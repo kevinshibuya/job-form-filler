@@ -159,7 +159,7 @@ job-form-filler/
 - Consumes: nothing.
 - Produces: `PROFILE_KEYS`, `ANSWER_BANK_KEYS`, `FIELD_KEYS` (readonly string tuples), types `ProfileKey`, `AnswerBankKey`, `FieldKey`, and `isFieldKey(s: string): s is FieldKey`. Every later task imports these from `@jff/shared`.
 
-- [ ] **Step 1: Create the workspace root**
+- [x] **Step 1: Create the workspace root**
 
 `package.json`:
 
@@ -207,7 +207,7 @@ test-results/
 playwright-report/
 ```
 
-- [ ] **Step 2: Create the shared TypeScript config**
+- [x] **Step 2: Create the shared TypeScript config**
 
 `tsconfig.base.json`:
 
@@ -232,7 +232,7 @@ playwright-report/
 }
 ```
 
-- [ ] **Step 3: Create the three workspace packages**
+- [x] **Step 3: Create the three workspace packages**
 
 Per the ESM extension rule (Global Constraints): `shared` and `host` are real Node ESM, so
 their tsconfigs use NodeNext resolution and every relative import in their sources and tests
@@ -356,7 +356,7 @@ non-composite projects cannot join `tsc -b`):
 }
 ```
 
-- [ ] **Step 4: Create the vitest config with two environments**
+- [x] **Step 4: Create the vitest config with two environments**
 
 `vitest.config.ts`:
 
@@ -392,7 +392,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Step 5: Write the failing test for the key sets**
+- [x] **Step 5: Write the failing test for the key sets**
 
 `shared/src/keys.test.ts`:
 
@@ -427,12 +427,12 @@ describe('field key sets', () => {
 })
 ```
 
-- [ ] **Step 6: Run the test to verify it fails**
+- [x] **Step 6: Run the test to verify it fails**
 
 Run: `npx vitest run shared/src/keys.test.ts`
 Expected: FAIL — cannot resolve `./keys.js` (the module does not exist yet).
 
-- [ ] **Step 7: Implement the key sets**
+- [x] **Step 7: Implement the key sets**
 
 `shared/src/keys.ts`:
 
@@ -476,17 +476,17 @@ export function isProfileKey(s: string): s is ProfileKey {
 export * from './keys.js'
 ```
 
-- [ ] **Step 8: Run the test to verify it passes**
+- [x] **Step 8: Run the test to verify it passes**
 
 Run: `npx vitest run shared/src/keys.test.ts`
 Expected: PASS (3 tests).
 
-- [ ] **Step 9: Install and typecheck**
+- [x] **Step 9: Install and typecheck**
 
 Run: `npm install && npm run typecheck`
 Expected: install succeeds, `tsc -b` exits 0. (`host`/`extension` have no sources yet — an empty `include` match is fine because `composite` projects tolerate it; if `tsc` errors with TS18003 for an empty project, add `host/src/.gitkeep`-adjacent placeholder modules `host/src/index.ts` and `extension/src/background.ts` each containing `export {}`.)
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add -A

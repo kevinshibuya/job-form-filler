@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tsbuildinfo
+extension/key.pem
+test-results/
+playwright-report/
