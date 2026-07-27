@@ -17,7 +17,8 @@ Every task's requirements implicitly include this section.
 - **The host writes NOTHING to stdout except Chrome's stdio framing** (4-byte little-endian length prefix + UTF-8 JSON). All logging goes to stderr or `~/.job-form-filler/host.log`. One stray `console.log` corrupts the channel irrecoverably. `host/` code may never call `console.log`; an ESLint rule enforces it.
 - **host→extension messages are hard-capped at 1 MB.** Any response that can grow (Q&A dumps, history) uses the `{ page, done }` chunking convention. extension→host is 64 MiB but nothing large is sent that way. The resume file never crosses native messaging at all.
 - **The spawned `claude` child** uses `stdio: ['ignore', 'pipe', 'pipe']` and receives the prompt via `-p` argv, never stdin. Inherited/open stdin stalls `claude -p` for ~3s per call and pollutes stderr.
-- **Every host request carries a `requestId`**; host responses are idempotent per id (replayed from `request_log`), so a dropped connection re-fetches rather than re-runs a paid LLM call.
+- **Every host request carries a `requestId`**; host responses are idempotent per id (replayed from `request_log`), so a dropped connection re-fetches rather than re-runs a paid LLM call. The panel's retrying port (Task 18) makes this real: a request that dies with `unreachable` is re-issued ONCE with the SAME `requestId` through a fresh `connectNative` port. `request_log` rows older than 7 days are pruned at host start.
+- **ESM extension rule:** `shared/` and `host/` compile as real Node ESM (`module`/`moduleResolution` NodeNext). EVERY relative import in `shared/` and `host/` sources and tests therefore carries a `.js` extension (`./keys.js`, `../db/repos.js`); tsc resolves `foo.js` → `foo.ts` at typecheck and Node needs the `.js` at runtime. The `extension/` workspace is bundled by Vite and stays bundler-resolution (extensionless).
 - **Field identity is the triple `{ frameId, fid, epoch }`.** The epoch is issued by the **panel** (monotonic per scan), never by the content script — multiple `allFrames` content-script instances cannot maintain a shared counter. Any message whose `epoch` ≠ the frame's current epoch is rejected with `stale_epoch`.
 - **The extension NEVER submits a form.** No code path calls `.click()` on a submit control, no flag enables it.
 - **Anti-fabrication:** the mapping LLM response schema has **no value field at all**. The model may only choose a `known_key` from the closed set or a `reuse_answer` id from the candidate ids that were sent; values are substituted from SQLite. Out-of-set key/id → that field falls to needs-input.
@@ -96,35 +97,46 @@ job-form-filler/
 │       └── handlers.ts          method router + requestId idempotency
 ├── extension/
 │   ├── package.json
+│   ├── tsconfig.node.json       non-composite noEmit config for the three *.config.ts files
 │   ├── vite.config.ts           crxjs build (manifest, SW, panel)
 │   ├── vite.content.config.ts   lib-mode IIFE build → dist/content.js
 │   ├── manifest.config.ts       MV3 manifest incl. pinned `key`
 │   └── src/
 │       ├── background.ts        SW: opens panel, relays messages, stamps frameId
+│       ├── snapshotKey.ts       storage.session key helper shared by SW and panel
 │       ├── panel/
 │       │   ├── index.html
 │       │   ├── main.tsx         React root
-│       │   ├── App.tsx          review surface
+│       │   ├── App.tsx          review surface (canonical full listing at Task 21)
+│       │   ├── Banner.tsx       self-check banner
 │       │   ├── ProfileEditor.tsx
 │       │   ├── FieldRow.tsx
 │       │   ├── tailwind.css     Tailwind v4 entry: @import "tailwindcss"
 │       │   ├── ui.ts            shared Tailwind class strings (BTN, INPUT, TIER_ACCENT…)
-│       │   ├── port.ts          createHostPort(): native | in-page fake (test flag)
+│       │   ├── group.ts         tier bucketing + source badges
+│       │   ├── port.ts          createHostPort(): retrying native port | compile-time-gated fake
+│       │   ├── tabScope.ts      tab-scoped reset
+│       │   ├── company.ts       guessCompany(title, hostname)
 │       │   ├── resume.ts        IndexedDB blob store
+│       │   ├── save.ts          three-way save diff + reusability suggestion
 │       │   └── scan.ts          scan/fill orchestration incl. phase-1 resume-first
 │       └── content/
 │           ├── index.ts         message router + injection guard
+│           ├── dom.ts           shadow-piercing walk, labels, group labels
 │           ├── enumerate.ts     EnumField harvesting
 │           ├── classify.ts      demographic + captcha predicates
 │           ├── fill.ts          per-widget-type fillers
+│           ├── settle.ts        MutationObserver quiet-window wait
 │           ├── snapshot.ts      submit/beforeunload capture
 │           └── jobpost.ts       job-text capture + element picker
 └── e2e/
+    ├── tsconfig.json            non-composite noEmit config (also covers playwright.config.ts)
     ├── bin/claude               fake `claude` CLI put on PATH for tests
-    ├── fixtures/greenhouse-apply/   copied from job-finder
+    ├── fixtures/greenhouse-apply/   PROJECT-OWNED copies (fixture-form.html is modified; see Task 3 Step 7)
     ├── static-server.ts         serves fixtures over http://127.0.0.1:PORT
-    ├── ext.ts                   launch-with-extension helper
-    ├── foundation.spec.ts       Task 3 smoke
+    ├── ext.ts                   launch-with-extension helper + panelUrl()
+    ├── hostBridge.ts            spawns the real host child for the full-loop smoke
+    ├── foundation.spec.ts       Task 3 smoke (per-concern tests share one harness)
     ├── panel-port.spec.ts       Task 18 smoke
     └── full-loop.spec.ts        Task 22 smoke
 ```
@@ -221,6 +233,11 @@ playwright-report/
 
 - [ ] **Step 3: Create the three workspace packages**
 
+Per the ESM extension rule (Global Constraints): `shared` and `host` are real Node ESM, so
+their tsconfigs use NodeNext resolution and every relative import in their sources and tests
+carries a `.js` extension. `extension` is bundled by Vite and stays on the base config's
+bundler resolution, extensionless.
+
 `shared/package.json`:
 
 ```json
@@ -242,7 +259,7 @@ playwright-report/
 ```json
 {
   "extends": "../tsconfig.base.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "module": "NodeNext", "moduleResolution": "nodenext" },
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts"]
 }
@@ -306,15 +323,35 @@ playwright-report/
 }
 ```
 
-`extension/tsconfig.json`:
+`extension/tsconfig.json` (the `*.config.ts` files live OUTSIDE `rootDir: "src"`, so they get
+their own non-composite config below — including them here is a TS6059 under `composite`):
 
 ```json
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": { "outDir": "dist-types", "rootDir": "src", "jsx": "react-jsx", "noEmit": false, "types": ["chrome", "vite/client"] },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "*.config.ts"],
-  "exclude": ["src/**/*.test.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [{ "path": "../shared" }]
+}
+```
+
+`extension/tsconfig.node.json` (typechecks the three Vite/manifest config files; Task 3
+Step 12 wires it into the root `typecheck` script as a plain `tsc -p` once those files exist —
+non-composite projects cannot join `tsc -b`):
+
+```json
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"]
+  },
+  "include": ["manifest.config.ts", "vite.config.ts", "vite.content.config.ts"]
 }
 ```
 
@@ -336,10 +373,17 @@ export default defineConfig({
         },
       },
       {
+        // The panel's compile-time test-seam flag (see Task 18); vite build defines
+        // it from the JFF_TEST_SEAM env var, unit tests always have the seam on.
+        define: { __JFF_TEST_SEAM__: 'true' },
         test: {
           name: 'extension',
           environment: 'jsdom',
-          include: ['extension/src/**/*.test.ts'],
+          // .tsx too, or React component tests are silently never collected.
+          include: ['extension/src/**/*.test.{ts,tsx}'],
+          // globals:true registers the afterEach hook @testing-library/react needs
+          // for auto-cleanup; without it every render leaks into the next test.
+          globals: true,
         },
       },
     ],
@@ -353,7 +397,7 @@ export default defineConfig({
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { PROFILE_KEYS, ANSWER_BANK_KEYS, FIELD_KEYS, isFieldKey } from './keys'
+import { PROFILE_KEYS, ANSWER_BANK_KEYS, FIELD_KEYS, isFieldKey } from './keys.js'
 
 describe('field key sets', () => {
   it('FIELD_KEYS is the union of profile and answer-bank keys with no duplicates', () => {
@@ -385,7 +429,7 @@ describe('field key sets', () => {
 - [ ] **Step 6: Run the test to verify it fails**
 
 Run: `npx vitest run shared/src/keys.test.ts`
-Expected: FAIL — `Cannot find module './keys'`.
+Expected: FAIL — cannot resolve `./keys.js` (the module does not exist yet).
 
 - [ ] **Step 7: Implement the key sets**
 
@@ -428,7 +472,7 @@ export function isProfileKey(s: string): s is ProfileKey {
 `shared/src/index.ts`:
 
 ```ts
-export * from './keys'
+export * from './keys.js'
 ```
 
 - [ ] **Step 8: Run the test to verify it passes**
@@ -473,7 +517,7 @@ git commit -m "chore: npm workspace skeleton, strict tsconfig, vitest projects, 
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema } from './messages'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema } from './messages.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -542,7 +586,7 @@ describe('ContentMessageSchema', () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run shared/src/messages.test.ts`
-Expected: FAIL — `Cannot find module './messages'`.
+Expected: FAIL — cannot resolve `./messages.js`.
 
 - [ ] **Step 3: Implement the field identity types**
 
@@ -550,7 +594,7 @@ Expected: FAIL — `Cannot find module './messages'`.
 
 ```ts
 import { z } from 'zod'
-import { FIELD_KEYS } from './keys'
+import { FIELD_KEYS } from './keys.js'
 
 /**
  * A field is addressed by the triple {frameId, fid, epoch}.
@@ -615,8 +659,8 @@ export type Resolution = z.infer<typeof ResolutionSchema>
 
 ```ts
 import { z } from 'zod'
-import { EnumFieldSchema, FieldHandleSchema, ResolutionSchema } from './field'
-import { FIELD_KEYS } from './keys'
+import { EnumFieldSchema, FieldHandleSchema, ResolutionSchema } from './field.js'
+import { FIELD_KEYS } from './keys.js'
 
 /* ---------------------------------------------------------------- host RPC */
 
@@ -710,13 +754,17 @@ export const PageEnvelopeSchema = z.object({
   page: z.number().int().nonnegative(),
   done: z.boolean(),
   items: z.array(z.unknown()),
+  /** Items dropped because they alone exceed the byte budget (see host/src/chunk.ts). */
+  omitted: z.number().int().nonnegative(),
 })
 
+// There is deliberately NO customQuestions list here: the panel offers [Generate]
+// on EVERY needs-input row (spec, "Needs input — each with a [Generate with AI]
+// button"), so a separate list would be dead payload. The reason string `custom`
+// marks the rows the LLM classified as free-text.
 export const ResolveResultSchema = z.object({
   epoch: z.number().int(),
   resolutions: z.array(ResolutionSchema),
-  /** Fields the LLM classified as free-text questions needing [Generate]. */
-  customQuestions: z.array(z.object({ handle: FieldHandleSchema, questionRaw: z.string() })),
 })
 export type ResolveResult = z.infer<typeof ResolveResultSchema>
 
@@ -758,15 +806,15 @@ export const STALE_EPOCH = 'stale_epoch' as const
 `shared/src/index.ts`:
 
 ```ts
-export * from './keys'
-export * from './field'
-export * from './messages'
+export * from './keys.js'
+export * from './field.js'
+export * from './messages.js'
 ```
 
 - [ ] **Step 6: Run the test to verify it passes**
 
 Run: `npx vitest run shared/src/messages.test.ts`
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 7: Build shared and typecheck**
 
@@ -790,9 +838,9 @@ git commit -m "feat(shared): field identity triple, host RPC schemas, content-sc
 - Create: `extension/manifest.config.ts`, `extension/vite.config.ts`, `extension/vite.content.config.ts`
 - Create: `extension/src/background.ts`, `extension/src/content/index.ts`
 - Create: `extension/src/panel/index.html`, `extension/src/panel/main.tsx`, `extension/src/panel/App.tsx`, `extension/src/panel/tailwind.css`
-- Create: `e2e/fixtures/greenhouse-apply/{fixture-form.html,figma-form.html,gusto-form.html}` (copied)
-- Create: `e2e/static-server.ts`, `e2e/ext.ts`, `e2e/foundation.spec.ts`, `playwright.config.ts`
-- Modify: `package.json` (root scripts)
+- Create: `e2e/fixtures/greenhouse-apply/{fixture-form.html,figma-form.html,gusto-form.html}` (copied; `fixture-form.html` then gets PROJECT-OWNED modifications, Step 7)
+- Create: `e2e/static-server.ts`, `e2e/ext.ts`, `e2e/foundation.spec.ts`, `e2e/tsconfig.json`, `playwright.config.ts`
+- Modify: `package.json` (root scripts), `extension/package.json` (exact version pins, Step 6b)
 
 **Interfaces:**
 - Consumes: `ContentMessageSchema`, `ScanResultSchema` from `@jff/shared`.
@@ -824,11 +872,14 @@ cat extension-id.txt
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { defineManifest } from '@crxjs/vite-plugin'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const key = readFileSync(resolve(here, 'key.pub.b64'), 'utf8').trim()
 
-export default {
+// defineManifest (not `as const`): crx() wants mutable arrays, and the helper
+// typechecks the manifest shape for us.
+export default defineManifest({
   manifest_version: 3,
   name: 'job-form-filler',
   version: '1.0.0',
@@ -843,8 +894,9 @@ export default {
   background: { service_worker: 'src/background.ts', type: 'module' },
   side_panel: { default_path: 'src/panel/index.html' },
   action: { default_title: 'Open job-form-filler' },
-  web_accessible_resources: [{ resources: ['content.js'], matches: ['<all_urls>'] }],
-} as const
+  // NO web_accessible_resources: content.js is injected with
+  // executeScript({ files }), which reads the extension's own bundle directly.
+})
 ```
 
 - [ ] **Step 3: Write the two Vite builds**
@@ -862,6 +914,10 @@ export default defineConfig({
   // Order matters: tailwindcss() must run BEFORE crx(), which rewrites HTML
   // entries and asset URLs. React first so JSX is transformed for class scanning.
   plugins: [react(), tailwindcss(), crx({ manifest })],
+  // Compile-time test seam (Task 18): a release build (JFF_TEST_SEAM unset) defines
+  // this false, which dead-code-eliminates the fake host port from the bundle.
+  // Browser smokes build with JFF_TEST_SEAM=1. No runtime switch ships.
+  define: { __JFF_TEST_SEAM__: JSON.stringify(process.env.JFF_TEST_SEAM === '1') },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
@@ -938,7 +994,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
         .catch((e: unknown) => sendResponse({ ok: false, error: String(e) }))
       return true
     }
-    chrome.webNavigation === undefined // no webNavigation permission; enumerate via scripting
+    // No webNavigation permission: frames are discovered via a no-op executeScript.
     chrome.scripting
       .executeScript({ target: { tabId: req.tabId, allFrames: true }, func: () => true })
       .then(async (frames) => {
@@ -1071,7 +1127,28 @@ style is a utility class in the markup; there are no hand-authored component rul
 Dark mode needs no configuration: Tailwind v4's `dark:` variant follows
 `prefers-color-scheme` by default, and every colour class below ships a `dark:` pair.
 
-- [ ] **Step 7: Copy the fixtures in**
+- [ ] **Step 6b: Bare-build spike — prove crxjs + Vite versions work, then pin them exactly**
+
+`@crxjs/vite-plugin ^2` + `vite ^5.4` compatibility is asserted nowhere upstream; measure it
+before writing any more sources. Everything the crx build needs already exists (manifest,
+configs, background, panel shell, content entry from Steps 2-6):
+
+```bash
+npm run build -w @jff/extension
+ls extension/dist/manifest.json extension/dist/content.js
+node -e "const m=require('./extension/dist/manifest.json'); console.log('sw:', m.background.service_worker, 'panel:', m.side_panel.default_path)"
+npm ls vite @crxjs/vite-plugin @tailwindcss/vite tailwindcss
+```
+
+Expected: both builds succeed, `dist/manifest.json` exists with a rewritten service worker
+path, and `npm ls` prints the resolved versions. If the crx build fails with a plugin/vite
+incompatibility, try the newest `@crxjs/vite-plugin@2.x` beta (`npm i -D @crxjs/vite-plugin@beta -w @jff/extension`)
+and re-run; do not proceed on a broken combination. Then **pin the measured versions exactly**:
+replace the `^`-ranged `vite`, `@crxjs/vite-plugin`, `@tailwindcss/vite` and `tailwindcss`
+entries in `extension/package.json` devDependencies with the exact versions `npm ls` printed
+(no carets), and run `npm install` to sync the lockfile.
+
+- [ ] **Step 7: Copy the fixtures in and make `fixture-form.html` project-owned**
 
 ```bash
 mkdir -p e2e/fixtures/greenhouse-apply
@@ -1081,6 +1158,68 @@ cp ~/keki/dev/personal_projects/job-finder/e2e/fixtures/greenhouse-apply/gusto-f
 ```
 
 (`lyft-form.html` is deliberately NOT copied: it is an empty SPA shell with no form markup, so it proves nothing offline.)
+
+Then apply these three PROJECT-OWNED modifications to our copy of `fixture-form.html`
+(`figma-form.html` and `gusto-form.html` stay verbatim). This copy belongs to this repo;
+it never syncs back from job-finder.
+
+**(a) A real job-description block** — insert directly after `<main class="main job-post">`'s
+`<h1>` line, before the `<form>` tag. The heuristic capture tier needs more than 400
+characters of honest prose to find (the form's labels alone stay under `MIN_JOB_TEXT`):
+
+```html
+  <!-- PROJECT-OWNED addition: a job-description block over 400 chars so the
+       heuristic job-text tier has something honest to capture. -->
+  <section class="job-description" id="job-description">
+    <h2>About the role</h2>
+    <p>FIXTURE-JD: We are hiring a Senior Frontend Engineer to build our application
+       platform. You will own the form infrastructure, design system and performance
+       budgets of a React and TypeScript codebase, collaborate closely with product
+       and design, and mentor mid-level engineers. We value pragmatic testing,
+       accessible HTML and boring technology. Experience with Node, Postgres and CI
+       pipelines is a plus. This paragraph exists so heuristic job-text capture has
+       more than four hundred characters of honest prose to find in browser smokes.</p>
+  </section>
+```
+
+**(b) A labelled free-text question** — insert after the LinkedIn field's closing `</div>`,
+before the `#mystery` field. The full-loop smoke needs a page-typed answer that CAN be saved
+(the unlabelled `#mystery` is skipped by `buildSaveItems` by design):
+
+```html
+    <!-- PROJECT-OWNED addition: a labelled free-text question, the save path for a
+         custom answer typed directly on the page. (#mystery below stays unlabelled
+         and is skipped by design.) -->
+    <div class="field">
+      <label id="hard_bug-label" for="hard_bug" class="label">Describe a hard bug you fixed</label>
+      <textarea id="hard_bug" name="hard_bug" class="input" rows="3"></textarea>
+    </div>
+```
+
+**(c) A real submit event** — the upstream fixture swaps `main.innerHTML` without ever
+dispatching `submit`, so capture-phase listeners can never observe the submission. Change
+the submit button to `type="button"` (native constraint validation on the always-empty
+required `#resume` would otherwise block a real submit anyway):
+
+```html
+    <button id="submit_app" type="button" class="btn" onclick="window.__submitApp()">Submit Application</button>
+```
+
+and in `window.__submitApp`, dispatch the event before the DOM swap — replace the success
+branch's first line so it reads:
+
+```js
+    // PROJECT-OWNED change: fire a REAL submit event before the DOM swap so
+    // capture-phase listeners (the extension's snapshot) observe the submission.
+    document.getElementById('application-form')
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    // success: swap the whole form out for a thank-you container (no network).
+    var main = document.querySelector('main');
+```
+
+Also add one line to the HTML comment at the top of the file: `PROJECT-OWNED copy —
+modified from job-finder's fixture (job-description block, hard_bug question, real submit
+event); do not re-copy over it.`
 
 - [ ] **Step 8: Write the static fixture server and the launch helper**
 
@@ -1122,6 +1261,7 @@ export async function startFixtureServer(): Promise<{ origin: string; stop: () =
 
 ```ts
 import { chromium, type BrowserContext } from '@playwright/test'
+import { readFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
@@ -1130,6 +1270,18 @@ import { dirname } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const EXT_DIST = resolve(here, '../extension/dist')
+
+/**
+ * crxjs rewrites HTML entry paths, so specs must never hard-code the panel path.
+ * Read the emitted manifest and build the URL from whatever crxjs actually wrote.
+ */
+export function panelUrl(extensionId: string, query = ''): string {
+  const manifest = JSON.parse(readFileSync(resolve(EXT_DIST, 'manifest.json'), 'utf8')) as {
+    side_panel?: { default_path?: string }
+  }
+  const path = manifest.side_panel?.default_path ?? 'src/panel/index.html'
+  return `chrome-extension://${extensionId}/${path}${query}`
+}
 
 export interface LaunchedExtension {
   context: BrowserContext
@@ -1179,86 +1331,154 @@ export default defineConfig({
 })
 ```
 
+`e2e/tsconfig.json` — the e2e helpers and specs (and `playwright.config.ts`) must be inside
+a tsconfig or `npm run typecheck` is blind to them. Non-composite + noEmit, so it runs as a
+plain `tsc -p e2e` appended to the root typecheck script (Step 12):
+
+```json
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node", "chrome"]
+  },
+  "include": ["./**/*.ts", "../playwright.config.ts"]
+}
+```
+
 - [ ] **Step 9: Write the failing browser smoke**
 
-`e2e/foundation.spec.ts`:
+`e2e/foundation.spec.ts`. Later tasks (13-17) each ADD one self-contained test to this file
+using the shared harness below; nothing is ever appended inside an existing test, so no test
+depends on another test's page state.
 
 ```ts
-import { test, expect } from '@playwright/test'
-import { launchWithExtension } from './ext'
+import { test, expect, type Page } from '@playwright/test'
+import { launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
 import { startFixtureServer } from './static-server'
 
-test('side panel document loads and the content script enumerates a fixture form with zero console errors', async () => {
-  const fixtures = await startFixtureServer()
-  const ext = await launchWithExtension()
+let fixtures: Awaited<ReturnType<typeof startFixtureServer>>
+let ext: LaunchedExtension
+
+test.beforeAll(async () => {
+  fixtures = await startFixtureServer()
+  ext = await launchWithExtension()
+})
+
+test.afterAll(async () => {
+  // Zero console errors across EVERY test in this file.
+  expect(ext.consoleErrors).toEqual([])
+  await ext.close()
+  await fixtures.stop()
+})
+
+interface Harness {
+  panel: Page
+  target: Page
+  tabId: number
+  send: (message: unknown, frameId?: number) => Promise<{ ok: boolean; replies: { frameId: number; payload: unknown }[] }>
+  close: () => Promise<void>
+}
+
+/** Fresh panel page + fixture tab + injected content script, torn down per test. */
+async function openFixtureTab(): Promise<Harness> {
+  const panel = await ext.context.newPage()
+  await panel.goto(panelUrl(ext.extensionId))
+  const target = await ext.context.newPage()
+  await target.goto(`${fixtures.origin}/fixture-form.html`)
+  const tabId = await panel.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ url: '*://*/fixture-form.html' })
+    return tabs[tabs.length - 1]!.id!
+  })
+  const injected = await panel.evaluate((id) => chrome.runtime.sendMessage({ kind: 'inject', tabId: id }), tabId)
+  expect(injected).toMatchObject({ ok: true })
+  const send = (message: unknown, frameId?: number) =>
+    panel.evaluate(
+      (args) => chrome.runtime.sendMessage({ kind: 'toContent', tabId: args.id, frameId: args.frameId, message: args.message }),
+      { id: tabId, message, frameId },
+    ) as Promise<{ ok: boolean; replies: { frameId: number; payload: unknown }[] }>
+  return {
+    panel, target, tabId, send,
+    close: async () => { await panel.close(); await target.close() },
+  }
+}
+
+test('the side panel document renders', async () => {
+  const panel = await ext.context.newPage()
+  await panel.goto(panelUrl(ext.extensionId))
+  await expect(panel.locator('[data-jff-ready="1"]')).toBeVisible()
+  await expect(panel.locator('[data-jff-title="1"]')).toHaveText('job-form-filler')
+  await panel.close()
+})
+
+test('the content script injects on demand into every frame and answers the probe', async () => {
+  const t = await openFixtureTab()
   try {
-    // 1) the side panel document renders as a normal extension page
-    const panel = await ext.context.newPage()
-    await panel.goto(`chrome-extension://${ext.extensionId}/src/panel/index.html`)
-    await expect(panel.locator('[data-jff-ready="1"]')).toBeVisible()
-    await expect(panel.locator('[data-jff-title="1"]')).toHaveText('job-form-filler')
-
-    // 2) the content script injects on demand into a real page and reports the form
-    const target = await ext.context.newPage()
-    await target.goto(`${fixtures.origin}/fixture-form.html`)
-    const tabId = await panel.evaluate(async () => {
-      const tabs = await chrome.tabs.query({})
-      return tabs.find((t) => (t.url ?? '').includes('fixture-form.html'))!.id!
-    })
-
-    const injected = await panel.evaluate(
-      (id) => chrome.runtime.sendMessage({ kind: 'inject', tabId: id }),
-      tabId,
-    )
-    expect(injected).toMatchObject({ ok: true })
-
-    const probe = await panel.evaluate(
-      (id) => chrome.runtime.sendMessage({ kind: 'toContent', tabId: id, message: { type: 'JFF_PROBE' } }),
-      tabId,
-    ) as { ok: boolean; replies: { frameId: number; payload: { ok: boolean; probe: { controlCount: number } } }[] }
-
+    const probe = await t.send({ type: 'JFF_PROBE' })
     expect(probe.ok).toBe(true)
     const top = probe.replies.find((r) => r.frameId === 0)!
-    expect(top.payload.ok).toBe(true)
-    // fixture-form.html has first_name, last_name, email, resume, work_auth,
-    // attestation, linkedin-input, mystery — at least 8 controls in the top frame.
-    expect(top.payload.probe.controlCount).toBeGreaterThanOrEqual(8)
-    // the EEO srcdoc iframe is a second frame with its own content-script instance
+    const topPayload = top.payload as { ok: boolean; probe: { controlCount: number; url: string } }
+    expect(topPayload.ok).toBe(true)
+    // fixture-form.html top frame: first_name, last_name, email, resume, work_auth,
+    // attestation, linkedin-input, hard_bug, mystery — at least 8 controls.
+    expect(topPayload.probe.controlCount).toBeGreaterThanOrEqual(8)
+    // SPIKE assertion (permanent): executeScript({allFrames:true, files}) must reach
+    // the EEO srcdoc iframe as a second content-script instance. If exactly one
+    // reply comes back, srcdoc injection does not hold on this Chromium build;
+    // apply the documented fallback in the note under Step 11 instead of loosening
+    // this assertion.
+    const frameUrls = probe.replies.map((r) => (r.payload as { probe?: { url: string } }).probe?.url)
+    expect(frameUrls).toContain('about:srcdoc')
     expect(probe.replies.length).toBeGreaterThanOrEqual(2)
-
-    // 3) zero console errors anywhere
-    expect(ext.consoleErrors).toEqual([])
   } finally {
-    await ext.close()
-    await fixtures.stop()
+    await t.close()
   }
 })
 ```
 
-- [ ] **Step 10: Run the smoke to verify it fails**
+- [ ] **Step 10: Run the smoke**
 
-Run: `npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
-Expected: FAIL — the extension is not built yet / panel path 404s.
+Run: `npx playwright test e2e/foundation.spec.ts`
+Expected: FAIL — the Step 6b build predates the panel shell's data attributes and/or the
+harness cannot find the emitted CSS; if instead it fails ONLY on the srcdoc SPIKE assertion,
+that is the measurement Step 11's fallback note exists for. (If everything already passes,
+the build from Step 6b was complete — proceed.)
 
 - [ ] **Step 11: Build and make the smoke pass**
+
+Browser smokes always build with `JFF_TEST_SEAM=1` (the compile-time flag Task 18's panel
+seam needs); the release build (`npm run build`, no env var) strips that code path.
 
 ```bash
 npx playwright install chromium
 npm run build -w @jff/shared
-npm run build -w @jff/extension
+JFF_TEST_SEAM=1 npm run build -w @jff/extension
 # Tailwind sanity: the emitted stylesheet must contain the utilities the panel uses.
 grep -rl "border-neutral-200" extension/dist/assets/*.css
 npx playwright test e2e/foundation.spec.ts
 ```
 
-Expected: the grep prints one CSS file, then the test PASSes.
+Expected: the grep prints one CSS file, then both tests PASS.
 
 - If the grep finds nothing, Tailwind did not scan the panel sources: check that `tailwindcss()`
   is in `vite.config.ts` BEFORE `crx()`, that `main.tsx` imports `./tailwind.css`, and that the
   `@source` glob in `tailwind.css` resolves relative to that file.
-- If the panel URL 404s, read `extension/dist/manifest.json` and use the exact
-  `side_panel.default_path` crxjs emitted in the spec's `panel.goto(...)` — crxjs rewrites HTML
-  entry paths, and the spec must point at the emitted path, not the source path.
+- The panel URL comes from `panelUrl()`, which reads the emitted manifest, so a crxjs path
+  rewrite can never 404 the specs.
+- **Documented fallback for the srcdoc SPIKE assertion**: if the probe returns only the top
+  frame (no `about:srcdoc` reply), this Chromium does not inject `executeScript({allFrames:
+  true, files})` into srcdoc frames. Fallback, in this order: (1) in `background.ts`'s inject
+  branch, additionally call `chrome.scripting.registerContentScripts([{ id: 'jff-frames',
+  js: ['content.js'], matches: ['<all_urls>'], allFrames: true, matchOriginAsFallback: true,
+  runAt: 'document_idle', persistAcrossSessions: false }])` and reload the tab once — the
+  `matchOriginAsFallback` flag is exactly the mechanism Chrome provides for about:/data:
+  frames; (2) if that also fails, record it in the plan and keep the assertion relaxed to
+  `>= 1` WITH a linked issue — never silently delete the assertion. The injection-guard in
+  the content script makes double injection safe either way.
 
 - [ ] **Step 12: Add the root scripts**
 
@@ -1267,8 +1487,8 @@ In root `package.json` `scripts`, ensure:
 ```json
 {
   "build": "npm run build -w @jff/shared && npm run build -w @jff/host && npm run build -w @jff/extension",
-  "smoke": "npm run build && playwright test",
-  "typecheck": "tsc -b shared host extension",
+  "smoke": "JFF_TEST_SEAM=1 npm run build && playwright test",
+  "typecheck": "tsc -b shared host extension && tsc -p e2e && tsc -p extension/tsconfig.node.json",
   "test": "vitest run"
 }
 ```
@@ -1295,7 +1515,7 @@ git commit -m "feat(extension): MV3 scaffold with pinned key, dumb SW relay, pan
   - `class FrameReader { push(chunk: Buffer): unknown[] }` — incremental parser tolerant of split/coalesced chunks.
   - `MAX_HOST_TO_EXT_BYTES = 1_048_576`
   - `class MessageTooLarge extends Error`
-  - `paginate<T>(items: T[], page: number, budgetBytes?: number): { page: number; done: boolean; items: T[] }`
+  - `paginate<T>(items: T[], page: number, budgetBytes?: number): { page: number; done: boolean; items: T[]; omitted: number }` — an item that alone exceeds the budget is dropped and counted in `omitted`, never emitted (it could not be framed).
   - `log(level: 'info' | 'warn' | 'error', msg: string, extra?: unknown): void` — writes to stderr AND `~/.job-form-filler/host.log`, never stdout.
 
 - [ ] **Step 1: Write the failing framing test**
@@ -1304,7 +1524,7 @@ git commit -m "feat(extension): MV3 scaffold with pinned key, dumb SW relay, pan
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { encodeMessage, FrameReader, MessageTooLarge, MAX_HOST_TO_EXT_BYTES } from './framing'
+import { encodeMessage, FrameReader, MessageTooLarge, MAX_HOST_TO_EXT_BYTES } from './framing.js'
 
 describe('encodeMessage', () => {
   it('prefixes the UTF-8 byte length as 4-byte little-endian', () => {
@@ -1362,7 +1582,7 @@ describe('FrameReader', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/framing.test.ts`
-Expected: FAIL — `Cannot find module './framing'`.
+Expected: FAIL — cannot resolve `./framing.js`.
 
 - [ ] **Step 3: Implement the framing codec**
 
@@ -1427,12 +1647,13 @@ Expected: PASS (7 tests).
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { paginate } from './chunk'
+import { paginate } from './chunk.js'
+import { encodeMessage } from './framing.js'
 
 describe('paginate', () => {
   it('returns done=true for a small single page', () => {
     const r = paginate([{ a: 1 }, { a: 2 }], 0)
-    expect(r).toEqual({ page: 0, done: true, items: [{ a: 1 }, { a: 2 }] })
+    expect(r).toEqual({ page: 0, done: true, items: [{ a: 1 }, { a: 2 }], omitted: 0 })
   })
 
   it('splits when the page would exceed the byte budget and marks done on the last page', () => {
@@ -1455,15 +1676,31 @@ describe('paginate', () => {
     expect(seen).toBe(items.length)
   })
 
-  it('always emits at least one item per page so an oversized single item cannot stall the loop', () => {
-    const items = [{ text: 'z'.repeat(5_000) }]
+  it('omits an item that alone exceeds the budget and reports it, so no page can ever break the frame cap', () => {
+    const items = [{ text: 'z'.repeat(5_000) }, { text: 'ok' }]
     const r = paginate(items, 0, 100)
-    expect(r.items).toHaveLength(1)
+    expect(r.items).toEqual([{ text: 'ok' }])
+    expect(r.omitted).toBe(1)
     expect(r.done).toBe(true)
   })
 
+  it('emits pages that all survive encodeMessage under the real 1 MB cap', () => {
+    // ~2.4 MB of items forces several pages; every FRAMED page must fit.
+    const items = Array.from({ length: 40 }, (_, i) => ({ i, text: 'y'.repeat(60_000) }))
+    let page = 0
+    let done = false
+    while (!done && page < 100) {
+      const p = paginate(items, page)
+      expect(() => encodeMessage({ requestId: 'r', ok: true, result: p })).not.toThrow()
+      done = p.done
+      page++
+    }
+    expect(done).toBe(true)
+    expect(page).toBeGreaterThan(1)
+  })
+
   it('returns an empty done page past the end', () => {
-    expect(paginate([{ a: 1 }], 5)).toEqual({ page: 5, done: true, items: [] })
+    expect(paginate([{ a: 1 }], 5)).toEqual({ page: 5, done: true, items: [], omitted: 0 })
   })
 })
 ```
@@ -1471,49 +1708,62 @@ describe('paginate', () => {
 - [ ] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run host/src/chunk.test.ts`
-Expected: FAIL — `Cannot find module './chunk'`.
+Expected: FAIL — cannot resolve `./chunk.js`.
 
 - [ ] **Step 7: Implement chunking**
 
 `host/src/chunk.ts`:
 
 ```ts
-import { MAX_HOST_TO_EXT_BYTES } from './framing'
+import { MAX_HOST_TO_EXT_BYTES } from './framing.js'
 
 /** Leave room for the response envelope around the items array. */
 const DEFAULT_BUDGET = MAX_HOST_TO_EXT_BYTES - 64 * 1024
 
+export interface Paged<T> {
+  page: number
+  done: boolean
+  items: T[]
+  /** Items dropped because they ALONE exceed the byte budget: such an item could
+   *  never be framed, so emitting it as "its own page" would only move the
+   *  MessageTooLarge failure to write time. The count makes the loss explicit. */
+  omitted: number
+}
+
 /**
  * The `{ page, done }` convention every growable host response uses. Pages are
  * computed deterministically from the same input array, so the panel can request
- * page N without the host holding a cursor.
+ * page N without the host holding a cursor. INVARIANT: every page this function
+ * emits fits inside a native-messaging frame after the response envelope is
+ * added (asserted by the encodeMessage test).
  */
-export function paginate<T>(items: T[], page: number, budgetBytes: number = DEFAULT_BUDGET): { page: number; done: boolean; items: T[] } {
+export function paginate<T>(items: T[], page: number, budgetBytes: number = DEFAULT_BUDGET): Paged<T> {
+  let omitted = 0
   const pages: T[][] = []
   let current: T[] = []
   let size = 0
   for (const item of items) {
     const itemSize = Buffer.byteLength(JSON.stringify(item), 'utf8') + 1
+    if (itemSize > budgetBytes) { omitted++; continue }
     if (current.length > 0 && size + itemSize > budgetBytes) {
       pages.push(current)
       current = []
       size = 0
     }
-    current.push(item) // at least one item per page, even if oversized
+    current.push(item)
     size += itemSize
   }
   if (current.length > 0) pages.push(current)
-  if (pages.length === 0) return { page, done: true, items: [] }
   const slice = pages[page]
-  if (slice === undefined) return { page, done: true, items: [] }
-  return { page, done: page >= pages.length - 1, items: slice }
+  if (slice === undefined) return { page, done: true, items: [], omitted }
+  return { page, done: page >= pages.length - 1, items: slice, omitted }
 }
 ```
 
 - [ ] **Step 8: Run the chunk test to verify it passes**
 
 Run: `npx vitest run host/src/chunk.test.ts`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 9: Implement the stdout-safe logger**
 
@@ -1606,6 +1856,7 @@ git commit -m "feat(host): native-messaging framing codec, 1MB cap, page/done ch
   - `getSelector(db, hostname, purpose): string | null` / `saveSelector(db, hostname, purpose, selector): void`
   - `insertApplication(db, row: { url, company, filledCount, generatedCount }): number`
   - `getCachedResponse(db, requestId: string): string | null` / `putCachedResponse(db, requestId, json): void`
+  - `pruneRequestLog(db, cutoffIso: string): void` — deletes ledger rows older than the cutoff; `openDb` calls it with a 7-day cutoff so the idempotency ledger cannot grow without bound.
   - Types `Lang = 'en' | 'pt'`, `QaRow`, `NewQaRow`.
 
 - [ ] **Step 1: Write the failing repo test**
@@ -1620,7 +1871,8 @@ import {
   findExactAnswer, listReusableAnswers, listReferenceAnswers, getAnswerById,
   upsertAnswer, touchAnswer, getLearnedMapping, saveLearnedMapping,
   getSelector, saveSelector, insertApplication, getCachedResponse, putCachedResponse,
-} from './repos'
+  pruneRequestLog,
+} from './repos.js'
 
 let db: Database.Database
 beforeEach(() => { db = openDb(':memory:') })
@@ -1710,13 +1962,22 @@ describe('applications and request idempotency', () => {
     putCachedResponse(db, 'r1', '{"ok":false}') // first write wins; a replay must not overwrite
     expect(getCachedResponse(db, 'r1')).toBe('{"ok":true}')
   })
+
+  it('prunes request_log rows older than the cutoff so the ledger cannot grow forever', () => {
+    putCachedResponse(db, 'old', '{"ok":true}')
+    db.prepare(`UPDATE request_log SET created_at = '2020-01-01T00:00:00.000Z' WHERE request_id = 'old'`).run()
+    putCachedResponse(db, 'fresh', '{"ok":true}')
+    pruneRequestLog(db, '2025-01-01T00:00:00.000Z')
+    expect(getCachedResponse(db, 'old')).toBeNull()
+    expect(getCachedResponse(db, 'fresh')).toBe('{"ok":true}')
+  })
 })
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/db/repos.test.ts`
-Expected: FAIL — `Cannot find module './repos'`.
+Expected: FAIL — cannot resolve `./repos.js`.
 
 - [ ] **Step 3: Write the schema**
 
@@ -1793,7 +2054,9 @@ export function migrate(db: Database.Database): void {
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import { isProfileKey, type FieldKey } from '@jff/shared'
-import { migrate } from './schema'
+import { migrate } from './schema.js'
+
+const REQUEST_LOG_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 export type Lang = 'en' | 'pt'
 export type Reusability = 'reusable' | 'company_specific'
@@ -1840,6 +2103,8 @@ export function openDb(path: string): Database.Database {
   if (path !== ':memory:') db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
   migrate(db)
+  // The idempotency ledger only needs to survive a reconnect, not a career.
+  pruneRequestLog(db, new Date(Date.now() - REQUEST_LOG_TTL_MS).toISOString())
   return db
 }
 
@@ -1981,12 +2246,17 @@ export function putCachedResponse(db: Database.Database, requestId: string, json
   db.prepare(`INSERT OR IGNORE INTO request_log (request_id, response_json, created_at) VALUES (?, ?, ?)`)
     .run(requestId, json, new Date().toISOString())
 }
+
+/** created_at is always an ISO string, so a plain lexical compare is correct. */
+export function pruneRequestLog(db: Database.Database, cutoffIso: string): void {
+  db.prepare(`DELETE FROM request_log WHERE created_at < ?`).run(cutoffIso)
+}
 ```
 
 - [ ] **Step 5: Run the repo test to verify it passes**
 
 Run: `npx vitest run host/src/db/repos.test.ts`
-Expected: PASS (11 tests). If better-sqlite3 fails to load, run `npm rebuild better-sqlite3`.
+Expected: PASS (12 tests). If better-sqlite3 fails to load, run `npm rebuild better-sqlite3`.
 
 - [ ] **Step 6: Commit**
 
@@ -2017,7 +2287,7 @@ git commit -m "feat(host): SQLite schema and repositories for profile, answer ba
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { normalizeQuestion, detectLanguage } from './normalize'
+import { normalizeQuestion, detectLanguage } from './normalize.js'
 
 describe('normalizeQuestion', () => {
   it('lowercases, strips accents, collapses punctuation and the required asterisk', () => {
@@ -2078,7 +2348,9 @@ export function normalizeQuestion(s: string): string {
     .trim()
 }
 
-const PT_HINTS = /\b(voce|vocês|voces|qual|quais|sua|seu|suas|seus|por que|porque|experiencia|salario|pretensao|trabalh\w*|empresa|cargo|nome|sobrenome|telefone|endereco|disponibilidade|contratacao)\b/
+// Matched against normalizeQuestion() output, which is ACCENT-STRIPPED: every hint
+// must be written unaccented or it can never match ("vocês" would be dead code).
+const PT_HINTS = /\b(voce|voces|qual|quais|sua|seu|suas|seus|por que|porque|experiencia|salario|pretensao|trabalh\w*|empresa|cargo|nome|sobrenome|telefone|endereco|disponibilidade|contratacao)\b/
 
 /** Deliberately dumb: two languages, stopword hit or fall back to English. */
 export function detectLanguage(s: string): 'en' | 'pt' {
@@ -2099,8 +2371,8 @@ Expected: PASS (6 tests).
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { recognize, BASELINE_RECOGNIZERS } from './recognizers'
-import { openDb, saveLearnedMapping } from '../db/repos'
+import { recognize, BASELINE_RECOGNIZERS } from './recognizers.js'
+import { openDb, saveLearnedMapping } from '../db/repos.js'
 import { isFieldKey } from '@jff/shared'
 
 describe('BASELINE_RECOGNIZERS', () => {
@@ -2170,8 +2442,8 @@ Expected: FAIL — module not found.
 ```ts
 import type Database from 'better-sqlite3'
 import type { FieldKey } from '@jff/shared'
-import { getLearnedMapping } from '../db/repos'
-import { normalizeQuestion } from './normalize'
+import { getLearnedMapping } from '../db/repos.js'
+import { normalizeQuestion } from './normalize.js'
 
 /**
  * Hand-curated baseline, ported from job-finder's BASELINE_RECOGNIZERS.
@@ -2220,7 +2492,7 @@ export function recognize(label: string, db?: Database.Database): FieldKey | nul
 - [ ] **Step 8: Run the recognizer test to verify it passes**
 
 Run: `npx vitest run host/src/resolve/recognizers.test.ts`
-Expected: PASS (23 assertions). If `Company name` still matches `firstName`, the `\bnome\b(?!\s+da\s+empresa)` lookahead is not the culprit (that pattern is PT-only); confirm the English branch is `first name` and not `name`.
+Expected: PASS (24 tests). If `Company name` still matches `firstName`, the `\bnome\b(?!\s+da\s+empresa)` lookahead is not the culprit (that pattern is PT-only); confirm the English branch is `first name` and not `name`.
 
 - [ ] **Step 9: Commit**
 
@@ -2265,7 +2537,7 @@ git commit -m "feat(host): question normalization, PT/EN detection, baseline lab
 ```ts
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createClaudeRunner, ClaudeError, type RunResult } from './claudeCli'
+import { createClaudeRunner, ClaudeError, type RunResult } from './claudeCli.js'
 
 const Schema = z.object({ ok: z.boolean() })
 const noSleep = () => Promise.resolve()
@@ -2315,6 +2587,13 @@ describe('createClaudeRunner', () => {
     expect(run).toHaveBeenCalledTimes(1)
   })
 
+  it('classifies "authentication rate limit exceeded" as rate_limit, not not_authed', async () => {
+    // Both regexes match this string; the rate-limit test must run FIRST.
+    const run = vi.fn(async (): Promise<RunResult> => ({ code: 1, stdout: '', stderr: 'authentication rate limit exceeded', timedOut: false }))
+    await expect(createClaudeRunner({ run, sleep: noSleep }).complete('p', Schema))
+      .rejects.toMatchObject({ kind: 'rate_limit' })
+  })
+
   it('classifies a timeout kill as timeout and retries exactly once', async () => {
     const run = vi.fn(async (): Promise<RunResult> => ({ code: 1, stdout: '', stderr: '', timedOut: true }))
     await expect(createClaudeRunner({ run, sleep: noSleep }).complete('p', Schema))
@@ -2351,7 +2630,7 @@ describe('createClaudeRunner', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/claudeCli.test.ts`
-Expected: FAIL — `Cannot find module './claudeCli'`.
+Expected: FAIL — cannot resolve `./claudeCli.js`.
 
 - [ ] **Step 3: Implement the runner**
 
@@ -2456,8 +2735,10 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
           if (res.timedOut) {
             kind = 'timeout'; message = `claude -p exceeded ${SPAWN_TIMEOUT_MS}ms`; cls = 'transient'
           } else if (res.code !== 0) {
-            if (AUTH_RE.test(res.stderr)) { kind = 'not_authed'; message = 'claude CLI is not logged in'; cls = 'terminal' }
-            else if (RATE_LIMIT_RE.test(res.stderr)) { kind = 'rate_limit'; message = 'claude subscription rate limit reached'; cls = 'terminal' }
+            // RATE_LIMIT first: "authentication rate limit exceeded" also matches
+            // AUTH_RE and must classify as rate_limit, not not_authed.
+            if (RATE_LIMIT_RE.test(res.stderr)) { kind = 'rate_limit'; message = 'claude subscription rate limit reached'; cls = 'terminal' }
+            else if (AUTH_RE.test(res.stderr)) { kind = 'not_authed'; message = 'claude CLI is not logged in'; cls = 'terminal' }
             else { kind = 'process'; message = res.stderr.trim() || `claude exited ${res.code}`; cls = 'transient' }
           } else {
             try {
@@ -2487,7 +2768,7 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run host/src/llm/claudeCli.test.ts`
-Expected: PASS (9 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -2524,7 +2805,7 @@ git commit -m "feat(host): claude -p runner with stdin-closed spawn discipline, 
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { fence, CAPS, UNTRUSTED_PREAMBLE } from './fence'
+import { fence, CAPS, UNTRUSTED_PREAMBLE } from './fence.js'
 
 describe('fence', () => {
   it('wraps content in the named tag', () => {
@@ -2563,7 +2844,7 @@ describe('UNTRUSTED_PREAMBLE', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/fence.test.ts`
-Expected: FAIL — `Cannot find module './fence'`.
+Expected: FAIL — cannot resolve `./fence.js`.
 
 - [ ] **Step 3: Implement fencing**
 
@@ -2617,7 +2898,7 @@ Expected: PASS (5 tests).
 ```ts
 import { describe, it, expect } from 'vitest'
 import type { EnumField } from '@jff/shared'
-import { buildMappingPrompt, validateMappingResponse, refOf, MappingResponseSchema } from './mapping'
+import { buildMappingPrompt, validateMappingResponse, refOf, MappingResponseSchema } from './mapping.js'
 
 const field = (fid: number, label: string, extra: Partial<EnumField> = {}): EnumField => ({
   frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
@@ -2737,7 +3018,7 @@ describe('refOf', () => {
 - [ ] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/mapping.test.ts`
-Expected: FAIL — `Cannot find module './mapping'`.
+Expected: FAIL — cannot resolve `./mapping.js`.
 
 - [ ] **Step 7: Implement the mapping prompt, schema and validator**
 
@@ -2746,8 +3027,8 @@ Expected: FAIL — `Cannot find module './mapping'`.
 ```ts
 import { z } from 'zod'
 import { FIELD_KEYS, isFieldKey, type EnumField, type FieldKey } from '@jff/shared'
-import type { ClaudeRunner } from './claudeCli'
-import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence'
+import type { ClaudeRunner } from './claudeCli.js'
+import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
 export interface MappingCandidate {
   id: number
@@ -2925,18 +3206,18 @@ git commit -m "feat(host): untrusted-input fencing and a mapping schema with no 
 | 4d | LLM `reuse_answer` pointing at a `company_specific` row | `needs_input` | `null` | `company-specific` |
 | 5 | LLM `custom`, or no decision at all, or the LLM call failed | `needs_input` | `null` | `custom` / `llm-unavailable` / `llm-error:<kind>` |
 
-Only `custom` fields (tier 5, decision `custom`) are listed in `customQuestions`, which is what drives the panel's [Generate] buttons.
+The panel offers [Generate] on EVERY needs-input row (spec); the reason string `custom` marks
+the rows the LLM explicitly classified as free-text. There is no separate customQuestions list.
 
 - [ ] **Step 1: Patch `ResolveResultSchema` to carry an LLM error**
 
-In `shared/src/messages.ts`, replace the `ResolveResultSchema` block with:
+In `shared/src/messages.ts`, replace the `ResolveResultSchema` object (keep the comment above
+it) with:
 
 ```ts
 export const ResolveResultSchema = z.object({
   epoch: z.number().int(),
   resolutions: z.array(ResolutionSchema),
-  /** Fields the LLM classified as free-text questions needing [Generate]. */
-  customQuestions: z.array(z.object({ handle: FieldHandleSchema, questionRaw: z.string() })),
   /**
    * Set when the batched mapping call failed. Every unresolved field is already
    * needs-input; this only tells the panel WHICH banner to show.
@@ -2946,7 +3227,10 @@ export const ResolveResultSchema = z.object({
 export type ResolveResult = z.infer<typeof ResolveResultSchema>
 ```
 
-Run `npx vitest run shared/src/messages.test.ts` — still PASS.
+Then rebuild shared — every other workspace's tests and typechecks resolve `@jff/shared` to
+its `dist/`, so a schema change without a rebuild tests STALE types:
+
+Run: `npm run build -w @jff/shared && npx vitest run shared/src/messages.test.ts` — still PASS.
 
 - [ ] **Step 2: Write the failing waterfall test**
 
@@ -2956,10 +3240,10 @@ Run `npx vitest run shared/src/messages.test.ts` — still PASS.
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 import type Database from 'better-sqlite3'
 import type { EnumField } from '@jff/shared'
-import { openDb, setProfile, setAnswerBank, upsertAnswer, getAnswerById } from '../db/repos'
-import { resolveFields } from './waterfall'
-import { ClaudeError, type ClaudeRunner } from '../llm/claudeCli'
-import type { MappingDecision } from '../llm/mapping'
+import { openDb, setProfile, setAnswerBank, upsertAnswer, getAnswerById } from '../db/repos.js'
+import { resolveFields } from './waterfall.js'
+import { ClaudeError, type ClaudeRunner } from '../llm/claudeCli.js'
+import type { MappingDecision } from '../llm/mapping.js'
 
 const field = (fid: number, label: string, extra: Partial<EnumField> = {}): EnumField => ({
   frameId: 0, fid, epoch: 5, label, name: null, idAttr: null, kind: 'text',
@@ -3053,8 +3337,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
     })
     const r = await resolveFields({ db, runner: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
       input([field(1, 'Why do you want to work here?')]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null })
-    expect(r.customQuestions).toHaveLength(1)
+    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'custom' })
   })
 
   it('does not offer company_specific rows to the mapping call as candidates', async () => {
@@ -3112,13 +3395,12 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
 })
 
 describe('tier 5 and failure modes', () => {
-  it('lists custom decisions as generate-able questions', async () => {
+  it('resolves an LLM custom decision to needs-input with reason custom', async () => {
     const r = await resolveFields(
       { db, runner: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
       input([field(1, 'Tell us about a hard technical decision.')]),
     )
-    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'custom' })
-    expect(r.customQuestions[0]).toMatchObject({ questionRaw: 'Tell us about a hard technical decision.' })
+    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'custom', value: null })
   })
 
   it('fails every unresolved field closed when the mapping response does not round-trip', async () => {
@@ -3165,11 +3447,11 @@ import {
 } from '@jff/shared'
 import {
   findExactAnswer, getAnswerById, getStoredValue, listReusableAnswers, touchAnswer,
-} from '../db/repos'
-import { ClaudeError, type ClaudeRunner } from '../llm/claudeCli'
-import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping'
-import { detectLanguage, normalizeQuestion } from './normalize'
-import { recognize } from './recognizers'
+} from '../db/repos.js'
+import { ClaudeError, type ClaudeRunner } from '../llm/claudeCli.js'
+import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
+import { detectLanguage, normalizeQuestion } from './normalize.js'
+import { recognize } from './recognizers.js'
 
 export interface WaterfallDeps {
   db: Database.Database
@@ -3241,7 +3523,6 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
     unresolved.push(f)
   }
 
-  const customQuestions: ResolveResult['customQuestions'] = []
   let llmError: ResolveResult['llmError'] = null
 
   if (unresolved.length > 0) {
@@ -3268,7 +3549,6 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
 
     for (const f of unresolved) {
       const ref = refOf(f)
-      const label = (f.label ?? '').trim()
 
       if (llmError !== null) {
         byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-error:${llmError.kind}` }))
@@ -3301,16 +3581,12 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
       }
 
       byRef.set(ref, res(f, { tier: 'needs_input', reason: 'custom' }))
-      if (label !== '') {
-        customQuestions.push({ handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch }, questionRaw: label })
-      }
     }
   }
 
   return {
     epoch: input.epoch,
     resolutions: input.fields.map((f) => byRef.get(refOf(f))!),
-    customQuestions,
     llmError,
   }
 }
@@ -3319,7 +3595,7 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
 - [ ] **Step 5: Run the waterfall test to verify it passes**
 
 Run: `npx vitest run host/src/resolve/waterfall.test.ts`
-Expected: PASS (17 tests).
+Expected: PASS (19 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -3362,8 +3638,8 @@ git commit -m "feat(host): resolution waterfall with confidence tiers, EEO skip 
 
 ```ts
 import { describe, it, expect, vi } from 'vitest'
-import type { ClaudeRunner } from './claudeCli'
-import { buildGenerationPrompt, buildProfileSummary, sanitizeDraft, runGeneration } from './generate'
+import type { ClaudeRunner } from './claudeCli.js'
+import { buildGenerationPrompt, buildProfileSummary, sanitizeDraft, runGeneration } from './generate.js'
 
 const input = {
   question: 'Why do you want to work at Acme?',
@@ -3449,7 +3725,7 @@ describe('runGeneration', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/generate.test.ts`
-Expected: FAIL — `Cannot find module './generate'`.
+Expected: FAIL — cannot resolve `./generate.js`.
 
 - [ ] **Step 3: Implement generation**
 
@@ -3457,8 +3733,8 @@ Expected: FAIL — `Cannot find module './generate'`.
 
 ```ts
 import { z } from 'zod'
-import type { ClaudeRunner } from './claudeCli'
-import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence'
+import type { ClaudeRunner } from './claudeCli.js'
+import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
 export interface GenerationInput {
   question: string
@@ -3560,13 +3836,15 @@ git commit -m "feat(host): honesty-first generation prompt with fenced untrusted
 
 **Auth check policy:** the only reliable signal that `claude` is logged in is a real call. `selfCheck` therefore runs one tiny probe (`claude -p "reply with the single word ok"`) and caches the outcome in `~/.job-form-filler/authcheck.json` for 12 hours, so opening the panel repeatedly does not burn calls.
 
+**`qa.list` has no panel consumer in v1 — deliberately.** It exists as the executable proof of the `{ page, done }` chunking protocol (verification row 34) and is exercised by `handlers.test.ts`. A "browse saved answers" view can consume it later without any host change.
+
 - [ ] **Step 1: Write the failing self-check test**
 
 `host/src/selfcheck.test.ts`:
 
 ```ts
 import { describe, it, expect, vi } from 'vitest'
-import { selfCheck } from './selfcheck'
+import { selfCheck } from './selfcheck.js'
 
 const base = {
   claudePath: '/opt/homebrew/bin/claude',
@@ -3628,7 +3906,7 @@ describe('selfCheck', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/selfcheck.test.ts`
-Expected: FAIL — `Cannot find module './selfcheck'`.
+Expected: FAIL — cannot resolve `./selfcheck.js`.
 
 - [ ] **Step 3: Implement config and self-check**
 
@@ -3672,8 +3950,8 @@ export function loadConfig(): HostConfig {
 ```ts
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import type { SelfCheck } from '@jff/shared'
-import { HOME_DIR } from './config'
-import { ClaudeError, createClaudeRunner } from './llm/claudeCli'
+import { HOME_DIR } from './config.js'
+import { ClaudeError, createClaudeRunner } from './llm/claudeCli.js'
 import { z } from 'zod'
 
 const AUTH_CACHE_TTL_MS = 12 * 60 * 60 * 1000
@@ -3761,8 +4039,8 @@ Expected: PASS (6 tests).
 ```ts
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { openDb, setProfile, getProfile, getSelector, getLearnedMapping, upsertAnswer } from './db/repos'
-import { handleRequest, type HandlerDeps } from './handlers'
+import { openDb, setProfile, getProfile, getSelector, getLearnedMapping, upsertAnswer } from './db/repos.js'
+import { handleRequest, type HandlerDeps } from './handlers.js'
 
 let db: Database.Database
 let deps: HandlerDeps
@@ -3852,7 +4130,7 @@ describe('handleRequest', () => {
 - [ ] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run host/src/handlers.test.ts`
-Expected: FAIL — `Cannot find module './handlers'`.
+Expected: FAIL — cannot resolve `./handlers.js`.
 
 - [ ] **Step 7: Implement the handlers**
 
@@ -3864,18 +4142,18 @@ import {
   isFieldKey, isProfileKey,
   type HostErrorKind, type HostRequest, type HostResponse, type SelfCheck,
 } from '@jff/shared'
-import { paginate } from './chunk'
-import type { HostConfig } from './config'
+import { paginate } from './chunk.js'
+import type { HostConfig } from './config.js'
 import {
   getAnswerBank, getCachedResponse, getProfile, getSelector, insertApplication,
   listAllAnswers, listReferenceAnswers, putCachedResponse, saveLearnedMapping,
   saveSelector, setAnswerBank, setProfile, upsertAnswer,
-} from './db/repos'
-import { ClaudeError, type ClaudeRunner } from './llm/claudeCli'
-import { buildProfileSummary, runGeneration } from './llm/generate'
-import { detectLanguage, normalizeQuestion } from './resolve/normalize'
-import { resolveFields } from './resolve/waterfall'
-import { log } from './log'
+} from './db/repos.js'
+import { ClaudeError, type ClaudeRunner } from './llm/claudeCli.js'
+import { buildProfileSummary, runGeneration } from './llm/generate.js'
+import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
+import { resolveFields } from './resolve/waterfall.js'
+import { log } from './log.js'
 
 export interface HandlerDeps {
   db: Database.Database
@@ -3993,6 +4271,8 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         return ok(req.requestId, { label: normalizeQuestion(req.params.label), fieldKey: req.params.fieldKey })
 
       case 'qa.list':
+        // No panel consumer in v1 (deliberate): this method is the executable
+        // proof of the {page, done} chunking protocol. See Task 11 preamble.
         return ok(req.requestId, paginate(listAllAnswers(db), req.params.page))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
@@ -4019,13 +4299,13 @@ Expected: PASS (9 tests).
 ```ts
 /* eslint-disable no-restricted-properties -- this is the ONE file allowed to write stdout */
 import { HostRequestSchema, type HostResponse } from '@jff/shared'
-import { loadConfig } from './config'
-import { openDb } from './db/repos'
-import { encodeMessage, FrameReader, MessageTooLarge } from './framing'
-import { createClaudeRunner } from './llm/claudeCli'
-import { handleRequest, type HandlerDeps } from './handlers'
-import { log } from './log'
-import { realAuthCache, realFileExists, realProbeAuth, selfCheck } from './selfcheck'
+import { loadConfig } from './config.js'
+import { openDb } from './db/repos.js'
+import { encodeMessage, FrameReader, MessageTooLarge } from './framing.js'
+import { createClaudeRunner } from './llm/claudeCli.js'
+import { handleRequest, type HandlerDeps } from './handlers.js'
+import { log } from './log.js'
+import { realAuthCache, realFileExists, realProbeAuth, selfCheck } from './selfcheck.js'
 
 const config = loadConfig()
 const db = openDb(config.dbPath)
@@ -4131,7 +4411,7 @@ git commit -m "feat(host): self-check with cached auth probe, idempotent request
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { buildWrapperScript, buildNativeManifest, nativeManifestPath, HOST_NAME } from './templates'
+import { buildWrapperScript, buildNativeManifest, nativeManifestPath, HOST_NAME } from './templates.js'
 
 describe('buildWrapperScript', () => {
   const sh = buildWrapperScript({ nodePath: '/opt/homebrew/bin/node', entryPath: '/repo/host/dist/index.js' })
@@ -4184,7 +4464,7 @@ describe('nativeManifestPath', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/install/templates.test.ts`
-Expected: FAIL — `Cannot find module './templates'`.
+Expected: FAIL — cannot resolve `./templates.js`.
 
 - [ ] **Step 3: Implement the templates**
 
@@ -4365,7 +4645,7 @@ git commit -m "feat(host): install script writing the PATH-explicit wrapper, hos
 
 **Interfaces:**
 - Consumes: `EnumField`, `WidgetKind` from `@jff/shared`.
-- Produces (`dom.ts`): `walkElements(root: Document | ShadowRoot): Element[]`, `countUnreachableWidgets(root: Document | ShadowRoot): number`, `scopeOf(el: Element): Document | ShadowRoot`, `labelFor(el: Element): string | null`, `optionLabelOf(el: Element): string`.
+- Produces (`dom.ts`): `walkElements(root: Document | ShadowRoot): Element[]`, `countUnreachableWidgets(root: Document | ShadowRoot): number`, `scopeOf(el: Element): Document | ShadowRoot`, `labelFor(el: Element): string | null`, `groupLabelFor(el: Element): string | null` (radio GROUP label: legend / role=group only, never the wrapping option label), `optionLabelOf(el: Element): string`.
 - Produces (`enumerate.ts`): `type Measure`, `type MeasureFn`, `defaultMeasure`, `enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; unreachableWidgets: number }`, `elementByFid(root: Document, fid: number): Element | null`, `getEpoch(): number`, `setEpoch(e: number): void`.
 
 - [ ] **Step 1: Write the failing DOM-helper test**
@@ -4374,7 +4654,7 @@ git commit -m "feat(host): install script writing the PATH-explicit wrapper, hos
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest'
-import { walkElements, countUnreachableWidgets, labelFor, optionLabelOf } from './dom'
+import { walkElements, countUnreachableWidgets, labelFor, groupLabelFor, optionLabelOf } from './dom'
 
 beforeEach(() => { document.body.innerHTML = '' })
 
@@ -4463,6 +4743,25 @@ describe('labelFor', () => {
   it('returns null when nothing labels the element', () => {
     document.body.innerHTML = '<input id="x">'
     expect(labelFor(document.getElementById('x')!)).toBeNull()
+  })
+})
+
+describe('groupLabelFor', () => {
+  it('uses the fieldset legend, NEVER the wrapping option label', () => {
+    document.body.innerHTML = `<fieldset><legend>Work model *</legend>
+      <label><input type="radio" name="wm" value="r" id="r1"> Remote</label></fieldset>`
+    expect(groupLabelFor(document.getElementById('r1')!)).toBe('Work model')
+  })
+
+  it('falls back to a [role=group] aria-label', () => {
+    document.body.innerHTML = `<div role="group" aria-label="Pronouns">
+      <label><input type="radio" name="p" id="p1"> She/her</label></div>`
+    expect(groupLabelFor(document.getElementById('p1')!)).toBe('Pronouns')
+  })
+
+  it('returns null when no group container labels the radios', () => {
+    document.body.innerHTML = `<label><input type="radio" name="x" id="x1"> Yes</label>`
+    expect(groupLabelFor(document.getElementById('x1')!)).toBeNull()
   })
 })
 
@@ -4576,6 +4875,33 @@ export function labelFor(el: Element): string | null {
   return null
 }
 
+/**
+ * The label of a WHOLE radio group. Never consults the wrapping <label> of an
+ * individual radio: that is the OPTION's text ("Remote"), not the group's
+ * ("Work model"). Group-level signals only: fieldset legend, then a
+ * [role="group"] container's aria-label / aria-labelledby.
+ */
+export function groupLabelFor(el: Element): string | null {
+  const legend = el.closest('fieldset')?.querySelector('legend')
+  const legendText = clean(legend?.textContent)
+  if (legendText !== '') return legendText
+
+  const group = el.closest('[role="group"]')
+  if (group !== null) {
+    const aria = clean(group.getAttribute('aria-label'))
+    if (aria !== '') return aria
+    const labelledBy = group.getAttribute('aria-labelledby')
+    if (labelledBy !== null) {
+      const scope = scopeOf(group)
+      const t = clean(labelledBy.split(/\s+/)
+        .map((id) => scope.querySelector(`[id="${escapeId(id)}"]`)?.textContent ?? '')
+        .join(' '))
+      if (t !== '') return t
+    }
+  }
+  return null
+}
+
 /** The visible label of one radio/option element. */
 export function optionLabelOf(el: Element): string {
   const wrapping = el.closest('label')
@@ -4595,7 +4921,7 @@ export function optionLabelOf(el: Element): string {
 - [ ] **Step 4: Run the DOM-helper test to verify it passes**
 
 Run: `npx vitest run extension/src/content/dom.test.ts`
-Expected: PASS (14 tests).
+Expected: PASS (17 tests).
 
 - [ ] **Step 5: Write the failing enumerator test**
 
@@ -4750,7 +5076,7 @@ describe('enumerateFields', () => {
     loadFixture()
     const { fields } = enumerateFields({ root: document, epoch: 9, measure: allVisible })
     const names = fields.map((f) => f.name)
-    expect(names).toEqual(expect.arrayContaining(['first_name', 'last_name', 'email', 'resume', 'work_auth', 'attestation']))
+    expect(names).toEqual(expect.arrayContaining(['first_name', 'last_name', 'email', 'resume', 'work_auth', 'attestation', 'hard_bug']))
     expect(fields.find((f) => f.name === 'work_auth')!.options.length).toBe(2)
     // the label-only LinkedIn field has no name but IS bound by its label
     expect(fields.find((f) => f.idAttr === 'linkedin-input')!.label).toBe('LinkedIn Profile')
@@ -4772,7 +5098,7 @@ Expected: FAIL — `Cannot find module './enumerate'`.
 
 ```ts
 import type { EnumField, WidgetKind } from '@jff/shared'
-import { countUnreachableWidgets, labelFor, optionLabelOf, scopeOf, walkElements } from './dom'
+import { countUnreachableWidgets, groupLabelFor, labelFor, optionLabelOf, scopeOf, walkElements } from './dom'
 
 export interface Measure {
   display: string
@@ -4874,7 +5200,6 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
 
   const fields: EnumField[] = []
   const radioGroups = new Map<string, EnumField>()
-  const radioElements = new Map<string, Element>()
   let fid = 0
 
   for (const el of walkElements(opts.root)) {
@@ -4900,15 +5225,18 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       }
       const group: EnumField = {
         frameId: -1, fid, epoch: opts.epoch,
-        label: labelFor(el), name, idAttr: el.id === '' ? null : el.id,
+        // groupLabelFor, NOT labelFor: the wrapping <label> of the first radio is
+        // that OPTION's text ("Remote"), never the group's ("Work model").
+        label: groupLabelFor(el), name, idAttr: el.id === '' ? null : el.id,
         kind: 'radiogroup', options: [optionLabel],
         required: (el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true',
         visible, currentValue: checked ? optionLabel : null,
         demographic: isDemographic(el),
       }
+      // Only the FIRST radio of a group carries data-jff-fid; the filler re-finds
+      // the other members through the shared name attribute (fill.ts).
       el.setAttribute(FID_ATTR, String(fid))
       radioGroups.set(groupKey, group)
-      radioElements.set(groupKey, el)
       fields.push(group)
       fid++
       continue
@@ -4980,24 +5308,29 @@ function handle(raw: unknown): unknown {
 
 - [ ] **Step 10: Extend the browser smoke to assert real enumeration**
 
-In `e2e/foundation.spec.ts`, after the `JFF_PROBE` assertions, append:
+Add this self-contained test to `e2e/foundation.spec.ts` (it uses the file's `openFixtureTab`
+harness from Task 3; never append inside an existing test):
 
 ```ts
-    const scan = await panel.evaluate(
-      (id) => chrome.runtime.sendMessage({ kind: 'toContent', tabId: id, message: { type: 'JFF_SCAN', epoch: 1 } }),
-      tabId,
-    ) as { ok: boolean; replies: { frameId: number; payload: { ok: boolean; scan?: { fields: { name: string | null; kind: string }[] } } }[] }
-
-    const topScan = scan.replies.find((r) => r.frameId === 0)!.payload.scan!
+test('a scan enumerates the fixture form for real', async () => {
+  const t = await openFixtureTab()
+  try {
+    const scan = await t.send({ type: 'JFF_SCAN', epoch: 1 })
+    type ScanPayload = { ok: boolean; scan?: { fields: { name: string | null; kind: string }[] } }
+    const topScan = (scan.replies.find((r) => r.frameId === 0)!.payload as ScanPayload).scan!
     const names = topScan.fields.map((f) => f.name)
-    expect(names).toEqual(expect.arrayContaining(['first_name', 'last_name', 'email', 'resume', 'work_auth']))
+    expect(names).toEqual(expect.arrayContaining(['first_name', 'last_name', 'email', 'resume', 'work_auth', 'hard_bug']))
     // real layout: the hidden #resume input is still reported, the file kind wins
     expect(topScan.fields.find((f) => f.name === 'resume')!.kind).toBe('file')
+  } finally {
+    await t.close()
+  }
+})
 ```
 
 - [ ] **Step 11: Rebuild and run the smoke**
 
-Run: `npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
+Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS, zero console errors.
 
 - [ ] **Step 12: Commit**
@@ -5168,9 +5501,12 @@ export function isDemographic(el: Element, opts: { isSubframe?: boolean } = {}):
   let levels = 0
 
   while (node !== null && levels < MAX_LEVELS) {
-    if (node === document.body || node === document.documentElement) return false
+    // `break`, never `return false`: body/documentElement are not consulted as
+    // containers, but control must still FALL THROUGH to the subframe heuristics
+    // below — inside an EEO srcdoc iframe the field's parent often IS <body>.
+    if (node === document.body || node === document.documentElement) break
     if (isContainer(node) && DEMOGRAPHIC_RE.test(containerSignal(node))) return true
-    if (node === form) return false // hard stop: never climb past the form
+    if (node === form) break // hard stop: never climb past the form
     node = node.parentElement
     levels++
   }
@@ -5247,23 +5583,29 @@ and add `import { hasActiveCaptcha, isDemographic } from './classify'` at the to
 
 - [ ] **Step 6: Assert it end to end in the browser smoke**
 
-In `e2e/foundation.spec.ts`, after the existing scan assertions, append:
+Add this self-contained test to `e2e/foundation.spec.ts`:
 
 ```ts
+test('the EEO srcdoc subframe is flagged demographic and the visible reCAPTCHA stub reads as active', async () => {
+  const t = await openFixtureTab()
+  try {
+    const scan = await t.send({ type: 'JFF_SCAN', epoch: 2 })
+    type ScanPayload = { scan?: { fields: { name: string | null; demographic: boolean }[]; activeCaptcha: boolean } }
     // the EEO srcdoc iframe is a separate frame; its Gender select must be flagged
-    const eeoFrame = scan.replies.find((r) => r.frameId !== 0 && (r.payload.scan?.fields.length ?? 0) > 0)!
-    const gender = eeoFrame.payload.scan!.fields.find((f) => f.name === 'gender')!
+    const eeoFrame = scan.replies.find((r) => r.frameId !== 0 && ((r.payload as ScanPayload).scan?.fields.length ?? 0) > 0)!
+    const gender = (eeoFrame.payload as ScanPayload).scan!.fields.find((f) => f.name === 'gender')!
     expect(gender.demographic).toBe(true)
-
     // the fixture's visible reCAPTCHA stub is an ACTIVE challenge
-    expect(scan.replies.find((r) => r.frameId === 0)!.payload.scan!.activeCaptcha).toBe(true)
+    expect((scan.replies.find((r) => r.frameId === 0)!.payload as ScanPayload).scan!.activeCaptcha).toBe(true)
+  } finally {
+    await t.close()
+  }
+})
 ```
-
-Widen the smoke's `scan` type annotation to include `demographic: boolean` and `activeCaptcha: boolean` on the payload.
 
 - [ ] **Step 7: Rebuild and run the smoke**
 
-Run: `npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
+Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
@@ -5644,22 +5986,27 @@ if (!window.__jffLoaded) {
 
 - [ ] **Step 6: Add a stale-epoch smoke assertion**
 
-In `e2e/foundation.spec.ts`, append:
+Add this self-contained test to `e2e/foundation.spec.ts`:
 
 ```ts
-    const stale = await panel.evaluate(
-      (id) => chrome.runtime.sendMessage({
-        kind: 'toContent', tabId: id,
-        message: { type: 'JFF_FILL', epoch: 999, fills: [{ handle: { frameId: 0, fid: 0, epoch: 999 }, value: 'x' }] },
-      }),
-      tabId,
-    ) as { replies: { frameId: number; payload: { ok: boolean; error?: string } }[] }
+test('a fill carrying a stale epoch is rejected', async () => {
+  const t = await openFixtureTab()
+  try {
+    await t.send({ type: 'JFF_SCAN', epoch: 3 })
+    const stale = await t.send({
+      type: 'JFF_FILL', epoch: 999,
+      fills: [{ handle: { frameId: 0, fid: 0, epoch: 999 }, value: 'x' }],
+    })
     expect(stale.replies.find((r) => r.frameId === 0)!.payload).toMatchObject({ ok: false, error: 'stale_epoch' })
+  } finally {
+    await t.close()
+  }
+})
 ```
 
 - [ ] **Step 7: Rebuild and run the smoke**
 
-Run: `npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
+Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
@@ -5676,13 +6023,19 @@ git commit -m "feat(content): per-widget-type filler with native value setters, 
 "Save answers" must see values the user typed **directly on the page**, not only what the
 engine filled. The content script therefore installs **capture-phase** `submit` and
 `beforeunload` listeners that snapshot every stamped field's live value and push it out
-before the page tears down. Because `beforeunload` gives no time for an async round trip,
-the snapshot is written to `chrome.storage.session` (which the panel can read later) **and**
-sent as a message (which usually arrives first).
+before the page tears down.
+
+**Attribution is the subtle part.** A content script knows neither its `frameId` nor its
+`tabId`, so it cannot key its own snapshot; if every frame wrote one shared storage key, a
+cross-origin iframe's snapshot would clobber the top frame's (or be misattributed to frame 0).
+The push therefore goes as a plain runtime message to the SERVICE WORKER, which stamps
+`sender.tab.id` + `sender.frameId`, writes `chrome.storage.session` under a per-tab-per-frame
+key, and re-broadcasts a stamped copy to the panel. The panel rejects any snapshot whose
+epoch is not the current scan's.
 
 **Files:**
-- Create: `extension/src/content/snapshot.ts`
-- Modify: `extension/src/content/index.ts`
+- Create: `extension/src/content/snapshot.ts`, `extension/src/snapshotKey.ts`
+- Modify: `extension/src/content/index.ts`, `extension/src/background.ts`
 - Test: `extension/src/content/snapshot.test.ts`
 
 **Interfaces:**
@@ -5691,7 +6044,7 @@ sent as a message (which usually arrives first).
   - `snapshotValues(root: Document): Record<number, string>` keyed by `fid`
   - `installSnapshotListeners(root: Document, push: (snap: SnapshotPayload) => void): () => void` (returns an uninstall function)
   - `type SnapshotPayload = { epoch: number; values: Record<number, string> }`
-  - `SNAPSHOT_STORAGE_KEY = 'jff:lastSnapshot'`
+  - `snapshotKey(tabId: number, frameId: number): string` and `SNAPSHOT_KEY_RE` in `extension/src/snapshotKey.ts` (imported by both the SW and the panel)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -5788,8 +6141,6 @@ Expected: FAIL — `Cannot find module './snapshot'`.
 import { walkElements } from './dom'
 import { getEpoch } from './enumerate'
 
-export const SNAPSHOT_STORAGE_KEY = 'jff:lastSnapshot'
-
 export interface SnapshotPayload {
   epoch: number
   values: Record<number, string>
@@ -5845,16 +6196,25 @@ export function installSnapshotListeners(root: Document, push: (snap: SnapshotPa
 Run: `npx vitest run extension/src/content/snapshot.test.ts`
 Expected: PASS (6 tests).
 
-- [ ] **Step 5: Install the listeners after every scan and wire `JFF_SNAPSHOT`**
+- [ ] **Step 5: Wire the push through the service worker (which stamps the sender)**
+
+Create `extension/src/snapshotKey.ts` — the one place the storage key format lives; the SW
+writes it and the panel reads it:
+
+```ts
+/** storage.session key for the last snapshot pushed from {tabId, frameId}. */
+export const snapshotKey = (tabId: number, frameId: number): string => `jff:snap:${tabId}:${frameId}`
+export const SNAPSHOT_KEY_RE = /^jff:snap:(\d+):(\d+)$/
+```
 
 In `extension/src/content/index.ts`, inside the `JFF_SCAN` branch after `enumerateFields(...)`, add:
 
 ```ts
     installSnapshotListeners(document, (snap) => {
-      // Two channels because beforeunload cannot await anything:
-      // storage.session survives the teardown, the message usually arrives first.
-      void chrome.storage.session.set({ [SNAPSHOT_STORAGE_KEY]: snap })
-      try { void chrome.runtime.sendMessage({ kind: 'fromContent', type: 'JFF_SNAPSHOT_PUSH', snap }) } catch { /* port may be gone */ }
+      // Fire-and-forget: beforeunload cannot await. The SW stamps sender.tab.id
+      // and sender.frameId (this script can know neither), persists the snapshot
+      // under a per-tab-per-frame storage.session key, and re-broadcasts it.
+      try { void chrome.runtime.sendMessage({ kind: 'fromContent', type: 'JFF_SNAPSHOT_PUSH', snap }) } catch { /* frame tearing down */ }
     })
 ```
 
@@ -5866,30 +6226,62 @@ and add the on-demand branch below the epoch guard:
   }
 ```
 
-with `import { installSnapshotListeners, snapshotValues, SNAPSHOT_STORAGE_KEY } from './snapshot'` at the top.
+with `import { installSnapshotListeners, snapshotValues } from './snapshot'` at the top.
+
+In `extension/src/background.ts`, rename the listener's `_sender` parameter to `sender` and
+add this branch BEFORE the `inject`/`toContent` branches:
+
+```ts
+  if ((req as { kind?: string }).kind === 'fromContent') {
+    const push = raw as { type?: string; snap?: unknown }
+    const tabId = sender.tab?.id
+    const frameId = sender.frameId
+    if (push.type === 'JFF_SNAPSHOT_PUSH' && tabId != null && frameId != null) {
+      // Stamp the identity the content script cannot know, then persist (keyed per
+      // tab+frame so parallel frames can never clobber each other) and broadcast.
+      void chrome.storage.session.set({ [snapshotKey(tabId, frameId)]: push.snap })
+      chrome.runtime.sendMessage({ kind: 'snapshotPush', tabId, frameId, snap: push.snap })
+        .catch(() => { /* panel may be closed; storage.session still has it */ })
+    }
+    return false
+  }
+```
+
+with `import { snapshotKey } from './snapshotKey'` at the top. No `setAccessLevel` call is
+needed anywhere: only the SW and the panel (both trusted contexts) touch `storage.session`.
 
 - [ ] **Step 6: Prove the snapshot survives a real submit in the browser**
 
-Add to `e2e/foundation.spec.ts`:
+The project-owned fixture (Task 3 Step 7c) dispatches a REAL `submit` event before swapping
+the DOM, so the capture-phase listener observes it. Add this self-contained test to
+`e2e/foundation.spec.ts`:
 
 ```ts
-    // type directly on the page, submit, then read the snapshot the content script pushed
-    await target.fill('#first_name', 'Kevin')
-    await target.selectOption('#work_auth', { index: 1 })
-    await target.fill('#mystery', 'typed by hand')
-    await target.click('#submit_app')
-    await expect(target.locator('#application-confirmation')).toBeVisible()
+test('a real submit pushes a per-tab-per-frame snapshot into storage.session', async () => {
+  const t = await openFixtureTab()
+  try {
+    await t.send({ type: 'JFF_SCAN', epoch: 40 }) // stamps fids + installs listeners
+    await t.target.fill('#first_name', 'Kevin')
+    await t.target.selectOption('#work_auth', { index: 1 })
+    await t.target.fill('#hard_bug', 'typed by hand')
+    await t.target.click('#submit_app')
+    await expect(t.target.locator('#application-confirmation')).toBeVisible()
 
-    const stored = await panel.evaluate(() => chrome.storage.session.get('jff:lastSnapshot')) as
-      { 'jff:lastSnapshot'?: { values: Record<string, string> } }
-    expect(Object.values(stored['jff:lastSnapshot']!.values)).toContain('typed by hand')
+    const stored = await t.panel.evaluate(() => chrome.storage.session.get(null)) as
+      Record<string, { epoch: number; values: Record<string, string> }>
+    const key = `jff:snap:${t.tabId}:0`
+    expect(Object.keys(stored)).toContain(key)
+    expect(stored[key]!.epoch).toBe(40)
+    expect(Object.values(stored[key]!.values)).toContain('typed by hand')
+  } finally {
+    await t.close()
+  }
+})
 ```
-
-Add `"storage"` is already in `permissions`; also confirm `chrome.storage.session` is accessible from the content script by setting `chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })` in `background.ts`'s `onInstalled` handler — content scripts are UNTRUSTED contexts and cannot touch session storage without it.
 
 - [ ] **Step 7: Rebuild and run the smoke**
 
-Run: `npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
+Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
@@ -6137,21 +6529,33 @@ with `import { captureJobText, startPicker } from './jobpost'` at the top.
 
 - [ ] **Step 6: Verify job-text capture in the browser**
 
-Add to `e2e/foundation.spec.ts`:
+The project-owned fixture carries a real `#job-description` block (Task 3 Step 7a) with the
+`FIXTURE-JD` marker and >400 chars of prose, so the heuristic tier has something honest to
+find and this test asserts a measured expectation, not an accident of DOM teardown. Add this
+self-contained test to `e2e/foundation.spec.ts`:
 
 ```ts
-    const jt = await panel.evaluate(
-      (id) => chrome.runtime.sendMessage({ kind: 'toContent', tabId: id, message: { type: 'JFF_JOBTEXT', epoch: 1, selector: null } }),
-      tabId,
-    ) as { replies: { frameId: number; payload: { ok: boolean; jobText?: { source: string } } }[] }
-    // fixture-form.html has a <main class="main job-post"> but under 400 chars of prose,
-    // so the honest answer is source=none and the panel must fall back to the paste box.
-    expect(jt.replies.find((r) => r.frameId === 0)!.payload.jobText!.source).toBe('none')
+test('job text is captured from the fixture job-description block by the heuristic tier', async () => {
+  const t = await openFixtureTab()
+  try {
+    await t.send({ type: 'JFF_SCAN', epoch: 5 }) // JOBTEXT sits below the epoch guard
+    const jt = await t.send({ type: 'JFF_JOBTEXT', epoch: 5, selector: null })
+    type JtPayload = { ok: boolean; jobText?: { text: string; selector: string | null; source: string } }
+    const payload = (jt.replies.find((r) => r.frameId === 0)!.payload as JtPayload).jobText!
+    expect(payload.source).toBe('heuristic')
+    expect(payload.text).toContain('FIXTURE-JD')
+    expect(payload.selector).toBe('#job-description')
+  } finally {
+    await t.close()
+  }
+})
 ```
+
+(The `source: 'none'` fall-back-to-paste-box path is covered by the jobpost unit tests.)
 
 - [ ] **Step 7: Rebuild and run the smoke**
 
-Run: `npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
+Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
@@ -6173,8 +6577,18 @@ process in the middle of a `claude -p` call. A single port also means a single h
 so SQLite never sees concurrent writers.
 
 Native messaging cannot be driven headlessly, so the panel's port layer has exactly one test
-seam: `?jffFakeHost=1` in the panel URL swaps `connectNative` for an in-page fake. The real
-handshake is covered by the MANUAL checklist in Task 23.
+seam: `?jffFakeHost=1` in the panel URL swaps `connectNative` for an in-page fake — but the
+seam is **compile-time gated**. `createHostPort` checks the flag only when the build-time
+constant `__JFF_TEST_SEAM__` is true (defined from the `JFF_TEST_SEAM=1` env var in
+`vite.config.ts`); a release build defines it false, which dead-code-eliminates the fake port
+from the shipped bundle entirely. No runtime switch exists in production, so the seam can
+never mask a real host failure. The real handshake is covered by the MANUAL checklist in
+Task 23.
+
+The port also implements the spec's idempotent-retry contract: a request that dies with
+`unreachable` is re-issued exactly once, with the SAME `requestId`, through a fresh
+`connectNative` port (Chrome relaunches the host). If the first attempt completed host-side,
+`request_log` replays the original response; a paid `claude -p` call is never run twice.
 
 **Files:**
 - Create: `extension/src/panel/port.ts`, `extension/src/panel/tabScope.ts`, `extension/src/panel/Banner.tsx`
@@ -6186,10 +6600,11 @@ handshake is covered by the MANUAL checklist in Task 23.
 - Consumes: `HostRequest`, `HostResponse`, `HostErrorKind`, `SelfCheck` from `@jff/shared`.
 - Produces:
   - `HOST_NAME = 'com.kevin.jobformfiller'`
-  - `interface HostPort { request<T>(method: HostRequest['method'], params: unknown): Promise<PortResult<T>>; onDisconnect(cb: () => void): void; disconnect(): void }`
+  - `interface HostPort { request<T>(method: HostRequest['method'], params: unknown, requestId?: string): Promise<PortResult<T>>; onDisconnect(cb: () => void): void; disconnect(): void }`
   - `type PortResult<T> = { ok: true; result: T } | { ok: false; error: { kind: HostErrorKind; message: string } }`
-  - `createHostPort(search?: string): HostPort`
+  - `createHostPort(search?: string): HostPort` — retrying native port, or the fake when `__JFF_TEST_SEAM__ && ?jffFakeHost=1`
   - `createNativeHostPort(connect?: () => chrome.runtime.Port): HostPort`
+  - `createRetryingHostPort(makePort?: () => HostPort): HostPort` — one same-requestId replay through a fresh port
   - `createFakeHostPort(): HostPort`
   - `ERROR_COPY: Record<HostErrorKind, string>` (the spec's error table, verbatim)
   - `tabScope.ts`: `createTabScope(tabId: number, onReset: () => void): () => void`
@@ -6200,7 +6615,7 @@ handshake is covered by the MANUAL checklist in Task 23.
 
 ```ts
 import { describe, it, expect, vi } from 'vitest'
-import { createNativeHostPort, createHostPort, ERROR_COPY } from './port'
+import { createNativeHostPort, createRetryingHostPort, createHostPort, ERROR_COPY } from './port'
 
 /** Minimal chrome.runtime.Port double. */
 function fakePort() {
@@ -6274,6 +6689,39 @@ describe('createNativeHostPort', () => {
   })
 })
 
+describe('createRetryingHostPort', () => {
+  it('re-issues the SAME requestId through a fresh port after a disconnect, so the host can replay it', async () => {
+    const p1 = fakePort()
+    const p2 = fakePort()
+    const ports = [p1, p2]
+    let i = 0
+    const port = createRetryingHostPort(() => createNativeHostPort(() => ports[i++]! as unknown as chrome.runtime.Port))
+    const pending = port.request('profile.get', {})
+    const first = p1.sent[0] as { requestId: string }
+    p1.die()
+    await new Promise((r) => setTimeout(r, 0)) // let the retry reach the fresh port
+    const second = p2.sent[0] as { requestId: string }
+    expect(second.requestId).toBe(first.requestId)
+    p2.emit({ requestId: second.requestId, ok: true, result: 'replayed' })
+    await expect(pending).resolves.toEqual({ ok: true, result: 'replayed' })
+  })
+
+  it('gives up after one retry and notifies onDisconnect subscribers', async () => {
+    const ports = [fakePort(), fakePort(), fakePort()]
+    let i = 0
+    const port = createRetryingHostPort(() => createNativeHostPort(() => ports[i++]! as unknown as chrome.runtime.Port))
+    const cb = vi.fn()
+    port.onDisconnect(cb)
+    const pending = port.request('selfCheck', {})
+    ports[0]!.die()
+    await new Promise((r) => setTimeout(r, 0))
+    ports[1]!.die()
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { kind: 'unreachable' } })
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(i).toBe(2) // exactly one reconnect, never a loop
+  })
+})
+
 describe('createHostPort', () => {
   it('returns the in-page fake when the test flag is present', async () => {
     const port = createHostPort('?jffFakeHost=1')
@@ -6310,6 +6758,10 @@ Expected: FAIL — `Cannot find module './port'`.
 ```ts
 import type { HostErrorKind, HostRequest, HostResponse, SelfCheck } from '@jff/shared'
 
+/** Compile-time test-seam flag, defined in vite.config.ts (and by vitest). A
+ *  release build defines it false, which strips the fake port from the bundle. */
+declare const __JFF_TEST_SEAM__: boolean
+
 export const HOST_NAME = 'com.kevin.jobformfiller'
 
 export type PortResult<T> =
@@ -6317,7 +6769,8 @@ export type PortResult<T> =
   | { ok: false; error: { kind: HostErrorKind; message: string } }
 
 export interface HostPort {
-  request<T>(method: HostRequest['method'], params: unknown): Promise<PortResult<T>>
+  /** `requestId` is normally generated; the retrying wrapper passes the SAME id on its replay. */
+  request<T>(method: HostRequest['method'], params: unknown, requestId?: string): Promise<PortResult<T>>
   onDisconnect(cb: () => void): void
   disconnect(): void
 }
@@ -6352,6 +6805,10 @@ export function createNativeHostPort(connect: () => chrome.runtime.Port = () => 
   })
 
   port.onDisconnect.addListener(() => {
+    // Reading lastError marks it handled; otherwise Chrome logs an
+    // "Unchecked runtime.lastError" console error when no host is installed.
+    // (typeof guard: unit tests drive this with a fake port and no chrome global.)
+    if (typeof chrome !== 'undefined') void chrome.runtime.lastError
     alive = false
     for (const [, resolve] of pending) {
       resolve({ ok: false, error: { kind: 'unreachable', message: ERROR_COPY.unreachable } })
@@ -6361,9 +6818,8 @@ export function createNativeHostPort(connect: () => chrome.runtime.Port = () => 
   })
 
   return {
-    request<T>(method: HostRequest['method'], params: unknown): Promise<PortResult<T>> {
+    request<T>(method: HostRequest['method'], params: unknown, requestId: string = crypto.randomUUID()): Promise<PortResult<T>> {
       if (!alive) return Promise.resolve({ ok: false, error: { kind: 'unreachable', message: ERROR_COPY.unreachable } })
-      const requestId = crypto.randomUUID()
       return new Promise<PortResult<T>>((resolve) => {
         pending.set(requestId, resolve as Pending)
         port.postMessage({ requestId, method, params })
@@ -6371,6 +6827,31 @@ export function createNativeHostPort(connect: () => chrome.runtime.Port = () => 
     },
     onDisconnect(cb) { disconnectCbs.push(cb) },
     disconnect() { alive = false; port.disconnect() },
+  }
+}
+
+/**
+ * One reconnect-and-replay on top of the native port. A request that dies with
+ * `unreachable` is re-sent ONCE, with the SAME requestId, through a fresh port
+ * (Chrome relaunches the host on connectNative). If the first attempt completed
+ * host-side, request_log replays the ORIGINAL response — a paid claude call is
+ * never run twice. onDisconnect subscribers are notified only when the retry
+ * also fails, so a successful reconnect never flashes an error banner.
+ */
+export function createRetryingHostPort(makePort: () => HostPort = () => createNativeHostPort()): HostPort {
+  let inner = makePort()
+  const disconnectCbs: (() => void)[] = []
+  return {
+    async request<T>(method: HostRequest['method'], params: unknown, requestId: string = crypto.randomUUID()): Promise<PortResult<T>> {
+      const first = await inner.request<T>(method, params, requestId)
+      if (first.ok || first.error.kind !== 'unreachable') return first
+      inner = makePort()
+      const second = await inner.request<T>(method, params, requestId)
+      if (!second.ok && second.error.kind === 'unreachable') for (const cb of disconnectCbs) cb()
+      return second
+    },
+    onDisconnect(cb) { disconnectCbs.push(cb) },
+    disconnect() { inner.disconnect() },
   }
 }
 
@@ -6397,8 +6878,7 @@ const FAKE_SELF_CHECK: SelfCheck = {
  */
 export function createFakeHostPort(): HostPort {
   return {
-    async request<T>(method: HostRequest['method'], params: unknown): Promise<PortResult<T>> {
-      const requestId = crypto.randomUUID()
+    async request<T>(method: HostRequest['method'], params: unknown, requestId: string = crypto.randomUUID()): Promise<PortResult<T>> {
       if (typeof window.__jffHostBridge === 'function') {
         const res = await window.__jffHostBridge({ requestId, method, params })
         return res.ok ? { ok: true, result: res.result as T } : { ok: false, error: res.error }
@@ -6408,10 +6888,10 @@ export function createFakeHostPort(): HostPort {
         'profile.get': {},
         'answerBank.get': {},
         'selector.get': { selector: null },
-        resolve: { epoch: 0, resolutions: [], customQuestions: [], llmError: null },
+        resolve: { epoch: 0, resolutions: [], llmError: null },
         generate: { draft: '' },
         save: { saved: 0 },
-        'qa.list': { page: 0, done: true, items: [] },
+        'qa.list': { page: 0, done: true, items: [], omitted: 0 },
       }
       return { ok: true, result: (canned[method] ?? {}) as T }
     },
@@ -6421,16 +6901,20 @@ export function createFakeHostPort(): HostPort {
 }
 
 export function createHostPort(search: string = location.search): HostPort {
-  return new URLSearchParams(search).get('jffFakeHost') === '1'
-    ? createFakeHostPort()
-    : createNativeHostPort()
+  // The && is load-bearing: with __JFF_TEST_SEAM__ defined false at build time,
+  // the whole branch (and createFakeHostPort with it) is dead-code-eliminated
+  // from the release bundle. No runtime seam ships.
+  if (__JFF_TEST_SEAM__ && new URLSearchParams(search).get('jffFakeHost') === '1') {
+    return createFakeHostPort()
+  }
+  return createRetryingHostPort()
 }
 ```
 
 - [ ] **Step 4: Run the port test to verify it passes**
 
 Run: `npx vitest run extension/src/panel/port.test.ts`
-Expected: PASS (9 tests).
+Expected: PASS (11 tests).
 
 - [ ] **Step 5: Write the failing tab-scope test**
 
@@ -6662,15 +7146,16 @@ imports Tailwind. If a class does not appear in the built CSS, the `@source` dir
 
 ```ts
 import { test, expect } from '@playwright/test'
-import { launchWithExtension } from './ext'
+import { launchWithExtension, panelUrl } from './ext'
 
 test('the panel connects through its port layer and renders a green self-check, with zero console errors', async () => {
   const ext = await launchWithExtension()
   try {
     const panel = await ext.context.newPage()
     // The fake-host flag swaps connectNative for the in-page fake: native messaging
-    // cannot be driven headlessly. The real handshake is the MANUAL Task 23 checklist.
-    await panel.goto(`chrome-extension://${ext.extensionId}/src/panel/index.html?jffFakeHost=1`)
+    // cannot be driven headlessly. It only exists in JFF_TEST_SEAM=1 builds; the
+    // real handshake is the MANUAL Task 23 checklist.
+    await panel.goto(panelUrl(ext.extensionId, '?jffFakeHost=1'))
     await expect(panel.locator('[data-jff-banner="ok"]')).toBeVisible()
     await expect(panel.locator('[data-jff-banner="ok"]')).toContainText('Host ready')
     await expect(panel.locator('[data-jff-tab]')).toBeVisible()
@@ -6684,8 +7169,9 @@ test('without the fake flag the panel reports the host as unreachable instead of
   const ext = await launchWithExtension()
   try {
     const panel = await ext.context.newPage()
-    await panel.goto(`chrome-extension://${ext.extensionId}/src/panel/index.html`)
-    // No native host is installed in the test profile, so connectNative fails fast.
+    await panel.goto(panelUrl(ext.extensionId))
+    // No native host is installed in the test profile, so connectNative fails fast
+    // (twice: the retrying port re-attempts once with the same requestId).
     await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Local host unreachable', { timeout: 15_000 })
   } finally {
     await ext.close()
@@ -6697,7 +7183,7 @@ test('without the fake flag the panel reports the host as unreachable instead of
 
 ```bash
 npx playwright test e2e/panel-port.spec.ts     # FAIL: banner not rendered yet
-npm run build -w @jff/extension
+JFF_TEST_SEAM=1 npm run build -w @jff/extension
 npx playwright test e2e/panel-port.spec.ts     # PASS
 ```
 
@@ -6851,7 +7337,7 @@ export function groupRows(fields: EnumField[], resolutions: Resolution[]): Recor
 - [ ] **Step 4: Run the grouping test to verify it passes**
 
 Run: `npx vitest run extension/src/panel/group.test.ts`
-Expected: PASS (6 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Write the failing FieldRow test**
 
@@ -7122,12 +7608,14 @@ surface. Add this state and these handlers above the return:
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [generatingRef, setGeneratingRef] = useState<string | null>(null)
   const [jobText, setJobText] = useState('')
+  const [company, setCompany] = useState('')
   const [unreachable, setUnreachable] = useState(0)
   const [activeCaptcha, setActiveCaptcha] = useState(false)
   const [showEditor, setShowEditor] = useState(false)
   const [facts, setFacts] = useState<Record<string, string>>({})
 
   const groups = groupRows(fields, resolutions)
+  const companyOrNull = company.trim() === '' ? null : company.trim()
   const onEdit = (ref: string, value: string): void => setEdits((e) => ({ ...e, [ref]: value }))
 ```
 
@@ -7150,6 +7638,16 @@ until then by passing `disabled={tabId === null}`):
           {showEditor ? 'Back to fields' : 'Edit your facts'}
         </button>
       </div>
+
+      <label className={`my-2 block ${MUTED}`} data-jff-company="1">
+        Company
+        <input
+          className={`${INPUT} mt-1`}
+          value={company}
+          onChange={(e) => setCompany(e.target.value)}
+          placeholder="Guessed on scan; edit if wrong"
+        />
+      </label>
 
       <label className={`my-2.5 block ${MUTED}`} data-jff-paste="1">
         Job description (paste here if the scan could not find it)
@@ -7191,6 +7689,11 @@ Add the remaining handlers:
       kind: 'toContent', tabId, frameId: row.field.frameId,
       message: { type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }] },
     })
+    // Accepting an AI key match IS the user confirmation the spec's learned_mappings
+    // flow needs: promote this label to a deterministic mapping.
+    if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
+      void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
+    }
     setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const, value } : r)))
   }
 
@@ -7203,7 +7706,7 @@ Add the remaining handlers:
       handle: row.resolution.handle,
       questionRaw: row.field.label ?? '',
       jobText,
-      company: null,
+      company: companyOrNull,
     })
     setGeneratingRef(null)
     if (r.ok) setEdits((e) => ({ ...e, [ref]: r.result.draft }))
@@ -7237,7 +7740,7 @@ No stylesheet to append: `tailwind.css` from Task 3 is still the only CSS file i
 ```bash
 npm run typecheck
 npx vitest run
-npm run build -w @jff/extension
+JFF_TEST_SEAM=1 npm run build -w @jff/extension
 npx playwright test
 ```
 
@@ -7263,9 +7766,9 @@ The resume file is stored as a Blob in **IndexedDB inside the extension** and ha
 the content script as base64. It never crosses native messaging.
 
 **Files:**
-- Create: `extension/src/content/settle.ts`, `extension/src/panel/resume.ts`, `extension/src/panel/scan.ts`
+- Create: `extension/src/content/settle.ts`, `extension/src/panel/resume.ts`, `extension/src/panel/scan.ts`, `extension/src/panel/company.ts`
 - Modify: `shared/src/messages.ts` (add `JFF_FILL_RESUME`), `extension/src/content/index.ts`, `extension/src/panel/App.tsx`
-- Test: `extension/src/content/settle.test.ts`, `extension/src/panel/resume.test.ts`, `extension/src/panel/scan.test.ts`
+- Test: `extension/src/content/settle.test.ts`, `extension/src/panel/resume.test.ts`, `extension/src/panel/scan.test.ts`, `extension/src/panel/company.test.ts`
 
 **Add the IndexedDB test double:**
 
@@ -7276,7 +7779,8 @@ npm i -D fake-indexeddb -w @jff/extension
 **Interfaces:**
 - Produces (`settle.ts`): `waitForSettle(root: Document, opts?: { quietMs?: number; maxMs?: number }): Promise<void>`
 - Produces (`resume.ts`): `type StoredResume = { name: string; mimeType: string; dataBase64: string }`, `saveResume(file: File): Promise<void>`, `loadResume(): Promise<StoredResume | null>`, `clearResume(): Promise<void>`
-- Produces (`scan.ts`): `type FrameReply<T>`, `type ScanDeps`, `type ScanOutcome`, `runScan(deps: ScanDeps): Promise<ScanOutcome>`
+- Produces (`scan.ts`): `type FrameReply`, `type ScanDeps`, `type ScanOutcome`, `runScan(deps: ScanDeps): Promise<ScanOutcome>`
+- Produces (`company.ts`): `guessCompany(title: string, hostname: string): string | null` — "at Company" from the tab title, else the second-level domain of a company-owned host; null for ATS platform hosts, IPs and localhost. The guess pre-fills the panel's Company field; the user's edit always wins.
 
 - [ ] **Step 1: Add the resume message to the shared schema**
 
@@ -7295,7 +7799,10 @@ In `shared/src/messages.ts`, add this member to `ContentMessageSchema`'s union (
   }),
 ```
 
-Run `npx vitest run shared/src/messages.test.ts` — still PASS.
+Then rebuild shared (dependent workspaces resolve `@jff/shared` to `dist/`; without the
+rebuild the extension tests below run against stale types):
+
+Run: `npm run build -w @jff/shared && npx vitest run shared/src/messages.test.ts` — still PASS.
 
 - [ ] **Step 2: Write the failing settle test**
 
@@ -7546,7 +8053,7 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
           const resolutions: Resolution[] = [
             { handle: { frameId: 0, fid: 0, epoch }, tier: 'auto', value: 'V0', source: 'profile', key: 'email', answerId: null, reason: 'recognizer:email' },
           ]
-          return { ok: true, result: { epoch, resolutions, customQuestions: [], llmError: null } }
+          return { ok: true, result: { epoch, resolutions, llmError: null } }
         }
         return { ok: true, result: {} }
       }),
@@ -7630,7 +8137,7 @@ describe('runScan', () => {
           if (method === 'resolve') return {
             ok: true,
             result: {
-              epoch: 2, customQuestions: [], llmError: null,
+              epoch: 2, llmError: null,
               resolutions: [
                 { handle: { frameId: 0, fid: 0, epoch: 2 }, tier: 'auto', value: 'FILL ME', source: 'profile', key: 'email', answerId: null, reason: 'r' },
                 { handle: { frameId: 0, fid: 1, epoch: 2 }, tier: 'auto', value: 'ALREADY THERE', source: 'page', key: null, answerId: null, reason: 'already-on-page' },
@@ -7654,7 +8161,7 @@ describe('runScan', () => {
       port: {
         request: vi.fn(async (method: string) => {
           if (method === 'selector.get') return { ok: true, result: { selector: null } }
-          if (method === 'resolve') return { ok: true, result: { epoch: 2, resolutions: [], customQuestions: [], llmError: { kind: 'rate_limit', message: 'limit' } } }
+          if (method === 'resolve') return { ok: true, result: { epoch: 2, resolutions: [], llmError: { kind: 'rate_limit', message: 'limit' } } }
           return { ok: true, result: {} }
         }),
         onDisconnect: () => undefined,
@@ -7713,7 +8220,6 @@ export interface ScanOutcome {
   epoch: number
   fields: EnumField[]
   resolutions: Resolution[]
-  customQuestions: ResolveResult['customQuestions']
   unreachableWidgets: number
   activeCaptcha: boolean
   jobText: string
@@ -7767,7 +8273,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
   if (activeCaptcha) {
     // An active challenge means the extension does nothing at all on this page.
-    return { epoch, fields, resolutions: [], customQuestions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null }
+    return { epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null }
   }
 
   // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
@@ -7797,7 +8303,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   })
   if (!resolved.ok) {
     return {
-      epoch, fields, resolutions: [], customQuestions: [], unreachableWidgets, activeCaptcha, jobText,
+      epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText,
       llmError: resolved.error,
     }
   }
@@ -7817,7 +8323,6 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   return {
     epoch, fields,
     resolutions: resolved.result.resolutions,
-    customQuestions: resolved.result.customQuestions,
     unreachableWidgets, activeCaptcha, jobText,
     llmError: resolved.result.llmError,
   }
@@ -7825,6 +8330,68 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 ```
 
 Run again: `npx vitest run extension/src/panel/scan.test.ts` → PASS (11 tests).
+
+- [ ] **Step 8b: The company guess helper (test first, then implement)**
+
+The company-specificity guard and the `applications` history row both need a company value;
+hard-coding `null` everywhere would make the guard dead code. The panel guesses once per
+scan and lets the user overwrite.
+
+`extension/src/panel/company.test.ts`:
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { guessCompany } from './company'
+
+describe('guessCompany', () => {
+  it('reads "at Company" from the tab title', () => {
+    expect(guessCompany('Senior Engineer at Stripe', 'boards.greenhouse.io')).toBe('Stripe')
+    expect(guessCompany('Job Application for SRE at Nubank', 'boards.greenhouse.io')).toBe('Nubank')
+  })
+
+  it('falls back to the second-level domain of a company-owned careers host', () => {
+    expect(guessCompany('Careers', 'jobs.acme.com')).toBe('Acme')
+  })
+
+  it('returns null for ATS platform hosts, IPs and localhost', () => {
+    expect(guessCompany('Job Application', 'boards.greenhouse.io')).toBeNull()
+    expect(guessCompany('Apply', 'jobs.lever.co')).toBeNull()
+    expect(guessCompany('Fixture', '127.0.0.1')).toBeNull()
+    expect(guessCompany('Dev', 'localhost')).toBeNull()
+  })
+})
+```
+
+Run: `npx vitest run extension/src/panel/company.test.ts` → FAIL (module not found).
+
+`extension/src/panel/company.ts`:
+
+```ts
+/** Hosts whose second-level domain names the ATS platform, never the employer. */
+const PLATFORM_SLDS = new Set([
+  'greenhouse', 'lever', 'myworkdayjobs', 'workday', 'ashbyhq', 'bamboohr',
+  'smartrecruiters', 'icims', 'workable', 'recruitee', 'gupy',
+])
+
+/**
+ * Best-effort ONE-SHOT guess shown in an editable field; the user's edit always
+ * wins downstream. Title "… at Company" first, then a company-owned host's
+ * second-level domain. ATS platform hosts, IPs and localhost yield null.
+ */
+export function guessCompany(title: string, hostname: string): string | null {
+  const at = /\bat ([A-Z][\w&.-]*(?:\s+[A-Z][\w&.-]*)*)\s*$/.exec(title)
+  if (at?.[1] !== undefined) return at[1].trim()
+
+  if (/^[\d.]+$/.test(hostname) || hostname === 'localhost') return null
+  const parts = hostname.replace(/^www\./, '').split('.')
+  if (parts.length < 2) return null
+  const sld = parts[parts.length - 2]!
+  if (sld === '' || PLATFORM_SLDS.has(sld)) return null
+  return sld.charAt(0).toUpperCase() + sld.slice(1)
+}
+```
+
+Run again: `npx vitest run extension/src/panel/company.test.ts` → PASS (3 tests).
 
 - [ ] **Step 9: Wire scan + the resume picker into App**
 
@@ -7857,6 +8424,10 @@ Add to `extension/src/panel/App.tsx`:
     const port = portRef.current
     if (port === null || tabId === null) return
     const tab = await chrome.tabs.get(tabId)
+    const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
+    // Company: the user's edit always wins; guess only while the field is empty.
+    const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
+    if (co !== null && companyOrNull === null) setCompany(co)
     const out = await runScan({
       tabId,
       nextEpoch: () => ++epochRef.current,
@@ -7868,9 +8439,9 @@ Add to `extension/src/panel/App.tsx`:
       port,
       getResume: loadResume,
       pastedJobText: jobText,
-      hostname: tab.url === undefined ? '' : new URL(tab.url).hostname,
+      hostname,
       url: tab.url ?? '',
-      company: null,
+      company: co,
     })
     setFields(out.fields)
     setResolutions(out.resolutions)
@@ -7881,12 +8452,39 @@ Add to `extension/src/panel/App.tsx`:
     if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
   }
 
-  const onPickResume = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+  const onPickJobText = async (): Promise<void> => {
+    // Spec's element picker: the user clicks the element holding the job text;
+    // the selector is learned per hostname so future scans find it directly.
+    if (tabId === null || fields.length === 0) return
+    const replies = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
+    const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
+    if (p?.ok !== true || p.pick === undefined) return
+    setJobText(p.pick.text)
+    const tab = await chrome.tabs.get(tabId)
+    const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
+    if (hostname !== '') {
+      await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
+    }
+  }
+
+  const onPickResume = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
     const file = e.target.files?.[0]
     if (file === undefined) return
     await saveResume(file)
     setResumeName(file.name)
   }
+```
+
+(`guessCompany` comes from `./company`; `ChangeEvent` is a type import from `react`.)
+
+Add the picker button inside the job-description `<label data-jff-paste="1">` block, after
+the textarea (disabled until a scan has stamped fids, since `JFF_PICK` sits below the epoch
+guard):
+
+```tsx
+        <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0} onClick={onPickJobText}>
+          Pick job description
+        </button>
 ```
 
 and this markup right under the `[data-jff-actions="1"]` div:
@@ -7908,7 +8506,7 @@ Auto-scan on open: add `useEffect(() => { if (tabId !== null) void onScan() }, [
 - [ ] **Step 10: Typecheck, test, rebuild, smoke**
 
 ```bash
-npm run typecheck && npx vitest run && npm run build -w @jff/extension && npx playwright test
+npm run typecheck && npx vitest run && JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test
 ```
 
 Expected: all PASS.
@@ -7917,7 +8515,7 @@ Expected: all PASS.
 
 ```bash
 git add -A
-git commit -m "feat(panel): IndexedDB resume store and the resume-first two-phase scan with re-enumeration"
+git commit -m "feat(panel): IndexedDB resume store, resume-first two-phase scan, company guess and the job-text element picker"
 ```
 
 ---
@@ -7936,8 +8534,8 @@ fields and page-sourced values are never written.
 
 **Files:**
 - Create: `extension/src/panel/save.ts`
-- Modify: `extension/src/panel/App.tsx`
-- Test: `extension/src/panel/save.test.ts`
+- Modify: `extension/src/panel/App.tsx` (Step 3b replaces it with the canonical full listing)
+- Test: `extension/src/panel/save.test.ts`, `extension/src/panel/App.test.tsx`
 
 **Interfaces:**
 - Consumes: `EnumField`, `Resolution`, `SaveItem` from `@jff/shared`; `refOf` from `group.ts`.
@@ -8146,73 +8744,358 @@ Run again: PASS (12 tests).
 
 - [ ] **Step 3: Wire Save answers into App**
 
-Add to `extension/src/panel/App.tsx`:
+Three pieces of state and three behaviors land here; the COMPLETE resulting `App.tsx` is the
+canonical listing in Step 3b — transcribe that listing, this step explains it.
+
+1. **Snapshots** arrive as `{ kind: 'snapshotPush', tabId, frameId, snap }` broadcasts from
+   the service worker (Task 16 stamps the sender). The panel keeps only pushes for its own
+   tab whose `snap.epoch` equals the CURRENT scan epoch, keyed `"frameId:fid"`. At save time
+   it additionally merges the `storage.session` fallback keys (`SNAPSHOT_KEY_RE`, same tab,
+   same epoch — durable across a `beforeunload` race) and a fresh on-demand `JFF_SNAPSHOT`
+   pull (which returns `{}` if the page already tore its form down; that is fine, the push
+   channel already captured submit-time values).
+2. **Generated tracking**: `generatedRefs` records each ref that actually received an AI
+   draft; `generatedCount` sent to `save` is `generatedRefs.length`, NOT the count of panel
+   edits (a hand-typed edit is not a generated draft).
+3. **Company** threads the panel's `companyOrNull` (Task 19/20) through `buildSaveItems` and
+   the `save` request, and `reuseOverrides` lets the user flip each item's suggested
+   reusability before sending.
+
+- [ ] **Step 3b: The canonical App.tsx (full listing)**
+
+`extension/src/panel/App.tsx` has been assembled incrementally across Tasks 18-21. Replace
+the whole file with this canonical listing; it is the single source of truth (the `?tabId=`
+override Task 22's smoke needs is already included):
 
 ```tsx
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import type { ContentMessage, EnumField, Resolution, SelfCheck } from '@jff/shared'
+import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
+import { guessCompany } from './company'
+import { FieldRow } from './FieldRow'
+import { groupRows, refOf } from './group'
+import { createHostPort, ERROR_COPY, type HostPort } from './port'
+import { ProfileEditor } from './ProfileEditor'
+import { loadResume, saveResume } from './resume'
+import { runScan, type FrameReply } from './scan'
+import { buildSaveItems } from './save'
+import { createTabScope } from './tabScope'
+import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
+import { SNAPSHOT_KEY_RE } from '../snapshotKey'
+
+export function App() {
+  const portRef = useRef<HostPort | null>(null)
+  const epochRef = useRef(0)
+  const [check, setCheck] = useState<SelfCheck | null>(null)
+  const [hostError, setHostError] = useState<string | null>(null)
+  const [tabId, setTabId] = useState<number | null>(null)
+  const [resetCount, setResetCount] = useState(0)
+  const [fields, setFields] = useState<EnumField[]>([])
+  const [resolutions, setResolutions] = useState<Resolution[]>([])
+  const [edits, setEdits] = useState<Record<string, string>>({})
+  const [generatedRefs, setGeneratedRefs] = useState<readonly string[]>([])
+  const [generatingRef, setGeneratingRef] = useState<string | null>(null)
+  const [jobText, setJobText] = useState('')
+  const [company, setCompany] = useState('')
+  const [unreachable, setUnreachable] = useState(0)
+  const [activeCaptcha, setActiveCaptcha] = useState(false)
+  const [showEditor, setShowEditor] = useState(false)
+  const [facts, setFacts] = useState<Record<string, string>>({})
+  const [resumeName, setResumeName] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<Record<string, string>>({})
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  const [reuseOverrides, setReuseOverrides] = useState<Record<string, 'reusable' | 'company_specific'>>({})
 
-  // The content script pushes a snapshot at submit/beforeunload; storage.session
-  // is the durable fallback for the beforeunload case.
+  const groups = groupRows(fields, resolutions)
+  const companyOrNull = company.trim() === '' ? null : company.trim()
+
+  /* ------------------------------------------------------------- lifecycle */
+
+  useEffect(() => {
+    const port = createHostPort()
+    portRef.current = port
+    port.onDisconnect(() => setHostError(ERROR_COPY.unreachable))
+    void port.request<SelfCheck>('selfCheck', {}).then((r) => {
+      if (r.ok) setCheck(r.result)
+      else setHostError(ERROR_COPY[r.error.kind])
+    })
+    return () => port.disconnect()
+  }, [])
+
+  useEffect(() => {
+    let stop: (() => void) | null = null
+    // ?tabId= lets the e2e smoke drive the panel as an ordinary page; the real
+    // side panel binds to the active tab.
+    const override = new URLSearchParams(location.search).get('tabId')
+    const bind = (id: number | null): void => {
+      setTabId(id)
+      if (id !== null) stop = createTabScope(id, () => setResetCount((n) => n + 1))
+    }
+    if (override !== null) bind(Number(override))
+    else void chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => bind(tabs[0]?.id ?? null))
+    return () => { if (stop !== null) stop() }
+  }, [])
+
+  useEffect(() => { void loadResume().then((r) => setResumeName(r?.name ?? null)) }, [])
+
+  // Pre-fill the facts editor from the host once the self-check answered.
+  useEffect(() => {
+    const port = portRef.current
+    if (port === null) return
+    void Promise.all([
+      port.request<Record<string, string>>('profile.get', {}),
+      port.request<Record<string, string>>('answerBank.get', {}),
+    ]).then(([p, b]) => setFacts({ ...(p.ok ? p.result : {}), ...(b.ok ? b.result : {}) }))
+  }, [check])
+
+  // Snapshot pushes arrive stamped by the SERVICE WORKER with the sender's
+  // tabId/frameId (the content script can know neither). Stale epochs are
+  // rejected: handles from an old scan must never leak into a save.
   useEffect(() => {
     const onMsg = (raw: unknown): void => {
-      const m = raw as { kind?: string; type?: string; snap?: { epoch: number; values: Record<number, string> }; frameId?: number }
-      if (m?.kind !== 'fromContent' || m.type !== 'JFF_SNAPSHOT_PUSH' || m.snap === undefined) return
+      const m = raw as { kind?: string; tabId?: number; frameId?: number; snap?: { epoch: number; values: Record<number, string> } }
+      if (m?.kind !== 'snapshotPush' || m.snap === undefined || m.tabId !== tabId) return
+      if (m.snap.epoch !== epochRef.current) return
       const frameId = m.frameId ?? 0
+      const values = m.snap.values
       setSnapshot((s) => {
         const next = { ...s }
-        for (const [fid, v] of Object.entries(m.snap!.values)) next[`${frameId}:${fid}`] = v
+        for (const [fid, v] of Object.entries(values)) next[`${frameId}:${fid}`] = v
         return next
       })
     }
     chrome.runtime.onMessage.addListener(onMsg)
     return () => chrome.runtime.onMessage.removeListener(onMsg)
-  }, [])
+  }, [tabId])
+
+  /* --------------------------------------------------------------- actions */
+
+  const sendToTab = async (frameId: number | undefined, message: ContentMessage): Promise<FrameReply[]> => {
+    const res = await chrome.runtime.sendMessage({ kind: 'toContent', tabId, frameId, message })
+    return (res as { replies?: FrameReply[] }).replies ?? []
+  }
+
+  const onEdit = (ref: string, value: string): void => setEdits((e) => ({ ...e, [ref]: value }))
+
+  const onScan = async (): Promise<void> => {
+    const port = portRef.current
+    if (port === null || tabId === null) return
+    const tab = await chrome.tabs.get(tabId)
+    const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
+    // Company: the user's edit always wins; guess only while the field is empty.
+    const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
+    if (co !== null && companyOrNull === null) setCompany(co)
+    const out = await runScan({
+      tabId,
+      nextEpoch: () => ++epochRef.current,
+      inject: async () => {
+        const r = await chrome.runtime.sendMessage({ kind: 'inject', tabId })
+        return (r as { frames?: number[] }).frames ?? []
+      },
+      sendToTab,
+      port,
+      getResume: loadResume,
+      pastedJobText: jobText,
+      hostname,
+      url: tab.url ?? '',
+      company: co,
+    })
+    setFields(out.fields)
+    setResolutions(out.resolutions)
+    setUnreachable(out.unreachableWidgets)
+    setActiveCaptcha(out.activeCaptcha)
+    setEdits({})
+    setGeneratedRefs([])
+    setSnapshot({})
+    if (out.jobText !== '') setJobText(out.jobText)
+    if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
+  }
+
+  // Auto-scan on open and whenever the tab scope resets (navigation, wizard step).
+  useEffect(() => { if (tabId !== null) void onScan() }, [tabId, resetCount])
+
+  const onAccept = async (ref: string): Promise<void> => {
+    const row = groups.proposed.find((r) => r.ref === ref)
+    if (row === undefined || tabId === null) return
+    const value = edits[ref] ?? row.resolution.value ?? ''
+    if (value === '') return
+    await chrome.runtime.sendMessage({
+      kind: 'toContent', tabId, frameId: row.field.frameId,
+      message: { type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }] },
+    })
+    // Accepting an AI key match IS the user confirmation the spec's
+    // learned_mappings flow needs: promote it to a deterministic mapping.
+    if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
+      void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
+    }
+    setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const, value } : r)))
+  }
+
+  const onGenerate = async (ref: string): Promise<void> => {
+    const row = groups.needs_input.find((r) => r.ref === ref)
+    const port = portRef.current
+    if (row === undefined || port === null) return
+    setGeneratingRef(ref)
+    const r = await port.request<{ draft: string }>('generate', {
+      handle: row.resolution.handle,
+      questionRaw: row.field.label ?? '',
+      jobText,
+      company: companyOrNull,
+    })
+    setGeneratingRef(null)
+    if (r.ok) {
+      setEdits((e) => ({ ...e, [ref]: r.result.draft }))
+      setGeneratedRefs((g) => (g.includes(ref) ? g : [...g, ref]))
+    } else {
+      setHostError(ERROR_COPY[r.error.kind])
+    }
+  }
+
+  const onPickJobText = async (): Promise<void> => {
+    if (tabId === null || fields.length === 0) return
+    const replies = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
+    const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
+    if (p?.ok !== true || p.pick === undefined) return
+    setJobText(p.pick.text)
+    const tab = await chrome.tabs.get(tabId)
+    const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
+    if (hostname !== '') {
+      await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
+    }
+  }
+
+  const onPickResume = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0]
+    if (file === undefined) return
+    await saveResume(file)
+    setResumeName(file.name)
+  }
+
+  const onSaveFacts = async (profile: Record<string, string>, bank: Record<string, string>): Promise<void> => {
+    const port = portRef.current
+    if (port === null) return
+    await port.request('profile.set', { values: profile })
+    await port.request('answerBank.set', { values: bank })
+    setFacts({ ...profile, ...bank })
+    setShowEditor(false)
+  }
 
   const onSaveAnswers = async (): Promise<void> => {
     const port = portRef.current
-    if (port === null) return
-    // Pull a fresh snapshot too: the user may not have submitted yet.
+    if (port === null || tabId === null) return
+    // Merge every snapshot source: SW-stamped pushes (state), the storage.session
+    // fallback (durable across a beforeunload race), and a fresh on-demand pull
+    // (returns {} if the form was already torn down; the pushes covered that).
     const live: Record<string, string> = { ...snapshot }
+    const stored = await chrome.storage.session.get(null) as Record<string, { epoch: number; values: Record<string, string> }>
+    for (const [key, snap] of Object.entries(stored)) {
+      const m = SNAPSHOT_KEY_RE.exec(key)
+      if (m === null || Number(m[1]) !== tabId || snap.epoch !== epochRef.current) continue
+      for (const [fid, v] of Object.entries(snap.values)) live[`${m[2]}:${fid}`] = v
+    }
     for (const r of await sendToTab(undefined, { type: 'JFF_SNAPSHOT', epoch: epochRef.current })) {
-      const p = r.payload as { ok: boolean; snapshot?: { values: Record<number, string> } }
+      const p = r.payload as { ok: boolean; snapshot?: { values: Record<string, string> } }
       if (p?.ok !== true || p.snapshot === undefined) continue
       for (const [fid, v] of Object.entries(p.snapshot.values)) live[`${r.frameId}:${fid}`] = v
     }
-    const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: null })
-    const tab = tabId === null ? null : await chrome.tabs.get(tabId)
+    const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull })
+      .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
+    const tab = await chrome.tabs.get(tabId)
     const r = await port.request<{ saved: number }>('save', {
-      url: tab?.url ?? '',
-      company: null,
+      url: tab.url ?? '',
+      company: companyOrNull,
       items,
-      generatedCount: Object.keys(edits).length,
+      generatedCount: generatedRefs.length,
     })
     setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : ERROR_COPY[r.error.kind])
   }
-```
 
-and this markup at the end of the panel, above the closing `</main>`:
+  /* ---------------------------------------------------------------- markup */
 
-```tsx
-      <div className="my-2.5 flex items-center gap-2">
-        <button type="button" className={BTN_PRIMARY} onClick={onSaveAnswers}>Save answers</button>
-        {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
+  const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull })
+
+  return (
+    <main className="p-3" data-jff-ready="1">
+      <header className="flex items-center justify-between border-b border-neutral-200 pb-2 dark:border-neutral-700">
+        <h1 className="m-0 text-[13px] font-semibold tracking-wide" data-jff-title="1">job-form-filler</h1>
+        <span className="text-neutral-500 tabular-nums dark:text-neutral-400" data-jff-tab={String(tabId ?? '')}>
+          {tabId === null ? 'no tab' : `tab ${tabId}`}
+        </span>
+      </header>
+
+      <SelfCheckBanner check={check} error={hostError} />
+
+      {activeCaptcha && (
+        <div className={`${BANNER_BASE} ${BANNER_BAD}`} role="status" data-jff-captcha="1">
+          A CAPTCHA challenge is active on this page. Solve it yourself; the extension will not touch it.
+        </div>
+      )}
+      {unreachable > 0 && (
+        <p className={`mt-3 ${MUTED}`}>{unreachable} widget(s) use closed shadow roots and cannot be read. Fill those by hand.</p>
+      )}
+
+      <div className="my-2.5 flex items-center gap-2" data-jff-actions="1">
+        <button type="button" className={BTN_PRIMARY} disabled={tabId === null} onClick={onScan}>Scan</button>
+        <button type="button" className={BTN} onClick={() => setShowEditor((s) => !s)}>
+          {showEditor ? 'Back to fields' : 'Edit your facts'}
+        </button>
       </div>
-```
 
-No stylesheet changes: `tailwind.css` is still the only CSS file in the project.
+      <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
+        Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}
+        <input
+          type="file"
+          accept=".pdf,.doc,.docx,.txt,.rtf"
+          onChange={onPickResume}
+          className="mt-1 block w-full text-[12px] file:mr-2 file:cursor-pointer file:rounded-md file:border file:border-neutral-300 file:bg-transparent file:px-2 file:py-1 file:text-[12px] file:text-inherit dark:file:border-neutral-600"
+        />
+      </label>
 
-Also add the reusability confirmation: render each save item with a `reusable` / `company specific`
-toggle before sending. Add above the Save button:
+      <label className={`my-2 block ${MUTED}`} data-jff-company="1">
+        Company
+        <input
+          className={`${INPUT} mt-1`}
+          value={company}
+          onChange={(e) => setCompany(e.target.value)}
+          placeholder="Guessed on scan; edit if wrong"
+        />
+      </label>
 
-```tsx
-      {Object.keys(edits).length > 0 && (
+      <label className={`my-2.5 block ${MUTED}`} data-jff-paste="1">
+        Job description (paste here if the scan could not find it)
+        <textarea className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} onChange={(e) => setJobText(e.target.value)} />
+        <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0} onClick={onPickJobText}>
+          Pick job description
+        </button>
+      </label>
+
+      {showEditor
+        ? <ProfileEditor values={facts} onSave={onSaveFacts} />
+        : (['needs_input', 'proposed', 'auto', 'skipped'] as const).map((tier) => (
+            groups[tier].length === 0 ? null : (
+              <section className="mt-4" key={tier} data-jff-group={tier}>
+                <h2 className={`m-0 mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest ${MUTED}`}>
+                  {tier === 'needs_input' ? 'Needs input' : tier === 'proposed' ? 'Proposed' : tier === 'auto' ? 'Filled' : 'Skipped'}
+                  <span className="rounded-full bg-neutral-200 px-1.5 text-[11px] dark:bg-neutral-700">{groups[tier].length}</span>
+                </h2>
+                <ul className="m-0 grid list-none gap-2 p-0">
+                  {groups[tier].map((row) => (
+                    <FieldRow
+                      key={row.ref} row={row} edited={edits[row.ref] ?? null}
+                      onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate}
+                      generating={generatingRef === row.ref}
+                    />
+                  ))}
+                </ul>
+              </section>
+            )
+          ))}
+
+      {saveItems.length > 0 && (
         <details className="mt-3" data-jff-savepreview="1">
-          <summary className={`cursor-pointer ${MUTED}`}>
-            Answers to save ({buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: null }).length})
-          </summary>
+          <summary className={`cursor-pointer ${MUTED}`}>Answers to save ({saveItems.length})</summary>
           <ul className="m-0 mt-2 grid list-none gap-2 p-0">
-            {buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: null }).map((it) => (
+            {saveItems.map((it) => (
               <li className={`${ROW_BASE} border-l-neutral-300 dark:border-l-neutral-600`} key={refOf(it.handle)}>
                 <div className="flex items-baseline gap-1.5"><span className="font-semibold">{it.questionRaw}</span></div>
                 <label className={`mt-1 block text-[12px] ${MUTED}`}>
@@ -8228,20 +9111,68 @@ toggle before sending. Add above the Save button:
           </ul>
         </details>
       )}
+
+      <div className="my-2.5 flex items-center gap-2">
+        <button type="button" className={BTN_PRIMARY} onClick={onSaveAnswers}>Save answers</button>
+        {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
+      </div>
+    </main>
+  )
+}
 ```
 
-with `import { BTN_PRIMARY, MUTED, ROW_BASE } from './ui'`, `const [reuseOverrides, setReuseOverrides] = useState<Record<string, 'reusable' | 'company_specific'>>({})`,
-and apply the overrides in `onSaveAnswers`:
+No stylesheet changes: `tailwind.css` is still the only CSS file in the project.
+
+- [ ] **Step 3c: A jsdom mount smoke for the finished App**
+
+The component above was specified across four tasks; one test proves the assembled whole
+actually renders against the fake host. `extension/src/panel/App.test.tsx`:
 
 ```tsx
-    const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: null })
-      .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import 'fake-indexeddb/auto'
+import { render, screen } from '@testing-library/react'
+import { App } from './App'
+
+beforeEach(() => {
+  // The compile-time seam is on in tests (vitest define), so the fake host answers.
+  window.history.replaceState(null, '', '/?jffFakeHost=1')
+  ;(globalThis as unknown as { chrome: unknown }).chrome = {
+    tabs: {
+      query: vi.fn(async () => [{ id: 7, url: 'https://jobs.acme.com/apply', title: 'Engineer at Acme' }]),
+      get: vi.fn(async () => ({ id: 7, url: 'https://jobs.acme.com/apply', title: 'Engineer at Acme' })),
+      onActivated: { addListener: vi.fn(), removeListener: vi.fn() },
+      onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+      onRemoved: { addListener: vi.fn(), removeListener: vi.fn() },
+    },
+    runtime: {
+      sendMessage: vi.fn(async () => ({ ok: true, replies: [], frames: [] })),
+      onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+    },
+    storage: { session: { get: vi.fn(async () => ({})) } },
+  }
+})
+
+describe('App', () => {
+  it('mounts the full review surface against the fake host', async () => {
+    render(<App />)
+    expect(await screen.findByText(/Host ready/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Scan' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Save answers' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Pick job description' })).toBeTruthy()
+    // The auto-scan guessed the company from the stubbed tab title.
+    expect(await screen.findByDisplayValue('Acme')).toBeTruthy()
+  })
+})
 ```
+
+Run: `npx vitest run extension/src/panel/App.test.tsx`
+Expected: PASS (1 test).
 
 - [ ] **Step 4: Typecheck, test, rebuild, smoke**
 
 ```bash
-npm run typecheck && npx vitest run && npm run build -w @jff/extension && npx playwright test
+npm run typecheck && npx vitest run && JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test
 ```
 
 Expected: all PASS.
@@ -8250,7 +9181,7 @@ Expected: all PASS.
 
 ```bash
 git add -A
-git commit -m "feat(panel): save-answers three-way diff with reusability suggestion and user confirmation"
+git commit -m "feat(panel): save-answers three-way diff, reusability confirmation and the canonical App assembly"
 ```
 
 ---
@@ -8265,12 +9196,12 @@ the real host process, the real SQLite file.
 
 **Files:**
 - Create: `e2e/bin/claude`, `e2e/hostBridge.ts`, `e2e/full-loop.spec.ts`
-- Modify: `host/src/config.ts` (honour `JFF_HOME`), `extension/src/panel/App.tsx` (accept `?tabId=`)
-- Modify: `package.json` (`smoke` script builds first)
+- Modify: `host/src/config.ts` (honour `JFF_HOME`)
+- Modify: `package.json` (`verify` script)
 
 **Interfaces:**
-- Produces: `e2e/hostBridge.ts` exporting `startHost(opts: { home: string }): Promise<HostChild>` where
-  `HostChild = { request(req: { requestId: string; method: string; params: unknown }): Promise<unknown>; dbPath: string; stop(): Promise<void>; stderr: string[] }`.
+- Produces: `e2e/hostBridge.ts` exporting `startHost(opts?: { mode?: string }): Promise<HostChild>` where
+  `HostChild = { request(req: { requestId: string; method: string; params: unknown }): Promise<unknown>; dbPath: string; home: string; stderr: string[]; stop(): Promise<void> }` — `mode` sets `JFF_FAKE_CLAUDE_MODE` for the spawned host.
 
 - [ ] **Step 1: Let the host relocate its home directory for tests**
 
@@ -8420,26 +9351,11 @@ Also write a `config.json` into the host home so `claudePath` points at the fake
   }))
 ```
 
-- [ ] **Step 4: Let the panel take its tab id from the URL**
+- [ ] **Step 4: Confirm the panel takes its tab id from the URL**
 
-In `extension/src/panel/App.tsx`, replace the tab-binding effect with:
-
-```tsx
-  useEffect(() => {
-    let stop: (() => void) | null = null
-    const override = new URLSearchParams(location.search).get('tabId')
-    const bind = (id: number | null): void => {
-      setTabId(id)
-      if (id !== null) stop = createTabScope(id, () => setResetCount((n) => n + 1))
-    }
-    if (override !== null) bind(Number(override))
-    else void chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => bind(tabs[0]?.id ?? null))
-    return () => { if (stop !== null) stop() }
-  }, [])
-```
-
-(The side panel opened by the action already binds to the right tab; the override exists so the
-smoke can drive the panel as an ordinary page.)
+The `?tabId=` override is already part of the canonical `App.tsx` (Task 21 Step 3b) — the
+side panel opened by the action binds to the active tab, the override lets this smoke drive
+the panel as an ordinary page. Verify it is present; nothing to change.
 
 - [ ] **Step 5: Write the failing full-loop smoke**
 
@@ -8448,7 +9364,7 @@ smoke can drive the panel as an ordinary page.)
 ```ts
 import { test, expect } from '@playwright/test'
 import DatabaseCtor from 'better-sqlite3'
-import { launchWithExtension } from './ext'
+import { launchWithExtension, panelUrl } from './ext'
 import { startFixtureServer } from './static-server'
 import { startHost } from './hostBridge'
 
@@ -8473,10 +9389,10 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
       return tabs.find((t) => (t.url ?? '').includes('fixture-form.html'))!.id!
     })
 
-    // The panel, bridged to the REAL host process.
+    // The panel, bridged to the REAL host process. exposeFunction BEFORE goto.
     const panel = await ext.context.newPage()
     await panel.exposeFunction('__jffHostBridge', (req: { requestId: string; method: string; params: unknown }) => host.request(req))
-    await panel.goto(`chrome-extension://${ext.extensionId}/src/panel/index.html?jffFakeHost=1&tabId=${tabId}`)
+    await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
     await expect(panel.locator('[data-jff-banner="ok"]')).toBeVisible()
 
     // SCAN: auto-scan runs on open; press it again to be explicit.
@@ -8492,16 +9408,24 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     const eeoValue = await target.frameLocator('#eeo-frame').locator('#gender').inputValue()
     expect(eeoValue).toBe('')
 
-    // A custom question lands in needs-input; drafting it uses the fake claude.
+    // Draft the LABELLED free-text question specifically (not .first(): the
+    // needs-input group also holds recognized-but-unstored factual fields).
     await expect(panel.locator('[data-jff-group="needs_input"]')).toBeVisible()
-    await panel.getByRole('button', { name: 'Generate with AI' }).first().click()
+    const bugRow = panel.locator('[data-jff-group="needs_input"] li', { hasText: 'Describe a hard bug you fixed' })
+    await bugRow.getByRole('button', { name: 'Generate with AI' }).click()
     await expect(panel.getByRole('button', { name: 'Drafting…' })).toHaveCount(0, { timeout: 30_000 })
 
-    // The user types on the page directly, then submits.
-    await target.fill('#mystery', 'answered by hand on the page')
+    // The user overrides the draft by typing on the PAGE (snapshot must beat the
+    // panel edit), corrects a factual select, types into the unlabelled mystery
+    // field (which must NOT be saved), then submits.
+    await target.fill('#hard_bug', 'answered by hand on the page')
     await target.selectOption('#work_auth', { index: 1 })
+    await target.fill('#mystery', 'unlabelled, must never be saved')
     await target.click('#submit_app')
     await expect(target.locator('#application-confirmation')).toBeVisible()
+
+    // Company is user-editable and threads into the applications row.
+    await panel.locator('[data-jff-company="1"] input').fill('Acme')
 
     // SAVE.
     await panel.getByRole('button', { name: 'Save answers' }).click()
@@ -8511,12 +9435,24 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     const db = new DatabaseCtor(host.dbPath, { readonly: true })
     const answers = db.prepare('SELECT question_raw, answer, reusability FROM qa_memory').all() as
       { question_raw: string; answer: string; reusability: string }[]
-    const apps = db.prepare('SELECT url, filled_count FROM applications').all() as { url: string; filled_count: number }[]
+    const bank = db.prepare('SELECT key, value FROM answer_bank').all() as { key: string; value: string }[]
+    const apps = db.prepare('SELECT url, company, filled_count, generated_count FROM applications').all() as
+      { url: string; company: string | null; filled_count: number; generated_count: number }[]
     db.close()
 
-    expect(answers.length).toBeGreaterThan(0)
-    expect(answers.map((a) => a.answer)).toContain('answered by hand on the page')
+    // The page-typed answer beat the AI draft (snapshot > panel edit) and landed
+    // in qa_memory under its labelled question.
+    const bug = answers.find((a) => a.question_raw === 'Describe a hard bug you fixed')!
+    expect(bug.answer).toBe('answered by hand on the page')
+    expect(bug.reusability).toBe('reusable')
+    // The unlabelled field is skipped by design.
+    expect(answers.map((a) => a.answer)).not.toContain('unlabelled, must never be saved')
+    // The factual correction routed to the ANSWER BANK, not qa_memory.
+    expect(bank).toContainEqual({ key: 'workAuth', value: 'I am authorized to work for any employer in the US.' })
+    expect(answers.map((a) => a.answer)).not.toContain('I am authorized to work for any employer in the US.')
+    // One application row, with the edited company and exactly one generated draft.
     expect(apps).toHaveLength(1)
+    expect(apps[0]!).toMatchObject({ company: 'Acme', generated_count: 1 })
     expect(apps[0]!.url).toContain('fixture-form.html')
 
     // Protocol hygiene: the host never wrote anything but frames to stdout, and it
@@ -8544,7 +9480,7 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
 
     const panel = await ext.context.newPage()
     await panel.exposeFunction('__jffHostBridge', (req: { requestId: string; method: string; params: unknown }) => host.request(req))
-    await panel.goto(`chrome-extension://${ext.extensionId}/src/panel/index.html?jffFakeHost=1&tabId=${tabId}`)
+    await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
 
     await panel.getByRole('button', { name: 'Scan' }).click()
     await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 30_000 })
@@ -8562,31 +9498,33 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
 
 ```bash
 chmod +x e2e/bin/claude
-npm run build
+JFF_TEST_SEAM=1 npm run build
 npx playwright test e2e/full-loop.spec.ts
 ```
 
-Expected: FAIL first (the bridge, the `?tabId=` override or the fake CLI is not wired yet), then
-PASS once Steps 1-4 are applied. Common first failures and their fixes:
+Expected: FAIL first (the bridge or the fake CLI is not wired yet), then PASS once Steps 1-3
+are applied. Common first failures and their fixes:
 - `__jffHostBridge is not a function` → `exposeFunction` must be called BEFORE `panel.goto`.
-- The self-check banner never turns green → the fake `claude` is not executable (`chmod +x`) or
-  `config.json` was not written into `JFF_HOME`.
+- The self-check banner never turns green → the fake `claude` is not executable (`chmod +x`),
+  `config.json` was not written into `JFF_HOME`, or the extension was built WITHOUT
+  `JFF_TEST_SEAM=1` (the fake port does not exist in a release build).
 - `apps` has zero rows → `save` was called with an empty `items` array; check that
   `buildSaveItems` is receiving the live snapshot, not only `edits`.
 
 - [ ] **Step 7: Make `npm run smoke` the single gate**
 
-Root `package.json`:
+Root `package.json` (the `smoke` script from Task 3 already builds with the seam; add `verify`):
 
 ```json
 {
-  "smoke": "npm run build && playwright test",
+  "smoke": "JFF_TEST_SEAM=1 npm run build && playwright test",
   "verify": "npm run typecheck && npm run lint && npm run test && npm run smoke"
 }
 ```
 
 Run: `npm run verify`
-Expected: everything PASS.
+Expected: everything PASS. (Task 23's release flow uses plain `npm run build`, which strips
+the test seam from the shipped bundle.)
 
 - [ ] **Step 8: Commit**
 
@@ -8681,7 +9619,7 @@ applied. Commit it.
 
 | # | Spec requirement (section) | Task | Test that proves it |
 | --- | --- | --- | --- |
-| 1 | Content script injected on demand via `chrome.scripting.executeScript({allFrames:true})`, not statically (Components 1) | 3 | `e2e/foundation.spec.ts` "content script enumerates a fixture form" (injects on demand, asserts ≥2 frames replied) |
+| 1 | Content script injected on demand via `chrome.scripting.executeScript({allFrames:true})`, not statically (Components 1) | 3 | `e2e/foundation.spec.ts` "the content script injects on demand into every frame and answers the probe" (on-demand inject, srcdoc SPIKE assertion, ≥2 frames replied) |
 | 2 | Enumerator: labels, input types, select/radio options (Components 1) | 13 | `enumerate.test.ts` "harvests text inputs…", "harvests a native select…", "classifies checkbox and file inputs" |
 | 3 | Enumerator: ARIA comboboxes `role=combobox` / `role=option` (Components 1) | 13 | `enumerate.test.ts` "classifies an ARIA combobox…", "emits an input[role=combobox] exactly ONCE" |
 | 4 | Enumerator: radio groups coalesced into one logical field with option labels (Components 1) | 13 | `enumerate.test.ts` "coalesces a radio group into ONE field…", "marks a radio group required when ANY member is required" |
@@ -8693,14 +9631,14 @@ applied. Commit it.
 | 10 | Filler: `DataTransfer` for the resume file input (Components 1) | 15 | `fill.test.ts` "sets input.files through a DataTransfer and fires change" |
 | 11 | Fields that reject a synthetic click fall to needs-input (Components 1) | 15 | `fill.test.ts` reason `click-rejected` path; `fillFields` "reports filled vs failed" |
 | 12 | Job-post capture: learned selector → heuristics → user fallback (Components 1, Fill pipeline) | 17, 20 | `jobpost.test.ts` "uses the learned selector first…", "falls back to heuristics…", "returns source=none…"; `scan.test.ts` "prefers pasted job text over scraping" |
-| 13 | Element picker; picked selector saved per hostname (Components 1) | 17, 20 | `jobpost.test.ts` `cssPathOf` tests (selector round-trips); `scan.test.ts` "saves a newly discovered job_description selector for this hostname" |
-| 14 | Submit snapshot via capture-phase `submit` + `beforeunload` (Components 1) | 16 | `snapshot.test.ts` "pushes a snapshot on submit, in the CAPTURE phase…", "pushes a snapshot on beforeunload"; `e2e/foundation.spec.ts` storage.session assertion |
+| 13 | Element picker; picked selector saved per hostname (Components 1) | 17, 20, 21 | `jobpost.test.ts` `cssPathOf` tests (selector round-trips); `scan.test.ts` "saves a newly discovered job_description selector…"; panel "Pick job description" button + `onPickJobText` (Task 20 Step 9, canonical App); `App.test.tsx` asserts the button renders |
+| 14 | Submit snapshot via capture-phase `submit` + `beforeunload` (Components 1) | 16 | `snapshot.test.ts` "pushes a snapshot on submit, in the CAPTURE phase…", "pushes a snapshot on beforeunload"; `e2e/foundation.spec.ts` "a real submit pushes a per-tab-per-frame snapshot into storage.session" (SW stamps sender tab+frame; the project fixture dispatches a real submit) |
 | 15 | Side panel owns the `connectNative` port, not the service worker (Components 2) | 18 | `port.test.ts` (port lives in the panel module); `background.ts` holds no port (Task 3 code); `e2e/panel-port.spec.ts` |
 | 16 | Review surface: Filled / Proposed / Needs input / Skipped with source badges (Components 2) | 19 | `group.test.ts` "puts every field in exactly one bucket"; `SOURCE_BADGE` test; `FieldRow.test.tsx` "shows the label, the value and the source badge" |
 | 17 | Inline editing (Components 2) | 19 | `FieldRow.test.tsx` "emits an edit as the user types", "prefers the local edit over the resolved value" |
 | 18 | Explicit Scan / Re-scan + auto-scan on panel open (Components 2) | 19, 20 | Task 19 Scan button; Task 20 Step 9 auto-scan effect; `e2e/full-loop.spec.ts` clicks Scan |
 | 19 | Manual paste box for the job description (Components 2) | 19, 20 | Task 19 `[data-jff-paste]` markup; `scan.test.ts` "prefers pasted job text over scraping and never asks the page for it" |
-| 20 | "Save answers" action (Components 2) | 21 | `save.test.ts` (12 tests); `e2e/full-loop.spec.ts` asserts rows in SQLite |
+| 20 | "Save answers" action (Components 2) | 21 | `save.test.ts` (12 tests); `e2e/full-loop.spec.ts` asserts the labelled page-typed answer in `qa_memory`, the factual correction in `answer_bank`, and that the unlabelled field is NOT saved |
 | 21 | Resume manager: Blob in IndexedDB, handed to the content script, never over native messaging (Components 2) | 20 | `resume.test.ts` round-trip tests; `JFF_FILL_RESUME` carries base64 over runtime messaging only; no host method accepts a file (`HostRequestSchema`, Task 2) |
 | 22 | Host self-check shown on connect (Components 2) | 11, 18 | `selfcheck.test.ts` (6 tests); `port.test.ts`; `e2e/panel-port.spec.ts` "renders a green self-check" |
 | 23 | Panel tab-scoped, resets on `tabs.onActivated` / navigation (Components 2) | 18 | `tabScope.test.ts` (6 tests) |
@@ -8713,33 +9651,33 @@ applied. Commit it.
 | 30 | Host executable is a wrapper shell script with explicit PATH and absolute node path (Host protocol) | 12 | `templates.test.ts` "exports an explicit PATH…", "execs node and the entry point by ABSOLUTE path", "never writes anything to stdout itself" |
 | 31 | `claude` path is a config value verified by the self-check (Host protocol) | 11, 12 | `selfcheck.test.ts` "reports claude not found when the configured path does not exist"; `install.mjs` writes `config.json` |
 | 32 | `claude` child uses `stdio:['ignore','pipe','pipe']`, prompt via `-p` argv (Host protocol) | 7 | `claudeCli.ts` `defaultRun`; `claudeCli.test.ts` "appends a JSON-only instruction…" exercises the argv path |
-| 33 | Every request carries a `requestId`; responses idempotent per id (Host protocol) | 2, 11 | `messages.test.ts` "rejects a missing requestId"; `handlers.test.ts` "replays a cached response for a repeated requestId", "does NOT cache a failed response" |
-| 34 | host→extension hard-capped at 1 MB with `{page, done}` chunking (Host protocol) | 4, 11 | `framing.test.ts` "throws MessageTooLarge strictly above 1 MB"; `chunk.test.ts` (4 tests); `handlers.test.ts` "pages qa.list with the {page, done} convention" |
+| 33 | Every request carries a `requestId`; responses idempotent per id so a dropped connection re-fetches (Host protocol) | 2, 5, 11, 18 | `messages.test.ts` "rejects a missing requestId"; `handlers.test.ts` "replays a cached response…", "does NOT cache a failed response"; `port.test.ts` "re-issues the SAME requestId through a fresh port after a disconnect"; `repos.test.ts` request_log pruning |
+| 34 | host→extension hard-capped at 1 MB with `{page, done}` chunking (Host protocol) | 4, 11 | `framing.test.ts` "throws MessageTooLarge strictly above 1 MB"; `chunk.test.ts` (5 tests, incl. oversized-item omission and the every-page-survives-encodeMessage invariant); `handlers.test.ts` "pages qa.list with the {page, done} convention" (qa.list is the deliberate protocol proof; no panel consumer in v1) |
 | 35 | Install script writes the native-messaging manifest with the pinned ID and marks the wrapper executable (Host protocol) | 12 | `templates.test.ts` (8 tests); Task 12 Steps 6-7 run it and execute the wrapper |
 | 36 | Field identity `{frameId, fid, epoch}`; `data-jff-fid` stamping (Field identity) | 2, 13 | `messages.test.ts` "accepts a fill message carrying the identity triple"; `enumerate.test.ts` "stamps data-jff-fid…", "clears stale fids and renumbers from zero on a re-scan" |
 | 37 | `frameId` reported per content-script instance under `allFrames` (Field identity) | 3, 20 | `background.ts` returns `{frameId, payload}` per frame; `scan.test.ts` "stamps frameId onto every field from the reply envelope" |
 | 38 | Stale `epoch` rejected, forcing a re-scan (Field identity) | 13, 15 | Content-script epoch guard (Task 13 Step 9, Task 15 Step 5); `e2e/foundation.spec.ts` stale-epoch assertion |
 | 39 | PHASE 1 resume first, wait for auto-parse to settle, RE-ENUMERATE (Fill pipeline) | 20 | `settle.test.ts` (3 tests); `scan.test.ts` "fills the RESUME before the resolve call and re-enumerates afterwards", "uses a NEW epoch for the re-enumeration" |
 | 40 | ATS-populated values treated as already-filled, not blank (Fill pipeline) | 9, 20 | `waterfall.test.ts` "treats an ATS-populated value as filled, sourced from the page"; `scan.test.ts` "auto-fills only tier=auto resolutions and never page-sourced ones" |
-| 41 | Waterfall step 1: deterministic recognizers + learned mappings (Fill pipeline) | 6, 9 | `recognizers.test.ts` (23 assertions incl. "lets a learned mapping win over the baseline"); `waterfall.test.ts` tier-2 block |
+| 41 | Waterfall step 1: deterministic recognizers + learned mappings (Fill pipeline) | 6, 9 | `recognizers.test.ts` (24 tests incl. "lets a learned mapping win over the baseline"); `waterfall.test.ts` tier-2 block |
 | 42 | Waterfall step 2: exact normalized saved-answer lookup, language-aware (Fill pipeline) | 5, 6, 9 | `normalize.test.ts` (6 tests); `repos.test.ts` "keeps EN and PT rows … separate"; `waterfall.test.ts` "auto-fills an exact reusable match and bumps times_used" |
 | 43 | Waterfall step 3: ONE batched `claude -p` call with all stored Q&A candidates (Fill pipeline) | 8, 9 | `mapping.test.ts` "lists the closed key set and the candidate answer ids"; `waterfall.test.ts` "does not call the LLM at all when every field resolved deterministically" |
-| 44 | Waterfall step 4: still unresolved → needs-input (Fill pipeline) | 9 | `waterfall.test.ts` "lists custom decisions as generate-able questions", "fails every unresolved field closed…" |
+| 44 | Waterfall step 4: still unresolved → needs-input (Fill pipeline) | 9 | `waterfall.test.ts` "resolves an LLM custom decision to needs-input with reason custom", "fails every unresolved field closed…" |
 | 45 | Confidence tiers: AUTO tier1+2, PROPOSED tier3, NEEDS-INPUT tier4 and any key with no stored value (Fill pipeline) | 9 | `waterfall.test.ts` tier tables (17 tests), specifically "routes a recognized key with NO stored value to needs-input" and "proposes a value for an LLM known_key" |
 | 46 | [Generate] flow: question + job description + profile summary → draft → user edits → fill (Fill pipeline) | 10, 19 | `generate.test.ts` (13 tests); `FieldRow.test.tsx` "shows Generate with AI only for a needs-input row"; `e2e/full-loop.spec.ts` clicks Generate |
 | 47 | The extension NEVER submits (Fill pipeline, Safety rails) | 15 | `fill.test.ts` "never clicks a submit control"; no `submit()` call exists anywhere; `e2e/full-loop.spec.ts` submits via the user's own click |
-| 48 | Save answers diffs engine-filled / panel-edited / on-page snapshot (Fill pipeline) | 21 | `save.test.ts` "lets the on-page snapshot beat a panel edit", "lets a panel edit beat the engine value", "does NOT re-save a value that equals what the engine already filled" |
+| 48 | Save answers diffs engine-filled / panel-edited / on-page snapshot (Fill pipeline) | 21, 22 | `save.test.ts` "lets the on-page snapshot beat a panel edit", "lets a panel edit beat the engine value", "does NOT re-save a value that equals what the engine already filled"; `e2e/full-loop.spec.ts` proves the precedence live (page-typed `#hard_bug` beats the AI draft) |
 | 49 | Multi-step wizards: re-run the loop per step; stale epoch kills old handles (Fill pipeline) | 18, 13 | `tabScope.test.ts` "resets when the bound tab starts navigating"; `e2e/foundation.spec.ts` stale-epoch assertion |
 | 50 | Anti-fabrication: the LLM only picks WHICH stored value applies; values come from the DB (Anti-fabrication) | 8, 9 | `mapping.test.ts` "has no value field, so a fabricated value is unrepresentable"; `waterfall.test.ts` "substitutes the DB value, never anything the model said" |
 | 51 | Structural validation: out-of-set `known_key` or `reuse_answer(id)` rejected → needs-input (Anti-fabrication) | 8 | `mapping.test.ts` "downgrades a known_key outside the closed set to custom", "downgrades a reuse_answer id outside the candidate set to custom" |
 | 52 | A batch that does not round-trip 1:1 fails ALL fields closed (Anti-fabrication) | 8, 9 | `mapping.test.ts` missing/duplicate/extra-ref tests; `waterfall.test.ts` "fails every unresolved field closed when the mapping response does not round-trip" |
 | 53 | Only subjective free-text is LLM-written, and always passes through the user's hands (Anti-fabrication) | 10, 19 | `generate.test.ts`; `FieldRow.test.tsx` (the draft lands in an editable textarea, never auto-filled) |
-| 54 | Company-specificity guard: tagged at save time, panel suggests, user confirms (Company guard) | 21 | `save.test.ts` `suggestReusability` tests; Task 21 Step 3 confirmation checkbox |
+| 54 | Company-specificity guard: tagged at save time, panel suggests, user confirms (Company guard) | 20, 21, 22 | `save.test.ts` `suggestReusability` tests; the confirmation checkbox (canonical App); the company value is REAL: guessed per scan (`company.test.ts`), user-editable, threaded through resolve/generate/save (`e2e/full-loop.spec.ts` asserts `applications.company = 'Acme'`) |
 | 55 | `company_specific` answers never auto-fill or propose verbatim; only seed [Generate] (Company guard) | 5, 9, 11 | `repos.test.ts` "listReusableAnswers excludes company_specific rows"; `waterfall.test.ts` "never auto-fills a company_specific exact match", "refuses to reuse a company_specific answer even when the model points at it"; `handlers.test.ts` generate path uses `listReferenceAnswers` |
 | 56 | `profile` table: identity facts hand-filled in the panel (Data model) | 5, 19 | `repos.test.ts` profile round-trip; `ProfileEditor.tsx` |
 | 57 | `answer_bank` table with the spec's keys (Data model) | 1, 5 | `keys.test.ts` "contains the exact keys the spec names"; `repos.test.ts` |
 | 58 | `qa_memory` with question_normalized/raw/answer/language/reusability/times_used/last_used_at/source_url (Data model) | 5 | `schema.ts` DDL; `repos.test.ts` upsert/touch/language tests |
-| 59 | `learned_mappings` promoted after the user confirms an LLM mapping once (Data model) | 5, 6, 11 | `repos.test.ts` mapping round-trip; `recognizers.test.ts` learned-wins test; `handlers.test.ts` "promotes a confirmed mapping to deterministic, normalized" |
+| 59 | `learned_mappings` promoted after the user confirms an LLM mapping once (Data model) | 5, 6, 11, 19 | `repos.test.ts` mapping round-trip; `recognizers.test.ts` learned-wins test; `handlers.test.ts` "promotes a confirmed mapping…"; the panel's `onAccept` calls `mapping.confirm` for accepted `llm_key` rows (Task 19 Step 10, canonical App) |
 | 60 | `learned_selectors` (hostname, purpose, selector) with v1 purpose `job_description` (Data model) | 5, 11, 20 | `repos.test.ts` selector round-trip; `handlers.test.ts` selector save/get; `scan.test.ts` selector.save |
 | 61 | `applications` history row, one insert per Save answers (Data model) | 5, 11 | `repos.test.ts` "inserts an application row"; `e2e/full-loop.spec.ts` asserts exactly one row |
 | 62 | Two prompt shapes, both JSON-schema validated; invalid → one retry → fail closed (claude usage) | 7, 8, 10 | `claudeCli.test.ts` "retries invalid output once then fails closed with invalid_output"; `mapping.test.ts`; `generate.test.ts` |
@@ -8751,7 +9689,7 @@ applied. Commit it.
 | 68 | Active CAPTCHA flags and blocks; passive badge ignored (Safety rails) | 14, 20 | `classify.test.ts` "flags a visible reCAPTCHA v2 challenge widget", "IGNORES the passive reCAPTCHA badge…"; `scan.test.ts` "reports an active CAPTCHA and fills NOTHING" |
 | 69 | Everything local: SQLite + resume on disk, no telemetry, no server (Safety rails) | 5, 20 | `repos.test.ts` (local file); `resume.test.ts` (IndexedDB); no network client exists in any workspace (`grep -rn "fetch(\|XMLHttpRequest" host/src extension/src` returns nothing — run it in Task 22 Step 7) |
 | 70 | Host logic unit-tested without Chrome (Testing) | 4-12 | Every `host/src/**/*.test.ts` runs in the vitest `host` project, node environment |
-| 71 | Enumerator/filler tested against captured real-form HTML fixtures (Testing) | 3, 13 | Fixtures copied in Task 3 Step 7; `enumerate.test.ts` "survives the real Greenhouse fixture and finds its core fields" |
+| 71 | Enumerator/filler tested against captured real-form HTML fixtures (Testing) | 3, 13 | Fixtures copied in Task 3 Step 7 (fixture-form.html is a documented PROJECT-OWNED copy); `enumerate.test.ts` "survives the real Greenhouse fixture and finds its core fields" |
 | 72 | Live smoke against a real posting (Testing) | 23 | MANUAL checklist Step 7 |
 | 73 | No per-ATS adapters in v1 (Out of scope) | all | No file in the plan names a platform; the only platform-specific artefacts are test fixtures |
 | 74 | Node ≥ 20 pinned by the wrapper's absolute path (Global constraints) | 1, 11, 12 | `package.json` engines; `selfcheck.test.ts` node check; `install.mjs` refuses Node < 20 |
@@ -8784,11 +9722,33 @@ inline while writing:
 4. **`epoch` cannot be a per-frame counter** under `allFrames`. Resolved by making the panel the
    sole epoch issuer. Recorded in Global Constraints and in Task 13's locked decisions.
 5. **The panel binds to a tab it cannot query in the smoke** (the panel page is itself the active
-   tab). Resolved by the `?tabId=` override in Task 22 Step 4.
-6. **`chrome.storage.session` is unreachable from a content script by default.** Task 16 Step 6
-   adds `setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })` to the service worker.
+   tab). Resolved by the `?tabId=` override (canonical App, Task 21 Step 3b; verified Task 22 Step 4).
+6. **`chrome.storage.session` is unreachable from a content script.** Resolved WITHOUT
+   `setAccessLevel`: the content script never touches storage; it sends the snapshot to the
+   service worker, which stamps the sender and writes the per-tab-per-frame key (Task 16 Step 5).
 7. **crxjs does not emit programmatically-injected scripts.** Resolved with a second lib-mode
    Vite build producing a single IIFE `dist/content.js` (Task 3 Step 3).
+
+**2026-07-27 pre-execution review fixes applied** (fresh-context Opus + codex/gpt-5.6-sol;
+all findings incorporated into the tasks above): shared+host moved to NodeNext ESM with `.js`
+relative imports throughout; EEO ancestor walk `break`s (never `return`s) at body/form so the
+subframe heuristics still run; radio groups labelled by `groupLabelFor` (legend/role=group,
+never the first option's wrapping label); extension config files typecheck via
+`tsconfig.node.json`, e2e via `e2e/tsconfig.json`; `fixture-form.html` is a project-owned
+copy (job-description block, labelled `hard_bug` question, real submit event); snapshot
+pushes are stamped by the SW with sender tab+frame and stored under per-tab-per-frame keys
+with stale-epoch rejection; vitest collects `.tsx` with `globals: true`; manifest uses
+`defineManifest`, no WAR block; the panel wires the element picker, `mapping.confirm` on
+accepted `llm_key` rows, and a real company field (guess + user edit); `customQuestions` was
+dropped as dead payload; requestId idempotency is exercised by a retrying port that replays
+the SAME id once, with request_log pruning; `paginate` omits unframeable items and proves
+every page fits `encodeMessage`; the `?jffFakeHost` seam is compile-time gated
+(`__JFF_TEST_SEAM__`); `panelUrl()` reads the emitted manifest; crx/vite versions are
+spike-verified then pinned exactly (Task 3 Step 6b); the srcdoc injection assumption is a
+permanent SPIKE assertion with a documented fallback; foundation.spec is per-concern tests
+over one harness; App.tsx has a canonical listing plus a jsdom mount smoke;
+rate-limit classification precedes auth; PT hints are accent-stripped; `generatedCount`
+counts actual AI drafts.
 
 Open risks the executing engineer should watch for, none of them blocking:
 
@@ -8796,9 +9756,9 @@ Open risks the executing engineer should watch for, none of them blocking:
   mode, which loads extensions. If `context.waitForEvent('serviceworker')` times out on the
   installed Playwright version, set `headless: false` in `e2e/ext.ts` (macOS runs headed locally
   without a display server) rather than deleting the smoke.
-- **crxjs output paths.** The panel URL used by the smokes is `src/panel/index.html`. If crxjs
-  rewrites it, read `extension/dist/manifest.json` and use the emitted `side_panel.default_path`
-  (Task 3 Step 11 says so explicitly).
+- **srcdoc frame injection.** The foundation SPIKE assertion measures it on the pinned Chromium;
+  the fallback (dynamic `registerContentScripts` with `matchOriginAsFallback`) is documented in
+  Task 3 Step 11.
 - **`better-sqlite3` native build.** It must be built for the system Node that the wrapper
   invokes. If the host logs `NODE_MODULE_VERSION` mismatch, run `npm rebuild better-sqlite3`
   under that Node.
