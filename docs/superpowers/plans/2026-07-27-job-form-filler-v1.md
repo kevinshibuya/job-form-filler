@@ -6,7 +6,7 @@
 
 **Architecture:** Thin extension / smart host. The content script only enumerates and fills DOM (it is the only component that touches the page); the side panel owns the single `chrome.runtime.connectNative` port and the whole review UI; the service worker is a dumb relay that stamps `frameId`. The Node host owns SQLite, the matching waterfall, prompt construction and the `claude -p` runner. One repo, three npm workspaces — `shared/` (protocol + key sets), `extension/`, `host/`.
 
-**Tech Stack:** TypeScript everywhere · Vite + `@crxjs/vite-plugin` (MV3) for the extension · React 18 for the side panel · vitest (node + jsdom projects) for unit tests · Playwright (Chromium, `--load-extension`) for browser smokes · Node ≥ 20 (pinned by absolute path in the host wrapper) · better-sqlite3 · zod for every message and LLM schema.
+**Tech Stack:** TypeScript everywhere · Vite + `@crxjs/vite-plugin` (MV3) for the extension · React 18 + Tailwind CSS v4 (`@tailwindcss/vite`) for the side panel · vitest (node + jsdom projects) for unit tests · Playwright (Chromium, `--load-extension`) for browser smokes · Node ≥ 20 (pinned by absolute path in the host wrapper) · better-sqlite3 · zod for every message and LLM schema.
 
 ## Global Constraints
 
@@ -107,7 +107,8 @@ job-form-filler/
 │       │   ├── App.tsx          review surface
 │       │   ├── ProfileEditor.tsx
 │       │   ├── FieldRow.tsx
-│       │   ├── panel.css
+│       │   ├── tailwind.css     Tailwind v4 entry: @import "tailwindcss"
+│       │   ├── ui.ts            shared Tailwind class strings (BTN, INPUT, TIER_ACCENT…)
 │       │   ├── port.ts          createHostPort(): native | in-page fake (test flag)
 │       │   ├── resume.ts        IndexedDB blob store
 │       │   └── scan.ts          scan/fill orchestration incl. phase-1 resume-first
@@ -294,10 +295,12 @@ playwright-report/
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0",
+    "@tailwindcss/vite": "^4.0.0",
     "@types/chrome": "^0.0.280",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
+    "tailwindcss": "^4.0.0",
     "vite": "^5.4.0"
   }
 }
@@ -786,7 +789,7 @@ git commit -m "feat(shared): field identity triple, host RPC schemas, content-sc
 **Files:**
 - Create: `extension/manifest.config.ts`, `extension/vite.config.ts`, `extension/vite.content.config.ts`
 - Create: `extension/src/background.ts`, `extension/src/content/index.ts`
-- Create: `extension/src/panel/index.html`, `extension/src/panel/main.tsx`, `extension/src/panel/App.tsx`, `extension/src/panel/panel.css`
+- Create: `extension/src/panel/index.html`, `extension/src/panel/main.tsx`, `extension/src/panel/App.tsx`, `extension/src/panel/tailwind.css`
 - Create: `e2e/fixtures/greenhouse-apply/{fixture-form.html,figma-form.html,gusto-form.html}` (copied)
 - Create: `e2e/static-server.ts`, `e2e/ext.ts`, `e2e/foundation.spec.ts`, `playwright.config.ts`
 - Modify: `package.json` (root scripts)
@@ -851,11 +854,14 @@ export default {
 ```ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { crx } from '@crxjs/vite-plugin'
 import manifest from './manifest.config'
 
 export default defineConfig({
-  plugins: [react(), crx({ manifest })],
+  // Order matters: tailwindcss() must run BEFORE crx(), which rewrites HTML
+  // entries and asset URLs. React first so JSX is transformed for class scanning.
+  plugins: [react(), tailwindcss(), crx({ manifest })],
   build: {
     outDir: 'dist',
     emptyOutDir: true,
@@ -863,6 +869,10 @@ export default defineConfig({
   },
 })
 ```
+
+The content script build (next file) deliberately gets NO Tailwind plugin: the content
+script never renders UI of its own, and injecting a stylesheet into someone else's page
+would be a visual side effect the spec does not ask for.
 
 `extension/vite.content.config.ts` (lib-mode IIFE — a single self-contained `content.js` that `chrome.scripting.executeScript({ files })` can inject on demand; crxjs does not emit programmatically-injected scripts):
 
@@ -1007,10 +1017,10 @@ if (!window.__jffLoaded) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>job-form-filler</title>
-    <link rel="stylesheet" href="./panel.css" />
   </head>
-  <body>
+  <body class="m-0 bg-white text-[13px] leading-normal text-neutral-900 antialiased dark:bg-neutral-900 dark:text-neutral-100">
     <div id="root" data-jff-root></div>
     <script type="module" src="./main.tsx"></script>
   </body>
@@ -1020,6 +1030,7 @@ if (!window.__jffLoaded) {
 `extension/src/panel/main.tsx`:
 
 ```tsx
+import './tailwind.css'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 
@@ -1033,42 +1044,32 @@ createRoot(el).render(<App />)
 ```tsx
 export function App() {
   return (
-    <main className="panel" data-jff-ready="1">
-      <header className="panel__head">
-        <h1 className="panel__title">job-form-filler</h1>
+    <main className="p-3" data-jff-ready="1">
+      <header className="flex items-center justify-between border-b border-neutral-200 pb-2 dark:border-neutral-700">
+        <h1 className="m-0 text-[13px] font-semibold tracking-wide" data-jff-title="1">job-form-filler</h1>
       </header>
-      <p className="panel__hint">Open a job application, then press Scan.</p>
+      <p className="mt-3 text-neutral-500 dark:text-neutral-400">Open a job application, then press Scan.</p>
     </main>
   )
 }
 ```
 
-`extension/src/panel/panel.css`:
+`extension/src/panel/tailwind.css` — the ONLY stylesheet in this project. Every other
+style is a utility class in the markup; there are no hand-authored component rules.
 
 ```css
-:root {
-  color-scheme: light dark;
-  --bg: #ffffff;
-  --fg: #111418;
-  --muted: #5b6470;
-  --line: #e3e6ea;
-  --accent: #2f5bea;
-}
-@media (prefers-color-scheme: dark) {
-  :root { --bg: #16181c; --fg: #eceef1; --muted: #9aa3ae; --line: #2b2f36; --accent: #7d9bff; }
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-.panel { padding: 12px; }
-.panel__head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
-.panel__title { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
-.panel__hint { color: var(--muted); margin: 12px 0 0; }
+@import "tailwindcss";
+
+/*
+  Tailwind v4 auto-detects sources from the project root, but this panel is built by
+  crxjs, which rewrites HTML entries. Registering the source tree explicitly means a
+  class used only in index.html can never be tree-shaken away.
+*/
+@source "../**/*.{ts,tsx,html}";
 ```
+
+Dark mode needs no configuration: Tailwind v4's `dark:` variant follows
+`prefers-color-scheme` by default, and every colour class below ships a `dark:` pair.
 
 - [ ] **Step 7: Copy the fixtures in**
 
@@ -1195,7 +1196,7 @@ test('side panel document loads and the content script enumerates a fixture form
     const panel = await ext.context.newPage()
     await panel.goto(`chrome-extension://${ext.extensionId}/src/panel/index.html`)
     await expect(panel.locator('[data-jff-ready="1"]')).toBeVisible()
-    await expect(panel.locator('.panel__title')).toHaveText('job-form-filler')
+    await expect(panel.locator('[data-jff-title="1"]')).toHaveText('job-form-filler')
 
     // 2) the content script injects on demand into a real page and reports the form
     const target = await ext.context.newPage()
@@ -1245,10 +1246,19 @@ Expected: FAIL — the extension is not built yet / panel path 404s.
 npx playwright install chromium
 npm run build -w @jff/shared
 npm run build -w @jff/extension
+# Tailwind sanity: the emitted stylesheet must contain the utilities the panel uses.
+grep -rl "border-neutral-200" extension/dist/assets/*.css
 npx playwright test e2e/foundation.spec.ts
 ```
 
-Expected: PASS. If the panel URL 404s, read `extension/dist/manifest.json` and use the exact `side_panel.default_path` crxjs emitted in the spec's `panel.goto(...)` — crxjs rewrites HTML entry paths, and the spec must point at the emitted path, not the source path.
+Expected: the grep prints one CSS file, then the test PASSes.
+
+- If the grep finds nothing, Tailwind did not scan the panel sources: check that `tailwindcss()`
+  is in `vite.config.ts` BEFORE `crx()`, that `main.tsx` imports `./tailwind.css`, and that the
+  `@source` glob in `tailwind.css` resolves relative to that file.
+- If the panel URL 404s, read `extension/dist/manifest.json` and use the exact
+  `side_panel.default_path` crxjs emitted in the spec's `panel.goto(...)` — crxjs rewrites HTML
+  entry paths, and the spec must point at the emitted path, not the source path.
 
 - [ ] **Step 12: Add the root scripts**
 
@@ -6168,7 +6178,7 @@ handshake is covered by the MANUAL checklist in Task 23.
 
 **Files:**
 - Create: `extension/src/panel/port.ts`, `extension/src/panel/tabScope.ts`, `extension/src/panel/Banner.tsx`
-- Modify: `extension/src/panel/App.tsx`, `extension/src/panel/panel.css`
+- Modify: `extension/src/panel/App.tsx`
 - Test: `extension/src/panel/port.test.ts`, `extension/src/panel/tabScope.test.ts`
 - Test (browser): `e2e/panel-port.spec.ts`
 
@@ -6542,16 +6552,26 @@ Expected: PASS (6 tests).
 ```tsx
 import type { SelfCheck } from '@jff/shared'
 
+// One shared shape for all four banner states; only the colour pair changes.
+const BANNER_BASE = 'my-2.5 rounded-md border px-2.5 py-2'
+const BANNER_NEUTRAL = 'border-neutral-200 dark:border-neutral-700'
+const BANNER_GOOD = 'border-green-600/50 bg-green-600/10 dark:border-green-400/50'
+const BANNER_BAD = 'border-red-600/50 bg-red-600/10 dark:border-red-400/50'
+
 export function SelfCheckBanner({ check, error }: { check: SelfCheck | null; error: string | null }) {
   if (error !== null) {
     return (
-      <div className="banner banner--bad" role="status" data-jff-banner="error">
-        <strong>Host problem.</strong> {error}
+      <div className={`${BANNER_BASE} ${BANNER_BAD}`} role="status" data-jff-banner="error">
+        <strong className="font-semibold">Host problem.</strong> {error}
       </div>
     )
   }
   if (check === null) {
-    return <div className="banner" role="status" data-jff-banner="pending">Checking the local host…</div>
+    return (
+      <div className={`${BANNER_BASE} ${BANNER_NEUTRAL} text-neutral-500 dark:text-neutral-400`} role="status" data-jff-banner="pending">
+        Checking the local host…
+      </div>
+    )
   }
 
   const problems: string[] = []
@@ -6562,18 +6582,20 @@ export function SelfCheckBanner({ check, error }: { check: SelfCheck | null; err
 
   if (problems.length === 0) {
     return (
-      <div className="banner banner--good" role="status" data-jff-banner="ok">
+      <div className={`${BANNER_BASE} ${BANNER_GOOD}`} role="status" data-jff-banner="ok">
         Host ready. Node {check.node.version}, claude found, logged in.
       </div>
     )
   }
   return (
-    <div className="banner banner--bad" role="status" data-jff-banner="degraded">
-      <strong>Host not ready.</strong>
-      <ul className="banner__list">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
+    <div className={`${BANNER_BASE} ${BANNER_BAD}`} role="status" data-jff-banner="degraded">
+      <strong className="font-semibold">Host not ready.</strong>
+      <ul className="mt-1.5 list-disc pl-4">{problems.map((p) => <li className="my-0.5" key={p}>{p}</li>)}</ul>
     </div>
   )
 }
+
+export { BANNER_BASE, BANNER_BAD }
 ```
 
 `extension/src/panel/App.tsx` (replaces the Task 3 shell):
@@ -6614,13 +6636,15 @@ export function App() {
   }, [])
 
   return (
-    <main className="panel" data-jff-ready="1">
-      <header className="panel__head">
-        <h1 className="panel__title">job-form-filler</h1>
-        <span className="panel__tab" data-jff-tab={String(tabId ?? '')}>{tabId === null ? 'no tab' : `tab ${tabId}`}</span>
+    <main className="p-3" data-jff-ready="1">
+      <header className="flex items-center justify-between border-b border-neutral-200 pb-2 dark:border-neutral-700">
+        <h1 className="m-0 text-[13px] font-semibold tracking-wide" data-jff-title="1">job-form-filler</h1>
+        <span className="text-neutral-500 tabular-nums dark:text-neutral-400" data-jff-tab={String(tabId ?? '')}>
+          {tabId === null ? 'no tab' : `tab ${tabId}`}
+        </span>
       </header>
       <SelfCheckBanner check={check} error={hostError} />
-      <p className="panel__hint" data-jff-resets={String(resetCount)}>
+      <p className="mt-3 text-neutral-500 dark:text-neutral-400" data-jff-resets={String(resetCount)}>
         Open a job application, then press Scan.
       </p>
     </main>
@@ -6628,16 +6652,9 @@ export function App() {
 }
 ```
 
-Append to `extension/src/panel/panel.css`:
-
-```css
-.panel__tab { color: var(--muted); font-variant-numeric: tabular-nums; }
-.banner { margin: 10px 0; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); }
-.banner--good { border-color: #1f7a4d; background: color-mix(in srgb, #1f7a4d 10%, transparent); }
-.banner--bad { border-color: #a3262c; background: color-mix(in srgb, #a3262c 10%, transparent); }
-.banner__list { margin: 6px 0 0; padding-left: 18px; }
-.banner__list li { margin: 2px 0; }
-```
+No stylesheet changes: every rule above is a utility class, and `tailwind.css` already
+imports Tailwind. If a class does not appear in the built CSS, the `@source` directive in
+`tailwind.css` is not covering this file.
 
 - [ ] **Step 10: Write the failing browser smoke**
 
@@ -6656,7 +6673,7 @@ test('the panel connects through its port layer and renders a green self-check, 
     await panel.goto(`chrome-extension://${ext.extensionId}/src/panel/index.html?jffFakeHost=1`)
     await expect(panel.locator('[data-jff-banner="ok"]')).toBeVisible()
     await expect(panel.locator('[data-jff-banner="ok"]')).toContainText('Host ready')
-    await expect(panel.locator('.panel__tab')).toBeVisible()
+    await expect(panel.locator('[data-jff-tab]')).toBeVisible()
     expect(ext.consoleErrors).toEqual([])
   } finally {
     await ext.close()
@@ -6701,8 +6718,8 @@ git commit -m "feat(panel): native port layer with test seam, error-taxonomy cop
 ### Task 19: The review surface — grouped fields, source badges, inline editing, profile editor
 
 **Files:**
-- Create: `extension/src/panel/group.ts`, `extension/src/panel/FieldRow.tsx`, `extension/src/panel/ProfileEditor.tsx`
-- Modify: `extension/src/panel/App.tsx`, `extension/src/panel/panel.css`
+- Create: `extension/src/panel/group.ts`, `extension/src/panel/FieldRow.tsx`, `extension/src/panel/ProfileEditor.tsx`, `extension/src/panel/ui.ts`
+- Modify: `extension/src/panel/App.tsx`
 - Test: `extension/src/panel/group.test.ts`, `extension/src/panel/FieldRow.test.tsx`
 
 **Add the React testing library:**
@@ -6715,6 +6732,7 @@ npm i -D @testing-library/react @testing-library/user-event -w @jff/extension
 - Consumes: `EnumField`, `Resolution`, `ResolutionTier`, `FIELD_KEYS` from `@jff/shared`; `HostPort` (Task 18).
 - Produces:
   - `group.ts`: `type Row = { field: EnumField; resolution: Resolution; ref: string }`, `refOf(h)`, `groupRows(fields: EnumField[], resolutions: Resolution[]): Record<ResolutionTier, Row[]>`, `SOURCE_BADGE: Record<NonNullable<Resolution['source']>, string>`
+  - `ui.ts`: shared Tailwind class strings so the same widget never drifts between files — `BTN`, `BTN_PRIMARY`, `INPUT`, `TIER_ACCENT: Record<ResolutionTier, string>`
   - `FieldRow.tsx`: `<FieldRow row edited onEdit onAccept onGenerate generating />`
   - `ProfileEditor.tsx`: `<ProfileEditor values onSave />`
 
@@ -6929,12 +6947,50 @@ describe('FieldRow', () => {
 Run: `npx vitest run extension/src/panel/FieldRow.test.tsx`
 Expected: FAIL — `Cannot find module './FieldRow'`.
 
-- [ ] **Step 7: Implement FieldRow**
+- [ ] **Step 7a: Create the shared Tailwind class vocabulary**
+
+Three widgets (button, text input, tier accent) appear in four different files. Keeping their
+class strings in one module is the Tailwind equivalent of a component class, and it is why
+there is no hand-authored CSS anywhere in this project.
+
+`extension/src/panel/ui.ts`:
+
+```ts
+import type { ResolutionTier } from '@jff/shared'
+
+export const BTN =
+  'cursor-pointer rounded-md border border-neutral-300 bg-transparent px-2.5 py-1 text-[13px] ' +
+  'hover:border-blue-600 disabled:cursor-not-allowed disabled:opacity-50 ' +
+  'dark:border-neutral-600 dark:hover:border-blue-400'
+
+export const BTN_PRIMARY =
+  `${BTN} border-blue-600 font-semibold text-blue-700 dark:border-blue-400 dark:text-blue-300`
+
+export const INPUT =
+  'w-full rounded-md border border-neutral-300 bg-transparent px-1.5 py-1 text-[13px] ' +
+  'text-neutral-900 dark:border-neutral-600 dark:text-neutral-100'
+
+export const MUTED = 'text-neutral-500 dark:text-neutral-400'
+
+/** The 3px left rule that tells the four tiers apart at a glance. */
+export const TIER_ACCENT: Record<ResolutionTier, string> = {
+  auto: 'border-l-green-600 dark:border-l-green-400',
+  proposed: 'border-l-blue-600 dark:border-l-blue-400',
+  needs_input: 'border-l-amber-500 dark:border-l-amber-400',
+  skipped: 'border-l-neutral-300 opacity-60 dark:border-l-neutral-600',
+}
+
+export const ROW_BASE =
+  'rounded-lg border border-l-[3px] border-neutral-200 p-2 dark:border-neutral-700'
+```
+
+- [ ] **Step 7b: Implement FieldRow**
 
 `extension/src/panel/FieldRow.tsx`:
 
 ```tsx
 import { SOURCE_BADGE, type Row } from './group'
+import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT } from './ui'
 
 export interface FieldRowProps {
   row: Row
@@ -6949,44 +7005,49 @@ export function FieldRow({ row, edited, onEdit, onAccept, onGenerate, generating
   const { field, resolution, ref } = row
   const label = field.label ?? '(unlabelled field)'
   const value = edited ?? resolution.value ?? ''
+  const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
 
   if (resolution.tier === 'skipped') {
     return (
-      <li className="row row--skipped">
-        <div className="row__head"><span className="row__label">{label}</span></div>
-        <p className="row__note">Demographic question. Never auto-filled.</p>
+      <li className={rowClass}>
+        <div className="flex items-baseline gap-1.5"><span className="font-semibold">{label}</span></div>
+        <p className={`mt-1 text-[12px] ${MUTED}`}>Demographic question. Never auto-filled.</p>
       </li>
     )
   }
 
   return (
-    <li className={`row row--${resolution.tier}`}>
-      <div className="row__head">
-        <label className="row__label" htmlFor={`f-${ref}`}>{label}</label>
-        {field.required && <span className="row__req" title="required">*</span>}
-        {resolution.source !== null && <span className="row__badge">{SOURCE_BADGE[resolution.source]}</span>}
+    <li className={rowClass}>
+      <div className="flex items-baseline gap-1.5">
+        <label className="font-semibold" htmlFor={`f-${ref}`}>{label}</label>
+        {field.required && <span className="text-red-600 dark:text-red-400" title="required">*</span>}
+        {resolution.source !== null && (
+          <span className={`ml-auto rounded-full border border-neutral-200 px-1.5 text-[11px] dark:border-neutral-700 ${MUTED}`}>
+            {SOURCE_BADGE[resolution.source]}
+          </span>
+        )}
       </div>
 
       <textarea
         id={`f-${ref}`}
-        className="row__input"
+        className={`${INPUT} mt-1.5 resize-y`}
         rows={value.length > 90 ? 4 : 1}
         value={value}
         onChange={(e) => onEdit(ref, e.target.value)}
       />
 
-      {field.options.length > 0 && <p className="row__options">{field.options.join(', ')}</p>}
+      {field.options.length > 0 && <p className={`mt-1 text-[12px] ${MUTED}`}>{field.options.join(', ')}</p>}
 
-      <div className="row__actions">
+      <div className="mt-1.5 flex items-center gap-2">
         {resolution.tier === 'proposed' && (
-          <button type="button" className="btn btn--primary" onClick={() => onAccept(ref)}>Accept</button>
+          <button type="button" className={BTN_PRIMARY} onClick={() => onAccept(ref)}>Accept</button>
         )}
         {resolution.tier === 'needs_input' && (
-          <button type="button" className="btn" disabled={generating} onClick={() => onGenerate(ref)}>
+          <button type="button" className={BTN} disabled={generating} onClick={() => onGenerate(ref)}>
             {generating ? 'Drafting…' : 'Generate with AI'}
           </button>
         )}
-        <span className="row__reason" title={resolution.reason}>{resolution.reason}</span>
+        <span className={`ml-auto font-mono text-[11px] ${MUTED}`} title={resolution.reason}>{resolution.reason}</span>
       </div>
     </li>
   )
@@ -6996,7 +7057,8 @@ export function FieldRow({ row, edited, onEdit, onAccept, onGenerate, generating
 - [ ] **Step 8: Run the FieldRow test to verify it passes**
 
 Run: `npx vitest run extension/src/panel/FieldRow.test.tsx`
-Expected: PASS (9 tests).
+Expected: PASS (9 tests). The tests query by role, label and title, never by class name, so
+they are unaffected by the utility-class markup.
 
 - [ ] **Step 9: Implement the profile editor**
 
@@ -7005,6 +7067,7 @@ Expected: PASS (9 tests).
 ```tsx
 import { useState } from 'react'
 import { ANSWER_BANK_KEYS, PROFILE_KEYS } from '@jff/shared'
+import { BTN_PRIMARY, INPUT, MUTED } from './ui'
 
 const LABELS: Record<string, string> = {
   firstName: 'First name', lastName: 'Last name', fullName: 'Full name',
@@ -7033,16 +7096,16 @@ export function ProfileEditor({
   }
 
   return (
-    <section className="editor" data-jff-editor="1">
-      <h2 className="editor__title">Your facts</h2>
-      <p className="editor__hint">These are the only values the tool will ever put on a page.</p>
+    <section className="mt-3" data-jff-editor="1">
+      <h2 className="mb-0.5 text-[13px] font-semibold">Your facts</h2>
+      <p className={`mb-2.5 ${MUTED}`}>These are the only values the tool will ever put on a page.</p>
       {[...PROFILE_KEYS, ...ANSWER_BANK_KEYS].map((k) => (
-        <div className="editor__field" key={k}>
-          <label className="editor__label" htmlFor={`p-${k}`}>{LABELS[k] ?? k}</label>
-          <input id={`p-${k}`} className="editor__input" value={draft[k] ?? ''} onChange={(e) => set(k, e.target.value)} />
+        <div className="mb-2 grid gap-0.5" key={k}>
+          <label className={`text-[12px] ${MUTED}`} htmlFor={`p-${k}`}>{LABELS[k] ?? k}</label>
+          <input id={`p-${k}`} className={INPUT} value={draft[k] ?? ''} onChange={(e) => set(k, e.target.value)} />
         </div>
       ))}
-      <button type="button" className="btn btn--primary" onClick={submit}>Save facts</button>
+      <button type="button" className={BTN_PRIMARY} onClick={submit}>Save facts</button>
     </section>
   )
 }
@@ -7073,36 +7136,36 @@ until then by passing `disabled={tabId === null}`):
 
 ```tsx
       {activeCaptcha && (
-        <div className="banner banner--bad" role="status" data-jff-captcha="1">
+        <div className={`${BANNER_BASE} ${BANNER_BAD}`} role="status" data-jff-captcha="1">
           A CAPTCHA challenge is active on this page. Solve it yourself; the extension will not touch it.
         </div>
       )}
       {unreachable > 0 && (
-        <p className="panel__hint">{unreachable} widget(s) use closed shadow roots and cannot be read. Fill those by hand.</p>
+        <p className={`mt-3 ${MUTED}`}>{unreachable} widget(s) use closed shadow roots and cannot be read. Fill those by hand.</p>
       )}
 
-      <div className="panel__actions">
-        <button type="button" className="btn btn--primary" disabled={tabId === null} onClick={onScan}>Scan</button>
-        <button type="button" className="btn" onClick={() => setShowEditor((s) => !s)}>
+      <div className="my-2.5 flex items-center gap-2" data-jff-actions="1">
+        <button type="button" className={BTN_PRIMARY} disabled={tabId === null} onClick={onScan}>Scan</button>
+        <button type="button" className={BTN} onClick={() => setShowEditor((s) => !s)}>
           {showEditor ? 'Back to fields' : 'Edit your facts'}
         </button>
       </div>
 
-      <label className="panel__paste">
+      <label className={`my-2.5 block ${MUTED}`} data-jff-paste="1">
         Job description (paste here if the scan could not find it)
-        <textarea className="panel__pastebox" rows={4} value={jobText} onChange={(e) => setJobText(e.target.value)} />
+        <textarea className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} onChange={(e) => setJobText(e.target.value)} />
       </label>
 
       {showEditor
         ? <ProfileEditor values={facts} onSave={onSaveFacts} />
         : (['needs_input', 'proposed', 'auto', 'skipped'] as const).map((tier) => (
             groups[tier].length === 0 ? null : (
-              <section className="group" key={tier} data-jff-group={tier}>
-                <h2 className="group__title">
+              <section className="mt-4" key={tier} data-jff-group={tier}>
+                <h2 className={`m-0 mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest ${MUTED}`}>
                   {tier === 'needs_input' ? 'Needs input' : tier === 'proposed' ? 'Proposed' : tier === 'auto' ? 'Filled' : 'Skipped'}
-                  <span className="group__count">{groups[tier].length}</span>
+                  <span className="rounded-full bg-neutral-200 px-1.5 text-[11px] dark:bg-neutral-700">{groups[tier].length}</span>
                 </h2>
-                <ul className="group__list">
+                <ul className="m-0 grid list-none gap-2 p-0">
                   {groups[tier].map((row) => (
                     <FieldRow
                       key={row.ref} row={row} edited={edits[row.ref] ?? null}
@@ -7157,39 +7220,17 @@ Add the remaining handlers:
   }
 ```
 
-Append the styles to `panel.css`:
+Extend the App imports to cover the shared class strings and the banner constants:
 
-```css
-.panel__actions { display: flex; gap: 8px; margin: 10px 0; }
-.panel__paste { display: block; color: var(--muted); margin: 10px 0; }
-.panel__pastebox { width: 100%; margin-top: 4px; font: inherit; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
-.btn { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
-.btn:hover:not(:disabled) { border-color: var(--accent); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn--primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.group { margin-top: 16px; }
-.group__title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); display: flex; gap: 6px; align-items: center; margin: 0 0 6px; }
-.group__count { background: var(--line); border-radius: 10px; padding: 0 6px; font-size: 11px; }
-.group__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.row { border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
-.row--needs_input { border-left: 3px solid #c2820b; }
-.row--proposed { border-left: 3px solid var(--accent); }
-.row--auto { border-left: 3px solid #1f7a4d; }
-.row--skipped { opacity: 0.65; }
-.row__head { display: flex; align-items: baseline; gap: 6px; }
-.row__label { font-weight: 600; }
-.row__req { color: #a3262c; }
-.row__badge { margin-left: auto; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 0 6px; }
-.row__input { width: 100%; margin-top: 6px; font: inherit; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); resize: vertical; }
-.row__options, .row__note { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
-.row__actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.row__reason { margin-left: auto; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
-.editor__title { font-size: 13px; margin: 12px 0 2px; }
-.editor__hint { color: var(--muted); margin: 0 0 10px; }
-.editor__field { display: grid; gap: 2px; margin-bottom: 8px; }
-.editor__label { color: var(--muted); font-size: 12px; }
-.editor__input { font: inherit; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
+```tsx
+import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
+import { FieldRow } from './FieldRow'
+import { groupRows, refOf } from './group'
+import { ProfileEditor } from './ProfileEditor'
+import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
 ```
+
+No stylesheet to append: `tailwind.css` from Task 3 is still the only CSS file in the project.
 
 - [ ] **Step 11: Typecheck, run all unit tests, rebuild, re-run both smokes**
 
@@ -7848,12 +7889,17 @@ Add to `extension/src/panel/App.tsx`:
   }
 ```
 
-and this markup right under `.panel__actions`:
+and this markup right under the `[data-jff-actions="1"]` div:
 
 ```tsx
-      <label className="panel__resume">
+      <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
         Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}
-        <input type="file" accept=".pdf,.doc,.docx,.txt,.rtf" onChange={onPickResume} />
+        <input
+          type="file"
+          accept=".pdf,.doc,.docx,.txt,.rtf"
+          onChange={onPickResume}
+          className="mt-1 block w-full text-[12px] file:mr-2 file:cursor-pointer file:rounded-md file:border file:border-neutral-300 file:bg-transparent file:px-2 file:py-1 file:text-[12px] file:text-inherit dark:file:border-neutral-600"
+        />
       </label>
 ```
 
@@ -8148,31 +8194,28 @@ Add to `extension/src/panel/App.tsx`:
 and this markup at the end of the panel, above the closing `</main>`:
 
 ```tsx
-      <div className="panel__actions">
-        <button type="button" className="btn btn--primary" onClick={onSaveAnswers}>Save answers</button>
-        {saveMsg !== null && <span className="panel__savemsg" data-jff-savemsg="1">{saveMsg}</span>}
+      <div className="my-2.5 flex items-center gap-2">
+        <button type="button" className={BTN_PRIMARY} onClick={onSaveAnswers}>Save answers</button>
+        {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
       </div>
 ```
 
-Append to `panel.css`:
-
-```css
-.panel__resume { display: block; color: var(--muted); margin: 8px 0; }
-.panel__savemsg { color: var(--muted); }
-```
+No stylesheet changes: `tailwind.css` is still the only CSS file in the project.
 
 Also add the reusability confirmation: render each save item with a `reusable` / `company specific`
 toggle before sending. Add above the Save button:
 
 ```tsx
       {Object.keys(edits).length > 0 && (
-        <details className="panel__savepreview">
-          <summary>Answers to save ({buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: null }).length})</summary>
-          <ul className="group__list">
+        <details className="mt-3" data-jff-savepreview="1">
+          <summary className={`cursor-pointer ${MUTED}`}>
+            Answers to save ({buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: null }).length})
+          </summary>
+          <ul className="m-0 mt-2 grid list-none gap-2 p-0">
             {buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: null }).map((it) => (
-              <li className="row" key={refOf(it.handle)}>
-                <div className="row__head"><span className="row__label">{it.questionRaw}</span></div>
-                <label className="row__options">
+              <li className={`${ROW_BASE} border-l-neutral-300 dark:border-l-neutral-600`} key={refOf(it.handle)}>
+                <div className="flex items-baseline gap-1.5"><span className="font-semibold">{it.questionRaw}</span></div>
+                <label className={`mt-1 block text-[12px] ${MUTED}`}>
                   <input
                     type="checkbox"
                     checked={(reuseOverrides[refOf(it.handle)] ?? it.reusability) === 'company_specific'}
@@ -8187,7 +8230,7 @@ toggle before sending. Add above the Save button:
       )}
 ```
 
-with `const [reuseOverrides, setReuseOverrides] = useState<Record<string, 'reusable' | 'company_specific'>>({})`,
+with `import { BTN_PRIMARY, MUTED, ROW_BASE } from './ui'`, `const [reuseOverrides, setReuseOverrides] = useState<Record<string, 'reusable' | 'company_specific'>>({})`,
 and apply the overrides in `onSaveAnswers`:
 
 ```tsx
@@ -8656,7 +8699,7 @@ applied. Commit it.
 | 16 | Review surface: Filled / Proposed / Needs input / Skipped with source badges (Components 2) | 19 | `group.test.ts` "puts every field in exactly one bucket"; `SOURCE_BADGE` test; `FieldRow.test.tsx` "shows the label, the value and the source badge" |
 | 17 | Inline editing (Components 2) | 19 | `FieldRow.test.tsx` "emits an edit as the user types", "prefers the local edit over the resolved value" |
 | 18 | Explicit Scan / Re-scan + auto-scan on panel open (Components 2) | 19, 20 | Task 19 Scan button; Task 20 Step 9 auto-scan effect; `e2e/full-loop.spec.ts` clicks Scan |
-| 19 | Manual paste box for the job description (Components 2) | 19, 20 | Task 19 `.panel__paste` markup; `scan.test.ts` "prefers pasted job text over scraping and never asks the page for it" |
+| 19 | Manual paste box for the job description (Components 2) | 19, 20 | Task 19 `[data-jff-paste]` markup; `scan.test.ts` "prefers pasted job text over scraping and never asks the page for it" |
 | 20 | "Save answers" action (Components 2) | 21 | `save.test.ts` (12 tests); `e2e/full-loop.spec.ts` asserts rows in SQLite |
 | 21 | Resume manager: Blob in IndexedDB, handed to the content script, never over native messaging (Components 2) | 20 | `resume.test.ts` round-trip tests; `JFF_FILL_RESUME` carries base64 over runtime messaging only; no host method accepts a file (`HostRequestSchema`, Task 2) |
 | 22 | Host self-check shown on connect (Components 2) | 11, 18 | `selfcheck.test.ts` (6 tests); `port.test.ts`; `e2e/panel-port.spec.ts` "renders a green self-check" |
