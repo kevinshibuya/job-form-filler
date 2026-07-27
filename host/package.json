@@ -1,0 +1,13 @@
+{
+  "name": "@jff/host",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -b", "install-host": "node scripts/install.mjs" },
+  "dependencies": {
+    "@jff/shared": "*",
+    "better-sqlite3": "^11.5.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": { "@types/better-sqlite3": "^7.6.11" }
+}
