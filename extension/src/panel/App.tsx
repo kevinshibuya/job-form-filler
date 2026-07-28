@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, Resolution, SelfCheck } from '@jff/shared'
-import { SNAPSHOT_KEY_RE } from '../snapshotKey'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
@@ -9,42 +8,42 @@ import { createHostPort, ERROR_COPY, type HostPort } from './port'
 import { ProfileEditor } from './ProfileEditor'
 import { loadResume, saveResume } from './resume'
 import { runScan, type FrameReply } from './scan'
+import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createTabScope } from './tabScope'
-import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
+import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
+import { SNAPSHOT_KEY_RE } from '../snapshotKey'
 
 export function App() {
   const portRef = useRef<HostPort | null>(null)
+  // Seeded from the clock, not 0: storage.session snapshot rows outlive a panel
+  // instance, so a fresh panel restarting at 1 on the same tab could merge a
+  // PREVIOUS application's snapshot into this one's save.
+  const epochRef = useRef(Date.now())
+  // Ignore-while-running guard: the mount auto-scan and a Scan click must not
+  // produce two overlapping runScans racing each other's epoch.
+  const scanningRef = useRef(false)
   const [check, setCheck] = useState<SelfCheck | null>(null)
   const [hostError, setHostError] = useState<string | null>(null)
   const [tabId, setTabId] = useState<number | null>(null)
-  // Bumped ONLY when the bound tab navigated. Task 20 Step 9 makes this the
-  // re-scan trigger; a tab switch or close must clear state without re-scanning.
-  const [scanNonce, setScanNonce] = useState(0)
   const [resetCount, setResetCount] = useState(0)
+  const [scanNonce, setScanNonce] = useState(0)
   const [fields, setFields] = useState<EnumField[]>([])
   const [resolutions, setResolutions] = useState<Resolution[]>([])
   const [edits, setEdits] = useState<Record<string, string>>({})
-  const [generatingRef, setGeneratingRef] = useState<string | null>(null)
+  const [generatedRefs, setGeneratedRefs] = useState<readonly string[]>([])
   const [filledRefs, setFilledRefs] = useState<readonly string[]>([])
+  const [generatingRef, setGeneratingRef] = useState<string | null>(null)
   const [jobText, setJobText] = useState('')
   const [company, setCompany] = useState('')
   const [unreachable, setUnreachable] = useState(0)
   const [activeCaptcha, setActiveCaptcha] = useState(false)
   const [showEditor, setShowEditor] = useState(false)
   const [facts, setFacts] = useState<Record<string, string>>({})
-  // The editor must not be savable before profile.get/answerBank.get answer: the
-  // host DELETES a key written as '' (Task 5 writeKv).
   const [factsLoaded, setFactsLoaded] = useState(false)
   const [resumeName, setResumeName] = useState<string | null>(null)
-  // Seeded from the clock, not 0. storage.session snapshot rows outlive a panel
-  // instance, so a fresh panel restarting at epoch 1 on the same tab would happily
-  // merge a PREVIOUS application's snapshot into this application's save, attributing
-  // old answers to new fids. A per-session base makes that collision impossible.
-  const epochRef = useRef(Date.now())
-  // Ignore-while-running. The panel auto-scans on open, and the user can also press
-  // Scan; two overlapping runScans race, and the loser's fills land under a stale
-  // epoch and are rejected, leaving fields half-filled nondeterministically.
-  const scanningRef = useRef(false)
+  const [snapshot, setSnapshot] = useState<Record<string, string>>({})
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  const [reuseOverrides, setReuseOverrides] = useState<Record<string, 'reusable' | 'company_specific'>>({})
 
   const groups = groupRows(fields, resolutions)
   const companyOrNull = company.trim() === '' ? null : company.trim()
@@ -62,19 +61,22 @@ export function App() {
     return () => port.disconnect()
   }, [])
 
-  /** Everything a scan produced. Cleared on ANY tab-scope reset; only a navigation
-   *  additionally re-scans. All the setters are stable, so closing over this once
-   *  from the bind effect is safe. */
+  /** Everything a scan produced. Cleared on ANY tab-scope reset. All setters are
+   *  stable, so the bind effect below may close over this once. */
   const resetScanState = (): void => {
-    setFields([]); setResolutions([]); setEdits({}); setFilledRefs([])
-    setUnreachable(0); setActiveCaptcha(false); setJobText('')
+    setFields([]); setResolutions([]); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
+    setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
+    setReuseOverrides({})
   }
 
   useEffect(() => {
     let stop: (() => void) | null = null
-    // Unmounting before tabs.query resolves would otherwise register listeners
-    // that nothing ever removes.
+    // Unmounting before tabs.query resolves would otherwise leak listeners that
+    // nothing ever removes.
     let cancelled = false
+    // ?tabId= lets the e2e smoke drive the panel as an ordinary page; the real
+    // side panel binds to the active tab.
+    const override = new URLSearchParams(location.search).get('tabId')
     const bind = (id: number | null): void => {
       if (cancelled) return
       setTabId(id)
@@ -82,21 +84,20 @@ export function App() {
       stop = createTabScope(id, (reason) => {
         setResetCount((n) => n + 1)
         resetScanState()
-        // Only a navigation is a new page. Re-scanning on every tab ACTIVATION would
-        // spend one batched `claude -p` resolve per tab switch, and on a tab CLOSE the
-        // scan would run against a tab that no longer exists.
+        // Clearing and re-scanning are different decisions. Re-scanning on every
+        // tab ACTIVATION would spend one batched `claude -p` resolve per tab
+        // switch; on a tab CLOSE it would scan a tab that no longer exists.
         if (reason === 'navigated') setScanNonce((n) => n + 1)
       })
     }
-    void chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => bind(tabs[0]?.id ?? null))
+    if (override !== null) bind(Number(override))
+    else void chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => bind(tabs[0]?.id ?? null))
     return () => { cancelled = true; if (stop !== null) stop() }
   }, [])
 
   useEffect(() => { void loadResume().then((r) => setResumeName(r?.name ?? null)) }, [])
 
-  // Pre-fill the facts editor from the host. `factsLoaded` is what unlocks Save in
-  // the ProfileEditor, so the editor is inert until this resolves. Task 20 Step 9
-  // lists this same effect: it is ALREADY HERE, so do not add a second copy.
+  // Pre-fill the facts editor from the host once the self-check answered.
   useEffect(() => {
     const port = portRef.current
     if (port === null) return
@@ -109,35 +110,54 @@ export function App() {
     })
   }, [check])
 
-  /* --------------------------------------------------------------- actions */
+  // Snapshot pushes arrive stamped by the SERVICE WORKER with the sender's
+  // tabId/frameId (the content script can know neither). Stale epochs are
+  // rejected: handles from an old scan must never leak into a save.
+  useEffect(() => {
+    const onMsg = (raw: unknown): void => {
+      const m = raw as { kind?: string; tabId?: number; frameId?: number; snap?: { epoch: number; values: Record<number, string> } }
+      if (m?.kind !== 'snapshotPush' || m.snap === undefined || m.tabId !== tabId) return
+      if (m.snap.epoch !== epochRef.current) return
+      const frameId = m.frameId ?? 0
+      const values = m.snap.values
+      setSnapshot((s) => {
+        const next = { ...s }
+        for (const [fid, v] of Object.entries(values)) next[`${frameId}:${fid}`] = v
+        return next
+      })
+    }
+    chrome.runtime.onMessage.addListener(onMsg)
+    return () => chrome.runtime.onMessage.removeListener(onMsg)
+  }, [tabId])
 
-  const onEdit = (ref: string, value: string): void => setEdits((e) => ({ ...e, [ref]: value }))
+  /* --------------------------------------------------------------- actions */
 
   const sendToTab = async (frameId: number | undefined, message: ContentMessage): Promise<FrameReply[]> => {
     const res = await chrome.runtime.sendMessage({ kind: 'toContent', tabId, frameId, message })
     return (res as { replies?: FrameReply[] }).replies ?? []
   }
 
-  /** chrome.tabs.get REJECTS once the bound tab is gone. Every caller here runs
-   *  from an event the user does not control, so a raw call is an unhandled
-   *  rejection waiting for a tab close. */
+  /** chrome.tabs.get REJECTS once the bound tab is gone; every caller here runs
+   *  from an event the user does not control. */
   const getTab = async (): Promise<chrome.tabs.Tab | null> => {
     if (tabId === null) return null
     try { return await chrome.tabs.get(tabId) } catch { return null }
   }
 
+  const onEdit = (ref: string, value: string): void => setEdits((e) => ({ ...e, [ref]: value }))
+
   const onScan = async (): Promise<void> => {
     const port = portRef.current
     if (port === null || tabId === null || scanningRef.current) return
     const tab = await getTab()
-    if (tab === null) return // tab closed between the trigger and here
+    if (tab === null) return // the tab closed between the trigger and here
     scanningRef.current = true
     try {
       // A previous application on this same tab may have left snapshot rows in
-      // storage.session. They must never merge into this scan's save.
-      const keys = Object.keys(await chrome.storage.session.get(null))
+      // storage.session; they must never merge into this scan's save.
+      const staleKeys = Object.keys(await chrome.storage.session.get(null))
         .filter((k) => { const m = SNAPSHOT_KEY_RE.exec(k); return m !== null && Number(m[1]) === tabId })
-      if (keys.length > 0) await chrome.storage.session.remove(keys)
+      if (staleKeys.length > 0) await chrome.storage.session.remove(staleKeys)
 
       const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
       // Company: the user's edit always wins; guess only while the field is empty.
@@ -163,7 +183,9 @@ export function App() {
       setUnreachable(out.unreachableWidgets)
       setActiveCaptcha(out.activeCaptcha)
       setEdits({})
+      setGeneratedRefs([])
       setFilledRefs([])
+      setSnapshot({})
       if (out.jobText !== '') setJobText(out.jobText)
       if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
     } finally {
@@ -171,36 +193,13 @@ export function App() {
     }
   }
 
-  const onPickJobText = async (): Promise<void> => {
-    // Spec's element picker: the user clicks the element holding the job text;
-    // the selector is learned per hostname so future scans find it directly.
-    // The content script always replies (click, Escape or timeout, Task 17 Step 5).
-    if (tabId === null || fields.length === 0) return
-    const replies = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
-    const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
-    if (p?.ok !== true || p.pick === undefined) return // cancelled or timed out
-    setJobText(p.pick.text)
-    const tab = await getTab()
-    const hostname = tab?.url === undefined ? '' : new URL(tab.url).hostname
-    if (hostname !== '') {
-      await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
-    }
-  }
-
-  const onPickResume = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
-    const file = e.target.files?.[0]
-    if (file === undefined) return
-    await saveResume(file)
-    setResumeName(file.name)
-  }
-
-  // Auto-scan on open and after the bound tab navigates (a wizard step is new DOM).
-  // `resetScanState` has already cleared jobText, so this scan can never feed the
-  // PREVIOUS page's job description to resolve.
+  // Auto-scan on open and after the bound tab NAVIGATES (a wizard step is new DOM).
+  // Deliberately NOT keyed on resetCount: a tab switch or close clears state
+  // without spending another batched `claude -p` resolve.
   useEffect(() => { if (tabId !== null) void onScan() }, [tabId, scanNonce])
 
-  /** Put one value on the page. Shared by Accept and Fill; the difference between
-   *  them is what they additionally CONFIRM, which is why this is not a component. */
+  /** Put one value on the page. Shared by Accept and Fill; what they additionally
+   *  CONFIRM is the only difference between them. */
   const fillOne = async (row: Row, value: string): Promise<void> => {
     if (tabId === null || value === '') return
     await chrome.runtime.sendMessage({
@@ -215,22 +214,20 @@ export function App() {
     const value = edits[ref] ?? row.resolution.value ?? ''
     if (value === '') return
     await fillOne(row, value)
-    // Accepting an AI key match IS the user confirmation the spec's learned_mappings
-    // flow needs: promote this label to a deterministic mapping.
+    // Accepting an AI key match IS the user confirmation the spec's
+    // learned_mappings flow needs: promote it to a deterministic mapping.
     if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
       void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
     }
-    // Promote the TIER only. Overwriting resolution.value with the accepted value
-    // would make engine === final in buildSaveItems (Task 21) and silently discard
-    // every correction the user made to a proposed answer, which is the learning
-    // loop's whole point. The edit stays in `edits`, which is exactly where the
-    // save diff looks for it.
+    // Promote the TIER only. Writing `value` back onto the resolution would make
+    // engine === final in buildSaveItems and silently drop every user correction
+    // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
     setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)))
   }
 
-  /** The spec's loop ends in a FILL: generate, edit, then put it on the page.
-   *  Needs-input rows are never auto-filled and have no mapping to confirm, so this
-   *  deliberately does neither mapping.confirm nor a tier promotion. */
+  /** Closes the spec's [Generate] loop: draft, edit, then put it on the page.
+   *  Unlike Accept this confirms no mapping and promotes no tier — a needs-input
+   *  row has no LLM-proposed key, only an answer the user wrote. */
   const onFill = async (ref: string): Promise<void> => {
     const row = groups.needs_input.find((r) => r.ref === ref)
     if (row === undefined) return
@@ -252,8 +249,33 @@ export function App() {
       company: companyOrNull,
     })
     setGeneratingRef(null)
-    if (r.ok) setEdits((e) => ({ ...e, [ref]: r.result.draft }))
-    else setHostError(ERROR_COPY[r.error.kind])
+    if (r.ok) {
+      setEdits((e) => ({ ...e, [ref]: r.result.draft }))
+      setGeneratedRefs((g) => (g.includes(ref) ? g : [...g, ref]))
+    } else {
+      setHostError(ERROR_COPY[r.error.kind])
+    }
+  }
+
+  const onPickJobText = async (): Promise<void> => {
+    if (tabId === null || fields.length === 0) return
+    // Always settles: click, Escape (pick_cancelled) or timeout (Task 17 Step 5).
+    const replies = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
+    const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
+    if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
+    setJobText(p.pick.text)
+    const tab = await getTab()
+    const hostname = tab?.url === undefined ? '' : new URL(tab.url).hostname
+    if (hostname !== '') {
+      await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
+    }
+  }
+
+  const onPickResume = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0]
+    if (file === undefined) return
+    await saveResume(file)
+    setResumeName(file.name)
   }
 
   const onSaveFacts = async (profile: Record<string, string>, bank: Record<string, string>): Promise<void> => {
@@ -261,13 +283,43 @@ export function App() {
     if (port === null) return
     await port.request('profile.set', { values: profile })
     await port.request('answerBank.set', { values: bank })
-    // Merge, never replace: the editor omits keys it never loaded, so replacing
-    // would drop them from the panel's own view of the facts.
+    // Merge, never replace: the editor omits keys it never loaded (Task 19 Step 9b).
     setFacts((f) => ({ ...f, ...profile, ...bank }))
     setShowEditor(false)
   }
 
+  const onSaveAnswers = async (): Promise<void> => {
+    const port = portRef.current
+    if (port === null || tabId === null) return
+    // Merge every snapshot source: SW-stamped pushes (state), the storage.session
+    // fallback (durable across a beforeunload race), and a fresh on-demand pull
+    // (returns {} if the form was already torn down; the pushes covered that).
+    const stored = await chrome.storage.session.get(null) as Record<string, StoredSnapshot>
+    const live: Record<string, string> = {
+      ...snapshot,
+      // Tab- and epoch-filtered in save.ts, where the rejection rules are tested.
+      ...mergeStoredSnapshots(stored, tabId, epochRef.current),
+    }
+    for (const r of await sendToTab(undefined, { type: 'JFF_SNAPSHOT', epoch: epochRef.current })) {
+      const p = r.payload as { ok: boolean; snapshot?: { values: Record<string, string> } }
+      if (p?.ok !== true || p.snapshot === undefined) continue
+      for (const [fid, v] of Object.entries(p.snapshot.values)) live[`${r.frameId}:${fid}`] = v
+    }
+    const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull })
+      .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
+    const tab = await getTab()
+    const r = await port.request<{ saved: number }>('save', {
+      url: tab?.url ?? '',
+      company: companyOrNull,
+      items,
+      generatedCount: generatedRefs.length,
+    })
+    setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : ERROR_COPY[r.error.kind])
+  }
+
   /* ---------------------------------------------------------------- markup */
+
+  const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull })
 
   return (
     // The two counters are debug surface, not decoration: they are how a browser
@@ -329,7 +381,7 @@ export function App() {
       {showEditor
         ? (
             // `key` remounts the editor the instant the facts arrive, so an editor
-            // opened during the load never stays stuck on an empty snapshot.
+            // opened during the load is never stuck on an empty snapshot.
             <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} />
           )
         : (['needs_input', 'proposed', 'auto', 'skipped'] as const).map((tier) => (
@@ -352,6 +404,32 @@ export function App() {
               </section>
             )
           ))}
+
+      {saveItems.length > 0 && (
+        <details className="mt-3" data-jff-savepreview="1">
+          <summary className={`cursor-pointer ${MUTED}`}>Answers to save ({saveItems.length})</summary>
+          <ul className="m-0 mt-2 grid list-none gap-2 p-0">
+            {saveItems.map((it) => (
+              <li className={`${ROW_BASE} border-l-neutral-300 dark:border-l-neutral-600`} key={refOf(it.handle)}>
+                <div className="flex items-baseline gap-1.5"><span className="font-semibold">{it.questionRaw}</span></div>
+                <label className={`mt-1 block text-[12px] ${MUTED}`}>
+                  <input
+                    type="checkbox"
+                    checked={(reuseOverrides[refOf(it.handle)] ?? it.reusability) === 'company_specific'}
+                    onChange={(e) => setReuseOverrides((o) => ({ ...o, [refOf(it.handle)]: e.target.checked ? 'company_specific' : 'reusable' }))}
+                  />
+                  {' '}Specific to this company (never reused verbatim)
+                </label>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <div className="my-2.5 flex items-center gap-2">
+        <button type="button" className={BTN_PRIMARY} onClick={onSaveAnswers}>Save answers</button>
+        {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
+      </div>
     </main>
   )
 }
