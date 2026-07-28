@@ -1,7 +1,10 @@
+import { DEMOGRAPHIC_RE } from './dom'
 import { defaultMeasure, type MeasureFn } from './enumerate'
 
-export const DEMOGRAPHIC_RE =
-  /eeo|equal employment|demographic|voluntary self|self-identif|veteran status|disability status|race\s*\/?\s*ethnicity|gender identity|autodeclara|raça|etnia|deficiência/i
+// DEMOGRAPHIC_RE now lives in dom.ts (the leaf of the content-layer import
+// graph) so the label heuristics can use it without a cycle. Re-exported here so
+// every existing `from './classify'` import keeps resolving.
+export { DEMOGRAPHIC_RE } from './dom'
 
 const MAX_LEVELS = 5
 
