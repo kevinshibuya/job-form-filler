@@ -315,3 +315,69 @@ export function optionLabelOf(el: Element): string {
   if (aria !== '') return aria
   return clean(el.getAttribute('value'))
 }
+
+/**
+ * A2: Ashby renders requiredness as a literal '*' in the label's raw text or as
+ * a CSS-module class token (`_required_f7cvd_91`). Both live on the BINDING
+ * element — clean() strips a trailing '*' from the returned text, which is why
+ * the binding carries the element. Class-token matching survives CSS-module
+ * hashing by convention, like classify.ts's regexes (accepted risk).
+ */
+export function requiredFromBinding(binding: LabelBinding): boolean {
+  if (binding.element === null) return false
+  if ((binding.element.textContent ?? '').includes('*')) return true
+  const klass = binding.element.getAttribute('class') ?? ''
+  return klass.split(/\s+/).some((token) =>
+    /(^|[-_])required/i.test(token) && !/not[-_]?required/i.test(token))
+}
+
+export const DESCRIPTION_MAX_CHARS = 500
+
+const DESCRIPTION_CLASS_RE = /description|help|hint/i
+const DESCRIPTION_REJECT_RE = /error|invalid|validation/i
+
+function normalizeText(s: string | null | undefined): string {
+  return (s ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/** A candidate block is a description only if it is pure text-bearing: no form
+ *  control anywhere in its subtree, no error/validation class. */
+function isDescriptionCandidate(node: Element): boolean {
+  if (DESCRIPTION_REJECT_RE.test(node.getAttribute('class') ?? '')) return false
+  for (const d of Array.from(node.querySelectorAll('*'))) {
+    if (kindOf(d) !== null) return false
+  }
+  return true
+}
+
+/**
+ * A4: wrapper-scoped description capture. aria-describedby targets first; else
+ * class-token blocks (/description|help|hint/i) anywhere inside the binding
+ * element's parent wrapper — the dump shows both control-sibling and
+ * control-uncle positions. Value is whitespace-normalized textContent only:
+ * markup and hrefs are discarded by construction. Capped at 500 chars.
+ */
+export function descriptionFor(el: Element, binding: LabelBinding): string | null {
+  const scope = scopeOf(el)
+
+  const describedBy = el.getAttribute('aria-describedby')
+  if (describedBy !== null) {
+    const text = normalizeText(describedBy.split(/\s+/)
+      .map((id) => scope.querySelector(`[id="${escapeId(id)}"]`))
+      .filter((n): n is Element => n !== null && isDescriptionCandidate(n))
+      .map((n) => n.textContent ?? '')
+      .join(' '))
+    if (text !== '') return text.slice(0, DESCRIPTION_MAX_CHARS)
+  }
+
+  const wrapper = binding.element?.parentElement ?? null
+  if (wrapper === null) return null
+  for (const node of Array.from(wrapper.querySelectorAll('*'))) {
+    const klass = node.getAttribute('class') ?? ''
+    if (!klass.split(/\s+/).some((t) => DESCRIPTION_CLASS_RE.test(t))) continue
+    if (!isDescriptionCandidate(node)) continue
+    const text = normalizeText(node.textContent)
+    if (text !== '') return text.slice(0, DESCRIPTION_MAX_CHARS)
+  }
+  return null
+}

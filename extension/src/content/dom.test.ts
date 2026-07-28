@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { walkElements, countUnreachableWidgets, labelFor, groupLabelFor, optionLabelOf } from './dom'
-import { ASHBY_COMBOBOX, ASHBY_YESNO_EN, SHARED_WRAPPER_FIRST_LAST, ASHBY_RADIO_FIELDSET, ASHBY_CONSENT_SINGLE } from './fixtures/ashby'
+import { walkElements, countUnreachableWidgets, labelFor, groupLabelFor, optionLabelOf, requiredFromBinding, descriptionFor, DESCRIPTION_MAX_CHARS } from './dom'
+import { ASHBY_COMBOBOX, ASHBY_YESNO_EN, SHARED_WRAPPER_FIRST_LAST, ASHBY_RADIO_FIELDSET, ASHBY_CONSENT_SINGLE, ASHBY_ESSAY_WITH_DESCRIPTION, ASHBY_COMBOBOX_WITH_DESCRIPTION, ASHBY_REQUIRED_BY_CLASS, ASHBY_OPTIONAL_FIELD, STAR_REQUIRED_FIELD } from './fixtures/ashby'
 
 beforeEach(() => { document.body.innerHTML = '' })
 
@@ -208,5 +208,104 @@ describe('optionLabelOf', () => {
   it('falls back to the value attribute', () => {
     document.body.innerHTML = '<input type="radio" name="g" value="Man">'
     expect(optionLabelOf(document.querySelector('input')!)).toBe('Man')
+  })
+})
+
+describe('requiredFromBinding', () => {
+  it('detects a literal * in the RAW label text (clean() strips it from .text)', () => {
+    document.body.innerHTML = STAR_REQUIRED_FIELD
+    const b = labelFor(document.getElementById('phone-input')!)
+    expect(b.text).toBe('Phone') // the star never leaks into the label text
+    expect(requiredFromBinding(b)).toBe(true)
+  })
+
+  it('detects a hashed CSS-module required class token', () => {
+    document.body.innerHTML = ASHBY_REQUIRED_BY_CLASS
+    const b = labelFor(document.querySelector('input')!)
+    expect(requiredFromBinding(b)).toBe(true)
+  })
+
+  it('stays false for an optional Ashby field', () => {
+    document.body.innerHTML = ASHBY_OPTIONAL_FIELD
+    const b = labelFor(document.querySelector('input')!)
+    expect(requiredFromBinding(b)).toBe(false)
+  })
+
+  it('does not trip on a not-required token', () => {
+    document.body.innerHTML = '<label for="nr" class="field not-required">Nickname</label><input id="nr">'
+    expect(requiredFromBinding(labelFor(document.getElementById('nr')!))).toBe(false)
+  })
+
+  it('is false for attribute-sourced bindings (no element)', () => {
+    document.body.innerHTML = '<input id="al" aria-label="Email *">'
+    expect(requiredFromBinding(labelFor(document.getElementById('al')!))).toBe(false)
+  })
+})
+
+describe('descriptionFor', () => {
+  it('captures a control-sibling description block, whitespace-normalized, markup discarded', () => {
+    document.body.innerHTML = ASHBY_ESSAY_WITH_DESCRIPTION
+    const el = document.querySelector('textarea')!
+    const d = descriptionFor(el, labelFor(el))
+    expect(d).toBe('Please include: • What made it challenging? • The total timeline from start to finish')
+  })
+
+  it("captures the control's-uncle description block and discards hrefs", () => {
+    document.body.innerHTML = ASHBY_COMBOBOX_WITH_DESCRIPTION
+    const el = document.querySelector('[role="combobox"]')!
+    const d = descriptionFor(el, labelFor(el))
+    expect(d).toBe('If unsure, choose the option that most closely matches your experience.')
+    expect(d).not.toContain('http')
+  })
+
+  it('prefers aria-describedby targets over class-token blocks', () => {
+    document.body.innerHTML = `
+      <div>
+        <label for="ad">Question</label>
+        <span id="hint1">From aria.</span>
+        <div class="description">From class.</div>
+        <input id="ad" aria-describedby="hint1">
+      </div>`
+    const el = document.getElementById('ad')!
+    expect(descriptionFor(el, labelFor(el))).toBe('From aria.')
+  })
+
+  it('never captures a block containing a form control', () => {
+    document.body.innerHTML = `
+      <div>
+        <label for="fc">Question</label>
+        <div class="help-row"><input type="checkbox" id="fc"> some layout text</div>
+      </div>`
+    const el = document.getElementById('fc')!
+    expect(descriptionFor(el, labelFor(el))).toBeNull()
+  })
+
+  it('never captures an error/validation block', () => {
+    document.body.innerHTML = `
+      <div>
+        <label for="ev">Question</label>
+        <input id="ev">
+        <div class="description validationError">This field is required</div>
+      </div>`
+    const el = document.getElementById('ev')!
+    expect(descriptionFor(el, labelFor(el))).toBeNull()
+  })
+
+  it('caps at 500 chars', () => {
+    const long = 'x'.repeat(700)
+    document.body.innerHTML = `
+      <div>
+        <label for="lg">Question</label>
+        <div class="description">${long}</div>
+        <input id="lg">
+      </div>`
+    const el = document.getElementById('lg')!
+    expect(descriptionFor(el, labelFor(el))!.length).toBe(DESCRIPTION_MAX_CHARS)
+  })
+
+  it('returns null when the binding has no element (no wrapper to search)', () => {
+    document.body.innerHTML = '<div><div class="description">Nearby text</div><input id="nb" aria-label="Q"></div>'
+    const el = document.getElementById('nb')!
+    expect(descriptionFor(el, labelFor(el))).toBeNull()
   })
 })
