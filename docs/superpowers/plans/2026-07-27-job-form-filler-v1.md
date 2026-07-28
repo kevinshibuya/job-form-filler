@@ -4735,7 +4735,7 @@ git commit -m "feat(host): install script writing the PATH-explicit wrapper, hos
 - Produces (`dom.ts`): `walkElements(root: Document | ShadowRoot): Element[]`, `countUnreachableWidgets(root: Document | ShadowRoot): number`, `scopeOf(el: Element): Document | ShadowRoot`, `labelFor(el: Element): string | null`, `groupLabelFor(el: Element): string | null` (radio GROUP label: legend / role=group only, never the wrapping option label), `optionLabelOf(el: Element): string`.
 - Produces (`enumerate.ts`): `type Measure`, `type MeasureFn`, `defaultMeasure`, `enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; unreachableWidgets: number }`, `elementByFid(root: Document, fid: number): Element | null`, `getEpoch(): number`, `setEpoch(e: number): void`.
 
-- [ ] **Step 1: Write the failing DOM-helper test**
+- [x] **Step 1: Write the failing DOM-helper test**
 
 `extension/src/content/dom.test.ts`:
 
@@ -4865,12 +4865,12 @@ describe('optionLabelOf', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/content/dom.test.ts`
 Expected: FAIL — `Cannot find module './dom'`.
 
-- [ ] **Step 3: Implement the DOM helpers**
+- [x] **Step 3: Implement the DOM helpers**
 
 `extension/src/content/dom.ts`:
 
@@ -5005,12 +5005,12 @@ export function optionLabelOf(el: Element): string {
 }
 ```
 
-- [ ] **Step 4: Run the DOM-helper test to verify it passes**
+- [x] **Step 4: Run the DOM-helper test to verify it passes**
 
 Run: `npx vitest run extension/src/content/dom.test.ts`
 Expected: PASS (17 tests).
 
-- [ ] **Step 5: Write the failing enumerator test**
+- [x] **Step 5: Write the failing enumerator test**
 
 `extension/src/content/enumerate.test.ts`:
 
@@ -5174,12 +5174,12 @@ describe('enumerateFields', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/content/enumerate.test.ts`
 Expected: FAIL — `Cannot find module './enumerate'`.
 
-- [ ] **Step 7: Implement the enumerator**
+- [x] **Step 7: Implement the enumerator**
 
 `extension/src/content/enumerate.ts`:
 
@@ -5362,12 +5362,12 @@ export function elementByFid(root: Document, fid: number): Element | null {
 }
 ```
 
-- [ ] **Step 8: Run the enumerator test to verify it passes**
+- [x] **Step 8: Run the enumerator test to verify it passes**
 
 Run: `npx vitest run extension/src/content/enumerate.test.ts`
 Expected: PASS (16 tests).
 
-- [ ] **Step 9: Wire `JFF_SCAN` into the content script with stale-epoch rejection**
+- [x] **Step 9: Wire `JFF_SCAN` into the content script with stale-epoch rejection**
 
 Replace the `handle` function in `extension/src/content/index.ts` with:
 
@@ -5393,7 +5393,7 @@ function handle(raw: unknown): unknown {
 }
 ```
 
-- [ ] **Step 10: Extend the browser smoke to assert real enumeration**
+- [x] **Step 10: Extend the browser smoke to assert real enumeration**
 
 Add this self-contained test to `e2e/foundation.spec.ts` (it uses the file's `openFixtureTab`
 harness from Task 3; never append inside an existing test):
@@ -5415,12 +5415,12 @@ test('a scan enumerates the fixture form for real', async () => {
 })
 ```
 
-- [ ] **Step 11: Rebuild and run the smoke**
+- [x] **Step 11: Rebuild and run the smoke**
 
 Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS, zero console errors.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add -A
