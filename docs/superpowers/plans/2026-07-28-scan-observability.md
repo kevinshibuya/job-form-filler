@@ -24,6 +24,7 @@
   - empty: `⚠ Scanned N frames, found no form fields. Open the application form, then Scan again.`
   - captcha: `⚠ CAPTCHA active — nothing was filled.`
   - failed: `✕ Scan failed: <reason>`
+  - action_failed: `✕ <reason>` (Accept/Fill/Pick failures — loud, but not labeled "Scan failed")
 - Retry delay is exactly `1_500` ms, exported as `RETRY_DELAY_MS` from `scan.ts`.
 - No `console.log`/`console.error` added anywhere (foundation smoke enforces zero console errors).
 - e2e runs against the seam build: `npm run smoke` (`JFF_TEST_SEAM=1`). Keep new e2e work inside the measured budgets in `playwright.config.ts`; the new smoke is light (no host, no claude).
@@ -44,7 +45,7 @@
 | 5 | App wiring | integrator-opus-high |
 | 6 | e2e smoke + blank fixture | implementer-sonnet-medium |
 
-Escalation: a task whose ATDD loop fails once re-dispatches to integrator-opus-high. Final review: reviewer-opus-high, fresh context, whole diff.
+Escalation: a task whose ATDD loop fails once re-dispatches to integrator-opus-high. Final review: reviewer-opus-high, fresh context, whole diff, **effort xhigh** — the diff spans ~12 files, well over 500 lines, across a relay/async-state surface (the standing escalation rule's threshold).
 
 ---
 
@@ -358,10 +359,49 @@ Then mechanically convert EVERY test-local `sendToTab` stub in the file from `re
   })
 
   it('propagates a relay failure instead of swallowing it into an empty scan', async () => {
-    const { deps } = makeDeps({
+    const { deps, phases } = makeDeps({
       sendToTab: vi.fn(async () => { throw new Error('background relay dead') }),
     })
     await expect(runScan(deps)).rejects.toThrow('background relay dead')
+    // The failure happened DURING enumeration; no phase may be emitted after it.
+    expect(phases).toEqual(['injecting', 'enumerating'])
+  })
+
+  it('keeps first-attempt frame errors as evidence across the retry', async () => {
+    let calls = 0
+    const { deps } = makeDeps({
+      getResume: async () => null,
+      sendToTab: vi.fn(async (_f, message: ContentMessage) => {
+        if (message.type === 'JFF_SCAN') {
+          calls++
+          if (calls === 1) {
+            return { replies: [{ frameId: 0, url: 'https://top.example/', payload: { ok: false, error: 'bad_scan' } }], failures: [] }
+          }
+          return { replies: [{ frameId: 0, url: 'https://top.example/', payload: { ok: true, scan: { epoch: 1, fields: [], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+        }
+        return { replies: [], failures: [] }
+      }),
+    })
+    const out = await runScan(deps)
+    expect(out.frameReports).toEqual([
+      { frameId: 0, url: 'https://top.example/', fields: null, error: 'bad_scan' },
+      { frameId: 0, url: 'https://top.example/', fields: 0, error: null },
+    ])
+  })
+
+  it('reports a failed auto-fill send in frameReports instead of discarding the scan', async () => {
+    const { deps } = makeDeps({
+      getResume: async () => null,
+      sendToTab: vi.fn(async (_f, message: ContentMessage) => {
+        if (message.type === 'JFF_SCAN') return { replies: [{ frameId: 0, url: null, payload: { ok: true, scan: { epoch: 1, fields: [field(0, 0)], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+        if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+        if (message.type === 'JFF_FILL') throw new Error('frame gone')
+        return { replies: [], failures: [] }
+      }),
+    })
+    const out = await runScan(deps)
+    expect(out.resolutions).toHaveLength(1) // the scan and its paid resolve survived
+    expect(out.frameReports.some((r) => r.error !== null && r.error.includes('fill failed'))).toBe(true)
   })
 
   it('reports per-frame errors and broadcast failures in frameReports', async () => {
@@ -390,7 +430,7 @@ Then mechanically convert EVERY test-local `sendToTab` stub in the file from `re
   })
 
   it('carries activeCaptcha through the empty outcome (captcha wins over empty in the UI)', async () => {
-    const { deps } = makeDeps({
+    const { deps, phases } = makeDeps({
       getResume: async () => null,
       sendToTab: vi.fn(async (_f, message: ContentMessage) => {
         if (message.type === 'JFF_SCAN') return { replies: [{ frameId: 0, url: null, payload: { ok: true, scan: { epoch: 1, fields: [], unreachableWidgets: 0, activeCaptcha: true } } }], failures: [] }
@@ -400,13 +440,15 @@ Then mechanically convert EVERY test-local `sendToTab` stub in the file from `re
     const out = await runScan(deps)
     expect(out.activeCaptcha).toBe(true)
     expect(out.fields).toEqual([])
+    // Zero fields still retries once, and NEVER reaches resolving under a captcha.
+    expect(phases).toEqual(['injecting', 'enumerating', 'retrying', 'injecting', 'enumerating'])
   })
 ```
 
 - [ ] **Step 3: Run to verify the new tests fail**
 
 Run: `npx vitest run extension/src/panel/scan.test.ts`
-Expected: FAIL — type errors on `onProgress`/`sleep`/`SendResult` (the harness now targets the new contract).
+Expected: FAIL at RUNTIME (test files are excluded from `tsc` and vitest transpiles without typechecking): the old `enumerateAllFrames` iterates the harness's new `{ replies, failures }` object — `TypeError: replies is not iterable` (or equivalent) — plus the new tests failing on missing `onProgress` emissions.
 
 - [ ] **Step 4: Replace `extension/src/panel/scan.ts`** with:
 
@@ -504,21 +546,25 @@ async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumer
   return { fields, unreachableWidgets, activeCaptcha, reports }
 }
 
-async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; enumd: Enumeration }> {
+async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; frameCount: number; enumd: Enumeration }> {
   deps.onProgress({ phase: 'injecting' })
   const frames = await deps.inject()
   const epoch = deps.nextEpoch()
   deps.onProgress({ phase: 'enumerating', frames: frames.length })
-  return { epoch, enumd: await enumerateAllFrames(deps, epoch) }
+  return { epoch, frameCount: frames.length, enumd: await enumerateAllFrames(deps, epoch) }
 }
 
 export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   // PHASE 0 — first enumeration, with ONE delayed retry on an all-empty result.
-  let { epoch, enumd } = await injectAndEnumerate(deps)
+  let { epoch, frameCount, enumd } = await injectAndEnumerate(deps)
   if (enumd.fields.length === 0) {
+    // First-attempt ERRORS are evidence (they may be WHY the page looked empty);
+    // they survive the retry. First-attempt field counts are superseded.
+    const firstErrors = enumd.reports.filter((r) => r.error !== null)
     deps.onProgress({ phase: 'retrying' })
     await deps.sleep(RETRY_DELAY_MS)
-    ;({ epoch, enumd } = await injectAndEnumerate(deps))
+    ;({ epoch, frameCount, enumd } = await injectAndEnumerate(deps))
+    enumd.reports = [...firstErrors, ...enumd.reports]
     if (enumd.fields.length === 0) {
       // An empty page must cost zero host round-trips: no selector.get, no resolve.
       return {
@@ -555,18 +601,25 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   const resume = await deps.getResume()
   const fileField = fields.find((f) => f.kind === 'file')
   if (resume !== null && fileField !== undefined) {
-    await deps.sendToTab(fileField.frameId, {
-      type: 'JFF_FILL_RESUME', epoch,
-      handle: { frameId: fileField.frameId, fid: fileField.fid, epoch },
-      fileName: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64,
-    })
+    let resumeError: FrameReport | null = null
+    try {
+      await deps.sendToTab(fileField.frameId, {
+        type: 'JFF_FILL_RESUME', epoch,
+        handle: { frameId: fileField.frameId, fid: fileField.fid, epoch },
+        fileName: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64,
+      })
+    } catch (e) {
+      // A dead resume-upload relay must not discard the whole scan: the field
+      // list and the paid resolve are still worth having. Report and continue.
+      resumeError = { frameId: fileField.frameId, url: null, fields: null, error: `resume upload failed: ${String(e)}` }
+    }
     epoch = deps.nextEpoch()
-    deps.onProgress({ phase: 'enumerating', frames: reports.length })
+    deps.onProgress({ phase: 'enumerating', frames: frameCount })
     const again = await enumerateAllFrames(deps, epoch)
     fields = again.fields
     unreachableWidgets = again.unreachableWidgets
     activeCaptcha = again.activeCaptcha
-    reports = again.reports
+    reports = resumeError === null ? again.reports : [...again.reports, resumeError]
 
     if (activeCaptcha) {
       // Uploading a resume is a common trigger for an ATS challenge. Re-reading
@@ -602,7 +655,13 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     byFrame.set(r.handle.frameId, list)
   }
   for (const [frameId, fills] of byFrame) {
-    await deps.sendToTab(frameId, { type: 'JFF_FILL', epoch, fills })
+    try {
+      await deps.sendToTab(frameId, { type: 'JFF_FILL', epoch, fills })
+    } catch (e) {
+      // A frame that vanished mid-fill (wizard advanced, iframe swapped) is
+      // evidence, not a reason to throw away the resolved scan.
+      reports = [...reports, { frameId, url: null, fields: null, error: `fill failed: ${String(e)}` }]
+    }
   }
 
   return {
@@ -615,7 +674,9 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 }
 ```
 
-Note the ONE behavior change to the resume re-enumeration: it re-emits `enumerating` (frames count reuses the last report count — the frame set cannot be re-discovered without a re-inject, and a resume upload does not change it). It deliberately does NOT re-run the 0-field retry: a page that had fields and lost them mid-scan is the captcha/teardown path, not the transient-iframe path.
+Notes on deliberate choices in this code:
+- The resume re-enumeration re-emits `enumerating` with the frame count from the LAST inject (`frameCount`) — the frame set cannot be re-discovered without a re-inject, and a resume upload does not change it. It deliberately does NOT re-run the 0-field retry: a page that had fields and lost them mid-scan is the captcha/teardown path, not the transient-iframe path.
+- The throw-on-relay-failure contract applies to `inject` and the ENUMERATING broadcasts (a page we cannot read is a failed scan). The resume send and the auto-fill sends instead catch and report into `frameReports`: at that point the scan holds a complete enumeration and (for fills) a paid resolve — aborting would discard good data over a partial-delivery problem.
 
 - [ ] **Step 5: Run the scan tests**
 
@@ -648,7 +709,7 @@ git commit -m "feat(scan): progress phases, per-frame reports, loud relay failur
 **Interfaces:**
 - Consumes: `FrameReport` from `./scan` (Task 2).
 - Produces (Task 5 relies on these):
-  - `type ScanUiState = { kind: 'connecting' } | { kind: 'injecting' } | { kind: 'enumerating'; frames: number } | { kind: 'retrying' } | { kind: 'resolving'; fields: number } | { kind: 'done'; filled: number; proposed: number; needsInput: number } | { kind: 'empty'; frames: number } | { kind: 'captcha' } | { kind: 'failed'; reason: string }`
+  - `type ScanUiState = { kind: 'connecting' } | { kind: 'injecting' } | { kind: 'enumerating'; frames: number } | { kind: 'retrying' } | { kind: 'resolving'; fields: number } | { kind: 'done'; filled: number; proposed: number; needsInput: number } | { kind: 'empty'; frames: number } | { kind: 'captcha' } | { kind: 'failed'; reason: string } | { kind: 'action_failed'; reason: string }`
   - `ScanStatus({ status, reports }: { status: ScanUiState | null; reports: FrameReport[] })` — renders `null` when `status === null`; root carries `data-jff-status="<kind>"`; diagnostics `<details data-jff-diagnostics>` render when (`kind` is `empty` or `failed` or (`done` and some report has an error)) AND `reports.length > 0`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -682,6 +743,7 @@ describe('ScanStatus', () => {
     [{ kind: 'empty', frames: 7 }, '⚠ Scanned 7 frames, found no form fields. Open the application form, then Scan again.'],
     [{ kind: 'captcha' }, '⚠ CAPTCHA active — nothing was filled.'],
     [{ kind: 'failed', reason: 'boom' }, '✕ Scan failed: boom'],
+    [{ kind: 'action_failed', reason: 'Fill failed: frame gone' }, '✕ Fill failed: frame gone'],
   ])('renders the spec copy for %j', (status, copy) => {
     render(<ScanStatus status={status} reports={[]} />)
     expect(screen.getByText(copy)).toBeTruthy()
@@ -708,6 +770,17 @@ describe('ScanStatus', () => {
     render(<ScanStatus status={{ kind: 'resolving', fields: 3 }} reports={[badReport]} />)
     expect(document.querySelector('[data-jff-diagnostics]')).toBeNull()
   })
+
+  it('shows the relay error in diagnostics when the scan failed before any frame replied', () => {
+    // frameId -1 is the App's synthetic "the relay itself failed" report; it must
+    // render as evidence, not as a bogus frame number.
+    const relayReport: FrameReport = { frameId: -1, url: null, fields: null, error: 'Could not reach the page.' }
+    render(<ScanStatus status={{ kind: 'failed', reason: 'Could not reach the page.' }} reports={[relayReport]} />)
+    const details = document.querySelector('[data-jff-diagnostics]')
+    expect(details).not.toBeNull()
+    expect(details!.textContent).toContain('relay')
+    expect(details!.textContent).toContain('Could not reach the page.')
+  })
 })
 ```
 
@@ -732,6 +805,7 @@ export type ScanUiState =
   | { kind: 'empty'; frames: number }
   | { kind: 'captcha' }
   | { kind: 'failed'; reason: string }
+  | { kind: 'action_failed'; reason: string }
 
 function copyFor(s: ScanUiState): string {
   switch (s.kind) {
@@ -744,6 +818,7 @@ function copyFor(s: ScanUiState): string {
     case 'empty': return `⚠ Scanned ${s.frames} frames, found no form fields. Open the application form, then Scan again.`
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'
     case 'failed': return `✕ Scan failed: ${s.reason}`
+    case 'action_failed': return `✕ ${s.reason}`
   }
 }
 
@@ -753,6 +828,7 @@ const TONE: Record<ScanUiState['kind'], string> = {
   empty: 'text-amber-600 dark:text-amber-400',
   captcha: 'text-amber-600 dark:text-amber-400',
   failed: 'text-red-600 dark:text-red-400',
+  action_failed: 'text-red-600 dark:text-red-400',
 }
 
 /** One-line scan status + collapsible per-frame evidence. Diagnostics render only
@@ -769,9 +845,10 @@ export function ScanStatus({ status, reports }: { status: ScanUiState | null; re
         <details className="mt-1" data-jff-diagnostics="1">
           <summary className={`cursor-pointer ${MUTED}`}>details</summary>
           <ul className={`m-0 mt-1 list-none p-0 font-mono text-[11px] ${MUTED}`}>
-            {reports.map((r) => (
-              <li className="my-0.5 truncate" key={r.frameId} title={r.url ?? undefined}>
-                frame {r.frameId} · {r.url ?? '(no url)'} · {r.error !== null ? r.error : `${r.fields ?? 0} fields`}
+            {/* index key: after a retry the same frameId can legitimately appear twice */}
+            {reports.map((r, i) => (
+              <li className="my-0.5 truncate" key={i} title={r.url ?? undefined}>
+                {r.frameId === -1 ? 'relay' : `frame ${r.frameId}`} · {r.url ?? '(no url)'} · {r.error !== null ? r.error : `${r.fields ?? 0} fields`}
               </li>
             ))}
           </ul>
@@ -824,7 +901,8 @@ const actingResolution = (fid: number, tier: 'proposed' | 'needs_input'): Resolu
 })
 const proposedRow: Row = { ref: '0:1', field: actingField(1), resolution: actingResolution(1, 'proposed') }
 const needsInputRow: Row = { ref: '0:2', field: actingField(2), resolution: actingResolution(2, 'needs_input') }
-const noop = () => undefined
+// NOTE: reuse the module-scope `noop` the file already declares at line 16 —
+// redeclaring it is a SyntaxError that kills the whole test module.
 
 describe('FieldRow acting states', () => {
   it('shows Accepting… and disables the button while an accept is in flight', () => {
@@ -847,7 +925,7 @@ describe('FieldRow acting states', () => {
 })
 ```
 
-(Also add `import type { EnumField, Resolution } from '@jff/shared'` and `import type { Row } from './group'` if the file does not already import them, and update every EXISTING `<FieldRow ... />` render in the file to include `acting={null}`.)
+(Also add `import type { EnumField, Resolution } from '@jff/shared'` and `import type { Row } from './group'` if the file does not already import them. For the EXISTING tests: the file funnels every render through a shared `props` object at `FieldRow.test.tsx:19` — add `acting: null` to THAT object, one line. Do not rely on typecheck to catch a miss: test files are excluded from `tsc`, and a missing prop degrades to `acting === undefined`, which renders every button disabled and fails existing click tests confusingly.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -912,14 +990,33 @@ git commit -m "feat(panel): per-row acting states for Accept and Fill"
 
 - [ ] **Step 1: Update the chrome mock and add failing tests in `App.test.tsx`**
 
-Replace the `runtime.sendMessage` line of the `beforeEach` chrome stub with a kind-aware default:
+Replace the `runtime.sendMessage` line of the `beforeEach` chrome stub with a kind- and message-aware default. CRITICAL: the default JFF_SCAN reply must contain at least one field — an all-empty default would push EVERY App test through the 0-field retry's real 1.5 s timer (pending timers firing after cleanup, flaky Scan-button label). Only the dedicated empty-state test overrides this with empty replies.
 
 ```ts
-      sendMessage: vi.fn(async (msg: { kind?: string }) => {
+      sendMessage: vi.fn(async (msg: { kind?: string; message?: { type?: string } }) => {
         if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+        if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+          return {
+            ok: true,
+            replies: [{
+              frameId: 0, url: 'https://jobs.acme.com/apply',
+              payload: { ok: true, scan: { epoch: 1, fields: [{ frameId: -1, fid: 0, epoch: 1, label: 'Email', name: 'email', idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false }], unreachableWidgets: 0, activeCaptcha: false } },
+            }],
+            failures: [],
+          }
+        }
+        if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') {
+          return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+        }
         if (msg?.kind === 'toContent') return { ok: true, replies: [], failures: [] }
         return { ok: true }
       }),
+```
+
+Additionally, fix the EXISTING assertion at `App.test.tsx:50` — `screen.getByRole('button', { name: 'Scan' })` is a synchronous exact-name query that now races the auto-scan's `Scanning…` label. Change that one line to:
+
+```ts
+    expect(await screen.findByRole('button', { name: /^Scan(ning…)?$/ })).toBeTruthy()
 ```
 
 Append new tests:
@@ -952,11 +1049,20 @@ describe('App scan status', () => {
   })
 
   it('reaches empty (after the one-shot retry) when no frame has fields', async () => {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [], failures: [] }
+      return { ok: true }
+    })
     render(<App />)
+    // The retry's 1.5s sleep is a REAL timer here (App injects the real sleep);
+    // vitest.config.ts documents ~10x jsdom inflation under contention, so the
+    // budget is wide.
     await waitFor(() => {
       expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('empty')
-    }, { timeout: 4_000 })
-  }, 10_000)
+    }, { timeout: 8_000 })
+  }, 15_000)
 
   it('surfaces an inject failure as a failed status instead of a silent no-op', async () => {
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
@@ -969,14 +1075,41 @@ describe('App scan status', () => {
       expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('failed')
     })
     expect(screen.getByText(/Cannot access contents of the page/)).toBeTruthy()
+    // The synthetic relay report makes the diagnostics disclosure render even
+    // though no frame ever replied.
+    expect(document.querySelector('[data-jff-diagnostics]')).not.toBeNull()
+  })
+
+  it('surfaces a broadcast relay failure (inject fine, toContent dead) as failed', async () => {
+    // Guards the sendToTab ok-check specifically: inject succeeds, so only the
+    // broadcast guard can produce the failed status here.
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent') return { ok: false, error: 'relay exploded' }
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('failed')
+    })
+    expect(screen.getByText(/relay exploded/)).toBeTruthy()
   })
 
   it('disables the Scan button and relabels it while a scan runs', async () => {
+    // ONE-SHOT latch: only the FIRST inject hangs. A latch that returned a fresh
+    // pending promise every time would deadlock the 0-field retry's second inject
+    // and the scan would never settle.
     let release: (() => void) | null = null
+    let injected = false
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
-    send.mockImplementation(async (msg: { kind?: string }) => {
-      if (msg?.kind === 'inject') return new Promise((r) => { release = () => r({ ok: true, frames: [0] }) })
-      return { ok: true, replies: [], failures: [] }
+    const base = send.getMockImplementation()!
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject' && !injected) {
+        injected = true
+        return new Promise((r) => { release = () => r({ ok: true, frames: [0] }) })
+      }
+      return base(msg) // default: inject ok + one-field scan reply, so no retry runs
     })
     render(<App />)
     const btn = await screen.findByRole('button', { name: 'Scanning…' }) as HTMLButtonElement
@@ -1008,7 +1141,7 @@ describe('App scan status', () => {
 - [ ] **Step 2: Run to verify failure**
 
 Run: `npx vitest run extension/src/panel/App.test.tsx`
-Expected: FAIL — no `[data-jff-status]`, no `Scanning…` label, plus type errors from the Task 2/4 contracts.
+Expected: FAIL at RUNTIME (test files are excluded from `tsc`): no `[data-jff-status]` element, no `Scanning…` label — plus the pre-wiring App crashes against the Task 2 `runScan` contract (missing `onProgress`/`sleep`, `SendResult` shape).
 
 - [ ] **Step 3: Rewire `App.tsx`**
 
@@ -1063,7 +1196,6 @@ e. In `onScan`: reset + status wiring + throwing inject. Replace the body of the
       const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
       if (co !== null && companyOrNull === null) setCompany(co)
       setScanning(true)
-      setScanStatus({ kind: 'connecting' })
       setFrameReports([])
       const out = await runScan({
         tabId,
@@ -1099,6 +1231,10 @@ e. In `onScan`: reset + status wiring + throwing inject. Replace the body of the
       setSnapshot({})
       if (out.jobText !== '') setJobText(out.jobText)
       if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
+      // DELIBERATE: these counts mirror the Filled/Proposed/Needs-input group
+      // headers exactly (all `auto` resolutions count as "filled", including
+      // page-sourced ones). Verifying fills against JFF_FILL reply payloads is a
+      // future slice — spec's out-of-scope list.
       const filled = out.resolutions.filter((r) => r.tier === 'auto').length
       const proposed = out.resolutions.filter((r) => r.tier === 'proposed').length
       const needsInput = out.resolutions.filter((r) => r.tier === 'needs_input').length
@@ -1116,14 +1252,38 @@ and wrap with the catch/finally:
 
 ```ts
     } catch (e) {
-      setScanStatus({ kind: 'failed', reason: e instanceof Error ? e.message : String(e) })
+      const reason = e instanceof Error ? e.message : String(e)
+      setScanStatus({ kind: 'failed', reason })
+      // Synthetic relay report (frameId -1): without it the diagnostics
+      // disclosure could NEVER render for inject/broadcast failures, because
+      // frameReports was cleared at scan start. ScanStatus renders -1 as "relay".
+      setFrameReports([{ frameId: -1, url: null, fields: null, error: reason }])
     } finally {
       setScanning(false)
       scanningRef.current = false
     }
 ```
 
-(`scanningRef` remains the synchronous re-entry guard exactly as before; `RETRY_DELAY_MS` is exported for tests but the sleep uses real timers in the app.)
+(`scanningRef` remains the synchronous re-entry guard exactly as before; the sleep uses real timers in the app.)
+
+e2. The auto-scan effect gains the host gate that gives `connecting` its spec meaning ("covers the mount-to-selfCheck gap when the auto-scan is queued behind the host answer"). Replace the existing effect (`App.tsx:210`):
+
+```ts
+  // Auto-scan on open and after the bound tab NAVIGATES (a wizard step is new DOM).
+  // Deliberately NOT keyed on resetCount: a tab switch or close clears state
+  // without spending another batched `claude -p` resolve.
+  // `hostAnswered` latches false->true ONCE (selfCheck answers or fails); keying
+  // on `hostError` directly would re-fire the auto-scan every time a later host
+  // error (e.g. an llmError) sets it — an accidental scan loop.
+  const hostAnswered = check !== null || hostError !== null
+  useEffect(() => {
+    if (tabId === null) return
+    if (!hostAnswered) { setScanStatus({ kind: 'connecting' }); return }
+    void onScan()
+  }, [tabId, scanNonce, hostAnswered])
+```
+
+`connecting` is set ONLY here — it exclusively means "waiting for the host before the queued auto-scan"; a manual Scan click starts directly at `injecting` (item e's code deliberately contains no `connecting`).
 
 f. `onSaveAnswers` — busy + new sendToTab shape + catch:
 
@@ -1180,15 +1340,32 @@ g. `onPickJobText` — busy + new shape + catch:
       if (hostname !== '') {
         await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
       }
-    } catch {
-      // relay failure mid-pick: leave the paste box alone, same as a cancel
+    } catch (e) {
+      // A relay failure mid-pick is NOT a cancel: say so.
+      setScanStatus({ kind: 'action_failed', reason: `Pick failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       setPicking(false)
     }
   }
 ```
 
-h. `onAccept` / `onFill` — per-row acting (wrap the existing bodies):
+h. `fillOne` stops swallowing failures, and `onAccept`/`onFill` gain per-row acting + loud errors. Replace `fillOne` (it currently calls `chrome.runtime.sendMessage` directly and never checks `ok` — the exact silent-failure class this slice removes, on the two most user-visible buttons):
+
+```ts
+  /** Put one value on the page. Shared by Accept and Fill; what they additionally
+   *  CONFIRM is the only difference between them. THROWS if the relay or the
+   *  frame refused the fill — callers must not confirm anything on a throw. */
+  const fillOne = async (row: Row, value: string): Promise<void> => {
+    if (tabId === null || value === '') return
+    const { replies } = await sendToTab(row.field.frameId, {
+      type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }],
+    })
+    const p = replies[0]?.payload as { ok?: boolean; error?: string } | undefined
+    if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the fill')
+  }
+```
+
+Then the handlers (note: tier promotion / "on the page" marking happen ONLY on success — inside the try, after `fillOne`):
 
 ```ts
   const onAccept = async (ref: string): Promise<void> => {
@@ -1203,6 +1380,8 @@ h. `onAccept` / `onFill` — per-row acting (wrap the existing bodies):
         void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
       }
       setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)))
+    } catch (e) {
+      setScanStatus({ kind: 'action_failed', reason: `Accept failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       setActing(null)
     }
@@ -1217,6 +1396,8 @@ h. `onAccept` / `onFill` — per-row acting (wrap the existing bodies):
     try {
       await fillOne(row, value)
       setFilledRefs((f) => (f.includes(ref) ? f : [...f, ref]))
+    } catch (e) {
+      setScanStatus({ kind: 'action_failed', reason: `Fill failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       setActing(null)
     }
@@ -1280,7 +1461,7 @@ Expected: green — this is the first task after which the whole workspace compi
 
 - [ ] **Step 6: Mutation probe the loud-failure guard**
 
-In `sendToTab`, temporarily restore the old swallow (`return { replies: (res as { replies?: FrameReply[] })?.replies ?? [], failures: [] }` without the ok check). Run `npx vitest run extension/src/panel/App.test.tsx` — the inject-failure test must fail (status ends `empty`, not `failed`). Restore, re-run, green.
+In `sendToTab`, temporarily restore the old swallow (`return { replies: (res as { replies?: FrameReply[] })?.replies ?? [], failures: [] }` without the ok check). Run `npx vitest run extension/src/panel/App.test.tsx` — the **broadcast-failure** test (`'surfaces a broadcast relay failure (inject fine, toContent dead) as failed'`) must fail; the inject-failure test alone does NOT exercise this guard (it fails in the `inject` wrapper before `sendToTab` runs). Restore, re-run, green.
 
 - [ ] **Step 7: Commit**
 
@@ -1322,6 +1503,8 @@ git commit -m "feat(panel): scan status line, loud relay failures, busy states o
 test('the panel surfaces scan outcomes: captcha on the fixture form, empty on a blank page', async () => {
   // Real UI, real relay, fake host (seam build). The fixture form carries an
   // ACTIVE reCAPTCHA stub, so its deterministic outcome is `captcha`.
+  // 60s assertion budgets: the repo's measured worst case for a foundation test
+  // is 31.4s under load (playwright.config.ts); full-loop already runs at 60s.
   const target = await ext.context.newPage()
   await target.goto(`${fixtures.origin}/fixture-form.html`)
   // chrome.tabs is only available to EXTENSION pages: the finder must be a panel
@@ -1334,7 +1517,7 @@ test('the panel surfaces scan outcomes: captcha on the fixture form, empty on a 
   })
   const panel = await ext.context.newPage()
   await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
-  await expect(panel.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'captcha', { timeout: 30_000 })
+  await expect(panel.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'captcha', { timeout: 60_000 })
 
   // A page with zero fields must settle to `empty` (after the one-shot retry)
   // and expose the per-frame diagnostics disclosure.
@@ -1346,7 +1529,7 @@ test('the panel surfaces scan outcomes: captcha on the fixture form, empty on a 
   })
   const panel2 = await ext.context.newPage()
   await panel2.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${blankTabId}`))
-  await expect(panel2.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'empty', { timeout: 30_000 })
+  await expect(panel2.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'empty', { timeout: 60_000 })
   await expect(panel2.locator('[data-jff-diagnostics]')).toBeAttached()
 
   await panel2.close(); await blank.close(); await panel.close(); await finder.close(); await target.close()

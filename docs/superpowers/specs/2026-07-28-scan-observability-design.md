@@ -86,9 +86,13 @@ Rendered directly under the action row, always present once a scan has started. 
 | `empty`     | ⚠ Scanned N frames, found no form fields. Open the application form, then Scan again.   | amber   |
 | `captcha`   | ⚠ CAPTCHA active — nothing was filled.                                                  | amber   |
 | `failed`    | ✕ Scan failed: <human reason>                                                           | red     |
+| `action_failed` | ✕ <human reason>                                                                    | red     |
 
-`connecting` covers the mount-to-selfCheck gap when the auto-scan is queued behind the host
-answer. The existing "Checking the local host…" pending banner (`Banner.tsx`) stays; its copy is
+`action_failed` is for NON-scan actions (Accept/Fill/Pick) hitting a relay or page failure — their
+errors must be as loud as scan errors, but must not read as "Scan failed". `connecting` covers the
+mount-to-selfCheck gap when the auto-scan is queued behind the host answer (the auto-scan effect
+waits for the selfCheck to answer or fail before its first run; a manual Scan starts at
+`injecting`). The existing "Checking the local host…" pending banner (`Banner.tsx`) stays; its copy is
 untouched. `llmError` outcomes render `failed` here; the existing `hostError` banner behavior is
 unchanged.
 
@@ -103,16 +107,21 @@ field count or error string — plus the inject/broadcast error when that is wha
 - Save answers: "Saving…" + disabled while the save round-trip runs; `saveMsg` behavior unchanged.
 - Pick job description: "Picking… (click the description on the page)" + disabled until the pick
   settles (it always settles: click, Escape, or timeout).
-- FieldRow: a per-row busy mechanism generalizing `generatingRef` — `busyRef: string | null` in
-  App; Accept renders "Accepting…", Fill renders "Filling…", both disabled while their send is in
-  flight. Generate keeps its existing spinner prop.
+- FieldRow: a per-row busy mechanism generalizing `generatingRef` — `acting: { ref: string;
+  action: 'accept' | 'fill' } | null` in App, passed down as FieldRow's `acting` prop; Accept
+  renders "Accepting…", Fill renders "Filling…", both disabled while their send is in flight.
+  Generate keeps its existing spinner prop.
+- Accept/Fill/Pick failures are NOT silent: `fillOne` goes through the throwing relay wrapper and
+  checks the frame's reply; a failure surfaces as `action_failed` in the status line, and a failed
+  Accept does not promote the row's tier (a failed Fill does not mark "on the page").
 - Shared helper in `ui.ts` for the busy label/disabled pair to keep the pattern uniform.
 
 ### 5. Testing
 
 - Unit (`scan.test.ts`): phase sequences for happy path, inject failure, broadcast failure,
   0-field retry-then-empty, 0-field retry-then-found, captcha; retry skips `resolve`; frameReports
-  content. Fake timers for the 1.5s delay.
+  content. The 1.5s delay is an injected `sleep` dependency, stubbed instant in unit tests (the
+  App-level empty-state test runs the real timer with a widened budget).
 - Unit (`background`-level test if present, else via relay contract tests): broadcast failure
   recording, discovery URL passthrough.
 - Unit (`App.test.tsx`): each status renders with the right `data-jff-status`; buttons disable
