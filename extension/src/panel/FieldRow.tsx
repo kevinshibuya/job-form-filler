@@ -13,9 +13,13 @@ export interface FieldRowProps {
   filled: boolean
   /** Which of this row's page-writing actions is in flight, if any. */
   acting: 'accept' | 'fill' | null
+  /** SOME row is acting. Page writes are serialized globally, so every row's
+   *  buttons must look disabled — an enabled button that silently no-ops is the
+   *  failure mode this slice removes. */
+  locked: boolean
 }
 
-export function FieldRow({ row, edited, onEdit, onAccept, onGenerate, onFill, generating, filled, acting }: FieldRowProps) {
+export function FieldRow({ row, edited, onEdit, onAccept, onGenerate, onFill, generating, filled, acting, locked }: FieldRowProps) {
   const { field, resolution, ref } = row
   const label = field.label ?? '(unlabelled field)'
   const value = edited ?? resolution.value ?? ''
@@ -55,19 +59,19 @@ export function FieldRow({ row, edited, onEdit, onAccept, onGenerate, onFill, ge
       <div className="mt-1.5 flex items-center gap-2">
         {resolution.tier === 'proposed' && (
           // Accept both fills the page AND confirms the mapping (App.onAccept).
-          <button type="button" className={BTN_PRIMARY} disabled={acting !== null} onClick={() => onAccept(ref)}>
+          <button type="button" className={BTN_PRIMARY} disabled={locked || acting !== null} onClick={() => onAccept(ref)}>
             {busyLabel(acting === 'accept', 'Accept', 'Accepting…')}
           </button>
         )}
         {resolution.tier === 'needs_input' && (
           <>
-            <button type="button" className={BTN} disabled={generating || acting !== null} onClick={() => onGenerate(ref)}>
+            <button type="button" className={BTN} disabled={generating || locked || acting !== null} onClick={() => onGenerate(ref)}>
               {generating ? 'Drafting…' : 'Generate with AI'}
             </button>
             {/* Closes the spec's loop: generate, edit, then put it on the page.
                 Unlike Accept this confirms NO mapping: a needs-input row has no
                 key the LLM proposed, only an answer the user wrote. */}
-            <button type="button" className={BTN_PRIMARY} disabled={value.trim() === '' || acting !== null} onClick={() => onFill(ref)}>
+            <button type="button" className={BTN_PRIMARY} disabled={value.trim() === '' || locked || acting !== null} onClick={() => onFill(ref)}>
               {busyLabel(acting === 'fill', 'Fill', 'Filling…')}
             </button>
             {filled && <span className={`text-[11px] ${MUTED}`}>on the page</span>}

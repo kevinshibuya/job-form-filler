@@ -1,7 +1,25 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import type { HostResponse, Resolution } from '@jff/shared'
 import { App, hostnameOf } from './App'
+
+/** The fake port forwards to `window.__jffHostBridge` when one is installed, so
+ *  this is how a test gives the panel real resolutions (the canned fake answers
+ *  every resolve with zero) or a host that never answers at all. */
+function installHostBridge(answer: (method: string) => Promise<unknown>): void {
+  window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> =>
+    ({ requestId, ok: true, result: await answer(method) })
+}
+
+const SELF_CHECK = {
+  node: { ok: true, version: 'v20.0.0' },
+  claude: { ok: true, path: '(fake)', detail: 'found' },
+  auth: { ok: true, detail: 'logged in' },
+  db: { ok: true, path: '(fake)' },
+}
+
+afterEach(() => { delete window.__jffHostBridge })
 
 beforeEach(() => {
   // The compile-time seam is on in tests (vitest define), so the fake host answers.
@@ -183,6 +201,110 @@ describe('App scan status', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Scan' })).toBeTruthy(), { timeout: 4_000 })
   }, 10_000)
 
+  it('counts DISTINCT frames in the empty status, not raw report rows', async () => {
+    // Frame 0 errors on the first pass and answers (with nothing) on the retry:
+    // two report rows, ONE frame on the page.
+    let scans = 0
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        scans++
+        return scans === 1
+          ? { ok: true, replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: false, error: 'bad_scan' } }], failures: [] }
+          : { ok: true, replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: true, scan: { epoch: 1, fields: [], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+      }
+      return { ok: true, replies: [], failures: [] }
+    })
+    render(<App />)
+    // Real 1.5s retry timer, same widened budget as the empty-state test above.
+    expect(await screen.findByText(/Scanned 1 frames, found no form fields/, undefined, { timeout: 8_000 })).toBeTruthy()
+  }, 15_000)
+
+  it('keeps the enumeration evidence when the scan dies after enumerating', async () => {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReply
+      if (msg?.kind === 'toContent') return { ok: false, error: 'relay died after the scan' }
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('failed')
+    })
+    // Both rows: what the frame DID report, and the relay failure that ended it.
+    const diagnostics = document.querySelector('[data-jff-diagnostics]')?.textContent ?? ''
+    expect(diagnostics).toContain('frame 0')
+    expect(diagnostics).toContain('1 fields')
+    expect(diagnostics).toContain('relay')
+    expect(diagnostics).toContain('relay died after the scan')
+  })
+
+  it('scans anyway when the host connects but never answers the self-check', async () => {
+    // A wedged host must not pin the panel on 'connecting' forever.
+    installHostBridge(async (method) => {
+      if (method === 'selfCheck') return await new Promise(() => undefined) // never answers
+      if (method === 'selector.get') return { selector: null }
+      if (method === 'resolve') return { epoch: 1, resolutions: [], llmError: null }
+      return {}
+    })
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReply
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      return { ok: true }
+    })
+    render(<App hostWaitMs={400} />)
+    // The panel parks on 'connecting' first — and then goes ahead on its own.
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('connecting')
+    })
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done')
+    }, { timeout: 5_000 })
+  }, 10_000)
+
+  it('shows the busy label before the first await of a scan', async () => {
+    // tabs.get is the FIRST await in onScan: hanging it proves the button flipped
+    // synchronously with the re-entry guard rather than after two round-trips.
+    const tabs = (globalThis as unknown as { chrome: { tabs: { get: ReturnType<typeof vi.fn> } } }).chrome.tabs
+    tabs.get.mockImplementation(async () => await new Promise(() => undefined))
+    render(<App />)
+    expect(((await screen.findByRole('button', { name: 'Scanning…' })) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('releases the scan guard when the bound tab is already gone', async () => {
+    // The tab-closed early return must go through the finally: otherwise the
+    // panel is wedged and every later Scan click is a silent no-op.
+    let gone = true
+    const tabs = (globalThis as unknown as { chrome: { tabs: { get: ReturnType<typeof vi.fn> } } }).chrome.tabs
+    tabs.get.mockImplementation(async () => {
+      // The delay makes the busy render observable, so the click below is ordered
+      // AFTER the auto-scan's early return instead of racing it.
+      if (gone) { await new Promise((r) => setTimeout(r, 20)); throw new Error('No tab with id: 7') }
+      return { id: 7, url: 'https://jobs.acme.com/apply', title: 'Engineer at Acme' }
+    })
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReply
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      return { ok: true }
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Scanning…' }) // the auto-scan started
+    // Back to idle: the early return went through the finally.
+    const btn = await screen.findByRole('button', { name: 'Scan' })
+    gone = false
+    fireEvent.click(btn)
+    // …and the re-entry guard was released too, so this second scan really runs.
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done')
+    }, { timeout: 5_000 })
+  }, 10_000)
+
   it('shows Saving… while the save round-trip is in flight', async () => {
     let release: (() => void) | null = null
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
@@ -199,5 +321,111 @@ describe('App scan status', () => {
     expect(((await screen.findByRole('button', { name: 'Saving…' })) as HTMLButtonElement).disabled).toBe(true)
     release!()
     await screen.findByRole('button', { name: 'Save answers' })
+  })
+})
+
+describe('App per-field fill failures', () => {
+  const enumField = (fid: number, label: string) => ({
+    frameId: -1, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const resolutions: Resolution[] = [
+    { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
+    { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
+  ]
+
+  /** The content script answers ok:true and reports the refusal PER FIELD — the
+   *  envelope alone says nothing about whether the value reached the page. */
+  const fillReply = {
+    ok: true,
+    replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [], failed: [{ handle: { frameId: 0, fid: 0, epoch: 1 }, reason: 'no-matching-option' }] } } }],
+    failures: [],
+  }
+
+  beforeEach(async () => {
+    installHostBridge(async (method) => {
+      if (method === 'selfCheck') return SELF_CHECK
+      if (method === 'selector.get') return { selector: null }
+      if (method === 'resolve') return { epoch: 1, resolutions, llmError: null }
+      return {}
+    })
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return {
+          ok: true,
+          replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: true, scan: { epoch: 1, fields: [enumField(0, 'Work model'), enumField(1, 'Why us?')], unreachableWidgets: 0, activeCaptcha: false } } }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') return fillReply
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      return { ok: true }
+    })
+  })
+
+  const renderScanned = async (): Promise<void> => {
+    render(<App />)
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done')
+    })
+  }
+
+  it('does not promote a proposed row whose fill the page refused', async () => {
+    await renderScanned()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed')
+    })
+    // Still Proposed: promoting to Filled would tell the user a lie about the page.
+    expect(document.querySelector('[data-jff-group="proposed"]')).not.toBeNull()
+    expect(document.querySelector('[data-jff-group="auto"]')).toBeNull()
+    expect(screen.getByText(/Accept failed: no-matching-option/)).toBeTruthy()
+  })
+
+  it('does not mark a needs-input row "on the page" when the page refused the value', async () => {
+    await renderScanned()
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed')
+    })
+    expect(screen.queryByText('on the page')).toBeNull()
+    expect(screen.getByText(/Fill failed: no-matching-option/)).toBeTruthy()
+  })
+
+  it('still confirms a fill the page accepted', async () => {
+    // Mutation guard: the failure check must read `failed`, not reject every reply.
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    const base = send.getMockImplementation()!
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 1, epoch: 1 }], failed: [] } } }], failures: [] }
+      }
+      return base(msg)
+    })
+    await renderScanned()
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    expect(await screen.findByText('on the page')).toBeTruthy()
+  })
+
+  it('locks every row while one row is acting', async () => {
+    let release: (() => void) | null = null
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    const base = send.getMockImplementation()!
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        return await new Promise((r) => { release = () => r(fillReply) })
+      }
+      return base(msg)
+    })
+    await renderScanned()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    // The OTHER row's buttons: serialization is global, so the lockout must be too.
+    const fill = await screen.findByRole('button', { name: 'Fill' }) as HTMLButtonElement
+    expect(fill.disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Generate with AI' }) as HTMLButtonElement).disabled).toBe(true)
+    release!()
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Fill' }) as HTMLButtonElement).disabled).toBe(false))
   })
 })

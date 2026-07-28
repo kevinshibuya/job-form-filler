@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { ContentMessage, EnumField, Resolution, SelfCheck } from '@jff/shared'
+import type { ContentMessage, EnumField, FillReport, Resolution, SelfCheck } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
@@ -7,7 +7,7 @@ import { groupRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, type HostPort } from './port'
 import { ProfileEditor } from './ProfileEditor'
 import { loadResume, saveResume } from './resume'
-import { runScan, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { runScan, ScanError, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createTabScope } from './tabScope'
@@ -25,7 +25,17 @@ export const hostnameOf = (url: string | undefined): string => {
   try { return new URL(url).hostname } catch { return '' }
 }
 
-export function App() {
+/** How long the auto-scan waits for the host's selfCheck before going ahead
+ *  anyway. A host that connects but never answers must not pin the panel on
+ *  'connecting' forever; the resolve step surfaces the host problem loudly. */
+export const HOST_WAIT_MS = 10_000
+
+export interface AppProps {
+  /** Injected only by tests, so the gate's timeout is provable without fake timers. */
+  hostWaitMs?: number
+}
+
+export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const portRef = useRef<HostPort | null>(null)
   // Seeded from the clock, not 0: storage.session snapshot rows outlive a panel
   // instance, so a fresh panel restarting at 1 on the same tab could merge a
@@ -62,6 +72,7 @@ export function App() {
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
   const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' } | null>(null)
+  const [gateOpen, setGateOpen] = useState(false)
 
   const groups = groupRows(fields, resolutions)
   const companyOrNull = company.trim() === '' ? null : company.trim()
@@ -173,10 +184,13 @@ export function App() {
   const onScan = async (): Promise<void> => {
     const port = portRef.current
     if (port === null || tabId === null || scanningRef.current) return
-    const tab = await getTab()
-    if (tab === null) return // the tab closed between the trigger and here
+    // Busy state and re-entry guard flip TOGETHER, before any await: between them
+    // the scan is already committed while the button would still read 'Scan'.
     scanningRef.current = true
+    setScanning(true)
     try {
+      const tab = await getTab()
+      if (tab === null) return // the tab closed between the trigger and here
       // A previous application on this same tab may have left snapshot rows in
       // storage.session; they must never merge into this scan's save.
       const staleKeys = Object.keys(await chrome.storage.session.get(null))
@@ -187,7 +201,6 @@ export function App() {
       // Company: the user's edit always wins; guess only while the field is empty.
       const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
       if (co !== null && companyOrNull === null) setCompany(co)
-      setScanning(true)
       setFrameReports([])
       const out = await runScan({
         tabId,
@@ -225,8 +238,9 @@ export function App() {
       if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
       // DELIBERATE: these counts mirror the Filled/Proposed/Needs-input group
       // headers exactly (all `auto` resolutions count as "filled", including
-      // page-sourced ones). Verifying fills against JFF_FILL reply payloads is a
-      // future slice — spec's out-of-scope list.
+      // page-sourced ones). Verifying the SCAN's batched auto-fills against their
+      // JFF_FILL reports is a future slice — spec's out-of-scope list. (Accept and
+      // Fill, which the user triggers one at a time, DO check theirs: see fillOne.)
       const filled = out.resolutions.filter((r) => r.tier === 'auto').length
       const proposed = out.resolutions.filter((r) => r.tier === 'proposed').length
       const needsInput = out.resolutions.filter((r) => r.tier === 'needs_input').length
@@ -234,7 +248,9 @@ export function App() {
       // also be field-less; the captcha is the actionable fact.
       setScanStatus(
         out.activeCaptcha ? { kind: 'captcha' }
-        : out.fields.length === 0 ? { kind: 'empty', frames: out.frameReports.length }
+        // DISTINCT frames: a frame that errored first-pass and replied on the retry
+        // contributes two reports but is still one frame on the page.
+        : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
         : out.llmError !== null ? { kind: 'failed', reason: ERROR_COPY[out.llmError.kind] }
         : { kind: 'done', filled, proposed, needsInput },
       )
@@ -244,7 +260,10 @@ export function App() {
       // Synthetic relay report (frameId -1): without it the diagnostics
       // disclosure could NEVER render for inject/broadcast failures, because
       // frameReports was cleared at scan start. ScanStatus renders -1 as "relay".
-      setFrameReports([{ frameId: -1, url: null, fields: null, error: reason }])
+      // A ScanError died AFTER enumerating, so its evidence is kept and the
+      // synthetic row APPENDED to it, never substituted for it.
+      const relayRow: FrameReport = { frameId: -1, url: null, fields: null, error: reason }
+      setFrameReports(e instanceof ScanError ? [...e.frameReports, relayRow] : [relayRow])
     } finally {
       setScanning(false)
       scanningRef.current = false
@@ -258,11 +277,21 @@ export function App() {
   // on `hostError` directly would re-fire the auto-scan every time a later host
   // error (e.g. an llmError) sets it — an accidental scan loop.
   const hostAnswered = check !== null || hostError !== null
+  // The wait is BOUNDED: a host that connects but never answers would otherwise
+  // pin the panel on 'connecting' forever (before the gate existed the scan just
+  // fired). After the deadline the scan runs anyway and its resolve call surfaces
+  // the host problem loudly. `gateOpen` latches false->true exactly once, so the
+  // late arrival of a selfCheck AFTER the deadline cannot fire a second scan.
+  useEffect(() => {
+    if (hostAnswered) { setGateOpen(true); return }
+    const timer = setTimeout(() => setGateOpen(true), hostWaitMs)
+    return () => clearTimeout(timer)
+  }, [hostAnswered, hostWaitMs])
   useEffect(() => {
     if (tabId === null) return
-    if (!hostAnswered) { setScanStatus({ kind: 'connecting' }); return }
+    if (!gateOpen) { setScanStatus({ kind: 'connecting' }); return }
     void onScan()
-  }, [tabId, scanNonce, hostAnswered])
+  }, [tabId, scanNonce, gateOpen])
 
   /** Put one value on the page. Shared by Accept and Fill; what they additionally
    *  CONFIRM is the only difference between them. THROWS if the relay or the
@@ -272,8 +301,14 @@ export function App() {
     const { replies } = await sendToTab(row.field.frameId, {
       type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }],
     })
-    const p = replies[0]?.payload as { ok?: boolean; error?: string } | undefined
+    const p = replies[0]?.payload as { ok?: boolean; error?: string; fill?: FillReport } | undefined
     if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the fill')
+    // An `ok` ENVELOPE is not a filled field: the content script answers ok:true
+    // with a per-field `failed` list (no-matching-option, element-not-found,
+    // click-rejected, unsupported-widget). Confirming on that is how a row got
+    // marked "on the page" while the page never took the value.
+    const failed = p.fill?.failed ?? []
+    if (failed.length > 0) throw new Error(failed[0]!.reason)
   }
 
   const onAccept = async (ref: string): Promise<void> => {
@@ -500,6 +535,7 @@ export function App() {
                       generating={generatingRef === row.ref}
                       filled={filledRefs.includes(row.ref)}
                       acting={acting !== null && acting.ref === row.ref ? acting.action : null}
+                      locked={acting !== null}
                     />
                   ))}
                 </ul>
