@@ -2,6 +2,7 @@ import { ContentMessageSchema, FillReportSchema, ScanResultSchema, STALE_EPOCH }
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
 import { fillFields } from './fill'
+import { installSnapshotListeners, snapshotValues } from './snapshot'
 
 declare global {
   interface Window { __jffLoaded?: boolean }
@@ -41,11 +42,21 @@ async function handle(raw: unknown): Promise<unknown> {
       epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document),
     })
     if (!scan.success) return { ok: false, error: 'bad_scan' }
+    installSnapshotListeners(document, (snap) => {
+      // Fire-and-forget: beforeunload cannot await. The SW stamps sender.tab.id
+      // and sender.frameId (this script can know neither), persists the snapshot
+      // under a per-tab-per-frame storage.session key, and re-broadcasts it.
+      try { void chrome.runtime.sendMessage({ kind: 'fromContent', type: 'JFF_SNAPSHOT_PUSH', snap }) } catch { /* frame tearing down */ }
+    })
     return { ok: true, scan: scan.data }
   }
 
   // Every other message must match the epoch this frame was last scanned at.
   if (msg.epoch !== getEpoch()) return { ok: false, error: STALE_EPOCH }
+
+  if (msg.type === 'JFF_SNAPSHOT') {
+    return { ok: true, snapshot: { epoch: msg.epoch, values: snapshotValues(document) } }
+  }
 
   if (msg.type === 'JFF_FILL') {
     const report = FillReportSchema.safeParse({ epoch: msg.epoch, ...(await fillFields(document, msg.fills)) })

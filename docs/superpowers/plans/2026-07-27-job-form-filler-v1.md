@@ -6169,7 +6169,7 @@ epoch is not the current scan's.
   - `type SnapshotPayload = { epoch: number; values: Record<number, string> }`
   - `snapshotKey(tabId: number, frameId: number): string` and `SNAPSHOT_KEY_RE` in `extension/src/snapshotKey.ts` (imported by both the SW and the panel)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `extension/src/content/snapshot.test.ts`:
 
@@ -6219,11 +6219,12 @@ describe('installSnapshotListeners', () => {
     enumerateFields({ root: document, epoch: 7, measure: allVisible })
     ;(document.getElementById('a') as HTMLInputElement).value = 'final'
     const push = vi.fn()
-    installSnapshotListeners(document, push)
+    const uninstall = installSnapshotListeners(document, push)
     // A bubble-phase listener that stops propagation must NOT suppress our capture listener.
     document.getElementById('f')!.addEventListener('submit', (e) => { e.stopPropagation(); e.preventDefault() })
     document.getElementById('f')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     expect(push).toHaveBeenCalledWith({ epoch: 7, values: { 0: 'final' } })
+    uninstall() // module-level install guard is shared across `it()` blocks in this file; release it
   })
 
   it('pushes a snapshot on beforeunload', () => {
@@ -6231,9 +6232,10 @@ describe('installSnapshotListeners', () => {
     enumerateFields({ root: document, epoch: 7, measure: allVisible })
     ;(document.getElementById('a') as HTMLInputElement).value = 'leaving'
     const push = vi.fn()
-    installSnapshotListeners(document, push)
+    const uninstall = installSnapshotListeners(document, push)
     window.dispatchEvent(new Event('beforeunload'))
     expect(push).toHaveBeenCalledWith({ epoch: 7, values: { 0: 'leaving' } })
+    uninstall() // module-level install guard is shared across `it()` blocks in this file; release it
   })
 
   it('installs exactly once and the returned uninstall stops further pushes', () => {
@@ -6251,12 +6253,12 @@ describe('installSnapshotListeners', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/content/snapshot.test.ts`
 Expected: FAIL — `Cannot find module './snapshot'`.
 
-- [ ] **Step 3: Implement the snapshot**
+- [x] **Step 3: Implement the snapshot**
 
 `extension/src/content/snapshot.ts`:
 
@@ -6314,12 +6316,23 @@ export function installSnapshotListeners(root: Document, push: (snap: SnapshotPa
 }
 ```
 
-- [ ] **Step 4: Run the snapshot test to verify it passes**
+- [x] **Step 4: Run the snapshot test to verify it passes**
 
 Run: `npx vitest run extension/src/content/snapshot.test.ts`
 Expected: PASS (6 tests).
 
-- [ ] **Step 5: Wire the push through the service worker (which stamps the sender)**
+**Deviation:** the given `installSnapshotListeners` test cases for the plain `submit` and
+`beforeunload` scenarios never called the returned uninstall function. `installed` is
+module-level state, and Vitest does not reset module state between individual `it()` blocks
+within one test file (only between files) — so the guard from the first test case latched
+permanently and the following two cases silently no-opped. Confirmed by running each `it()`
+in isolation (all pass alone) versus the full file (2 failures). Fixed by having those two
+cases capture and call `uninstall()` after their assertion, matching the pattern the third
+case already uses. The `snapshot.ts` implementation is unchanged from the plan — the guard's
+production behavior (idempotent install across repeated `JFF_SCAN` calls on one live content
+script instance) is correct as specified; only the test's cleanup was missing.
+
+- [x] **Step 5: Wire the push through the service worker (which stamps the sender)**
 
 Create `extension/src/snapshotKey.ts` — the one place the storage key format lives; the SW
 writes it and the panel reads it:
@@ -6373,7 +6386,7 @@ add this branch BEFORE the `inject`/`toContent` branches:
 with `import { snapshotKey } from './snapshotKey'` at the top. No `setAccessLevel` call is
 needed anywhere: only the SW and the panel (both trusted contexts) touch `storage.session`.
 
-- [ ] **Step 6: Prove the snapshot survives a real submit in the browser**
+- [x] **Step 6: Prove the snapshot survives a real submit in the browser**
 
 The project-owned fixture (Task 3 Step 7c) dispatches a REAL `submit` event before swapping
 the DOM, so the capture-phase listener observes it. Add this self-contained test to
@@ -6402,12 +6415,12 @@ test('a real submit pushes a per-tab-per-frame snapshot into storage.session', a
 })
 ```
 
-- [ ] **Step 7: Rebuild and run the smoke**
+- [x] **Step 7: Rebuild and run the smoke**
 
 Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
