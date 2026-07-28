@@ -3,6 +3,7 @@
 // ~30s idle; a native port living here would die mid-`claude -p` call.)
 
 import { snapshotKey } from './snapshotKey'
+import { broadcast, type RelayDeps } from './relay'
 
 chrome.runtime.onInstalled.addListener(() => {
   // Must stay false: openPanelOnActionClick would suppress action.onClicked.
@@ -16,6 +17,13 @@ chrome.action.onClicked.addListener((tab) => {
 type RelayRequest =
   | { kind: 'inject'; tabId: number }
   | { kind: 'toContent'; tabId: number; frameId?: number; message: unknown }
+
+const relayDeps: RelayDeps = {
+  discoverFrames: async (tabId) =>
+    (await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: () => location.href }))
+      .map((r) => ({ frameId: r.frameId, url: typeof r.result === 'string' ? r.result : null })),
+  sendToFrame: (tabId, frameId, message) => chrome.tabs.sendMessage(tabId, message, { frameId }),
+}
 
 chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   const req = raw as RelayRequest
@@ -40,31 +48,15 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     return true
   }
   if (req?.kind === 'toContent') {
-    const opts = req.frameId != null ? { frameId: req.frameId } : {}
-    // Broadcast to every frame when no frameId is given, stamping each reply with
-    // the frame it came from — the content script cannot know its own frame id.
     if (req.frameId != null) {
       chrome.tabs
-        .sendMessage(req.tabId, req.message, opts)
-        .then((r) => sendResponse({ ok: true, replies: [{ frameId: req.frameId, payload: r }] }))
+        .sendMessage(req.tabId, req.message, { frameId: req.frameId })
+        .then((r) => sendResponse({ ok: true, replies: [{ frameId: req.frameId, url: null, payload: r }], failures: [] }))
         .catch((e: unknown) => sendResponse({ ok: false, error: String(e) }))
       return true
     }
-    // No webNavigation permission: frames are discovered via a no-op executeScript.
-    chrome.scripting
-      .executeScript({ target: { tabId: req.tabId, allFrames: true }, func: () => true })
-      .then(async (frames) => {
-        const replies: { frameId: number; payload: unknown }[] = []
-        for (const f of frames) {
-          try {
-            const payload = await chrome.tabs.sendMessage(req.tabId, req.message, { frameId: f.frameId })
-            replies.push({ frameId: f.frameId, payload })
-          } catch {
-            // frame gone or content script not injected there; skip it
-          }
-        }
-        sendResponse({ ok: true, replies })
-      })
+    broadcast(relayDeps, req.tabId, req.message)
+      .then((out) => sendResponse({ ok: true, ...out }))
       .catch((e: unknown) => sendResponse({ ok: false, error: String(e) }))
     return true
   }
