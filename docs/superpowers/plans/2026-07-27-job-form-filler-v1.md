@@ -1366,7 +1366,12 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: 60_000,
+  // MEASURED post-execution, not guessed: every test launches its own Chromium with
+  // the unpacked extension, and that launch cost tracks machine load. Same suite,
+  // same commit: idle -> 11 passed in 1.7m; loaded -> 2 failed in 6.5m with the same
+  // test at 31.4s vs 4.7s. 60s left the launch consuming half the budget. Verified at
+  // 180s with all 8 cores saturated: 11/11 passed, slowest test 57.4s.
+  timeout: 180_000,
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],
@@ -10239,7 +10244,7 @@ A fourth change is a harness budget, not an assertion: these two tests each laun
 spawn a host child and drive the whole loop, and `chrome.scripting.executeScript` (the SW's
 frame-discovery call, one per broadcast) has latency that tracks machine load — measured
 between 16ms and 40s for the identical call on the same box. Put
-`test.describe.configure({ timeout: 120_000 })` at file scope. The per-assertion 30s timeouts
+`test.describe.configure({ timeout: 240_000 })` at file scope. The per-assertion 60s timeouts
 below are the real budgets and stay exactly as written, so a genuinely broken loop still fails
 fast.
 
@@ -10286,7 +10291,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // SCAN: the panel auto-scans on open. Do NOT also click Scan — a second
     // runScan would overlap the first, and the loser's fills land under a stale
     // epoch, leaving the form half-filled nondeterministically.
-    await expect(panel.locator('[data-jff-group="auto"]')).toBeVisible({ timeout: 30_000 })
+    await expect(panel.locator('[data-jff-group="auto"]')).toBeVisible({ timeout: 60_000 })
 
     // The deterministic recognizers filled the page for real.
     await expect(target.locator('#first_name')).toHaveValue('Kevin')
@@ -10305,7 +10310,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // Assert the DRAFT ARRIVED, not that a button vanished: `toHaveCount(0)` on
     // 'Drafting…' passes in the window before the state lands, which would make
     // every assertion after it race the generate call.
-    await expect(bugRow.locator('textarea')).toHaveValue(/production TypeScript/, { timeout: 30_000 })
+    await expect(bugRow.locator('textarea')).toHaveValue(/production TypeScript/, { timeout: 60_000 })
 
     // FILL: the spec's loop is generate -> edit -> fill. Clicking Fill is what puts
     // the draft on the page; without it the draft dies in the panel textarea and
@@ -10327,7 +10332,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
 
     // SAVE.
     await panel.getByRole('button', { name: 'Save answers' }).click()
-    await expect(panel.locator('[data-jff-savemsg="1"]')).toContainText('Saved', { timeout: 30_000 })
+    await expect(panel.locator('[data-jff-savemsg="1"]')).toContainText('Saved', { timeout: 60_000 })
 
     // The rows really landed in SQLite.
     const db = new DatabaseCtor(host.dbPath, { readonly: true })
@@ -10391,7 +10396,7 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
     await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
 
     // The auto-scan on open is the scan; clicking Scan again would race it.
-    await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 30_000 })
+    await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 60_000 })
     // Deterministic fills still happened; only the LLM tier degraded.
     await expect(panel.locator('[data-jff-group="needs_input"]')).toBeVisible()
     await expect(target.locator('#first_name')).toHaveValue('Kevin')

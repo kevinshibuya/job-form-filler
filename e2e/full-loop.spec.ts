@@ -38,13 +38,19 @@ const STUB_SELECTOR = '.g-recaptcha'
  * These two are the heaviest tests in the repo: each launches its own Chromium
  * with the unpacked extension, spawns a real host child process, and drives the
  * whole loop across a service worker relay and two frames. The per-assertion
- * timeouts below are the real budgets and stay as written; this only widens the
- * WALL-CLOCK envelope, because `chrome.scripting.executeScript` (the SW's frame
- * discovery, one call per broadcast) is the single step whose latency tracks
- * machine load rather than anything this code does. A genuinely broken loop
- * still fails fast on the 30s assertion timeouts.
+ * timeouts below are the real behavioural budgets; this widens the WALL-CLOCK
+ * envelope, because `chrome.scripting.executeScript` (the SW's frame discovery,
+ * one call per broadcast) is the single step whose latency tracks machine load
+ * rather than anything this code does. A genuinely broken loop still fails fast
+ * on the per-assertion timeouts.
+ *
+ * The assertion budgets were 30s and MEASURED TOO TIGHT: on a loaded machine the
+ * rate-limit banner assertion timed out at 30s while passing in 13.1s on an idle
+ * one (and the whole test ran 51.9s isolated against a then-60s envelope). 60s
+ * assertions inside a 240s envelope keep the failure mode meaningful without
+ * failing correct code because the machine was busy.
  */
-test.describe.configure({ timeout: 120_000 })
+test.describe.configure({ timeout: 240_000 })
 
 test('scan, resolve, fill, snapshot and save round-trips through the real host into SQLite', async () => {
   const fixtures = await startFixtureServer()
@@ -81,7 +87,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // SCAN: the panel auto-scans on open. Do NOT also click Scan — a second
     // runScan would overlap the first, and the loser's fills land under a stale
     // epoch, leaving the form half-filled nondeterministically.
-    await expect(panel.locator('[data-jff-group="auto"]')).toBeVisible({ timeout: 30_000 })
+    await expect(panel.locator('[data-jff-group="auto"]')).toBeVisible({ timeout: 60_000 })
 
     // The deterministic recognizers filled the page for real.
     await expect(target.locator('#first_name')).toHaveValue('Kevin')
@@ -100,7 +106,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // Assert the DRAFT ARRIVED, not that a button vanished: `toHaveCount(0)` on
     // 'Drafting…' passes in the window before the state lands, which would make
     // every assertion after it race the generate call.
-    await expect(bugRow.locator('textarea')).toHaveValue(/production TypeScript/, { timeout: 30_000 })
+    await expect(bugRow.locator('textarea')).toHaveValue(/production TypeScript/, { timeout: 60_000 })
 
     // FILL: the spec's loop is generate -> edit -> fill. Clicking Fill is what puts
     // the draft on the page; without it the draft dies in the panel textarea and
@@ -122,7 +128,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
 
     // SAVE.
     await panel.getByRole('button', { name: 'Save answers' }).click()
-    await expect(panel.locator('[data-jff-savemsg="1"]')).toContainText('Saved', { timeout: 30_000 })
+    await expect(panel.locator('[data-jff-savemsg="1"]')).toContainText('Saved', { timeout: 60_000 })
 
     // The rows really landed in SQLite.
     const db = new DatabaseCtor(host.dbPath, { readonly: true })
@@ -189,7 +195,7 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
     await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
 
     // The auto-scan on open is the scan; clicking Scan again would race it.
-    await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 30_000 })
+    await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 60_000 })
     // Deterministic fills still happened; only the LLM tier degraded.
     await expect(panel.locator('[data-jff-group="needs_input"]')).toBeVisible()
     await expect(target.locator('#first_name')).toHaveValue('Kevin')
