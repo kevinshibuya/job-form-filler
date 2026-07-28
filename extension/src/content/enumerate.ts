@@ -1,5 +1,8 @@
 import type { EnumField, WidgetKind } from '@jff/shared'
-import { countUnreachableWidgets, groupLabelFor, isSoleControl, kindOf, labelFor, optionLabelOf, scopeOf, walkElements } from './dom'
+import {
+  countUnreachableWidgets, DEMOGRAPHIC_RE, descriptionFor, groupLabelFor, isSoleControl, kindOf,
+  labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements, type LabelBinding,
+} from './dom'
 
 export interface Measure {
   display: string
@@ -111,7 +114,10 @@ function currentValueOf(el: Element, kind: WidgetKind): string | null {
   if (kind === 'select') {
     const sel = el as HTMLSelectElement
     const opt = sel.selectedOptions[0]
-    const t = (opt?.textContent ?? '').trim()
+    // A "Select…" placeholder (empty value or disabled) is a prompt, not a
+    // page-sourced value: it must resolve through the normal waterfall.
+    if (opt === undefined || opt.value === '' || opt.disabled) return null
+    const t = (opt.textContent ?? '').trim()
     return t === '' ? null : t
   }
   if (kind === 'checkbox') return (el as HTMLInputElement).checked ? 'true' : null
@@ -124,6 +130,13 @@ function currentValueOf(el: Element, kind: WidgetKind): string | null {
   }
   const v = (el as HTMLInputElement | HTMLTextAreaElement).value
   return typeof v === 'string' && v !== '' ? v : null
+}
+
+/** Native requiredness OR the ATS conventions carried by the bound label. */
+function requiredOf(el: Element, binding: LabelBinding): boolean {
+  return (el as HTMLInputElement).required === true
+    || el.getAttribute('aria-required') === 'true'
+    || requiredFromBinding(binding)
 }
 
 export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; unreachableWidgets: number } {
@@ -144,39 +157,83 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
     if (kind === null) continue
 
     const m = measure(el)
-    const visible = kind === 'file'
-      ? true // Greenhouse hides the real file input behind a dropzone button
-      : !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden')
+    // HONEST visibility for every kind, file included: the blanket file
+    // exemption moved to the panel filter (junk.ts), which keeps hidden file
+    // inputs only when they carry a resolvable label (A8 adds scoring).
+    // `clipped` counts: the visually-hidden recipe (1px box / clip:rect(0 0 0 0))
+    // is how ATS pages hide real controls, so a clipped control is NOT visible.
+    const visible = !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden' || m.clipped)
 
     if (kind === 'radiogroup') {
       const name = el.getAttribute('name')
       const groupKey = name === null || name === '' ? `__fid_${fid}` : name
       const existing = radioGroups.get(groupKey)
-      const optionLabel = optionLabelOf(el)
-      const checked = (el as HTMLInputElement).checked
       if (existing !== undefined) {
+        // A choice group is complete at its first member: the buttons are the
+        // options, so later same-name radios contribute nothing.
+        if (existing.kind === 'choice') continue
+        const optionLabel = optionLabelOf(el)
         existing.options.push(optionLabel)
         if ((el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true') existing.required = true
-        if (checked) existing.currentValue = optionLabel
+        if ((el as HTMLInputElement).checked) existing.currentValue = optionLabel
         continue
       }
-      const group: EnumField = {
-        frameId: -1, fid, epoch: opts.epoch,
-        // groupLabelFor, NOT labelFor: the wrapping <label> of the first radio is
-        // that OPTION's text ("Remote"), never the group's ("Work model").
-        label: groupLabelFor(el).text, name, idAttr: el.id === '' ? null : el.id,
-        kind: 'radiogroup', options: [optionLabel],
-        required: (el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true',
-        visible, currentValue: checked ? optionLabel : null,
-        demographic: isDemographic(el),
-      }
-      // Only the FIRST radio of a group carries data-jff-fid; the filler re-finds
-      // the other members through the shared name attribute (fill.ts).
+
+      // groupLabelFor, NOT labelFor: the wrapping <label> of the first radio is
+      // that OPTION's text ("Remote"), never the group's ("Work model").
+      const binding = groupLabelFor(el)
+      const choice = selfHidden(m) ? detectChoice(el) : null
+      const group: EnumField = choice !== null
+        ? {
+            frameId: -1, fid, epoch: opts.epoch,
+            label: binding.text, name, idAttr: el.id === '' ? null : el.id,
+            // Options are the BUTTON texts verbatim (i18n-safe), never the
+            // radio option labels and never boolean-mapped.
+            kind: 'choice', options: choice.options,
+            required: requiredOf(el, binding),
+            visible,
+            // Which button a checked hidden radio maps to is not observable
+            // here; null is honest and routes through the normal waterfall.
+            currentValue: null,
+            demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+            description: descriptionFor(el, binding) ?? undefined,
+          }
+        : {
+            frameId: -1, fid, epoch: opts.epoch,
+            label: binding.text, name, idAttr: el.id === '' ? null : el.id,
+            kind: 'radiogroup', options: [optionLabelOf(el)],
+            required: requiredOf(el, binding),
+            visible, currentValue: (el as HTMLInputElement).checked ? optionLabelOf(el) : null,
+            demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+            description: descriptionFor(el, binding) ?? undefined,
+          }
+      // Only the FIRST member carries data-jff-fid; the filler re-finds the
+      // other members through the shared name (fill.ts) or, for choice, the
+      // buttons structurally via detectChoice (B1).
       el.setAttribute(FID_ATTR, String(fid))
       radioGroups.set(groupKey, group)
       fields.push(group)
       fid++
       continue
+    }
+
+    if (kind === 'checkbox' && selfHidden(m)) {
+      const choice = detectChoice(el)
+      if (choice !== null) {
+        const binding = labelFor(el)
+        el.setAttribute(FID_ATTR, String(fid))
+        fields.push({
+          frameId: -1, fid, epoch: opts.epoch,
+          label: binding.text, name: el.getAttribute('name'), idAttr: el.id === '' ? null : el.id,
+          kind: 'choice', options: choice.options,
+          required: requiredOf(el, binding),
+          visible, currentValue: null,
+          demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+          description: descriptionFor(el, binding) ?? undefined,
+        })
+        fid++
+        continue
+      }
     }
 
     let options: string[] = []
@@ -188,14 +245,16 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       options = comboboxOptions(el)
     }
 
+    const binding = labelFor(el)
     el.setAttribute(FID_ATTR, String(fid))
     fields.push({
       frameId: -1, fid, epoch: opts.epoch,
-      label: labelFor(el).text, name: el.getAttribute('name'), idAttr: el.id === '' ? null : el.id,
+      label: binding.text, name: el.getAttribute('name'), idAttr: el.id === '' ? null : el.id,
       kind, options,
-      required: (el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true',
+      required: requiredOf(el, binding),
       visible, currentValue: currentValueOf(el, kind),
-      demographic: isDemographic(el),
+      demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+      description: descriptionFor(el, binding) ?? undefined,
     })
     fid++
   }
