@@ -124,3 +124,24 @@ test('a fill carrying a stale epoch is rejected', async () => {
     await t.close()
   }
 })
+
+test('a real submit pushes a per-tab-per-frame snapshot into storage.session', async () => {
+  const t = await openFixtureTab()
+  try {
+    await t.send({ type: 'JFF_SCAN', epoch: 40 }) // stamps fids + installs listeners
+    await t.target.fill('#first_name', 'Kevin')
+    await t.target.selectOption('#work_auth', { index: 1 })
+    await t.target.fill('#hard_bug', 'typed by hand')
+    await t.target.click('#submit_app')
+    await expect(t.target.locator('#application-confirmation')).toBeVisible()
+
+    const stored = await t.panel.evaluate(() => chrome.storage.session.get(null)) as
+      Record<string, { epoch: number; values: Record<string, string> }>
+    const key = `jff:snap:${t.tabId}:0`
+    expect(Object.keys(stored)).toContain(key)
+    expect(stored[key]!.epoch).toBe(40)
+    expect(Object.values(stored[key]!.values)).toContain('typed by hand')
+  } finally {
+    await t.close()
+  }
+})
