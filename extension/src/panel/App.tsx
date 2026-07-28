@@ -7,10 +7,11 @@ import { groupRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, type HostPort } from './port'
 import { ProfileEditor } from './ProfileEditor'
 import { loadResume, saveResume } from './resume'
-import { runScan, type FrameReply } from './scan'
+import { runScan, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { ScanStatus, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createTabScope } from './tabScope'
-import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
+import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
 
 /**
@@ -55,6 +56,12 @@ export function App() {
   const [snapshot, setSnapshot] = useState<Record<string, string>>({})
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [reuseOverrides, setReuseOverrides] = useState<Record<string, 'reusable' | 'company_specific'>>({})
+  const [scanning, setScanning] = useState(false)
+  const [scanStatus, setScanStatus] = useState<ScanUiState | null>(null)
+  const [frameReports, setFrameReports] = useState<FrameReport[]>([])
+  const [saving, setSaving] = useState(false)
+  const [picking, setPicking] = useState(false)
+  const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' } | null>(null)
 
   const groups = groupRows(fields, resolutions)
   const companyOrNull = company.trim() === '' ? null : company.trim()
@@ -78,6 +85,7 @@ export function App() {
     setFields([]); setResolutions([]); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
     setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
     setReuseOverrides({})
+    setScanStatus(null); setFrameReports([])
   }
 
   useEffect(() => {
@@ -143,9 +151,14 @@ export function App() {
 
   /* --------------------------------------------------------------- actions */
 
-  const sendToTab = async (frameId: number | undefined, message: ContentMessage): Promise<FrameReply[]> => {
-    const res = await chrome.runtime.sendMessage({ kind: 'toContent', tabId, frameId, message })
-    return (res as { replies?: FrameReply[] }).replies ?? []
+  const sendToTab = async (frameId: number | undefined, message: ContentMessage): Promise<SendResult> => {
+    const res = await chrome.runtime.sendMessage({ kind: 'toContent', tabId, frameId, message }) as
+      { ok?: boolean; error?: string; replies?: FrameReply[]; failures?: RelayFailure[] } | undefined
+    // A relay that answers ok:false — or does not answer at all — is a failure the
+    // user must SEE. The old `?? []` here is how three real failure modes rendered
+    // as "nothing happened".
+    if (res?.ok !== true) throw new Error(res?.error ?? 'The extension background did not answer.')
+    return { replies: res.replies ?? [], failures: res.failures ?? [] }
   }
 
   /** chrome.tabs.get REJECTS once the bound tab is gone; every caller here runs
@@ -174,14 +187,24 @@ export function App() {
       // Company: the user's edit always wins; guess only while the field is empty.
       const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
       if (co !== null && companyOrNull === null) setCompany(co)
+      setScanning(true)
+      setFrameReports([])
       const out = await runScan({
         tabId,
         nextEpoch: () => ++epochRef.current,
         inject: async () => {
-          const r = await chrome.runtime.sendMessage({ kind: 'inject', tabId })
-          return (r as { frames?: number[] }).frames ?? []
+          const r = await chrome.runtime.sendMessage({ kind: 'inject', tabId }) as
+            { ok?: boolean; error?: string; frames?: number[] } | undefined
+          if (r?.ok !== true) throw new Error(r?.error ?? 'Could not reach the page.')
+          return r.frames ?? []
         },
         sendToTab,
+        onProgress: (p: ScanProgress) => setScanStatus(
+          p.phase === 'enumerating' ? { kind: 'enumerating', frames: p.frames }
+          : p.phase === 'resolving' ? { kind: 'resolving', fields: p.fields }
+          : { kind: p.phase },
+        ),
+        sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
         port,
         getResume: loadResume,
         pastedJobText: jobText,
@@ -193,13 +216,37 @@ export function App() {
       setResolutions(out.resolutions)
       setUnreachable(out.unreachableWidgets)
       setActiveCaptcha(out.activeCaptcha)
+      setFrameReports(out.frameReports)
       setEdits({})
       setGeneratedRefs([])
       setFilledRefs([])
       setSnapshot({})
       if (out.jobText !== '') setJobText(out.jobText)
       if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
+      // DELIBERATE: these counts mirror the Filled/Proposed/Needs-input group
+      // headers exactly (all `auto` resolutions count as "filled", including
+      // page-sourced ones). Verifying fills against JFF_FILL reply payloads is a
+      // future slice — spec's out-of-scope list.
+      const filled = out.resolutions.filter((r) => r.tier === 'auto').length
+      const proposed = out.resolutions.filter((r) => r.tier === 'proposed').length
+      const needsInput = out.resolutions.filter((r) => r.tier === 'needs_input').length
+      // Precedence: captcha > empty > llm failure > done. A captcha'd page may
+      // also be field-less; the captcha is the actionable fact.
+      setScanStatus(
+        out.activeCaptcha ? { kind: 'captcha' }
+        : out.fields.length === 0 ? { kind: 'empty', frames: out.frameReports.length }
+        : out.llmError !== null ? { kind: 'failed', reason: ERROR_COPY[out.llmError.kind] }
+        : { kind: 'done', filled, proposed, needsInput },
+      )
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e)
+      setScanStatus({ kind: 'failed', reason })
+      // Synthetic relay report (frameId -1): without it the diagnostics
+      // disclosure could NEVER render for inject/broadcast failures, because
+      // frameReports was cleared at scan start. ScanStatus renders -1 as "relay".
+      setFrameReports([{ frameId: -1, url: null, fields: null, error: reason }])
     } finally {
+      setScanning(false)
       scanningRef.current = false
     }
   }
@@ -207,33 +254,50 @@ export function App() {
   // Auto-scan on open and after the bound tab NAVIGATES (a wizard step is new DOM).
   // Deliberately NOT keyed on resetCount: a tab switch or close clears state
   // without spending another batched `claude -p` resolve.
-  useEffect(() => { if (tabId !== null) void onScan() }, [tabId, scanNonce])
+  // `hostAnswered` latches false->true ONCE (selfCheck answers or fails); keying
+  // on `hostError` directly would re-fire the auto-scan every time a later host
+  // error (e.g. an llmError) sets it — an accidental scan loop.
+  const hostAnswered = check !== null || hostError !== null
+  useEffect(() => {
+    if (tabId === null) return
+    if (!hostAnswered) { setScanStatus({ kind: 'connecting' }); return }
+    void onScan()
+  }, [tabId, scanNonce, hostAnswered])
 
   /** Put one value on the page. Shared by Accept and Fill; what they additionally
-   *  CONFIRM is the only difference between them. */
+   *  CONFIRM is the only difference between them. THROWS if the relay or the
+   *  frame refused the fill — callers must not confirm anything on a throw. */
   const fillOne = async (row: Row, value: string): Promise<void> => {
     if (tabId === null || value === '') return
-    await chrome.runtime.sendMessage({
-      kind: 'toContent', tabId, frameId: row.field.frameId,
-      message: { type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }] },
+    const { replies } = await sendToTab(row.field.frameId, {
+      type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }],
     })
+    const p = replies[0]?.payload as { ok?: boolean; error?: string } | undefined
+    if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the fill')
   }
 
   const onAccept = async (ref: string): Promise<void> => {
     const row = groups.proposed.find((r) => r.ref === ref)
-    if (row === undefined) return
+    if (row === undefined || acting !== null) return
     const value = edits[ref] ?? row.resolution.value ?? ''
     if (value === '') return
-    await fillOne(row, value)
-    // Accepting an AI key match IS the user confirmation the spec's
-    // learned_mappings flow needs: promote it to a deterministic mapping.
-    if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
-      void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
+    setActing({ ref, action: 'accept' })
+    try {
+      await fillOne(row, value)
+      // Accepting an AI key match IS the user confirmation the spec's
+      // learned_mappings flow needs: promote it to a deterministic mapping.
+      if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
+        void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
+      }
+      // Promote the TIER only. Writing `value` back onto the resolution would make
+      // engine === final in buildSaveItems and silently drop every user correction
+      // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
+      setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)))
+    } catch (e) {
+      setScanStatus({ kind: 'action_failed', reason: `Accept failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setActing(null)
     }
-    // Promote the TIER only. Writing `value` back onto the resolution would make
-    // engine === final in buildSaveItems and silently drop every user correction
-    // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
-    setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)))
   }
 
   /** Closes the spec's [Generate] loop: draft, edit, then put it on the page.
@@ -241,11 +305,18 @@ export function App() {
    *  row has no LLM-proposed key, only an answer the user wrote. */
   const onFill = async (ref: string): Promise<void> => {
     const row = groups.needs_input.find((r) => r.ref === ref)
-    if (row === undefined) return
+    if (row === undefined || acting !== null) return
     const value = edits[ref] ?? row.resolution.value ?? ''
     if (value.trim() === '') return
-    await fillOne(row, value)
-    setFilledRefs((f) => (f.includes(ref) ? f : [...f, ref]))
+    setActing({ ref, action: 'fill' })
+    try {
+      await fillOne(row, value)
+      setFilledRefs((f) => (f.includes(ref) ? f : [...f, ref]))
+    } catch (e) {
+      setScanStatus({ kind: 'action_failed', reason: `Fill failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setActing(null)
+    }
   }
 
   const onGenerate = async (ref: string): Promise<void> => {
@@ -269,16 +340,24 @@ export function App() {
   }
 
   const onPickJobText = async (): Promise<void> => {
-    if (tabId === null || fields.length === 0) return
-    // Always settles: click, Escape (pick_cancelled) or timeout (Task 17 Step 5).
-    const replies = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
-    const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
-    if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
-    setJobText(p.pick.text)
-    const tab = await getTab()
-    const hostname = hostnameOf(tab?.url)
-    if (hostname !== '') {
-      await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
+    if (tabId === null || fields.length === 0 || picking) return
+    setPicking(true)
+    try {
+      // Always settles: click, Escape (pick_cancelled) or timeout (Task 17 Step 5).
+      const { replies } = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
+      const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
+      if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
+      setJobText(p.pick.text)
+      const tab = await getTab()
+      const hostname = hostnameOf(tab?.url)
+      if (hostname !== '') {
+        await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
+      }
+    } catch (e) {
+      // A relay failure mid-pick is NOT a cancel: say so.
+      setScanStatus({ kind: 'action_failed', reason: `Pick failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setPicking(false)
     }
   }
 
@@ -301,31 +380,38 @@ export function App() {
 
   const onSaveAnswers = async (): Promise<void> => {
     const port = portRef.current
-    if (port === null || tabId === null) return
-    // Merge every snapshot source: SW-stamped pushes (state), the storage.session
-    // fallback (durable across a beforeunload race), and a fresh on-demand pull
-    // (returns {} if the form was already torn down; the pushes covered that).
-    const stored = await chrome.storage.session.get(null) as Record<string, StoredSnapshot>
-    const live: Record<string, string> = {
-      ...snapshot,
-      // Tab- and epoch-filtered in save.ts, where the rejection rules are tested.
-      ...mergeStoredSnapshots(stored, tabId, epochRef.current),
+    if (port === null || tabId === null || saving) return
+    setSaving(true)
+    try {
+      // Merge every snapshot source: SW-stamped pushes (state), the storage.session
+      // fallback (durable across a beforeunload race), and a fresh on-demand pull
+      // (returns {} if the form was already torn down; the pushes covered that).
+      const stored = await chrome.storage.session.get(null) as Record<string, StoredSnapshot>
+      const live: Record<string, string> = {
+        ...snapshot,
+        // Tab- and epoch-filtered in save.ts, where the rejection rules are tested.
+        ...mergeStoredSnapshots(stored, tabId, epochRef.current),
+      }
+      for (const r of (await sendToTab(undefined, { type: 'JFF_SNAPSHOT', epoch: epochRef.current })).replies) {
+        const p = r.payload as { ok: boolean; snapshot?: { values: Record<string, string> } }
+        if (p?.ok !== true || p.snapshot === undefined) continue
+        for (const [fid, v] of Object.entries(p.snapshot.values)) live[`${r.frameId}:${fid}`] = v
+      }
+      const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull })
+        .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
+      const tab = await getTab()
+      const r = await port.request<{ saved: number }>('save', {
+        url: tab?.url ?? '',
+        company: companyOrNull,
+        items,
+        generatedCount: generatedRefs.length,
+      })
+      setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : ERROR_COPY[r.error.kind])
+    } catch (e) {
+      setSaveMsg(`Save failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSaving(false)
     }
-    for (const r of await sendToTab(undefined, { type: 'JFF_SNAPSHOT', epoch: epochRef.current })) {
-      const p = r.payload as { ok: boolean; snapshot?: { values: Record<string, string> } }
-      if (p?.ok !== true || p.snapshot === undefined) continue
-      for (const [fid, v] of Object.entries(p.snapshot.values)) live[`${r.frameId}:${fid}`] = v
-    }
-    const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull })
-      .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
-    const tab = await getTab()
-    const r = await port.request<{ saved: number }>('save', {
-      url: tab?.url ?? '',
-      company: companyOrNull,
-      items,
-      generatedCount: generatedRefs.length,
-    })
-    setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : ERROR_COPY[r.error.kind])
   }
 
   /* ---------------------------------------------------------------- markup */
@@ -355,11 +441,15 @@ export function App() {
       )}
 
       <div className="my-2.5 flex items-center gap-2" data-jff-actions="1">
-        <button type="button" className={BTN_PRIMARY} disabled={tabId === null} onClick={onScan}>Scan</button>
+        <button type="button" className={BTN_PRIMARY} disabled={tabId === null || scanning} onClick={onScan}>
+          {busyLabel(scanning, 'Scan', 'Scanning…')}
+        </button>
         <button type="button" className={BTN} onClick={() => setShowEditor((s) => !s)}>
           {showEditor ? 'Back to fields' : 'Edit your facts'}
         </button>
       </div>
+
+      <ScanStatus status={scanStatus} reports={frameReports} />
 
       <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
         Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}
@@ -384,8 +474,8 @@ export function App() {
       <label className={`my-2.5 block ${MUTED}`} data-jff-paste="1">
         Job description (paste here if the scan could not find it)
         <textarea className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} onChange={(e) => setJobText(e.target.value)} />
-        <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0} onClick={onPickJobText}>
-          Pick job description
+        <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0 || picking} onClick={onPickJobText}>
+          {busyLabel(picking, 'Pick job description', 'Picking… (click the description on the page)')}
         </button>
       </label>
 
@@ -409,6 +499,7 @@ export function App() {
                       onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
                       generating={generatingRef === row.ref}
                       filled={filledRefs.includes(row.ref)}
+                      acting={acting !== null && acting.ref === row.ref ? acting.action : null}
                     />
                   ))}
                 </ul>
@@ -438,7 +529,9 @@ export function App() {
       )}
 
       <div className="my-2.5 flex items-center gap-2">
-        <button type="button" className={BTN_PRIMARY} onClick={onSaveAnswers}>Save answers</button>
+        <button type="button" className={BTN_PRIMARY} disabled={saving} onClick={onSaveAnswers}>
+          {busyLabel(saving, 'Save answers', 'Saving…')}
+        </button>
         {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
       </div>
     </main>
