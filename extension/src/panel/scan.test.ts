@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ContentMessage, EnumField, Resolution } from '@jff/shared'
 import type { HostPort } from './port'
-import { runScan, type ScanDeps } from './scan'
+import { runScan, ScanError, type ScanDeps } from './scan'
 
 const field = (frameId: number, fid: number, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: -1, fid, epoch: 0, label: `L${fid}`, name: `n${fid}`, idAttr: null, kind: 'text',
@@ -324,7 +324,10 @@ describe('runScan', () => {
     ])
   })
 
-  it('carries activeCaptcha through the empty outcome (captcha wins over empty in the UI)', async () => {
+  it('carries activeCaptcha through the empty outcome and does NOT retry past it', async () => {
+    // The retry's 1.5s delay is exactly long enough for a challenge frame to churn.
+    // Retrying could find fields with activeCaptcha back to false — and then fill
+    // past a challenge this scan already observed.
     const { deps, phases } = makeDeps({
       getResume: async () => null,
       sendToTab: vi.fn(async (_f, message: ContentMessage) => {
@@ -335,7 +338,81 @@ describe('runScan', () => {
     const out = await runScan(deps)
     expect(out.activeCaptcha).toBe(true)
     expect(out.fields).toEqual([])
-    // Zero fields still retries once, and NEVER reaches resolving under a captcha.
-    expect(phases).toEqual(['injecting', 'enumerating', 'retrying', 'injecting', 'enumerating'])
+    expect(phases).toEqual(['injecting', 'enumerating'])
+    expect(deps.inject).toHaveBeenCalledTimes(1)
+    expect(deps.sleep).not.toHaveBeenCalled()
+    expect(deps.port.request).not.toHaveBeenCalled()
+  })
+
+  it('does not resolve when a captcha-free retry would have found fields but the first pass was challenged', async () => {
+    // Mutation probe for the guard above: without it the second pass (fields, no
+    // captcha) sails straight into a paid resolve and a full auto-fill.
+    let calls = 0
+    const { deps, sent } = makeDeps({
+      getResume: async () => null,
+      sendToTab: vi.fn(async (_f, message: ContentMessage) => {
+        if (message.type === 'JFF_SCAN') {
+          calls++
+          return { replies: [{ frameId: 0, url: null, payload: { ok: true, scan: {
+            epoch: 1, fields: calls === 1 ? [] : [field(0, 0)],
+            unreachableWidgets: 0, activeCaptcha: calls === 1,
+          } } }], failures: [] }
+        }
+        return { replies: [], failures: [] }
+      }),
+    })
+    const out = await runScan(deps)
+    expect(calls).toBe(1)
+    expect(out.activeCaptcha).toBe(true)
+    expect(sent.map((m) => m.type)).not.toContain('JFF_FILL')
+    expect(deps.port.request).not.toHaveBeenCalledWith('resolve', expect.anything())
+  })
+
+  it('never resolves when the post-resume re-enumeration comes back empty', async () => {
+    // The resume upload can navigate the frame out from under us. PHASE 0's
+    // "zero fields costs zero host round-trips" rule holds here too.
+    let scans = 0
+    const { deps, phases } = makeDeps({
+      sendToTab: vi.fn(async (_f, message: ContentMessage) => {
+        if (message.type === 'JFF_SCAN') {
+          scans++
+          return { replies: [{ frameId: 0, url: 'https://ats.example/apply', payload: { ok: true, scan: {
+            epoch: scans, fields: scans === 1 ? [field(0, 0, { kind: 'file' })] : [],
+            unreachableWidgets: 0, activeCaptcha: false,
+          } } }], failures: [] }
+        }
+        if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+        return { replies: [{ frameId: 0, payload: { ok: true } }], failures: [] }
+      }),
+    })
+    const out = await runScan(deps)
+    expect(scans).toBe(2)
+    expect(out.fields).toEqual([])
+    expect(out.resolutions).toEqual([])
+    expect(phases).toEqual(['injecting', 'enumerating', 'enumerating'])
+    expect(deps.port.request).not.toHaveBeenCalledWith('resolve', expect.anything())
+  })
+
+  it('throws a ScanError carrying the enumeration evidence when a later step dies', async () => {
+    const { deps } = makeDeps({
+      getResume: async () => null,
+      sendToTab: vi.fn(async (_f, message: ContentMessage) => {
+        if (message.type === 'JFF_SCAN') {
+          return {
+            replies: [{ frameId: 0, url: 'https://top.example/', payload: { ok: true, scan: { epoch: 1, fields: [field(0, 0)], unreachableWidgets: 0, activeCaptcha: false } } }],
+            failures: [{ frameId: 7, url: 'https://ats.example/embed', error: 'no receiver' }],
+          }
+        }
+        throw new Error('relay died mid-scan')
+      }),
+    })
+    const err = await runScan(deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ScanError)
+    expect((err as ScanError).message).toBe('relay died mid-scan')
+    // The evidence the enumeration already paid for survives the failure.
+    expect((err as ScanError).frameReports).toEqual([
+      { frameId: 7, url: 'https://ats.example/embed', fields: null, error: 'no receiver' },
+      { frameId: 0, url: 'https://top.example/', fields: 1, error: null },
+    ])
   })
 })

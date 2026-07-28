@@ -20,7 +20,7 @@ const noop = () => undefined
 const props = {
   edited: null as string | null,
   onEdit: noop, onAccept: noop, onGenerate: noop, onFill: noop,
-  generating: false, filled: false, acting: null,
+  generating: false, filled: false, acting: null, locked: false,
 }
 
 const needsInput = (label = 'Why us?') =>
@@ -130,19 +130,30 @@ const needsInputRow: Row = { ref: '0:2', field: actingField(2), resolution: acti
 describe('FieldRow acting states', () => {
   it('shows Accepting… and disables the button while an accept is in flight', () => {
     // row fixture: tier 'proposed' with a value, as the file's existing proposed-row fixture builds it
-    render(<FieldRow row={proposedRow} edited={null} onEdit={noop} onAccept={noop} onGenerate={noop} onFill={noop} generating={false} filled={false} acting="accept" />)
+    render(<FieldRow {...props} row={proposedRow} acting="accept" locked={true} />)
     const btn = screen.getByRole('button', { name: 'Accepting…' }) as HTMLButtonElement
     expect(btn.disabled).toBe(true)
   })
 
   it('shows Filling… and disables Fill and Generate while a fill is in flight', () => {
-    render(<FieldRow row={needsInputRow} edited={'my answer'} onEdit={noop} onAccept={noop} onGenerate={noop} onFill={noop} generating={false} filled={false} acting="fill" />)
+    render(<FieldRow {...props} row={needsInputRow} edited="my answer" acting="fill" locked={true} />)
     expect((screen.getByRole('button', { name: 'Filling…' }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Generate with AI' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('renders idle labels when nothing is acting', () => {
-    render(<FieldRow row={proposedRow} edited={null} onEdit={noop} onAccept={noop} onGenerate={noop} onFill={noop} generating={false} filled={false} acting={null} />)
+    render(<FieldRow {...props} row={proposedRow} acting={null} />)
     expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  // Page writes are serialized in App, so a row that is NOT the acting one still
+  // cannot act. Leaving its buttons enabled makes the click a silent no-op.
+  it('disables every action on a row while ANOTHER row is acting', () => {
+    const { rerender } = render(<FieldRow {...props} row={proposedRow} acting={null} locked={true} />)
+    expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(true)
+
+    rerender(<FieldRow {...props} row={needsInputRow} edited="my answer" acting={null} locked={true} />)
+    expect((screen.getByRole('button', { name: 'Fill' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Generate with AI' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
