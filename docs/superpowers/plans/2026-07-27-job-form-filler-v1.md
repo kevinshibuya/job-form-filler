@@ -1931,7 +1931,7 @@ git commit -m "feat(host): native-messaging framing codec, 1MB cap, page/done ch
   - `pruneRequestLog(db, cutoffIso: string): void` — deletes ledger rows older than the cutoff; `openDb` calls it with a 7-day cutoff so the idempotency ledger cannot grow without bound.
   - Types `Lang = 'en' | 'pt'`, `QaRow`, `NewQaRow`.
 
-- [ ] **Step 1: Write the failing repo test**
+- [x] **Step 1: Write the failing repo test**
 
 `host/src/db/repos.test.ts`:
 
@@ -2046,12 +2046,12 @@ describe('applications and request idempotency', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/db/repos.test.ts`
 Expected: FAIL — cannot resolve `./repos.js`.
 
-- [ ] **Step 3: Write the schema**
+- [x] **Step 3: Write the schema**
 
 `host/src/db/schema.ts`:
 
@@ -2118,7 +2118,7 @@ export function migrate(db: Database.Database): void {
 }
 ```
 
-- [ ] **Step 4: Write the repositories**
+- [x] **Step 4: Write the repositories**
 
 `host/src/db/repos.ts`:
 
@@ -2325,12 +2325,12 @@ export function pruneRequestLog(db: Database.Database, cutoffIso: string): void 
 }
 ```
 
-- [ ] **Step 5: Run the repo test to verify it passes**
+- [x] **Step 5: Run the repo test to verify it passes**
 
 Run: `npx vitest run host/src/db/repos.test.ts`
 Expected: PASS (12 tests). If better-sqlite3 fails to load, run `npm rebuild better-sqlite3`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
