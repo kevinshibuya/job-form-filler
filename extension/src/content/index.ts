@@ -1,6 +1,7 @@
-import { ContentMessageSchema, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
+import { ContentMessageSchema, FillReportSchema, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
+import { fillFields } from './fill'
 
 declare global {
   interface Window { __jffLoaded?: boolean }
@@ -18,7 +19,7 @@ export function probeFrame(): { controlCount: number; url: string } {
   }
 }
 
-function handle(raw: unknown): unknown {
+async function handle(raw: unknown): Promise<unknown> {
   const parsed = ContentMessageSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: 'bad_message' }
   const msg = parsed.data
@@ -43,7 +44,17 @@ function handle(raw: unknown): unknown {
     return { ok: true, scan: scan.data }
   }
 
+  // Every other message must match the epoch this frame was last scanned at.
   if (msg.epoch !== getEpoch()) return { ok: false, error: STALE_EPOCH }
+
+  if (msg.type === 'JFF_FILL') {
+    const report = FillReportSchema.safeParse({ epoch: msg.epoch, ...(await fillFields(document, msg.fills)) })
+    // Same reasoning as the scan branch: a malformed report is caught here, in the
+    // frame that produced it, not three hops later in the panel.
+    if (!report.success) return { ok: false, error: 'bad_fill_report' }
+    return { ok: true, fill: report.data }
+  }
+
   return { ok: false, error: 'not_implemented' }
 }
 
@@ -51,7 +62,7 @@ function handle(raw: unknown): unknown {
 if (!window.__jffLoaded) {
   window.__jffLoaded = true
   chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
-    sendResponse(handle(raw))
-    return false
+    handle(raw).then(sendResponse).catch((e: unknown) => sendResponse({ ok: false, error: String(e) }))
+    return true // keep the message channel open for the async reply
   })
 }

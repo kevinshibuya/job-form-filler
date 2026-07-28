@@ -5737,7 +5737,7 @@ need a real `.click()`. Known limitation, surfaced in the panel: `el.click()` pr
   - `fillFields(root: Document, fills: { handle: FieldHandle; value: string }[]): Promise<Omit<FillReport, 'epoch'>>`
   - `fillFile(el: Element, file: File): { ok: true } | { ok: false; reason: string }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `extension/src/content/fill.test.ts`:
 
@@ -5892,12 +5892,29 @@ describe('fillFields', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/content/fill.test.ts`
 Expected: FAIL — `Cannot find module './fill'`.
 
-- [ ] **Step 3: Implement the filler**
+> **Deviation (documented at execution time, Task 15):** the `fillFile` test as
+> given above fails under jsdom even after `fill.ts` is implemented exactly as
+> specified below: `new DataTransfer()` throws `ReferenceError: DataTransfer is
+> not defined`. jsdom has never implemented the DataTransfer API
+> (jsdom/jsdom#1568, open since 2016) — this is a permanent gap in the test
+> environment, not a defect in `fillFile`'s production code, which is correct
+> per the HTML spec and per real Chrome (where this content script actually
+> runs). Fix applied to `fill.test.ts` only (`fill.ts` is unchanged from the
+> snippet below): a top-of-file shim, guarded on
+> `typeof globalThis.DataTransfer === 'undefined'` (so it is inert in a real
+> browser), that (a) installs a minimal `DataTransfer` polyfill exposing
+> `items.add()` and a `.files` getter, and (b) patches
+> `HTMLInputElement.prototype`'s `files` accessor to accept a plain array,
+> because jsdom's real `files` setter requires an internally-constructed
+> `FileList` that no public jsdom API can produce. `fillFile`'s production
+> logic is exercised unmodified.
+
+- [x] **Step 3: Implement the filler**
 
 `extension/src/content/fill.ts`:
 
@@ -6033,12 +6050,12 @@ export async function fillFields(
 }
 ```
 
-- [ ] **Step 4: Run the fill test to verify it passes**
+- [x] **Step 4: Run the fill test to verify it passes**
 
 Run: `npx vitest run extension/src/content/fill.test.ts`
 Expected: PASS (14 tests).
 
-- [ ] **Step 5: Wire `JFF_FILL` with stale-epoch rejection**
+- [x] **Step 5: Wire `JFF_FILL` with stale-epoch rejection**
 
 In `extension/src/content/index.ts`, the async branches now need an async handler. Replace the listener registration and add the FILL branch:
 
@@ -6090,7 +6107,7 @@ if (!window.__jffLoaded) {
 }
 ```
 
-- [ ] **Step 6: Add a stale-epoch smoke assertion**
+- [x] **Step 6: Add a stale-epoch smoke assertion**
 
 Add this self-contained test to `e2e/foundation.spec.ts`:
 
@@ -6110,12 +6127,12 @@ test('a fill carrying a stale epoch is rejected', async () => {
 })
 ```
 
-- [ ] **Step 7: Rebuild and run the smoke**
+- [x] **Step 7: Rebuild and run the smoke**
 
 Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
