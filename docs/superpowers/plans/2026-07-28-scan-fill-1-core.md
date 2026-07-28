@@ -40,8 +40,8 @@ Plus house rules:
 | --- | --- | --- | --- |
 | 1. Ashby fixture module | editor-sonnet-low | Inert data, full content given verbatim. | `npm run typecheck && npm run lint` |
 | 2. Shared schema additions | editor-sonnet-low | Exact zod diffs + exact tests given. | `npx vitest run shared/src/messages.test.ts` + typecheck |
-| 3. `labelFor` → `LabelBinding` + recovery chain | implementer-sonnet-medium | Full code given, but 3 files + a test-file rewrite must land coherently. | `npx vitest run extension/src/content/dom.test.ts` + typecheck |
-| 4. `groupLabelFor` recovery | editor-sonnet-low | Single function + tests, code given, helpers already exist. | `npx vitest run extension/src/content/dom.test.ts` |
+| 3. `labelFor` → `LabelBinding` + recovery chain | integrator-opus-high | 4 files, symbol relocations under a no-cycle constraint, three guarded heuristics — the plan reviews found two defects in this task alone. | `npx vitest run extension/src/content/dom.test.ts` + typecheck |
+| 4. `groupLabelFor` recovery | implementer-sonnet-medium | No longer pure transcription: the group climb now depends on the wrapping-label skip added in Task 3, and the fixture must come back with the `<h4>`. | `npx vitest run extension/src/content/dom.test.ts` |
 | 5. `requiredFromBinding` + `descriptionFor` | implementer-sonnet-medium | Two new dom heuristics with negative cases; fixture-driven tests. | `npx vitest run extension/src/content/dom.test.ts` |
 | 6. `Measure.clipped` + `detectChoice` | implementer-sonnet-medium | New detection logic + Measure-literal churn across 4 test files. | `npx vitest run extension/src/content` |
 | 7. `enumerateFields` rewrite | integrator-opus-high | The highest-consequence merge: binding/required/demographic/description/choice/select/file-visibility land in ONE loop rewrite. | `npx vitest run extension/src/content` + typecheck |
@@ -59,8 +59,8 @@ Plus house rules:
 - **`'choice'` in `WidgetKindSchema`** (`shared/src/field.ts`). A9 renders it as segmented buttons; B1 routes it to `fillChoice`. No exhaustive `switch` on `WidgetKind` exists anywhere today (verified), so widening is compile-safe.
 - **`EnumField.description?: string`** (`shared/src/field.ts`), ≤500 chars, whitespace-normalized textContent. A9 renders it as a subtitle.
 - **`CHOICE_MIN_BUTTONS = 2`, `CHOICE_MAX_BUTTONS = 5`, `CHOICE_MAX_OPTION_CHARS = 30`, `detectChoice(el): ChoiceDetection | null`, `selfHidden(m: Measure): boolean`** exported from `extension/src/content/enumerate.ts`. `ChoiceDetection = { wrapper: Element; buttons: HTMLButtonElement[]; options: string[] }`. **B1's `fillChoice` MUST re-detect with this same function** so filler and enumerator can never disagree.
-- **`Measure.clipped: boolean`** + pure helper `isClipped(width, height, clip, clipPath)` (`enumerate.ts`). Real-browser computation is exercised by the slice-2/3 Playwright fixtures.
-- **`keepField(f: EnumField): boolean` / `dropJunk(fields: EnumField[]): EnumField[]`** (`extension/src/panel/junk.ts`). **Slice 2 (A8) extends the file-input clause**: today it keeps hidden file inputs iff `label !== null`; A8 adds "or scores positively on the resume scorer" by threading the scorer into `keepField` — that is the seam, do not blanket-keep files again.
+- **`Measure.clipped: boolean`** + pure helper `isClipped(width, height, clip, clipPath)` (`enumerate.ts`). **`clipped` is part of `visible`, not only of `selfHidden`**: Task 7 computes `visible = !(ariaHidden || display none || visibility hidden || clipped)` for EVERY kind, file included. A clip-hidden control (the `visually-hidden` recipe) therefore enumerates `visible: false` and faces the panel junk filter like any other hidden field. Real-browser computation is exercised by the slice-2/3 Playwright fixtures.
+- **`keepField(f: EnumField): boolean` / `dropJunk(fields: EnumField[]): EnumField[]`** (`extension/src/panel/junk.ts`). Because `clipped ⇒ visible:false`, the CLIPPED unlabelled autofill-pane file input reaches `keepField` as hidden junk and is dropped here; the real resume input (clipped too, but labelled "Resume") survives on the resolvable-label clause. Ashby's yes/no hidden checkboxes are unaffected — the choice-pattern exemption keeps them. **Slice 2 (A8) extends the file-input clause**: today it keeps hidden file inputs iff `label !== null`; A8 adds "or scores positively on the resume scorer" by threading the scorer into `keepField` — that is the seam, do not blanket-keep files again.
 - **`CAPS.description = 500`** and the **`field_description`** fence tag (`host/src/llm/fence.ts`), already in `UNTRUSTED_PREAMBLE`'s tag list.
 - **`generate.params.description?: string`** (`shared/src/messages.ts`) and `GenerationInput.description: string | null` (`host/src/llm/generate.ts`).
 - **Interim guard (slice 3 REMOVES it):** `scan.ts`'s auto-fill loop skips `kind === 'choice'` resolutions until B1's `fillChoice` exists — `fillCheckbox("Yes")` on the hidden input is exactly the misfill class the spec kills. B1/B3 delete this guard when they wire `fillChoice` + fill reports.
@@ -387,6 +387,8 @@ Expected: all pass, typecheck clean.
 
 Precedence (spec A1, exact): explicit `label[for]` → aria-label → aria-labelledby → wrapping label → fieldset legend → **dangling-label repair** → **name==for** → **guarded climb** → placeholder (true last resort) → none.
 
+Perf note (so it is never later mistaken for a regression): the dangling/climb heuristics add an O(fields × wrapper-size) `enumerableUnits` sweep to the scan hot path — acceptable at ATS scale (~35 fields per form), and deliberately not memoized in this slice.
+
 - [ ] **Step 1: Rewrite the `labelFor` describe in `extension/src/content/dom.test.ts`**
 
 Replace the whole `describe('labelFor', ...)` block with (add `import { ASHBY_COMBOBOX, ASHBY_YESNO_EN, SHARED_WRAPPER_FIRST_LAST } from './fixtures/ashby'` at the top; existing `labelFor` import stays):
@@ -616,6 +618,10 @@ function nameForLabelFor(el: Element): LabelBinding | null {
   if (scope.querySelector(`[id="${escapeId(name)}"]`) !== null) return null // resolves: belongs to that element
   const label = scope.querySelector(`label[for="${escapeId(name)}"]`)
   if (label === null) return null
+  // Spec A1 scopes name==for to the label's WRAPPER: a document-wide lookup can
+  // bind a newsletter label at the top of the page to an ATS control far below.
+  const wrapper = label.parentElement
+  if (wrapper === null || !wrapper.contains(el)) return null
   const t = clean(label.textContent)
   return t === '' ? null : { text: t, source: 'name-for', element: label }
 }
@@ -641,6 +647,8 @@ function climbLabelFor(el: Element): LabelBinding | null {
     if (!isSoleControl(node, el)) return null // another control's territory: stop unconsulted
     for (const child of Array.from(node.children)) {
       if (!/^(LABEL|LEGEND|H1|H2|H3|H4|H5|H6)$/.test(child.tagName)) continue
+      // A <label> that WRAPS a control is that OPTION's text, never the group's.
+      if (child.tagName === 'LABEL' && Array.from(child.querySelectorAll('*')).some((d) => kindOf(d) !== null)) continue
       const forId = child.getAttribute('for')
       if (forId !== null && forId !== '') {
         const target = scope.querySelector(`[id="${escapeId(forId)}"]`)
@@ -1202,13 +1210,15 @@ export function detectChoice(el: Element): ChoiceDetection | null {
 }
 ```
 
-- [ ] **Step 4: Fix every `Measure` literal in tests (compile break is deliberate)**
+- [ ] **Step 4: Fix every `Measure` literal in tests (hygiene — NOT enforced by tsc)**
 
-Add `clipped: false` to all six literals:
-- `extension/src/content/enumerate.test.ts` lines 7, 104, 110
-- `extension/src/content/classify.test.ts` lines 65, 66
-- `extension/src/content/fill.test.ts` line 38
-- `extension/src/content/snapshot.test.ts` line 5
+Tests are excluded from typechecking (`extension/tsconfig.json` and `host/tsconfig.json` both exclude `src/**/*.test.*`, so `npm run typecheck` never sees them). There is no compile break to lean on: update the literals because a `Measure` literal missing `clipped` is a lie about the fixture, and a future `selfHidden`/`visible` assertion would read `undefined` as falsy.
+
+Add `clipped: false` to all SEVEN literals:
+- `extension/src/content/enumerate.test.ts` lines 7, 104, 110 (3)
+- `extension/src/content/classify.test.ts` lines 65, 66 (2)
+- `extension/src/content/fill.test.ts` line 38 (1)
+- `extension/src/content/snapshot.test.ts` line 5 (1)
 
 - [ ] **Step 5: Run to verify pass**
 
@@ -1229,7 +1239,8 @@ Expected: green, clean.
 
 **Interfaces:**
 - Consumes: everything from Tasks 2–6.
-- Produces: `EnumField`s with recovered labels, convention-required flags, `demographic` OR-ed with the label regex, `description`, kind `'choice'` (options = button texts verbatim, `currentValue: null`, fid on the hidden input), select-placeholder `currentValue: null`, and HONEST `visible` for file inputs (the content-level blanket file exemption moves to the panel filter in Task 10 — see "Plan decisions" at the bottom). The injected `isDemographic` signature stays `(el) => boolean`. Fid numbering/stamping semantics are unchanged.
+- Produces: `EnumField`s with recovered labels, convention-required flags, `demographic` OR-ed with the label regex, `description`, kind `'choice'` (options = button texts verbatim, `currentValue: null`, fid on the hidden input), select-placeholder `currentValue: null`, and HONEST `visible` for every kind, file included (the content-level blanket file exemption moves to the panel filter in Task 10 — see "Plan decisions" at the bottom). The injected `isDemographic` signature stays `(el) => boolean`. Fid numbering/stamping semantics are unchanged.
+- **`clipped` is a `visible` term, not only a `selfHidden` term.** `visible = !(ariaHidden || display none || visibility hidden || clipped)`. The `visually-hidden` recipe (1px box / `clip: rect(0 0 0 0)`) is how ATS pages hide real controls, so a clipped control is honestly not visible. Consequence, threaded through plans 2 and 3: Ashby's clipped, unlabelled autofill-pane file input enumerates `visible: false` and the panel junk filter drops it (no label, no A8 score); the real resume input is clipped too but labelled, so the resolvable-label clause keeps it; the yes/no hidden checkboxes are unaffected (choice-pattern exemption).
 
 - [ ] **Step 1: Update + add tests in `enumerate.test.ts`**
 
@@ -1242,6 +1253,15 @@ REPLACE the test `'always treats a file input as visible even when the page hide
     const f = enumerateFields({ root: document, epoch: 1, measure }).fields[0]!
     expect(f.visible).toBe(false)
     expect(f.label).toBe('Resume') // the panel keeps it via this label
+  })
+
+  it('counts CLIPPED as not visible — the Ashby autofill pane is a hidden file input', () => {
+    // The pane's real recipe: laid out and displayed, but clipped to nothing.
+    document.body.innerHTML = `<input type="file" class="visually-hidden">`
+    const measure: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 1, height: 1, clipped: true })
+    const f = enumerateFields({ root: document, epoch: 1, measure }).fields[0]!
+    expect(f.visible).toBe(false)
+    expect(f.label).toBeNull() // unlabelled + hidden => the panel filter drops it (Task 10)
   })
 ```
 
@@ -1454,7 +1474,9 @@ Replace the loop body of `enumerateFields` (from `for (const el of walkElements(
     // HONEST visibility for every kind, file included: the blanket file
     // exemption moved to the panel filter (junk.ts), which keeps hidden file
     // inputs only when they carry a resolvable label (A8 adds scoring).
-    const visible = !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden')
+    // `clipped` counts: the visually-hidden recipe (1px box / clip:rect(0 0 0 0))
+    // is how ATS pages hide real controls, so a clipped control is NOT visible.
+    const visible = !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden' || m.clipped)
 
     if (kind === 'radiogroup') {
       const name = el.getAttribute('name')
@@ -1599,9 +1621,11 @@ Expected: all green, including the pre-existing greenhouse-fixture test (its `my
       jobText: '', company: null, candidates: [],
     })
     expect(withDesc).toContain('<field_description>Please include a timeline.</field_description>')
-    expect(prompt).not.toContain('<field_description>') // the original input has no descriptions
+    expect(prompt).not.toContain('</field_description>') // the original input has no descriptions
   })
 ```
+
+NOTE on the negative assertions in this task: they assert the CLOSING tag. The rewritten `UNTRUSTED_PREAMBLE` itself contains the literal `<field_description>` opening tag (it enumerates the untrusted tags), and every prompt embeds the preamble — so `not.toContain('<field_description>')` would fail for a prompt with no descriptions at all. `</field_description>` appears only when a description was actually fenced.
 
 `host/src/llm/generate.test.ts` — the module-level `input` literal gains `description: null`; add inside `describe('buildGenerationPrompt', ...)`:
 
@@ -1609,11 +1633,11 @@ Expected: all green, including the pre-existing greenhouse-fixture test (its `my
   it('fences the description when present and omits the block when null', () => {
     const withDesc = buildGenerationPrompt({ ...input, description: 'Answer for your current country.' })
     expect(withDesc).toContain('<field_description>Answer for your current country.</field_description>')
-    expect(buildGenerationPrompt(input)).not.toContain('<field_description>')
+    expect(buildGenerationPrompt(input)).not.toContain('</field_description>')
   })
 ```
 
-`host/src/handlers.test.ts` — change the mock line `const complete = vi.fn(async () => [])` to `const complete = vi.fn(async (): Promise<unknown> => [])` and add:
+`host/src/handlers.test.ts` — change the mock line `const complete = vi.fn(async () => [])` to `const complete = vi.fn(async (_prompt: string, _schema?: unknown): Promise<unknown> => [])` (typed params keep the mock honest about the call shape the code passes; tests are NOT typechecked here — `host/tsconfig.json` excludes `src/**/*.test.*` — so this is hygiene, not a compiler-enforced contract) and add:
 
 ```ts
   it('passes the generate description through to the prompt, fenced', async () => {
@@ -1896,59 +1920,65 @@ Run: `npx vitest run extension/src/panel/junk.test.ts` — green.
 
 - [ ] **Step 4: Add failing scan-level tests to `extension/src/panel/scan.test.ts`**
 
-Append a describe (reuse the file's `field()`/`makeDeps()` helpers; `field()` already produces `visible: true` by default):
+Add `depsWithFields` at **FILE SCOPE** (below `makeDeps`, NOT inside the describe) — plan 3 Task 4's new describe consumes it — then append the describe (reuse the file's `field()`/`makeDeps()` helpers; `field()` already produces `visible: true` by default):
 
 ```ts
+/** File-scope on purpose: plan 3 Task 4's B3 describe reuses it. */
+function depsWithFields(fields: ReturnType<typeof field>[], resolveTier: 'auto' | 'needs_input' = 'needs_input') {
+  const made = makeDeps()
+  let epoch = 0
+  made.deps.nextEpoch = () => ++epoch
+  // `made.deps.sendToTab` IS makeDeps' recording wrapper (it pushes to `sent`
+  // itself). So delegate to it for everything we do not answer here, and push
+  // ONLY the one message we answer without delegating (JFF_SCAN) — pushing
+  // unconditionally here would leave `sent` holding every fill TWICE and quietly
+  // break any length-based assertion.
+  const inner = made.deps.sendToTab
+  made.deps.sendToTab = vi.fn(async (frameId, message) => {
+    if (message.type === 'JFF_SCAN') {
+      made.sent.push(message)
+      return {
+        replies: [{ frameId: 0, url: 'https://ats.example/apply', payload: { ok: true, scan: { epoch, fields, unreachableWidgets: 0, activeCaptcha: false } } }],
+        failures: [],
+      }
+    }
+    return inner(frameId, message)
+  })
+  made.deps.getResume = async () => null
+  const resolveCalls: unknown[] = []
+  made.deps.port = {
+    request: vi.fn(async (method: string, params: unknown) => {
+      if (method === 'selector.get') return { ok: true, result: { selector: null } }
+      if (method === 'resolve') {
+        resolveCalls.push(params)
+        const p = params as { fields: { frameId: number; fid: number }[] }
+        return {
+          ok: true,
+          result: {
+            epoch,
+            resolutions: p.fields.map((f) => ({
+              handle: { frameId: f.frameId, fid: f.fid, epoch }, tier: resolveTier,
+              value: resolveTier === 'auto' ? 'V' : null,
+              source: null, key: null, answerId: null, reason: 'test',
+            })),
+            llmError: null,
+          },
+        }
+      }
+      return { ok: true, result: {} }
+    }),
+    onDisconnect: () => undefined,
+    disconnect: () => undefined,
+  } as unknown as HostPort
+  return { ...made, resolveCalls }
+}
+
 describe('runScan — A5 junk filtering', () => {
   const junkAnd2 = [
     field(0, 0),
     field(0, 1, { kind: 'textarea', visible: false, label: null, name: 'g-recaptcha-response' }),
     field(0, 2, { kind: 'choice', visible: false, label: 'Authorized?', options: ['Yes', 'No'] }),
   ]
-
-  function depsWithFields(fields: ReturnType<typeof field>[], resolveTier: 'auto' | 'needs_input' = 'needs_input') {
-    const made = makeDeps()
-    let epoch = 0
-    made.deps.nextEpoch = () => ++epoch
-    const inner = made.deps.sendToTab
-    made.deps.sendToTab = vi.fn(async (frameId, message) => {
-      made.sent.push(message)
-      if (message.type === 'JFF_SCAN') {
-        return {
-          replies: [{ frameId: 0, url: 'https://ats.example/apply', payload: { ok: true, scan: { epoch, fields, unreachableWidgets: 0, activeCaptcha: false } } }],
-          failures: [],
-        }
-      }
-      return inner(frameId, message)
-    })
-    made.deps.getResume = async () => null
-    const resolveCalls: unknown[] = []
-    made.deps.port = {
-      request: vi.fn(async (method: string, params: unknown) => {
-        if (method === 'selector.get') return { ok: true, result: { selector: null } }
-        if (method === 'resolve') {
-          resolveCalls.push(params)
-          const p = params as { fields: { frameId: number; fid: number }[] }
-          return {
-            ok: true,
-            result: {
-              epoch,
-              resolutions: p.fields.map((f) => ({
-                handle: { frameId: f.frameId, fid: f.fid, epoch }, tier: resolveTier,
-                value: resolveTier === 'auto' ? 'V' : null,
-                source: null, key: null, answerId: null, reason: 'test',
-              })),
-              llmError: null,
-            },
-          }
-        }
-        return { ok: true, result: {} }
-      }),
-      onDisconnect: () => undefined,
-      disconnect: () => undefined,
-    } as unknown as HostPort
-    return { ...made, resolveCalls }
-  }
 
   it('excludes visible:false junk from the resolve payload, the fill loop and the returned fields', async () => {
     const { deps, sent, resolveCalls } = depsWithFields(junkAnd2, 'auto')
@@ -2103,7 +2133,7 @@ Spec TODOs this slice ticks (quoted from the spec's Slice A list):
 
 ## Plan decisions (interpretations an executor must not re-litigate)
 
-1. **Honest file visibility is a content-layer edit.** The spec frames A5 as panel-layer, but the "blanket file exemption" it removes lives in `enumerate.ts` (`visible = kind === 'file' ? true : …`). Keeping that forcing would make the panel's conditional file exemption unimplementable (all file inputs would report visible:true). Fid numbering and snapshot behavior are untouched; only the `visible` bit becomes truthful.
+1. **Honest file visibility is a content-layer edit, and `clipped` is part of "honest".** The spec frames A5 as panel-layer, but the "blanket file exemption" it removes lives in `enumerate.ts` (`visible = kind === 'file' ? true : …`). Keeping that forcing would make the panel's conditional file exemption unimplementable (all file inputs would report visible:true). The same computation gains the `clipped` term for every kind, so a control hidden by the `visually-hidden` recipe reports `visible: false` like one hidden by `display:none`. Fid numbering and snapshot behavior are untouched; only the `visible` bit becomes truthful.
 2. **`choice.currentValue` is `null`.** The spec is silent; mapping a hidden checkbox's `checked` bit onto one of N verbatim button texts would be fabrication. Null routes the field through the waterfall honestly. B-slice observable-state verification supersedes.
 3. **name==for stays EXACT.** The spec's parenthetical notes radio-group names merely END with the label's uuid — those bind via the dangling-label rule (radio same-name collapse), not via name==for, so no suffix matching is added.
 4. **Interim choice auto-fill guard** (Task 10): scan-time auto-fill skips `kind === 'choice'` until B1's `fillChoice` exists. Without it, slice 1 would route "Yes"/"No" values into `fillCheckbox` on the hidden input — the exact misfill class the spec kills. Plan 3 removes the guard.
