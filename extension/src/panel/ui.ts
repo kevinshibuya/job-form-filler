@@ -24,3 +24,6 @@ export const TIER_ACCENT: Record<ResolutionTier, string> = {
 
 export const ROW_BASE =
   'rounded-lg border border-l-[3px] border-neutral-200 p-2 dark:border-neutral-700'
+
+/** One uniform busy pattern for every async button: swap the label, disable. */
+export const busyLabel = (isBusy: boolean, idle: string, active: string): string => (isBusy ? active : idle)
