@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { App } from './App'
+import { App, hostnameOf } from './App'
 
 beforeEach(() => {
   // The compile-time seam is on in tests (vitest define), so the fake host answers.
@@ -21,6 +21,26 @@ beforeEach(() => {
     // `remove` is required: onScan clears this tab's stale snapshot keys first.
     storage: { session: { get: vi.fn(async () => ({})), remove: vi.fn(async () => undefined) } },
   }
+})
+
+describe('hostnameOf', () => {
+  // Regression: the previous `tab.url === undefined ? '' : new URL(tab.url).hostname`
+  // threw on '' — the value Chrome reports for a tab that has not committed a
+  // navigation. Thrown out of the auto-scan effect it killed the scan and logged a
+  // console error, which the foundation smoke's zero-console-errors rule caught
+  // intermittently.
+  it('returns no hostname for a tab that has not committed a navigation', () => {
+    expect(hostnameOf('')).toBe('')
+    expect(hostnameOf(undefined)).toBe('')
+  })
+
+  it('returns no hostname for an unparseable url instead of throwing', () => {
+    expect(hostnameOf('not a url')).toBe('')
+  })
+
+  it('still reads the hostname of a real url', () => {
+    expect(hostnameOf('https://jobs.acme.com/apply')).toBe('jobs.acme.com')
+  })
 })
 
 describe('App', () => {

@@ -9149,7 +9149,7 @@ fields and page-sourced values are never written.
   - `type SaveInput = { fields: EnumField[]; resolutions: Resolution[]; panelEdits: Record<string, string>; snapshot: Record<string, string>; company: string | null }` where `snapshot` is keyed by `"frameId:fid"`.
   - `mergeStoredSnapshots(stored, tabId, epoch): Record<string, string>` — the `storage.session` fallback merge, with tab and epoch filtering. A pure function so the rejection rules are testable without a browser.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `extension/src/panel/save.test.ts`:
 
@@ -9243,21 +9243,35 @@ describe('buildSaveItems', () => {
     expect(items[0]).toMatchObject({ fieldKey: 'salary', answer: 'R$ 22k' })
   })
 
-  it('never saves a demographic field', () => {
+  // The three exclusion rules below are kept DELIBERATELY INDEPENDENT. The obvious
+  // fixture (demographic AND tier 'skipped' AND engine === final) trips all three
+  // guards at once, so any one of them could be deleted with the suite still green
+  // — a vacuous assertion on three privacy/safety rules. Each test isolates one guard.
+  it('never saves a demographic field, even if the waterfall did not mark it skipped', () => {
     expect(buildSaveItems({
       ...base,
       fields: [field(0, 'Gender', { demographic: true })],
-      resolutions: [res(0, { tier: 'skipped', reason: 'eeo' })],
+      resolutions: [res(0, { tier: 'auto', value: null, source: null })],
       snapshot: { '0:0': 'Man' },
     })).toEqual([])
   })
 
-  it('never saves a value that was already on the page before we touched it', () => {
+  it('never saves a field the engine skipped, even when it is not demographic', () => {
+    expect(buildSaveItems({
+      ...base,
+      fields: [field(0, 'Type the characters you see')],
+      resolutions: [res(0, { tier: 'skipped', reason: 'captcha' })],
+      snapshot: { '0:0': 'x7f2q' },
+    })).toEqual([])
+  })
+
+  it('never saves a value that was already on the page, even after the user edits it there', () => {
+    // engine !== final here, so ONLY the source==='page' guard can drop this row.
     expect(buildSaveItems({
       ...base,
       fields: [field(0, 'First Name')],
       resolutions: [res(0, { tier: 'auto', value: 'Kevin', source: 'page' })],
-      snapshot: { '0:0': 'Kevin' },
+      snapshot: { '0:0': 'Kevin Shibuya' },
     })).toEqual([])
   })
 
@@ -9316,7 +9330,7 @@ describe('mergeStoredSnapshots', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails, then implement**
+- [x] **Step 2: Run it to verify it fails, then implement**
 
 Run: `npx vitest run extension/src/panel/save.test.ts` → FAIL (module not found).
 
@@ -9413,9 +9427,9 @@ export function buildSaveItems(input: SaveInput): SaveItem[] {
 }
 ```
 
-Run again: PASS (17 tests).
+Run again: PASS (18 tests).
 
-- [ ] **Step 3: Wire Save answers into App**
+- [x] **Step 3: Wire Save answers into App**
 
 Three pieces of state and three behaviors land here; the COMPLETE resulting `App.tsx` is the
 canonical listing in Step 3b — transcribe that listing, this step explains it.
@@ -9434,7 +9448,7 @@ canonical listing in Step 3b — transcribe that listing, this step explains it.
    the `save` request, and `reuseOverrides` lets the user flip each item's suggested
    reusability before sending.
 
-- [ ] **Step 3b: The canonical App.tsx (full listing)**
+- [x] **Step 3b: The canonical App.tsx (full listing)**
 
 `extension/src/panel/App.tsx` has been assembled incrementally across Tasks 18-21. Replace
 the whole file with this canonical listing; it is the single source of truth (the `?tabId=`
@@ -9455,6 +9469,17 @@ import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './sav
 import { createTabScope } from './tabScope'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
+
+/**
+ * `chrome.tabs.Tab.url` is `''` — not `undefined` — for a tab that has not committed
+ * a navigation yet, and `new URL('')` THROWS. onScan runs from a `void`-ed effect, so
+ * that throw surfaces as an unhandled rejection: a console error plus a scan that
+ * silently never happens. Any unparseable url just means "no hostname".
+ */
+export const hostnameOf = (url: string | undefined): string => {
+  if (url === undefined || url === '') return ''
+  try { return new URL(url).hostname } catch { return '' }
+}
 
 export function App() {
   const portRef = useRef<HostPort | null>(null)
@@ -9602,7 +9627,7 @@ export function App() {
         .filter((k) => { const m = SNAPSHOT_KEY_RE.exec(k); return m !== null && Number(m[1]) === tabId })
       if (staleKeys.length > 0) await chrome.storage.session.remove(staleKeys)
 
-      const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
+      const hostname = hostnameOf(tab.url)
       // Company: the user's edit always wins; guess only while the field is empty.
       const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
       if (co !== null && companyOrNull === null) setCompany(co)
@@ -9708,7 +9733,7 @@ export function App() {
     if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
     setJobText(p.pick.text)
     const tab = await getTab()
-    const hostname = tab?.url === undefined ? '' : new URL(tab.url).hostname
+    const hostname = hostnameOf(tab?.url)
     if (hostname !== '') {
       await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
     }
@@ -9880,7 +9905,7 @@ export function App() {
 
 No stylesheet changes: `tailwind.css` is still the only CSS file in the project.
 
-- [ ] **Step 3c: A jsdom mount smoke for the finished App**
+- [x] **Step 3c: A jsdom mount smoke for the finished App**
 
 The component above was specified across four tasks; one test proves the assembled whole
 actually renders against the fake host. `extension/src/panel/App.test.tsx`:
@@ -9889,7 +9914,7 @@ actually renders against the fake host. `extension/src/panel/App.test.tsx`:
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { render, screen } from '@testing-library/react'
-import { App } from './App'
+import { App, hostnameOf } from './App'
 
 beforeEach(() => {
   // The compile-time seam is on in tests (vitest define), so the fake host answers.
@@ -9909,6 +9934,26 @@ beforeEach(() => {
     // `remove` is required: onScan clears this tab's stale snapshot keys first.
     storage: { session: { get: vi.fn(async () => ({})), remove: vi.fn(async () => undefined) } },
   }
+})
+
+describe('hostnameOf', () => {
+  // Regression: the previous `tab.url === undefined ? '' : new URL(tab.url).hostname`
+  // threw on '' — the value Chrome reports for a tab that has not committed a
+  // navigation. Thrown out of the auto-scan effect it killed the scan and logged a
+  // console error, which the foundation smoke's zero-console-errors rule caught
+  // intermittently.
+  it('returns no hostname for a tab that has not committed a navigation', () => {
+    expect(hostnameOf('')).toBe('')
+    expect(hostnameOf(undefined)).toBe('')
+  })
+
+  it('returns no hostname for an unparseable url instead of throwing', () => {
+    expect(hostnameOf('not a url')).toBe('')
+  })
+
+  it('still reads the hostname of a real url', () => {
+    expect(hostnameOf('https://jobs.acme.com/apply')).toBe('jobs.acme.com')
+  })
 })
 
 describe('App', () => {
@@ -9939,9 +9984,9 @@ describe('App', () => {
 (add `fireEvent` and `waitFor` to the `@testing-library/react` import.)
 
 Run: `npx vitest run extension/src/panel/App.test.tsx`
-Expected: PASS (2 tests).
+Expected: PASS (5 tests).
 
-- [ ] **Step 4: Typecheck, test, rebuild, smoke**
+- [x] **Step 4: Typecheck, test, rebuild, smoke**
 
 ```bash
 npm run typecheck && npx vitest run && JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test
@@ -9949,7 +9994,7 @@ npm run typecheck && npx vitest run && JFF_TEST_SEAM=1 npm run build -w @jff/ext
 
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A

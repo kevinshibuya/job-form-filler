@@ -87,21 +87,35 @@ describe('buildSaveItems', () => {
     expect(items[0]).toMatchObject({ fieldKey: 'salary', answer: 'R$ 22k' })
   })
 
-  it('never saves a demographic field', () => {
+  // The three exclusion rules below are kept DELIBERATELY INDEPENDENT. The obvious
+  // fixture (demographic AND tier 'skipped' AND engine === final) trips all three
+  // guards at once, so any one of them could be deleted with the suite still green
+  // — a vacuous assertion on three privacy/safety rules. Each test isolates one guard.
+  it('never saves a demographic field, even if the waterfall did not mark it skipped', () => {
     expect(buildSaveItems({
       ...base,
       fields: [field(0, 'Gender', { demographic: true })],
-      resolutions: [res(0, { tier: 'skipped', reason: 'eeo' })],
+      resolutions: [res(0, { tier: 'auto', value: null, source: null })],
       snapshot: { '0:0': 'Man' },
     })).toEqual([])
   })
 
-  it('never saves a value that was already on the page before we touched it', () => {
+  it('never saves a field the engine skipped, even when it is not demographic', () => {
+    expect(buildSaveItems({
+      ...base,
+      fields: [field(0, 'Type the characters you see')],
+      resolutions: [res(0, { tier: 'skipped', reason: 'captcha' })],
+      snapshot: { '0:0': 'x7f2q' },
+    })).toEqual([])
+  })
+
+  it('never saves a value that was already on the page, even after the user edits it there', () => {
+    // engine !== final here, so ONLY the source==='page' guard can drop this row.
     expect(buildSaveItems({
       ...base,
       fields: [field(0, 'First Name')],
       resolutions: [res(0, { tier: 'auto', value: 'Kevin', source: 'page' })],
-      snapshot: { '0:0': 'Kevin' },
+      snapshot: { '0:0': 'Kevin Shibuya' },
     })).toEqual([])
   })
 
