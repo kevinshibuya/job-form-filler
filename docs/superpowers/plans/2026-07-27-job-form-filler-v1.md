@@ -7536,7 +7536,7 @@ npm i -D @testing-library/react @testing-library/user-event -w @jff/extension
   - `FieldRow.tsx`: `<FieldRow row edited onEdit onAccept onGenerate onFill generating filled />`
   - `ProfileEditor.tsx`: `<ProfileEditor values loaded onSave />`
 
-- [ ] **Step 1: Write the failing grouping test**
+- [x] **Step 1: Write the failing grouping test**
 
 `extension/src/panel/group.test.ts`:
 
@@ -7603,12 +7603,12 @@ describe('SOURCE_BADGE', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/panel/group.test.ts`
 Expected: FAIL — `Cannot find module './group'`.
 
-- [ ] **Step 3: Implement grouping**
+- [x] **Step 3: Implement grouping**
 
 `extension/src/panel/group.ts`:
 
@@ -7648,12 +7648,12 @@ export function groupRows(fields: EnumField[], resolutions: Resolution[]): Recor
 }
 ```
 
-- [ ] **Step 4: Run the grouping test to verify it passes**
+- [x] **Step 4: Run the grouping test to verify it passes**
 
 Run: `npx vitest run extension/src/panel/group.test.ts`
 Expected: PASS (5 tests).
 
-- [ ] **Step 5: Write the failing FieldRow test**
+- [x] **Step 5: Write the failing FieldRow test**
 
 `extension/src/panel/FieldRow.test.tsx`:
 
@@ -7774,12 +7774,12 @@ describe('FieldRow', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/panel/FieldRow.test.tsx`
 Expected: FAIL — `Cannot find module './FieldRow'`.
 
-- [ ] **Step 7a: Create the shared Tailwind class vocabulary**
+- [x] **Step 7a: Create the shared Tailwind class vocabulary**
 
 Three widgets (button, text input, tier accent) appear in four different files. Keeping their
 class strings in one module is the Tailwind equivalent of a component class, and it is why
@@ -7816,7 +7816,7 @@ export const ROW_BASE =
   'rounded-lg border border-l-[3px] border-neutral-200 p-2 dark:border-neutral-700'
 ```
 
-- [ ] **Step 7b: Implement FieldRow**
+- [x] **Step 7b: Implement FieldRow**
 
 `extension/src/panel/FieldRow.tsx`:
 
@@ -7897,13 +7897,13 @@ export function FieldRow({ row, edited, onEdit, onAccept, onGenerate, onFill, ge
 }
 ```
 
-- [ ] **Step 8: Run the FieldRow test to verify it passes**
+- [x] **Step 8: Run the FieldRow test to verify it passes**
 
 Run: `npx vitest run extension/src/panel/FieldRow.test.tsx`
 Expected: PASS (13 tests). The tests query by role, label and title, never by class name, so
 they are unaffected by the utility-class markup.
 
-- [ ] **Step 9a: Write the failing profile-editor test**
+- [x] **Step 9a: Write the failing profile-editor test**
 
 The editor can destroy data, so it gets its own test: the host's `writeKv` (Task 5) DELETES a
 key written as `''`, and the editor's `values` prop arrives asynchronously from `profile.get`.
@@ -7951,7 +7951,7 @@ describe('ProfileEditor', () => {
 
 Run: `npx vitest run extension/src/panel/ProfileEditor.test.tsx` → FAIL (module not found).
 
-- [ ] **Step 9b: Implement the profile editor**
+- [x] **Step 9b: Implement the profile editor**
 
 `extension/src/panel/ProfileEditor.tsx`:
 
@@ -8019,7 +8019,7 @@ export function ProfileEditor({
 
 Run: `npx vitest run extension/src/panel/ProfileEditor.test.tsx` → PASS (3 tests).
 
-- [ ] **Step 10: Wire the review surface into App**
+- [x] **Step 10: Wire the review surface into App**
 
 Replace the body of `extension/src/panel/App.tsx`'s returned markup with the full review
 surface. **Everything below goes ABOVE the `return`**: `onScan`, `onAccept`, `onFill`,
@@ -8214,7 +8214,7 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
 
 No stylesheet to append: `tailwind.css` from Task 3 is still the only CSS file in the project.
 
-- [ ] **Step 11: Typecheck, run all unit tests, rebuild, re-run both smokes**
+- [x] **Step 11: Typecheck, run all unit tests, rebuild, re-run both smokes**
 
 ```bash
 npm run typecheck
@@ -8225,7 +8225,7 @@ npx playwright test
 
 Expected: all PASS, zero console errors.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add -A
@@ -8908,7 +8908,13 @@ Run again: `npx vitest run extension/src/panel/company.test.ts` → PASS (3 test
 - [ ] **Step 9: Wire scan + the resume picker into App**
 
 Add to `extension/src/panel/App.tsx` (`onScan` REPLACES the Task 19 placeholder binding of
-the same name; everything else is new, and all of it lives above the return):
+the same name; everything else is new, and all of it lives above the return).
+
+**Already present from Task 19:** the "Pre-fill the facts editor" effect below was wired in
+Task 19 Step 10 (which explicitly allows it: `factsLoaded` is what unlocks Save in the
+ProfileEditor, so leaving it for Task 20 would ship a permanently inert editor). It is in the
+file verbatim, including the `[check]` dep. Do NOT add a second copy: two of them would fire
+two `profile.get`/`answerBank.get` pairs per self-check.
 
 ```tsx
   const [resumeName, setResumeName] = useState<string | null>(null)
