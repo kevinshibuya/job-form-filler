@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8" />
+<title>Job Application — Fixture (local stand-in for a real Greenhouse form)</title>
+<style>
+  /* Greenhouse styles its real résumé file input to display:none and surfaces a
+     dropzone button instead. Reproduce that so the adapter must locate a hidden
+     input. */
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  #resume { display: none; }
+  .field { margin: 12px 0; }
+</style>
+</head>
+<body>
+<!--
+  This is a LOCAL stand-in modeled on a real Greenhouse public application form
+  (see gusto-form.html). It deliberately reproduces every hard case the adapter
+  must survive on real Greenhouse so logic proven here transfers to live forms.
+  NO network: submit swaps the DOM to a thank-you container in-page.
+  PROJECT-OWNED copy — modified from job-finder's fixture (job-description block,
+  hard_bug question, real submit event); do not re-copy over it.
+-->
+<main class="main job-post">
+  <h1>Apply: Senior Frontend Engineer</h1>
+
+  <!-- PROJECT-OWNED addition: a job-description block over 400 chars so the
+       heuristic job-text tier has something honest to capture. -->
+  <section class="job-description" id="job-description">
+    <h2>About the role</h2>
+    <p>FIXTURE-JD: We are hiring a Senior Frontend Engineer to build our application
+       platform. You will own the form infrastructure, design system and performance
+       budgets of a React and TypeScript codebase, collaborate closely with product
+       and design, and mentor mid-level engineers. We value pragmatic testing,
+       accessible HTML and boring technology. Experience with Node, Postgres and CI
+       pipelines is a plus. This paragraph exists so heuristic job-text capture has
+       more than four hundred characters of honest prose to find in browser smokes.</p>
+  </section>
+
+  <form id="application-form" class="application--form" onsubmit="return false">
+
+    <!-- CLEAN name-bound text inputs -->
+    <div class="field">
+      <label id="first_name-label" for="first_name" class="label">First Name <span aria-hidden="true">*</span></label>
+      <input id="first_name" name="first_name" class="input" aria-label="First Name"
+             aria-required="true" required type="text" value="" />
+    </div>
+    <div class="field">
+      <label id="last_name-label" for="last_name" class="label">Last Name <span aria-hidden="true">*</span></label>
+      <input id="last_name" name="last_name" class="input" aria-label="Last Name"
+             aria-required="true" required type="text" value="" />
+    </div>
+    <div class="field">
+      <label id="email-label" for="email" class="label">Email <span aria-hidden="true">*</span></label>
+      <input id="email" name="email" class="input" aria-label="Email"
+             aria-required="true" required type="email" value="" />
+    </div>
+
+    <!-- STYLED / HIDDEN file input (résumé) behind a dropzone "Attach" button -->
+    <div class="field">
+      <label class="visually-hidden" for="resume">Resume/CV</label>
+      <input id="resume" name="resume" type="file" required
+             accept=".pdf,.doc,.docx,.txt,.rtf" />
+      <button type="button" class="btn" data-testid="resume-dropbox"
+              onclick="document.getElementById('resume').click()">Attach Résumé</button>
+      <span id="resume-filename" class="resume-filename"></span>
+    </div>
+
+    <!-- SELECT (work auth) with options -->
+    <div class="field">
+      <label id="work_auth-label" for="work_auth" class="label">Work Authorization <span aria-hidden="true">*</span></label>
+      <select id="work_auth" name="work_auth" aria-label="Work Authorization" aria-required="true" required>
+        <option value=""></option>
+        <option value="authorized">I am authorized to work for any employer in the US.</option>
+        <option value="sponsorship">I will require sponsorship now or in the future.</option>
+      </select>
+    </div>
+
+    <!-- DEFAULTED attestation checkbox (checked on load) -->
+    <div class="field">
+      <label id="attestation-label" for="attestation" class="label">
+        <input id="attestation" name="attestation" type="checkbox" required checked
+               aria-label="I certify the information provided is accurate" />
+        I certify the information provided is accurate <span aria-hidden="true">*</span>
+      </label>
+    </div>
+
+    <!-- LABEL-ONLY field: NO name attribute; bound via its visible <label for>. -->
+    <div class="field">
+      <label id="linkedin-label" for="linkedin-input" class="label">LinkedIn Profile</label>
+      <input id="linkedin-input" class="input" type="text" value="" />
+    </div>
+
+    <!-- PROJECT-OWNED addition: a labelled free-text question, the save path for a
+         custom answer typed directly on the page. (#mystery below stays unlabelled
+         and is skipped by design.) -->
+    <div class="field">
+      <label id="hard_bug-label" for="hard_bug" class="label">Describe a hard bug you fixed</label>
+      <textarea id="hard_bug" name="hard_bug" class="input" rows="3"></textarea>
+    </div>
+
+    <!-- UNBINDABLE required field: required, NO name, NO resolvable label. -->
+    <div class="field">
+      <input id="mystery" class="input" type="text" required
+             aria-required="true" value="" />
+    </div>
+
+    <!-- EEO / demographic section rendered in an IFRAME (same-origin via srcdoc).
+         Contains a DEMOGRAPHIC select with NO decline option → the gate blocks it. -->
+    <div class="field" id="eeo-section">
+      <h2>Demographic Questions</h2>
+      <iframe id="eeo-frame" title="EEO" width="100%" height="120" srcdoc='
+        <!DOCTYPE html><html><body>
+          <label id=&quot;gender-label&quot; for=&quot;gender&quot;>Gender *</label>
+          <select id=&quot;gender&quot; name=&quot;gender&quot; aria-label=&quot;Gender&quot; aria-required=&quot;true&quot; required>
+            <option value=&quot;&quot;></option>
+            <option value=&quot;woman&quot;>Woman</option>
+            <option value=&quot;man&quot;>Man</option>
+            <option value=&quot;nonbinary&quot;>Non-binary</option>
+          </select>
+        </body></html>'></iframe>
+    </div>
+
+    <!-- reCAPTCHA-STUB: a VISIBLE v2 challenge widget (an ACTIVE anti-bot challenge a
+         human must solve) → antiBot=true. A passive/invisible badge (what Greenhouse
+         actually uses) must NOT flag — that case lives in gate-tuning.spec.ts. -->
+    <div class="g-recaptcha" data-sitekey="fixture-stub-sitekey" style="width:304px;height:78px;display:block"></div>
+
+    <!-- SUBMIT: on click, validates a required field then swaps the DOM to a
+         thank-you container (no network). Empty required → inline error, NO swap. -->
+    <button id="submit_app" type="button" class="btn" onclick="window.__submitApp()">Submit Application</button>
+    <div id="form-error" class="error" role="alert" style="color:#b00020"></div>
+  </form>
+</main>
+
+<script>
+  // A field JS-INJECTED after load (client-rendered): the adapter must WAIT for
+  // it before snapshotting, and distinguish "not yet rendered" from "absent".
+  setTimeout(function () {
+    var form = document.getElementById('application-form');
+    var wrap = document.createElement('div');
+    wrap.className = 'field';
+    wrap.id = 'injected-field';
+    var lbl = document.createElement('label');
+    lbl.id = 'phone-label';
+    lbl.setAttribute('for', 'phone');
+    lbl.textContent = 'Phone *';
+    var inp = document.createElement('input');
+    inp.id = 'phone';
+    inp.name = 'phone';
+    inp.type = 'text';
+    inp.required = true;
+    inp.setAttribute('aria-label', 'Phone');
+    inp.setAttribute('aria-required', 'true');
+    wrap.appendChild(lbl);
+    wrap.appendChild(inp);
+    // insert before the submit button so it's part of the live form
+    form.insertBefore(wrap, document.getElementById('submit_app'));
+  }, 400);
+
+  // Submit handler: DOM-swap confirmation with inline-validation re-render.
+  window.__submitApp = function () {
+    var err = document.getElementById('form-error');
+    var first = document.getElementById('first_name');
+    var workAuth = document.getElementById('work_auth');
+    // inline validation: a required field empty re-renders an error, NO thank-you.
+    if (!first.value || !workAuth.value) {
+      err.textContent = 'Please complete all required fields.';
+      return;
+    }
+    // PROJECT-OWNED change: fire a REAL submit event before the DOM swap so
+    // capture-phase listeners (the extension's snapshot) observe the submission.
+    document.getElementById('application-form')
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    // success: swap the whole form out for a thank-you container (no network).
+    var main = document.querySelector('main');
+    main.innerHTML =
+      '<div id="application-confirmation" class="confirmation">' +
+      '<h1>Thank you for applying!</h1>' +
+      '<p>Your application has been received.</p>' +
+      '</div>';
+  };
+</script>
+</body>
+</html>

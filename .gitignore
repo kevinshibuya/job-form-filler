@@ -4,3 +4,4 @@ dist/
 extension/key.pem
 test-results/
 playwright-report/
+extension/dist-types/
