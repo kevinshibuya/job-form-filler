@@ -142,8 +142,9 @@ field count or error string — plus the inject/broadcast error when that is wha
   recording, discovery URL passthrough.
 - Unit (`App.test.tsx`): each status renders with the right `data-jff-status`; buttons disable
   while busy; diagnostics disclosure appears on `empty`/`failed`.
-- Browser smoke (extend existing Playwright specs): `data-jff-status` reaches `done` on the
-  fixture form; a fixture page with zero fields reaches `empty` after the retry.
+- Browser smoke (extend existing Playwright specs): `data-jff-status` reaches `captcha` on the
+  main fixture form (its reCAPTCHA stub makes that the deterministic outcome), `done` on a
+  captcha-free fixture form, and `empty` (after the retry) on a page with zero fields.
 - Mutation probes (handoff lesson): deleting the retry, the `failures` recording, or the
   throw-on-relay-failure must each fail at least one test in isolation.
 
