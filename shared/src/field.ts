@@ -18,7 +18,7 @@ export const FieldHandleSchema = z.object({
 export type FieldHandle = z.infer<typeof FieldHandleSchema>
 
 export const WidgetKindSchema = z.enum([
-  'text', 'textarea', 'select', 'combobox', 'radiogroup', 'checkbox', 'file',
+  'text', 'textarea', 'select', 'combobox', 'radiogroup', 'checkbox', 'file', 'choice',
 ])
 export type WidgetKind = z.infer<typeof WidgetKindSchema>
 
@@ -33,6 +33,10 @@ export const EnumFieldSchema = FieldHandleSchema.extend({
   /** Value already on the page (e.g. written by the ATS resume auto-parse). */
   currentValue: z.string().nullable(),
   demographic: z.boolean(),
+  /** A4: page-provided helper text under the question label — wrapper-scoped,
+   *  whitespace-normalized textContent, capped at 500 chars in the enumerator.
+   *  Optional: a stale content script simply omits it. */
+  description: z.string().optional(),
 })
 export type EnumField = z.infer<typeof EnumFieldSchema>
 
