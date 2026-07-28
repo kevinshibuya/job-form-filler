@@ -484,6 +484,14 @@ describe('App generation discipline', () => {
     await act(async () => { onUpdated(7, { status: 'loading' }) })
   }
 
+  /** Fires the tab-scope listener as Chrome would when a DIFFERENT tab becomes
+   *  active — the bound tab itself neither navigates nor closes. */
+  const activateOtherTab = async (): Promise<void> => {
+    const onActivated = (globalThis as unknown as { chrome: { tabs: { onActivated: { addListener: ReturnType<typeof vi.fn> } } } })
+      .chrome.tabs.onActivated.addListener.mock.calls[0]![0] as (info: { tabId: number }) => void
+    await act(async () => { onActivated({ tabId: 99 }) })
+  }
+
   beforeEach(() => {
     installHostBridge(async (method) => {
       if (method === 'selfCheck') return SELF_CHECK
@@ -523,6 +531,72 @@ describe('App generation discipline', () => {
     // The replayed scan's own progress takes the line back over.
     await waitFor(() => { expect(statusNow()).toBe('done') })
     expect(screen.queryByText('Dead work model')).toBeNull()
+  })
+
+  it('leaves the status line blank after a tab switch mid-scan, never superseded', async () => {
+    // 'activated' never replays a scan (the tab that scanned is not the one that
+    // just became active) — 'superseded' promises a rescan an activation reset
+    // will not deliver, so the dead scan's own drain must leave the line blank.
+    let releaseScan: (() => void) | null = null
+    let resolveCalled = false
+    installHostBridge(async (method) => {
+      if (method === 'selfCheck') return SELF_CHECK
+      if (method === 'selector.get') return { selector: null }
+      if (method === 'resolve') {
+        resolveCalled = true
+        const resolutions: Resolution[] = [
+          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
+          { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
+        ]
+        return { epoch: 1, resolutions, llmError: null }
+      }
+      return {}
+    })
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return await new Promise((r) => { releaseScan = () => r(scanReplyFor(['Dead work model', 'Dead why us?'])) })
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(releaseScan).not.toBeNull() })
+    await activateOtherTab()
+    expect(statusNow()).toBeUndefined()
+    releaseScan!()
+    // Let the dead scan run all the way through (its writes are dropped, not just
+    // its status write) before asserting the line stayed blank.
+    await waitFor(() => { expect(resolveCalled).toBe(true) })
+    expect(statusNow()).toBeUndefined()
+    expect(screen.queryByText('Dead work model')).toBeNull()
+  })
+
+  it('clears a lingering superseded status when the navigation replay finds no tab', async () => {
+    // A navigate-then-close race: 'navigated' sets 'superseded' and queues the
+    // replay, but by the time the replay's own getTab() runs the tab is gone — the
+    // replay itself, not another reset, must clear the promise of a rescan.
+    let releaseScan: (() => void) | null = null
+    let calls = 0
+    tabsGet().mockImplementation(async () => {
+      calls++
+      if (calls > 1) throw new Error('No tab with id: 7')
+      return ACME
+    })
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return await new Promise((r) => { releaseScan = () => r(scanReplyFor(['Dead work model', 'Dead why us?'])) })
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(releaseScan).not.toBeNull() })
+    await navigateBoundTab()
+    expect(statusNow()).toBe('superseded')
+    releaseScan!()
+    await waitFor(() => { expect(statusNow()).toBeUndefined() })
   })
 
   it('drops a dead scan progress event instead of resurrecting its status', async () => {
@@ -567,29 +641,33 @@ describe('App generation discipline', () => {
     expect(screen.queryByText(/relay died on the dead page/)).toBeNull()
   })
 
-  it('keeps a dead page Accept failure off the new page status line', async () => {
-    let releaseFill: (() => void) | null = null
+  it.each([
+    { label: 'Accept', button: 'Accept', msgType: 'JFF_FILL', reply: fillRefused, failureText: /Accept failed/ },
+    { label: 'Fill', button: 'Fill', msgType: 'JFF_FILL', reply: fillRefused, failureText: /Fill failed/ },
+    { label: 'Pick', button: 'Pick job description', msgType: 'JFF_PICK', reply: { ok: false, error: 'relay died on the dead page' }, failureText: /Pick failed/ },
+  ])('keeps a dead page $label failure off the new page status line', async ({ button, msgType, reply, failureText }) => {
+    let release: (() => void) | null = null
     sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
-      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
-        return await new Promise((r) => { releaseFill = () => r(fillRefused) })
+      if (msg?.kind === 'toContent' && msg.message?.type === msgType) {
+        return await new Promise((r) => { release = () => r(reply) })
       }
       if (msg?.kind === 'toContent') return jobTextReply
       return { ok: true }
     })
     render(<App />)
     await waitFor(() => { expect(statusNow()).toBe('done') })
-    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
-    await waitFor(() => { expect(releaseFill).not.toBeNull() })
+    fireEvent.click(screen.getByRole('button', { name: button }))
+    await waitFor(() => { expect(release).not.toBeNull() })
     await navigateBoundTab()
-    // The new page scans and settles while the dead page's JFF_FILL is still out.
+    // The new page scans and settles while the dead page's request is still out.
     await waitFor(() => { expect(statusNow()).toBe('done') })
-    releaseFill!()
-    // acting clears in the handler's finally, i.e. after its guarded write.
-    await waitFor(() => { expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(false) })
+    release!()
+    // acting/picking clears in the handler's finally, i.e. after its guarded write.
+    await waitFor(() => { expect((screen.getByRole('button', { name: button }) as HTMLButtonElement).disabled).toBe(false) })
     expect(statusNow()).toBe('done')
-    expect(screen.queryByText(/Accept failed/)).toBeNull()
+    expect(screen.queryByText(failureText)).toBeNull()
   })
 
   it('does not badge the new page field with a dead page fill', async () => {
@@ -665,6 +743,53 @@ describe('App generation discipline', () => {
     releasePick!()
     await waitFor(() => { expect(screen.getByRole('button', { name: 'Pick job description' })).toBeTruthy() })
     expect((document.querySelector('[data-jff-paste] textarea') as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('does not learn a poisoned selector when a navigation lands mid-getTab in a pick', async () => {
+    // The pick itself already answered when the navigation lands — only the
+    // SECOND await (getTab, read for the hostname) is still in flight. Without its
+    // own guard, the old page's selector would be saved under the new hostname.
+    let selectorSaveCalled = false
+    installHostBridge(async (method) => {
+      if (method === 'selfCheck') return SELF_CHECK
+      if (method === 'selector.get') return { selector: null }
+      if (method === 'selector.save') { selectorSaveCalled = true; return {} }
+      if (method === 'resolve') {
+        const resolutions: Resolution[] = [
+          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
+          { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
+        ]
+        return { epoch: 1, resolutions, llmError: null }
+      }
+      return {}
+    })
+    let calls = 0
+    let releaseTab: (() => void) | null = null
+    tabsGet().mockImplementation(async () => {
+      calls++
+      // Call 1 is the mount's auto-scan; call 2 is the pick's own getTab — park it.
+      if (calls === 2) return await new Promise((r) => { releaseTab = () => r(GLOBEX) })
+      return ACME
+    })
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_PICK') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Old page job description' } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    fireEvent.click(screen.getByRole('button', { name: 'Pick job description' }))
+    await waitFor(() => { expect(releaseTab).not.toBeNull() })
+    await navigateBoundTab()
+    releaseTab!()
+    // The navigation's own replay scan settling is proof the pick's guarded write
+    // (or non-write) has already run.
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    expect(selectorSaveCalled).toBe(false)
   })
 
   it('clears a GUESSED company on navigation so the next employer is guessed fresh', async () => {
