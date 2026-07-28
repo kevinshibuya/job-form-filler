@@ -6856,7 +6856,7 @@ The port also implements the spec's idempotent-retry contract: a request that di
   - `ERROR_COPY: Record<HostErrorKind, string>` (the spec's error table, verbatim)
   - `tabScope.ts`: `type ResetReason = 'activated' | 'navigated' | 'removed'`, `createTabScope(tabId: number, onReset: (reason: ResetReason) => void): () => void` — the reason is load-bearing: only `'navigated'` may trigger a re-scan (Task 20 Step 9)
 
-- [ ] **Step 1: Write the failing port test**
+- [x] **Step 1: Write the failing port test**
 
 `extension/src/panel/port.test.ts`:
 
@@ -7015,12 +7015,12 @@ describe('ERROR_COPY', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/panel/port.test.ts`
 Expected: FAIL — `Cannot find module './port'`.
 
-- [ ] **Step 3: Implement the port layer**
+- [x] **Step 3: Implement the port layer**
 
 `extension/src/panel/port.ts`:
 
@@ -7194,7 +7194,7 @@ export function createHostPort(search: string = location.search): HostPort {
 }
 ```
 
-- [ ] **Step 4: Run the port test to verify it passes**
+- [x] **Step 4: Run the port test to verify it passes**
 
 Run: `npx vitest run extension/src/panel/port.test.ts`
 Expected: PASS (12 tests).
@@ -7208,7 +7208,7 @@ exactly the seam the compile-time flag exists to erase. Add a one-line setup fil
 reference it from the extension project's `setupFiles` in `vitest.config.ts`. The release
 bundle is unaffected: `define` still substitutes the literal `false` there.
 
-- [ ] **Step 5: Write the failing tab-scope test**
+- [x] **Step 5: Write the failing tab-scope test**
 
 `extension/src/panel/tabScope.test.ts`:
 
@@ -7280,12 +7280,12 @@ describe('createTabScope', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/panel/tabScope.test.ts`
 Expected: FAIL — `Cannot find module './tabScope'`.
 
-- [ ] **Step 7: Implement tab scoping**
+- [x] **Step 7: Implement tab scoping**
 
 `extension/src/panel/tabScope.ts`:
 
@@ -7327,12 +7327,12 @@ export function createTabScope(tabId: number, onReset: (reason: ResetReason) => 
 }
 ```
 
-- [ ] **Step 8: Run the tab-scope test to verify it passes**
+- [x] **Step 8: Run the tab-scope test to verify it passes**
 
 Run: `npx vitest run extension/src/panel/tabScope.test.ts`
 Expected: PASS (6 tests).
 
-- [ ] **Step 9: Build the self-check banner and wire it into the panel**
+- [x] **Step 9: Build the self-check banner and wire it into the panel**
 
 `extension/src/panel/Banner.tsx`:
 
@@ -7454,7 +7454,7 @@ No stylesheet changes: every rule above is a utility class, and `tailwind.css` a
 imports Tailwind. If a class does not appear in the built CSS, the `@source` directive in
 `tailwind.css` is not covering this file.
 
-- [ ] **Step 10: Write the failing browser smoke**
+- [x] **Step 10: Write the failing browser smoke**
 
 `e2e/panel-port.spec.ts`:
 
@@ -7493,7 +7493,7 @@ test('without the fake flag the panel reports the host as unreachable instead of
 })
 ```
 
-- [ ] **Step 11: Run the smoke to verify it fails, then make it pass**
+- [x] **Step 11: Run the smoke to verify it fails, then make it pass**
 
 ```bash
 npx playwright test e2e/panel-port.spec.ts     # FAIL: banner not rendered yet
@@ -7506,7 +7506,7 @@ If the second test's console records an uncaught `connectNative` error, catch it
 request resolves `{ ok: false, error: { kind: 'unreachable', ... } }`. Do this rather than
 loosening the zero-console-errors assertion.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add -A
