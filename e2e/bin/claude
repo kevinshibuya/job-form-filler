@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+// Canned stand-in for the `claude` CLI, used by the e2e smoke so CI needs no LLM.
+// Contract: read the prompt from `-p`, print ONE JSON envelope on stdout.
+//   JFF_FAKE_CLAUDE_MODE=ok            (default) classify every ref as "custom"
+//   JFF_FAKE_CLAUDE_MODE=salary        classify a salary-ish label as known_key=salary
+//   JFF_FAKE_CLAUDE_MODE=not_authed    exit 1 with an auth message on stderr
+//   JFF_FAKE_CLAUDE_MODE=rate_limit    exit 1 with a usage-limit message on stderr
+//   JFF_FAKE_CLAUDE_MODE=garbage       exit 0 with unparseable stdout
+// Deliberately written to parse identically as CommonJS or ESM: the file has no
+// extension, so Node picks the goal symbol itself, and it must not care.
+const args = process.argv.slice(2)
+const prompt = args[args.indexOf('-p') + 1] ?? ''
+const mode = process.env.JFF_FAKE_CLAUDE_MODE ?? 'ok'
+
+if (mode === 'not_authed') { process.stderr.write('Error: not logged in\n'); process.exit(1) }
+if (mode === 'rate_limit') { process.stderr.write('Claude usage limit reached\n'); process.exit(1) }
+if (mode === 'garbage') { process.stdout.write('I am not JSON at all'); process.exit(0) }
+
+const emit = (payload) => {
+  process.stdout.write(JSON.stringify({ type: 'result', result: JSON.stringify(payload) }))
+  process.exit(0)
+}
+
+// The auth probe from selfCheck.
+if (/Reply with exactly/.test(prompt)) emit({ ok: true })
+
+// The generation call.
+if (/You draft one answer/.test(prompt)) {
+  emit({ draft: 'I have shipped production TypeScript services for six years, mostly Node and Postgres. I would bring that to this team.' })
+}
+
+// The mapping call: one entry per ref, in the order the prompt lists them.
+const refs = [...prompt.matchAll(/ref=(\d+:\d+)/g)].map((m) => m[1])
+emit(refs.map((ref) => {
+  if (mode === 'salary') {
+    const line = prompt.split('\n').find((l) => l.includes(`ref=${ref}`)) ?? ''
+    if (/salary|compensation|pretens/i.test(line)) {
+      return { ref, decision: 'known_key', knownKey: 'salary', answerId: null }
+    }
+  }
+  return { ref, decision: 'custom', knownKey: null, answerId: null }
+}))
