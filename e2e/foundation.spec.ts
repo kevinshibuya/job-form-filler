@@ -110,3 +110,17 @@ test('the EEO srcdoc subframe is flagged demographic and the visible reCAPTCHA s
     await t.close()
   }
 })
+
+test('a fill carrying a stale epoch is rejected', async () => {
+  const t = await openFixtureTab()
+  try {
+    await t.send({ type: 'JFF_SCAN', epoch: 3 })
+    const stale = await t.send({
+      type: 'JFF_FILL', epoch: 999,
+      fills: [{ handle: { frameId: 0, fid: 0, epoch: 999 }, value: 'x' }],
+    })
+    expect(stale.replies.find((r) => r.frameId === 0)!.payload).toMatchObject({ ok: false, error: 'stale_epoch' })
+  } finally {
+    await t.close()
+  }
+})
