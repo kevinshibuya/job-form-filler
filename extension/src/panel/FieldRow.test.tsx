@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { EnumField, Resolution } from '@jff/shared'
 import { FieldRow } from './FieldRow'
+import type { Row } from './group'
 
 const field = (patch: Partial<EnumField> = {}): EnumField => ({
   frameId: 0, fid: 1, epoch: 1, label: 'Desired salary', name: null, idAttr: null,
@@ -19,7 +20,7 @@ const noop = () => undefined
 const props = {
   edited: null as string | null,
   onEdit: noop, onAccept: noop, onGenerate: noop, onFill: noop,
-  generating: false, filled: false,
+  generating: false, filled: false, acting: null,
 }
 
 const needsInput = (label = 'Why us?') =>
@@ -110,5 +111,38 @@ describe('FieldRow', () => {
     render(<FieldRow {...props}
       row={row(field({ label: 'Work model', kind: 'select', options: ['Remote', 'Hybrid'] }), resolution({ tier: 'needs_input', value: null, source: null }))} />)
     expect(screen.getByText('Remote, Hybrid')).toBeTruthy()
+  })
+})
+
+const actingField = (fid: number): EnumField => ({
+  frameId: 0, fid, epoch: 1, label: `Q${fid}`, name: null, idAttr: null, kind: 'text',
+  options: [], required: false, visible: true, currentValue: null, demographic: false,
+})
+const actingResolution = (fid: number, tier: 'proposed' | 'needs_input'): Resolution => ({
+  handle: { frameId: 0, fid, epoch: 1 }, tier, value: 'stored answer', source: tier === 'proposed' ? 'llm_key' : null,
+  key: null, answerId: null, reason: 'test',
+})
+const proposedRow: Row = { ref: '0:1', field: actingField(1), resolution: actingResolution(1, 'proposed') }
+const needsInputRow: Row = { ref: '0:2', field: actingField(2), resolution: actingResolution(2, 'needs_input') }
+// NOTE: reuse the module-scope `noop` the file already declares at line 16 —
+// redeclaring it is a SyntaxError that kills the whole test module.
+
+describe('FieldRow acting states', () => {
+  it('shows Accepting… and disables the button while an accept is in flight', () => {
+    // row fixture: tier 'proposed' with a value, as the file's existing proposed-row fixture builds it
+    render(<FieldRow row={proposedRow} edited={null} onEdit={noop} onAccept={noop} onGenerate={noop} onFill={noop} generating={false} filled={false} acting="accept" />)
+    const btn = screen.getByRole('button', { name: 'Accepting…' }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+  })
+
+  it('shows Filling… and disables Fill and Generate while a fill is in flight', () => {
+    render(<FieldRow row={needsInputRow} edited={'my answer'} onEdit={noop} onAccept={noop} onGenerate={noop} onFill={noop} generating={false} filled={false} acting="fill" />)
+    expect((screen.getByRole('button', { name: 'Filling…' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Generate with AI' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('renders idle labels when nothing is acting', () => {
+    render(<FieldRow row={proposedRow} edited={null} onEdit={noop} onAccept={noop} onGenerate={noop} onFill={noop} generating={false} filled={false} acting={null} />)
+    expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
