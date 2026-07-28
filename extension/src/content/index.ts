@@ -1,4 +1,5 @@
-import { ContentMessageSchema } from '@jff/shared'
+import { ContentMessageSchema, STALE_EPOCH } from '@jff/shared'
+import { enumerateFields, getEpoch } from './enumerate'
 
 declare global {
   interface Window { __jffLoaded?: boolean }
@@ -19,13 +20,18 @@ export function probeFrame(): { controlCount: number; url: string } {
 function handle(raw: unknown): unknown {
   const parsed = ContentMessageSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: 'bad_message' }
-  switch (parsed.data.type) {
-    case 'JFF_PROBE':
-      return { ok: true, probe: probeFrame() }
-    default:
-      // Later tasks add SCAN / FILL / SNAPSHOT / PICK / JOBTEXT here.
-      return { ok: false, error: 'not_implemented' }
+  const msg = parsed.data
+
+  if (msg.type === 'JFF_PROBE') return { ok: true, probe: probeFrame() }
+
+  // A SCAN establishes the epoch for this frame. Everything else must match it.
+  if (msg.type === 'JFF_SCAN') {
+    const { fields, unreachableWidgets } = enumerateFields({ root: document, epoch: msg.epoch })
+    return { ok: true, scan: { epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: false } }
   }
+
+  if (msg.epoch !== getEpoch()) return { ok: false, error: STALE_EPOCH }
+  return { ok: false, error: 'not_implemented' }
 }
 
 // executeScript re-runs this file on every Scan; register listeners exactly once.

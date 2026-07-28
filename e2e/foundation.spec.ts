@@ -79,3 +79,18 @@ test('the content script injects on demand into every frame and answers the prob
     await t.close()
   }
 })
+
+test('a scan enumerates the fixture form for real', async () => {
+  const t = await openFixtureTab()
+  try {
+    const scan = await t.send({ type: 'JFF_SCAN', epoch: 1 })
+    type ScanPayload = { ok: boolean; scan?: { fields: { name: string | null; kind: string }[] } }
+    const topScan = (scan.replies.find((r) => r.frameId === 0)!.payload as ScanPayload).scan!
+    const names = topScan.fields.map((f) => f.name)
+    expect(names).toEqual(expect.arrayContaining(['first_name', 'last_name', 'email', 'resume', 'work_auth', 'hard_bug']))
+    // real layout: the hidden #resume input is still reported, the file kind wins
+    expect(topScan.fields.find((f) => f.name === 'resume')!.kind).toBe('file')
+  } finally {
+    await t.close()
+  }
+})
