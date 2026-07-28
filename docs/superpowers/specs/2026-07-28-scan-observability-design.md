@@ -90,6 +90,7 @@ Rendered directly under the action row, always present once a scan has started. 
 | `captcha`   | ⚠ CAPTCHA active — nothing was filled.                                                  | amber   |
 | `failed`    | ✕ Scan failed: <human reason>                                                           | red     |
 | `action_failed` | ✕ <human reason>                                                                    | red     |
+| `superseded`| Page changed — finishing the old scan before rescanning…                                | neutral |
 
 `action_failed` is for NON-scan actions (Accept/Fill/Pick) hitting a relay or page failure — their
 errors must be as loud as scan errors, but must not read as "Scan failed". `connecting` covers the
@@ -102,7 +103,17 @@ silently pin the panel on `connecting` forever.
 A scan that fails AFTER enumeration (jobtext/resolve relay failure) keeps the per-frame evidence
 already collected: the thrown error carries the frame reports, and the synthetic relay-error row
 is APPENDED to them, not substituted for them. The `empty` state's frame count is the number of
-DISTINCT frames in the reports (a frame that errored then replied on the retry counts once). The existing "Checking the local host…" pending banner (`Banner.tsx`) stays; its copy is
+DISTINCT frames in the reports (a frame that errored then replied on the retry counts once).
+
+Generation discipline: a tab-scope reset (navigate/switch/close) invalidates every in-flight
+async producer — not just the scan. Post-await writes in the scan AND in the Accept/Fill/Pick
+handlers (success and failure alike) are dropped when the reset generation changed; the
+`action_failed` rollback target is cleared by the reset so it can never restore a previous
+page's outcome. While an invalidated scan is still draining (its resolve cannot be cancelled —
+cancellation is a host-protocol change deferred to a future slice), the panel shows `superseded`
+instead of a blank line; the replayed scan starts when the dead one settles. A GUESSED company
+is cleared by the reset (a user-typed one is kept); `hostError` deliberately survives resets —
+it is host-scoped, not page-scoped, and the next scan re-derives it. The existing "Checking the local host…" pending banner (`Banner.tsx`) stays; its copy is
 untouched. `llmError` outcomes render `failed` here; the existing `hostError` banner behavior is
 unchanged.
 
