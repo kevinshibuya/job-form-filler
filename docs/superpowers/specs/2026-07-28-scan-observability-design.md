@@ -162,6 +162,29 @@ field count or error string — plus the inject/broadcast error when that is wha
 - Mutation probes (handoff lesson): deleting the retry, the `failures` recording, or the
   throw-on-relay-failure must each fail at least one test in isolation.
 
+## Addendum (2026-07-28, post-manual-test): frame discovery must not use allFrames
+
+The manual re-test produced the diagnosis the slice was built for: `✕ Scan failed: Error: Cannot
+access a chrome:// URL`. Root cause of the original 0-field mystery: when ANY frame in the tab is
+privileged (chrome://, chrome-extension:// — injected by other extensions or by Chrome features),
+`chrome.scripting.executeScript({allFrames: true})` REJECTS WHOLESALE instead of skipping the
+frame. Both `inject` and broadcast discovery used it, so in a real profile with an ad blocker the
+whole content-script leg failed identically on every scan.
+
+Required design:
+- Add the `webNavigation` permission. Frame discovery becomes
+  `chrome.webNavigation.getAllFrames({ tabId })` filtered by an exported pure predicate
+  `isInjectableFrameUrl(url)`: keep `http:`, `https:`, `about:` (blank + srcdoc — the EEO srcdoc
+  frame MUST stay reachable); drop everything else (chrome:, chrome-extension:, devtools:, …).
+- `inject` runs `executeScript` PER FRAME over the filtered list, try/catch per frame; a frame
+  that fails injection is skipped (the broadcast's per-frame send failure then surfaces it in the
+  diagnostics with its URL). The handler returns the successfully injected frame ids.
+- Broadcast discovery uses the same filtered list (frameId + url); relay.ts is unchanged — only
+  its injected deps change.
+- A tab with NO injectable frames (e.g. the panel bound to its own chrome-extension:// tab) now
+  yields an honest `empty` scan instead of a thrown "Cannot access" — acceptable and covered by
+  the existing smokes.
+
 ## Out of scope
 
 Broader UI restyling, per-phase timing display, polling until fields appear, host-side changes,
