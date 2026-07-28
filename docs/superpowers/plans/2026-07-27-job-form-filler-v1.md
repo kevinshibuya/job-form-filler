@@ -856,7 +856,7 @@ git commit -m "feat(shared): field identity triple, host RPC schemas, content-sc
   - `probeFrame(): { controlCount: number; url: string }` in `extension/src/content/index.ts`, the permanent cheap liveness probe used by every browser smoke.
   - `e2e/ext.ts` exports `launchWithExtension()` returning `{ context, extensionId, close }`.
 
-- [ ] **Step 1: Generate the pinned extension key and derive the extension ID**
+- [x] **Step 1: Generate the pinned extension key and derive the extension ID**
 
 ```bash
 cd extension
@@ -870,7 +870,7 @@ cat extension-id.txt
 
 `key.pem` is gitignored (Task 1 already lists it). Commit `key.pub.b64` and `extension-id.txt` — the host install script reads `extension-id.txt`.
 
-- [ ] **Step 2: Write the manifest**
+- [x] **Step 2: Write the manifest**
 
 `extension/manifest.config.ts`:
 
@@ -905,7 +905,7 @@ export default defineManifest({
 })
 ```
 
-- [ ] **Step 3: Write the two Vite builds**
+- [x] **Step 3: Write the two Vite builds**
 
 `extension/vite.config.ts` (crxjs build — manifest, service worker, panel):
 
@@ -958,7 +958,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Step 4: Write the service worker**
+- [x] **Step 4: Write the service worker**
 
 `extension/src/background.ts`:
 
@@ -1024,7 +1024,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
 export {}
 ```
 
-- [ ] **Step 5: Write the content script with an injection guard and the probe**
+- [x] **Step 5: Write the content script with an injection guard and the probe**
 
 `extension/src/content/index.ts`:
 
@@ -1069,7 +1069,7 @@ if (!window.__jffLoaded) {
 }
 ```
 
-- [ ] **Step 6: Write the panel shell**
+- [x] **Step 6: Write the panel shell**
 
 `extension/src/panel/index.html`:
 
@@ -1133,7 +1133,7 @@ style is a utility class in the markup; there are no hand-authored component rul
 Dark mode needs no configuration: Tailwind v4's `dark:` variant follows
 `prefers-color-scheme` by default, and every colour class below ships a `dark:` pair.
 
-- [ ] **Step 6b: Bare-build spike — prove crxjs + Vite versions work, then pin them exactly**
+- [x] **Step 6b: Bare-build spike — prove crxjs + Vite versions work, then pin them exactly**
 
 `@crxjs/vite-plugin ^2` + `vite ^5.4` compatibility is asserted nowhere upstream; measure it
 before writing any more sources. Everything the crx build needs already exists (manifest,
@@ -1154,7 +1154,18 @@ replace the `^`-ranged `vite`, `@crxjs/vite-plugin`, `@tailwindcss/vite` and `ta
 entries in `extension/package.json` devDependencies with the exact versions `npm ls` printed
 (no carets), and run `npm install` to sync the lockfile.
 
-- [ ] **Step 7: Copy the fixtures in and make `fixture-form.html` project-owned**
+**MEASURED at execution (2026-07-27):** `@crxjs/vite-plugin@2.7.1`, `@tailwindcss/vite@4.3.3`,
+`tailwindcss@4.3.3`, **`vite@7.3.6`** — all pinned exactly. Both builds succeed and the smoke
+passes on this combination. Deviation from the `vite ^5.4` the plan assumed: vitest 3.2.7 pulls
+`vite@7.3.6` into the ROOT `node_modules`, so a `vite@5.4.x` pin in `extension/` left TWO vite
+copies in the tree; the plugins (hoisted, typed against root vite 7) then produced
+`PluginOption is not assignable to PluginOption` under `tsc -p extension/tsconfig.node.json`.
+The runtime build was fine either way, but the typecheck was not. All three plugins declare
+vite 7 in their peer ranges (`@crxjs` `^3||^4||^5||^6||^7||^8`, `@tailwindcss/vite` `^5.2||^6||^7||^8`,
+`@vitejs/plugin-react` `^4.2||^5||^6||^7`), so the extension is pinned to the single hoisted
+`vite@7.3.6`. One vite in the tree, typecheck clean, smoke green.
+
+- [x] **Step 7: Copy the fixtures in and make `fixture-form.html` project-owned**
 
 ```bash
 mkdir -p e2e/fixtures/greenhouse-apply
@@ -1233,7 +1244,7 @@ from its own tab at runtime instead, because a live challenge makes `runScan` (c
 nothing at all. Do not gate it behind a query parameter: `e2e/static-server.ts` strips query
 strings before resolving the file, so a `?captcha=0` flag would never reach the page.
 
-- [ ] **Step 8: Write the static fixture server and the launch helper**
+- [x] **Step 8: Write the static fixture server and the launch helper**
 
 `e2e/static-server.ts`:
 
@@ -1362,7 +1373,7 @@ plain `tsc -p e2e` appended to the root typecheck script (Step 12):
 }
 ```
 
-- [ ] **Step 9: Write the failing browser smoke**
+- [x] **Step 9: Write the failing browser smoke**
 
 `e2e/foundation.spec.ts`. Later tasks (13-17) each ADD one self-contained test to this file
 using the shared harness below; nothing is ever appended inside an existing test, so no test
@@ -1452,7 +1463,7 @@ test('the content script injects on demand into every frame and answers the prob
 })
 ```
 
-- [ ] **Step 10: Run the smoke**
+- [x] **Step 10: Run the smoke**
 
 Run: `npx playwright test e2e/foundation.spec.ts`
 Expected: FAIL — the Step 6b build predates the panel shell's data attributes and/or the
@@ -1460,7 +1471,7 @@ harness cannot find the emitted CSS; if instead it fails ONLY on the srcdoc SPIK
 that is the measurement Step 11's fallback note exists for. (If everything already passes,
 the build from Step 6b was complete — proceed.)
 
-- [ ] **Step 11: Build and make the smoke pass**
+- [x] **Step 11: Build and make the smoke pass**
 
 Browser smokes always build with `JFF_TEST_SEAM=1` (the compile-time flag Task 18's panel
 seam needs); the release build (`npm run build`, no env var) strips that code path.
@@ -1492,7 +1503,19 @@ Expected: the grep prints one CSS file, then both tests PASS.
   `>= 1` WITH a linked issue — never silently delete the assertion. The injection-guard in
   the content script makes double injection safe either way.
 
-- [ ] **Step 12: Add the root scripts**
+**SPIKE RESULT (measured 2026-07-27, Chromium 151.0.7922.34 via Playwright 1.56):** srcdoc
+injection HOLDS. `inject` returned `{"ok":true,"frames":[0,4]}` and the probe returned two
+replies — frame 0 (`http://127.0.0.1:PORT/fixture-form.html`, 9 controls) and frame 4
+(`about:srcdoc`, 1 control). **No fallback applied**; `registerContentScripts` is not needed
+and the assertion stays strict.
+
+**Execution deviation (Step 8, `e2e/static-server.ts`):** Chromium's new headless mode
+auto-requests `/favicon.ico` on every navigation. The 404 surfaced as a page console error and
+failed the `afterAll` zero-console-errors assertion for a reason unrelated to the extension.
+The fixture server answers `favicon.ico` with an empty `204` instead; no smoke assertion was
+weakened.
+
+- [x] **Step 12: Add the root scripts**
 
 In root `package.json` `scripts`, ensure:
 
@@ -1505,7 +1528,7 @@ In root `package.json` `scripts`, ensure:
 }
 ```
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add -A

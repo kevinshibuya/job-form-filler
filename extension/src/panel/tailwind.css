@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/*
+  Tailwind v4 auto-detects sources from the project root, but this panel is built by
+  crxjs, which rewrites HTML entries. Registering the source tree explicitly means a
+  class used only in index.html can never be tree-shaken away.
+*/
+@source "../**/*.{ts,tsx,html}";
