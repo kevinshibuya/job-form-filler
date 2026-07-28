@@ -6,7 +6,7 @@ export interface RelayReply { frameId: number; url: string | null; payload: unkn
 export interface RelayFailure { frameId: number; url: string | null; error: string }
 
 export interface RelayDeps {
-  /** All frames of the tab, from a no-op executeScript (no webNavigation permission). */
+  /** The tab's INJECTABLE frames (see isInjectableFrameUrl); privileged ones are already dropped. */
   discoverFrames: (tabId: number) => Promise<{ frameId: number; url: string | null }[]>
   sendToFrame: (tabId: number, frameId: number, message: unknown) => Promise<unknown>
 }
@@ -27,4 +27,20 @@ export async function broadcast(
     }
   }
   return { replies, failures }
+}
+
+/**
+ * Frame-discovery filter. `chrome.scripting.executeScript` REJECTS THE WHOLE CALL
+ * ("Cannot access a chrome:// URL") when its target set contains one privileged
+ * frame, so privileged frames must be excluded BEFORE the call. `about:` stays in:
+ * about:srcdoc carries the EEO subframe and about:blank carries lazily-written ones.
+ */
+export function isInjectableFrameUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url)
+    return protocol === 'http:' || protocol === 'https:' || protocol === 'about:'
+  } catch {
+    // Unparseable (or empty) url — not something we can safely inject into.
+    return false
+  }
 }

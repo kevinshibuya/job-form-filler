@@ -16,7 +16,10 @@ export default defineManifest({
   // Pins the extension ID. Native messaging allowed_origins cannot wildcard, so a
   // drifting ID silently breaks the host connection.
   key,
-  permissions: ['nativeMessaging', 'sidePanel', 'storage', 'scripting', 'tabs'],
+  // webNavigation: frame discovery must enumerate frames BEFORE injecting. A single
+  // privileged frame (chrome://, another extension's) makes executeScript({allFrames})
+  // reject wholesale, which killed the whole content-script leg.
+  permissions: ['nativeMessaging', 'sidePanel', 'storage', 'scripting', 'tabs', 'webNavigation'],
   // <all_urls> (not activeTab): embedded ATS forms are cross-origin iframes, which
   // activeTab deliberately excludes. Injection is still on demand (Scan button).
   host_permissions: ['<all_urls>'],

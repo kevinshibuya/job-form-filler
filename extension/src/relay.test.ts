@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { broadcast, type RelayDeps } from './relay'
+import { broadcast, isInjectableFrameUrl, type RelayDeps } from './relay'
 
 function makeDeps(over: Partial<RelayDeps> = {}): RelayDeps {
   return {
@@ -48,5 +48,33 @@ describe('broadcast', () => {
     await broadcast(deps, 42, { type: 'JFF_SNAPSHOT', epoch: 9 })
     expect(deps.sendToFrame).toHaveBeenCalledWith(42, 0, { type: 'JFF_SNAPSHOT', epoch: 9 })
     expect(deps.sendToFrame).toHaveBeenCalledWith(42, 7, { type: 'JFF_SNAPSHOT', epoch: 9 })
+  })
+})
+
+describe('isInjectableFrameUrl', () => {
+  it.each([
+    ['https://boards.greenhouse.io/acme/jobs/1', true],
+    ['http://localhost:4173/fixture-form.html', true],
+    // about:srcdoc is the EEO subframe of the real fixture — dropping it is the
+    // regression this matrix exists to catch. about:blank holds lazily-written frames.
+    ['about:srcdoc', true],
+    ['about:blank', true],
+    // The wholesale-rejection culprits: one of these in an executeScript target set
+    // fails the entire call, so none may ever reach it.
+    ['chrome://newtab/', false],
+    ['chrome-extension://abcdefghijklmnop/panel.html', false],
+    ['devtools://devtools/bundled/devtools_app.html', false],
+    ['data:text/html,<p>x</p>', false],
+    ['blob:https://example.com/1234-5678', false],
+    ['javascript:void(0)', false],
+    ['', false],
+    ['not a url at all', false],
+  ])('%s -> %s', (url, expected) => {
+    expect(isInjectableFrameUrl(url)).toBe(expected)
+  })
+
+  it('never throws on a malformed url', () => {
+    expect(() => isInjectableFrameUrl('http://[::1')).not.toThrow()
+    expect(isInjectableFrameUrl('http://[::1')).toBe(false)
   })
 })
