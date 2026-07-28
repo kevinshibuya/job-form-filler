@@ -5442,7 +5442,7 @@ git commit -m "feat(content): shadow-piercing enumerator with radio coalescing, 
 - Consumes: `scopeOf` from `dom.ts`, `MeasureFn` from `enumerate.ts`.
 - Produces: `DEMOGRAPHIC_RE`, `isDemographic(el: Element): boolean`, `hasActiveCaptcha(root: Document, measure?: MeasureFn): boolean`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `extension/src/content/classify.test.ts`:
 
@@ -5541,12 +5541,12 @@ describe('hasActiveCaptcha', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/content/classify.test.ts`
 Expected: FAIL — `Cannot find module './classify'`.
 
-- [ ] **Step 3: Implement the classifiers**
+- [x] **Step 3: Implement the classifiers**
 
 `extension/src/content/classify.ts`:
 
@@ -5643,12 +5643,12 @@ export function hasActiveCaptcha(root: Document, measure: MeasureFn = defaultMea
 }
 ```
 
-- [ ] **Step 4: Run the classifier test to verify it passes**
+- [x] **Step 4: Run the classifier test to verify it passes**
 
 Run: `npx vitest run extension/src/content/classify.test.ts`
 Expected: PASS (15 tests).
 
-- [ ] **Step 5: Wire the classifiers into the scan**
+- [x] **Step 5: Wire the classifiers into the scan**
 
 In `extension/src/content/index.ts`, change the `JFF_SCAN` branch to:
 
@@ -5674,7 +5674,7 @@ In `extension/src/content/index.ts`, change the `JFF_SCAN` branch to:
 and add `import { hasActiveCaptcha, isDemographic } from './classify'` at the top, plus
 `ScanResultSchema` to the existing `@jff/shared` import.
 
-- [ ] **Step 6: Assert it end to end in the browser smoke**
+- [x] **Step 6: Assert it end to end in the browser smoke**
 
 **This test owns the active-CAPTCHA assertion for the whole plan.** It runs on its own fresh
 fixture tab, so the fixture's visible `.g-recaptcha` stub must stay in place (Task 3 Step 7
@@ -5701,12 +5701,12 @@ test('the EEO srcdoc subframe is flagged demographic and the visible reCAPTCHA s
 })
 ```
 
-- [ ] **Step 7: Rebuild and run the smoke**
+- [x] **Step 7: Rebuild and run the smoke**
 
 Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
