@@ -420,6 +420,298 @@ describe('App mid-scan navigation', () => {
   })
 })
 
+describe('App generation discipline', () => {
+  const statusNow = (): string | null | undefined =>
+    document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')
+  const companyInput = (): HTMLInputElement =>
+    document.querySelector('[data-jff-company] input') as HTMLInputElement
+  const sendMock = () => (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+  const tabsGet = () => (globalThis as unknown as { chrome: { tabs: { get: ReturnType<typeof vi.fn> } } }).chrome.tabs.get
+
+  const ACME = { id: 7, url: 'https://jobs.acme.com/apply', title: 'Engineer at Acme' }
+  const GLOBEX = { id: 7, url: 'https://jobs.globex.com/apply', title: 'Engineer at Globex' }
+
+  const enumField = (fid: number, label: string) => ({
+    frameId: -1, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const scanReplyFor = ([proposed, needsInput]: [string, string]) => ({
+    ok: true,
+    replies: [{
+      frameId: 0, url: 'https://jobs.acme.com/apply',
+      payload: { ok: true, scan: { epoch: 1, fields: [enumField(0, proposed), enumField(1, needsInput)], unreachableWidgets: 0, activeCaptcha: false } },
+    }],
+    failures: [],
+  })
+  const jobTextReply = { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+  const fillRefused = {
+    ok: true,
+    replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [], failed: [{ handle: { frameId: 0, fid: 0, epoch: 1 }, reason: 'no-matching-option' }] } } }],
+    failures: [],
+  }
+  const fillAccepted = {
+    ok: true,
+    replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 1, epoch: 1 }], failed: [] } } }],
+    failures: [],
+  }
+
+  /** inject + a two-field enumeration + no job text: a scan that settles `done`. */
+  const installFullScan = (labelsFor: (nth: number) => [string, string] = () => ['Work model', 'Why us?']): void => {
+    let scans = 0
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') { scans++; return scanReplyFor(labelsFor(scans)) }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+  }
+
+  /** tabs.get answers once and then hangs, so the REPLAYED scan parks on its very
+   *  first await. Anything on the status line afterwards can only be the dead
+   *  scan's own write — without this the replay's `injecting` masks the leak. */
+  const parkReplayedScan = (): void => {
+    let calls = 0
+    tabsGet().mockImplementation(async () => {
+      calls++
+      if (calls > 1) return await new Promise(() => undefined)
+      return ACME
+    })
+  }
+
+  const navigateBoundTab = async (): Promise<void> => {
+    const onUpdated = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } })
+      .chrome.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status: string }) => void
+    await act(async () => { onUpdated(7, { status: 'loading' }) })
+  }
+
+  beforeEach(() => {
+    installHostBridge(async (method) => {
+      if (method === 'selfCheck') return SELF_CHECK
+      if (method === 'selector.get') return { selector: null }
+      if (method === 'resolve') {
+        const resolutions: Resolution[] = [
+          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
+          { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
+        ]
+        return { epoch: 1, resolutions, llmError: null }
+      }
+      return {}
+    })
+  })
+
+  it('says the page changed while the invalidated scan is still draining', async () => {
+    // The dead scan's resolve cannot be cancelled (deferred host-protocol change),
+    // so a blank status line here is minutes of a frozen-looking panel.
+    let releaseScan: (() => void) | null = null
+    let scans = 0
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        scans++
+        if (scans > 1) return scanReplyFor(['Work model', 'Why us?'])
+        return await new Promise((r) => { releaseScan = () => r(scanReplyFor(['Dead work model', 'Dead why us?'])) })
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(releaseScan).not.toBeNull() })
+    await navigateBoundTab()
+    expect(statusNow()).toBe('superseded')
+    expect(screen.getByText('Page changed — finishing the old scan before rescanning…')).toBeTruthy()
+    releaseScan!()
+    // The replayed scan's own progress takes the line back over.
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    expect(screen.queryByText('Dead work model')).toBeNull()
+  })
+
+  it('drops a dead scan progress event instead of resurrecting its status', async () => {
+    // Pins the onProgress generation guard: without it the dead scan's `resolving`
+    // phase overwrites `superseded` with a phase of a page that is gone.
+    let releaseJobText: (() => void) | null = null
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') {
+        return await new Promise((r) => { releaseJobText = () => r(jobTextReply) })
+      }
+      return { ok: true, replies: [], failures: [] }
+    })
+    parkReplayedScan()
+    render(<App />)
+    await waitFor(() => { expect(releaseJobText).not.toBeNull() })
+    await navigateBoundTab()
+    releaseJobText!()
+    // The dead scan ran to completion: its replay reached the parked tabs.get.
+    await waitFor(() => { expect(tabsGet().mock.calls.length).toBeGreaterThan(1) })
+    expect(statusNow()).toBe('superseded')
+  })
+
+  it('drops a dead scan failure instead of blaming the new page for it', async () => {
+    // Pins the catch-path generation guard.
+    let failScan: (() => void) | null = null
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return await new Promise((r) => { failScan = () => r({ ok: false, error: 'relay died on the dead page' }) })
+      }
+      return { ok: true, replies: [], failures: [] }
+    })
+    parkReplayedScan()
+    render(<App />)
+    await waitFor(() => { expect(failScan).not.toBeNull() })
+    await navigateBoundTab()
+    failScan!()
+    await waitFor(() => { expect(tabsGet().mock.calls.length).toBeGreaterThan(1) })
+    expect(statusNow()).toBe('superseded')
+    expect(screen.queryByText(/relay died on the dead page/)).toBeNull()
+  })
+
+  it('keeps a dead page Accept failure off the new page status line', async () => {
+    let releaseFill: (() => void) | null = null
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        return await new Promise((r) => { releaseFill = () => r(fillRefused) })
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    await waitFor(() => { expect(releaseFill).not.toBeNull() })
+    await navigateBoundTab()
+    // The new page scans and settles while the dead page's JFF_FILL is still out.
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    releaseFill!()
+    // acting clears in the handler's finally, i.e. after its guarded write.
+    await waitFor(() => { expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(false) })
+    expect(statusNow()).toBe('done')
+    expect(screen.queryByText(/Accept failed/)).toBeNull()
+  })
+
+  it('does not badge the new page field with a dead page fill', async () => {
+    // A ref is `frameId:fid` with no epoch, so the new page's field 0:1 would wear
+    // the dead page's "on the page" badge although nothing was filled on it.
+    let releaseFill: (() => void) | null = null
+    let scans = 0
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        scans++
+        return scanReplyFor(scans === 1 ? ['Work model', 'Why us?'] : ['New work model', 'Why this employer?'])
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        return await new Promise((r) => { releaseFill = () => r(fillAccepted) })
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    await waitFor(() => { expect(releaseFill).not.toBeNull() })
+    await navigateBoundTab()
+    expect(await screen.findByText('Why this employer?')).toBeTruthy()
+    releaseFill!()
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Fill' })).toBeTruthy() })
+    expect(screen.queryByText('on the page')).toBeNull()
+  })
+
+  it('does not promote the new page row when a dead page Accept succeeds late', async () => {
+    let releaseFill: (() => void) | null = null
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        return await new Promise((r) => { releaseFill = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 0, epoch: 1 }], failed: [] } } }], failures: [] }) })
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    await waitFor(() => { expect(releaseFill).not.toBeNull() })
+    await navigateBoundTab()
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    releaseFill!()
+    await waitFor(() => { expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(false) })
+    // Still Proposed: the fill the promotion claims happened was answered by a page
+    // that no longer exists.
+    expect(document.querySelector('[data-jff-group="proposed"]')).not.toBeNull()
+    expect(document.querySelector('[data-jff-group="auto"]')).toBeNull()
+  })
+
+  it('does not paste a dead page job description into the new page', async () => {
+    let releasePick: (() => void) | null = null
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_PICK') {
+        return await new Promise((r) => { releasePick = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Dead page job description' } } }], failures: [] }) })
+      }
+      if (msg?.kind === 'toContent') return jobTextReply
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    fireEvent.click(screen.getByRole('button', { name: 'Pick job description' }))
+    await waitFor(() => { expect(releasePick).not.toBeNull() })
+    await navigateBoundTab()
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    releasePick!()
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Pick job description' })).toBeTruthy() })
+    expect((document.querySelector('[data-jff-paste] textarea') as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('clears a GUESSED company on navigation so the next employer is guessed fresh', async () => {
+    // Otherwise employer B's saved answers are filed under employer A's name.
+    let onNewPage = false
+    tabsGet().mockImplementation(async () => (onNewPage ? GLOBEX : ACME))
+    installFullScan()
+    render(<App />)
+    await waitFor(() => { expect(companyInput().value).toBe('Acme') })
+    onNewPage = true
+    await navigateBoundTab()
+    await waitFor(() => { expect(companyInput().value).toBe('Globex') })
+  })
+
+  it('keeps a company the user typed across a navigation', async () => {
+    let onNewPage = false
+    tabsGet().mockImplementation(async () => (onNewPage ? GLOBEX : ACME))
+    installFullScan()
+    render(<App />)
+    await waitFor(() => { expect(companyInput().value).toBe('Acme') })
+    fireEvent.change(companyInput(), { target: { value: 'Initech' } })
+    onNewPage = true
+    await navigateBoundTab()
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    expect(companyInput().value).toBe('Initech')
+  })
+
+  it('never lets a dead scan company guess name the live page employer', async () => {
+    // The guess is a post-await write like any other: `tab` is read before the
+    // navigation and answers after it.
+    let releaseTab: (() => void) | null = null
+    let calls = 0
+    tabsGet().mockImplementation(async () => {
+      calls++
+      if (calls === 1) return await new Promise((r) => { releaseTab = () => r(ACME) })
+      return GLOBEX
+    })
+    installFullScan()
+    render(<App />)
+    await waitFor(() => { expect(releaseTab).not.toBeNull() })
+    await navigateBoundTab()
+    releaseTab!()
+    // 'Acme' here would also SUPPRESS the live page's guess: the field is no longer empty.
+    await waitFor(() => { expect(companyInput().value).toBe('Globex') })
+  })
+})
+
 describe('App per-field fill failures', () => {
   const enumField = (fid: number, label: string) => ({
     frameId: -1, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',

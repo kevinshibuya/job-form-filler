@@ -54,6 +54,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // The last SETTLED scan outcome. An action_failed line is transient: when the
   // retried action succeeds the panel goes back to what the scan said.
   const lastOutcomeRef = useRef<ScanUiState | null>(null)
+  // Provenance of `company`. A GUESS describes the page that is gone, so a reset
+  // drops it; a value the user typed is theirs and survives every reset.
+  const companyGuessedRef = useRef(false)
   const [check, setCheck] = useState<SelfCheck | null>(null)
   const [hostError, setHostError] = useState<string | null>(null)
   const [tabId, setTabId] = useState<number | null>(null)
@@ -106,11 +109,23 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // Invalidate whatever scan is in flight BEFORE clearing: its results describe
     // the page that just went away.
     resetGenRef.current++
+    // Defensive only — unreachable as a restore source by construction: this same
+    // reset clears the rows, and any later action requires a settled scan, which
+    // reassigns the ref inside its own generation-guarded block. Kept because the
+    // invariant ("a rollback target never outlives its page") must not depend on
+    // that reasoning staying true.
     lastOutcomeRef.current = null
     setFields([]); setResolutions([]); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
     setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
     setReuseOverrides({})
-    setScanStatus(null); setFrameReports([])
+    // A guessed company belongs to the employer whose page just went away; keeping
+    // it files the NEXT employer's answers under the previous company's name.
+    if (companyGuessedRef.current) { companyGuessedRef.current = false; setCompany('') }
+    // A scan still draining cannot be cancelled (host-protocol change, deferred to
+    // a future slice), and its own writes are dropped — so a blank line here is
+    // minutes of a frozen-looking panel. Say what is being waited on instead.
+    setScanStatus(scanningRef.current ? { kind: 'superseded' } : null)
+    setFrameReports([])
   }
 
   /** A SETTLED scan outcome (done/empty/captcha/failed) — remembered so a later
@@ -232,7 +247,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const hostname = hostnameOf(tab.url)
       // Company: the user's edit always wins; guess only while the field is empty.
       const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
-      if (co !== null && companyOrNull === null) setCompany(co)
+      // Post-await write: a dead page's guess must not name the live page's employer.
+      if (co !== null && companyOrNull === null && resetGenRef.current === gen) {
+        companyGuessedRef.current = true
+        setCompany(co)
+      }
       setFrameReports([])
       const out = await runScan({
         tabId,
@@ -367,9 +386,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (row === undefined || acting !== null) return
     const value = edits[ref] ?? row.resolution.value ?? ''
     if (value === '') return
+    // Same rule as the scan: this row, this value and this failure all describe the
+    // page the click was made on. A JFF_FILL answering after a navigation is about
+    // a dead page — its verdict must reach neither the status line nor the rows.
+    const gen = resetGenRef.current
     setActing({ ref, action: 'accept' })
     try {
       await fillOne(row, value)
+      if (resetGenRef.current !== gen) return
       // Accepting an AI key match IS the user confirmation the spec's
       // learned_mappings flow needs: promote it to a deterministic mapping.
       if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
@@ -381,6 +405,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)))
       clearActionFailure()
     } catch (e) {
+      if (resetGenRef.current !== gen) return
       setScanStatus({ kind: 'action_failed', reason: `Accept failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       setActing(null)
@@ -395,12 +420,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (row === undefined || acting !== null) return
     const value = edits[ref] ?? row.resolution.value ?? ''
     if (value.trim() === '') return
+    // A ref is `frameId:fid` — it carries no epoch, so the NEW page's field 0:1
+    // would wear a dead page's "on the page" badge without this.
+    const gen = resetGenRef.current
     setActing({ ref, action: 'fill' })
     try {
       await fillOne(row, value)
+      if (resetGenRef.current !== gen) return
       setFilledRefs((f) => (f.includes(ref) ? f : [...f, ref]))
       clearActionFailure()
     } catch (e) {
+      if (resetGenRef.current !== gen) return
       setScanStatus({ kind: 'action_failed', reason: `Fill failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       setActing(null)
@@ -429,10 +459,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const onPickJobText = async (): Promise<void> => {
     if (tabId === null || fields.length === 0 || picking) return
+    // The picked text — and the selector learned from it — describe the page the
+    // pick started on; everything below this await is dropped once that page is gone.
+    const gen = resetGenRef.current
     setPicking(true)
     try {
       // Always settles: click, Escape (pick_cancelled) or timeout (Task 17 Step 5).
       const { replies } = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
+      if (resetGenRef.current !== gen) return
       const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
       if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
       setJobText(p.pick.text)
@@ -443,6 +477,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
       }
     } catch (e) {
+      if (resetGenRef.current !== gen) return
       // A relay failure mid-pick is NOT a cancel: say so.
       setScanStatus({ kind: 'action_failed', reason: `Pick failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
@@ -555,7 +590,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         <input
           className={`${INPUT} mt-1`}
           value={company}
-          onChange={(e) => setCompany(e.target.value)}
+          // Typing makes the value the USER's: a later tab-scope reset keeps it.
+          onChange={(e) => { companyGuessedRef.current = false; setCompany(e.target.value) }}
           placeholder="Guessed on scan; edit if wrong"
         />
       </label>

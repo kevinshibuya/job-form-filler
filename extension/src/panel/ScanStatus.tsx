@@ -12,6 +12,9 @@ export type ScanUiState =
   | { kind: 'captcha' }
   | { kind: 'failed'; reason: string }
   | { kind: 'action_failed'; reason: string }
+  // A scan the page outlived. Its resolve cannot be cancelled (host-protocol
+  // change, deferred), so the panel says why it is waiting instead of going blank.
+  | { kind: 'superseded' }
 
 function copyFor(s: ScanUiState): string {
   switch (s.kind) {
@@ -25,11 +28,13 @@ function copyFor(s: ScanUiState): string {
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'
     case 'failed': return `✕ Scan failed: ${s.reason}`
     case 'action_failed': return `✕ ${s.reason}`
+    case 'superseded': return 'Page changed — finishing the old scan before rescanning…'
   }
 }
 
 const TONE: Record<ScanUiState['kind'], string> = {
   connecting: MUTED, injecting: MUTED, enumerating: MUTED, retrying: MUTED, resolving: MUTED,
+  superseded: MUTED,
   done: 'text-green-700 dark:text-green-400',
   empty: 'text-amber-600 dark:text-amber-400',
   captcha: 'text-amber-600 dark:text-amber-400',
