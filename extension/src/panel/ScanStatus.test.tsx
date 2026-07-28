@@ -25,6 +25,7 @@ describe('ScanStatus', () => {
     [{ kind: 'captcha' }, '⚠ CAPTCHA active — nothing was filled.'],
     [{ kind: 'failed', reason: 'boom' }, '✕ Scan failed: boom'],
     [{ kind: 'action_failed', reason: 'Fill failed: frame gone' }, '✕ Fill failed: frame gone'],
+    [{ kind: 'superseded' }, 'Page changed — finishing the old scan before rescanning…'],
   ])('renders the spec copy for %j', (status, copy) => {
     render(<ScanStatus status={status} reports={[]} />)
     expect(screen.getByText(copy)).toBeTruthy()
