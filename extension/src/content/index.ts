@@ -1,4 +1,5 @@
-import { ContentMessageSchema, STALE_EPOCH } from '@jff/shared'
+import { ContentMessageSchema, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
+import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
 
 declare global {
@@ -26,8 +27,20 @@ function handle(raw: unknown): unknown {
 
   // A SCAN establishes the epoch for this frame. Everything else must match it.
   if (msg.type === 'JFF_SCAN') {
-    const { fields, unreachableWidgets } = enumerateFields({ root: document, epoch: msg.epoch })
-    return { ok: true, scan: { epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: false } }
+    const { fields, unreachableWidgets } = enumerateFields({
+      root: document,
+      epoch: msg.epoch,
+      isDemographic: (el) => isDemographic(el),
+    })
+    // Validate our OWN reply. This is the consumer ScanResultSchema was written for
+    // (Task 2): enumerator drift that emits a malformed field would otherwise reach
+    // the host's `resolve` call and fail there as an opaque bad_request, with no way
+    // to tell which frame produced it.
+    const scan = ScanResultSchema.safeParse({
+      epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document),
+    })
+    if (!scan.success) return { ok: false, error: 'bad_scan' }
+    return { ok: true, scan: scan.data }
   }
 
   if (msg.epoch !== getEpoch()) return { ok: false, error: STALE_EPOCH }

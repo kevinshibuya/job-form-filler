@@ -94,3 +94,19 @@ test('a scan enumerates the fixture form for real', async () => {
     await t.close()
   }
 })
+
+test('the EEO srcdoc subframe is flagged demographic and the visible reCAPTCHA stub reads as active', async () => {
+  const t = await openFixtureTab()
+  try {
+    const scan = await t.send({ type: 'JFF_SCAN', epoch: 2 })
+    type ScanPayload = { scan?: { fields: { name: string | null; demographic: boolean }[]; activeCaptcha: boolean } }
+    // the EEO srcdoc iframe is a separate frame; its Gender select must be flagged
+    const eeoFrame = scan.replies.find((r) => r.frameId !== 0 && ((r.payload as ScanPayload).scan?.fields.length ?? 0) > 0)!
+    const gender = (eeoFrame.payload as ScanPayload).scan!.fields.find((f) => f.name === 'gender')!
+    expect(gender.demographic).toBe(true)
+    // the fixture's visible reCAPTCHA stub is an ACTIVE challenge
+    expect((scan.replies.find((r) => r.frameId === 0)!.payload as ScanPayload).scan!.activeCaptcha).toBe(true)
+  } finally {
+    await t.close()
+  }
+})
