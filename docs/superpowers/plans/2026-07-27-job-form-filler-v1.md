@@ -2876,7 +2876,7 @@ git commit -m "feat(host): claude -p runner with stdin-closed spawn discipline, 
   - `validateMappingResponse(raw, requestedRefs, candidateIds): Map<string, MappingDecision>`
   - `runMapping(runner: ClaudeRunner, input: MappingInput): Promise<Map<string, MappingDecision>>`
 
-- [ ] **Step 1: Write the failing fencing test**
+- [x] **Step 1: Write the failing fencing test**
 
 `host/src/llm/fence.test.ts`:
 
@@ -2918,12 +2918,12 @@ describe('UNTRUSTED_PREAMBLE', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/fence.test.ts`
 Expected: FAIL — cannot resolve `./fence.js`.
 
-- [ ] **Step 3: Implement fencing**
+- [x] **Step 3: Implement fencing**
 
 `host/src/llm/fence.ts`:
 
@@ -2963,12 +2963,12 @@ export function fence(tag: string, raw: string, cap: number): string {
 }
 ```
 
-- [ ] **Step 4: Run the fencing test to verify it passes**
+- [x] **Step 4: Run the fencing test to verify it passes**
 
 Run: `npx vitest run host/src/llm/fence.test.ts`
 Expected: PASS (5 tests).
 
-- [ ] **Step 5: Write the failing mapping test**
+- [x] **Step 5: Write the failing mapping test**
 
 `host/src/llm/mapping.test.ts`:
 
@@ -3092,12 +3092,12 @@ describe('refOf', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/mapping.test.ts`
 Expected: FAIL — cannot resolve `./mapping.js`.
 
-- [ ] **Step 7: Implement the mapping prompt, schema and validator**
+- [x] **Step 7: Implement the mapping prompt, schema and validator**
 
 `host/src/llm/mapping.ts`:
 
@@ -3241,12 +3241,12 @@ export async function runMapping(runner: ClaudeRunner, input: MappingInput): Pro
 }
 ```
 
-- [ ] **Step 8: Run the mapping test to verify it passes**
+- [x] **Step 8: Run the mapping test to verify it passes**
 
 Run: `npx vitest run host/src/llm/mapping.test.ts`
 Expected: PASS (14 tests).
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A
