@@ -109,6 +109,11 @@ export const PageEnvelopeSchema = z.object({
 export const ResolveResultSchema = z.object({
   epoch: z.number().int(),
   resolutions: z.array(ResolutionSchema),
+  /**
+   * Set when the batched mapping call failed. Every unresolved field is already
+   * needs-input; this only tells the panel WHICH banner to show.
+   */
+  llmError: z.object({ kind: HostErrorKindSchema, message: z.string() }).nullable(),
 })
 export type ResolveResult = z.infer<typeof ResolveResultSchema>
 

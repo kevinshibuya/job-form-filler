@@ -3286,7 +3286,7 @@ git commit -m "feat(host): untrusted-input fencing and a mapping schema with no 
 The panel offers [Generate] on EVERY needs-input row (spec); the reason string `custom` marks
 the rows the LLM explicitly classified as free-text. There is no separate customQuestions list.
 
-- [ ] **Step 1: Patch `ResolveResultSchema` to carry an LLM error**
+- [x] **Step 1: Patch `ResolveResultSchema` to carry an LLM error**
 
 In `shared/src/messages.ts`, replace the `ResolveResultSchema` object (keep the comment above
 it) with:
@@ -3309,7 +3309,7 @@ its `dist/`, so a schema change without a rebuild tests STALE types:
 
 Run: `npm run build -w @jff/shared && npx vitest run shared/src/messages.test.ts` — still PASS.
 
-- [ ] **Step 2: Write the failing waterfall test**
+- [x] **Step 2: Write the failing waterfall test**
 
 `host/src/resolve/waterfall.test.ts`:
 
@@ -3467,7 +3467,11 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
       { db, runner: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
       input([field(1, 'Why do you want to join Acme?')]),
     )
-    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'company-specific' })
+    // The refusal happens one layer UP, in validateMappingResponse: company_specific rows are
+    // never offered as candidates, so this answerId is out-of-set and degrades to `custom`
+    // before the waterfall sees it. The waterfall's own company-specificity check stays as
+    // defense-in-depth (unreachable via this path by construction, which is the point).
+    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'custom' })
   })
 })
 
@@ -3483,7 +3487,9 @@ describe('tier 5 and failure modes', () => {
   it('fails every unresolved field closed when the mapping response does not round-trip', async () => {
     const r = await resolveFields(
       { db, runner: runnerReturning({ '9:9': { decision: 'custom', knownKey: null, answerId: null } }) },
-      input([field(1, 'Anything else?'), field(2, 'Portfolio password?')]),
+      // Both labels must miss every baseline recognizer, or the field resolves at tier 2 and
+      // never enters the LLM batch this test is exercising.
+      input([field(1, 'Anything else?'), field(2, 'What should we know about you?')]),
     )
     expect(r.resolutions.every((x) => x.tier === 'needs_input')).toBe(true)
     expect(r.resolutions.every((x) => x.reason === 'llm-unavailable')).toBe(true)
@@ -3508,12 +3514,12 @@ describe('tier 5 and failure modes', () => {
 })
 ```
 
-- [ ] **Step 3: Run it to verify it fails**
+- [x] **Step 3: Run it to verify it fails**
 
 Run: `npx vitest run host/src/resolve/waterfall.test.ts`
 Expected: FAIL — `Cannot find module './waterfall'`.
 
-- [ ] **Step 4: Implement the waterfall**
+- [x] **Step 4: Implement the waterfall**
 
 `host/src/resolve/waterfall.ts`:
 
@@ -3669,12 +3675,12 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
 }
 ```
 
-- [ ] **Step 5: Run the waterfall test to verify it passes**
+- [x] **Step 5: Run the waterfall test to verify it passes**
 
 Run: `npx vitest run host/src/resolve/waterfall.test.ts`
 Expected: PASS (19 tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
