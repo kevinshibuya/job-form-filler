@@ -10020,7 +10020,7 @@ the real host process, the real SQLite file.
 - Produces: `e2e/hostBridge.ts` exporting `startHost(opts?: { mode?: string }): Promise<HostChild>` where
   `HostChild = { request(req: { requestId: string; method: string; params: unknown }): Promise<unknown>; dbPath: string; home: string; stderr: string[]; stop(): Promise<void> }` — `mode` sets `JFF_FAKE_CLAUDE_MODE` for the spawned host.
 
-- [ ] **Step 1: Let the host relocate its home directory for tests**
+- [x] **Step 1: Let the host relocate its home directory for tests**
 
 In `host/src/config.ts`, replace the `HOME_DIR` constant with:
 
@@ -10031,7 +10031,7 @@ export const HOME_DIR = process.env.JFF_HOME ?? join(homedir(), '.job-form-fille
 
 Run `npx vitest run host/` — still PASS.
 
-- [ ] **Step 2: Write the fake `claude` CLI**
+- [x] **Step 2: Write the fake `claude` CLI**
 
 `e2e/bin/claude` (make it executable with `chmod +x e2e/bin/claude`):
 
@@ -10078,7 +10078,7 @@ emit(refs.map((ref) => {
 }))
 ```
 
-- [ ] **Step 3: Write the host bridge**
+- [x] **Step 3: Write the host bridge**
 
 `e2e/hostBridge.ts`:
 
@@ -10158,30 +10158,95 @@ export async function startHost(opts: { mode?: string } = {}): Promise<HostChild
 ```
 
 Also write a `config.json` into the host home so `claudePath` points at the fake. Add this to
-`startHost` right after `mkdtemp`:
+`startHost` right after `mkdtemp` (import `writeFileSync` from `node:fs` at the top of the
+file rather than with a dynamic `await import`; there is no reason to defer it):
 
 ```ts
-  const { writeFileSync } = await import('node:fs')
   writeFileSync(join(home, 'config.json'), JSON.stringify({
     claudePath: join(FAKE_BIN, 'claude'),
     dbPath: join(home, 'db.sqlite'),
   }))
 ```
 
-- [ ] **Step 4: Confirm the panel takes its tab id from the URL**
+**Corrected during execution.** Two liveness holes in the snippet above: a `request` whose
+host has died stays pending forever (the panel awaits it, and the failure surfaces as an
+opaque Playwright timeout with no hint that the host process was the thing that died), and
+`stop()` awaits a `close` event that may already have fired. Track the close once and use it
+for both:
+
+```ts
+  let closed = false
+  child.on('close', (code) => {
+    closed = true
+    for (const [requestId, settle] of pending) {
+      settle({ requestId, ok: false, error: { kind: 'unreachable', message: `host exited with code ${String(code)}` } })
+    }
+    pending.clear()
+  })
+  // ...and in the returned object:
+  stop() {
+    if (closed) return Promise.resolve()
+    child.stdin.end()
+    return new Promise<void>((r) => child.on('close', () => r()))
+  },
+```
+
+- [x] **Step 4: Confirm the panel takes its tab id from the URL**
 
 The `?tabId=` override is already part of the canonical `App.tsx` (Task 21 Step 3b) — the
 side panel opened by the action binds to the active tab, the override lets this smoke drive
 the panel as an ordinary page. Verify it is present; nothing to change.
 
-- [ ] **Step 5: Write the failing full-loop smoke**
+- [x] **Step 5: Write the failing full-loop smoke**
 
 `e2e/full-loop.spec.ts`:
+
+**Corrected during execution — three defects in the draft below, all reproduced before fixing:**
+
+1. **`chrome.tabs` is not reachable from `context.newPage()`.** The draft looked the tab id up
+   on a freshly created page, which sits on `about:blank`: `chrome` exists there but
+   `chrome.tabs` is `undefined`, so `chrome.tabs.query` throws. Driving the extension's
+   service worker instead is not a fix either — `serviceWorkers()[0].evaluate(...)` hangs once
+   MV3 has parked the worker (measured: never returned inside a 60s test). The lookup must run
+   on an **extension-origin page**. `manifest.json` is one, gets the full API surface, and
+   mounts no React app, so it cannot start a second auto-scan racing the one under test:
+
+   ```ts
+   async function tabIdForUrl(ext: LaunchedExtension, needle: string): Promise<number> {
+     const lookup = await ext.context.newPage()
+     await lookup.goto(`chrome-extension://${ext.extensionId}/manifest.json`)
+     const id = await lookup.evaluate(async (n) => {
+       const tabs = await chrome.tabs.query({})
+       return tabs.find((t) => (t.url ?? '').includes(n))?.id ?? null
+     }, needle)
+     await lookup.close()
+     if (id === null) throw new Error(`no tab matching ${needle}`)
+     return id
+   }
+   ```
+
+2. **The `.g-recaptcha` removal needs a pre-condition, not just a post-condition.** Asserting
+   only that the stub is gone would also pass if the fixture had quietly lost its stub, which
+   would silently gut Task 14's active-CAPTCHA assertion. Assert `toHaveCount(1)` before the
+   `evaluate` and `toHaveCount(0)` after it.
+
+3. **The rate-limit test's comment claimed something it did not test.** "Deterministic fills
+   still happened" was unobservable there: with no profile seeded the deterministic tier had
+   nothing to fill, so the claim could not fail. Seed `firstName` first, then assert
+   `#first_name` really carries it alongside the rate-limit banner.
+
+A fourth change is a harness budget, not an assertion: these two tests each launch a Chromium,
+spawn a host child and drive the whole loop, and `chrome.scripting.executeScript` (the SW's
+frame-discovery call, one per broadcast) has latency that tracks machine load — measured
+between 16ms and 40s for the identical call on the same box. Put
+`test.describe.configure({ timeout: 120_000 })` at file scope. The per-assertion 30s timeouts
+below are the real budgets and stay exactly as written, so a genuinely broken loop still fails
+fast.
 
 ```ts
 import { test, expect } from '@playwright/test'
 import DatabaseCtor from 'better-sqlite3'
-import { launchWithExtension, panelUrl } from './ext'
+import { launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
 import { startFixtureServer } from './static-server'
 import { startHost } from './hostBridge'
 
@@ -10207,11 +10272,10 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // on THIS tab; Task 14 Step 6 owns the active-CAPTCHA assertion, on its own
     // fresh fixture tab in foundation.spec.ts. (A query-gated stub would not work:
     // the static server strips query strings before resolving the file.)
+    await expect(target.locator('.g-recaptcha')).toHaveCount(1)
     await target.evaluate(() => { document.querySelector('.g-recaptcha')?.remove() })
-    const tabId = await (await ext.context.newPage()).evaluate(async () => {
-      const tabs = await chrome.tabs.query({})
-      return tabs.find((t) => (t.url ?? '').includes('fixture-form.html'))!.id!
-    })
+    await expect(target.locator('.g-recaptcha')).toHaveCount(0)
+    const tabId = await tabIdForUrl(ext, 'fixture-form.html')
 
     // The panel, bridged to the REAL host process. exposeFunction BEFORE goto.
     const panel = await ext.context.newPage()
@@ -10305,15 +10369,22 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
   const host = await startHost({ mode: 'rate_limit' })
   const ext = await launchWithExtension()
   try {
+    // Seeded so "only the LLM tier degraded" is something this test can actually
+    // observe: without a stored profile the deterministic tier would have nothing
+    // to fill and its assertion below could not fail.
+    await host.request({
+      requestId: 'seed-rl-1', method: 'profile.set',
+      params: { values: { firstName: 'Kevin' } },
+    })
+
     const target = await ext.context.newPage()
     await target.goto(`${fixtures.origin}/fixture-form.html`)
     // Same reason as the first test: an active CAPTCHA returns before `resolve` is
     // ever called, so the rate-limit banner would never appear.
+    await expect(target.locator('.g-recaptcha')).toHaveCount(1)
     await target.evaluate(() => { document.querySelector('.g-recaptcha')?.remove() })
-    const tabId = await (await ext.context.newPage()).evaluate(async () => {
-      const tabs = await chrome.tabs.query({})
-      return tabs.find((t) => (t.url ?? '').includes('fixture-form.html'))!.id!
-    })
+    await expect(target.locator('.g-recaptcha')).toHaveCount(0)
+    const tabId = await tabIdForUrl(ext, 'fixture-form.html')
 
     const panel = await ext.context.newPage()
     await panel.exposeFunction('__jffHostBridge', (req: { requestId: string; method: string; params: unknown }) => host.request(req))
@@ -10323,6 +10394,7 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
     await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 30_000 })
     // Deterministic fills still happened; only the LLM tier degraded.
     await expect(panel.locator('[data-jff-group="needs_input"]')).toBeVisible()
+    await expect(target.locator('#first_name')).toHaveValue('Kevin')
   } finally {
     await ext.close()
     await host.stop()
@@ -10331,7 +10403,7 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
 })
 ```
 
-- [ ] **Step 6: Run the smoke to verify it fails, then make it pass**
+- [x] **Step 6: Run the smoke to verify it fails, then make it pass**
 
 ```bash
 chmod +x e2e/bin/claude
@@ -10349,8 +10421,22 @@ are applied. Common first failures and their fixes:
   (or ran after the auto-scan). `runScan` returns before phase 1 on an active challenge.
 - `apps` has zero rows → `save` was called with an empty `items` array; check that
   `buildSaveItems` is receiving the live snapshot, not only `edits`.
+- The test times out but every step it DID reach looked right → this is almost certainly
+  `chrome.scripting.executeScript`, not this code. Measured on one idle-vs-loaded box, the
+  identical no-op frame-discovery call (`{ allFrames: true, func: () => true }`, which the SW
+  runs once per broadcast) took 16ms when the machine was idle and 39.6s when it was not; the
+  `chrome.tabs.sendMessage` calls around it stayed at 1-10ms and the host round trip at ~72ms.
+  Check the load average before touching any assertion. The `test.describe.configure` budget
+  above absorbs the normal spread; it cannot absorb a pinned CPU.
 
-- [ ] **Step 7: Make `npm run smoke` the single gate, and prove there is no network client**
+- [x] **Step 6b: Prove the zero-console-errors assertion is not vacuous**
+
+`expect(ext.consoleErrors).toEqual([])` passes against an empty array, so it would also pass if
+the collector were never wired — exactly the failure mode Task 20 found. Prove it fires: in a
+throwaway spec, open the panel, `page.evaluate(() => { console.error('probe') })`, and confirm
+the same assertion FAILS. It did (`Received + 3`). Delete the probe afterwards.
+
+- [x] **Step 7: Make `npm run verify` the single gate, and prove there is no network client**
 
 Verification row 69 ("everything local, no telemetry, no server") is a NEGATIVE claim, so it
 needs an executed check rather than a reading. Run it here, with the whole codebase written:
@@ -10376,7 +10462,7 @@ Expected: everything PASS, `npm run lint` included (Task 4 Step 10 pinned ESLint
 the root `.eslintrc.cjs`; an unpinned install silently lints nothing). Task 23's release flow
 uses plain `npm run build`, which strips the test seam from the shipped bundle.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A

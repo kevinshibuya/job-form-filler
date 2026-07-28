@@ -8,7 +8,8 @@ export interface HostConfig {
   authCachePath: string
 }
 
-export const HOME_DIR = join(homedir(), '.job-form-filler')
+// JFF_HOME lets the e2e harness point a host process at a throwaway directory.
+export const HOME_DIR = process.env.JFF_HOME ?? join(homedir(), '.job-form-filler')
 
 export function loadConfig(): HostConfig {
   const defaults: HostConfig = {
