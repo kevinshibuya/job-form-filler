@@ -291,6 +291,13 @@ export function groupLabelFor(el: Element): LabelBinding {
       if (t !== '') return { text: t, source: 'group-aria', element: refs[0] ?? null }
     }
   }
+
+  const dangling = danglingLabelFor(el)
+  if (dangling !== null) return dangling
+
+  const climbed = climbLabelFor(el)
+  if (climbed !== null) return climbed
+
   return NO_BINDING
 }
 

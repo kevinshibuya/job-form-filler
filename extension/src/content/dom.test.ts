@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { walkElements, countUnreachableWidgets, labelFor, groupLabelFor, optionLabelOf } from './dom'
-import { ASHBY_COMBOBOX, ASHBY_YESNO_EN, SHARED_WRAPPER_FIRST_LAST } from './fixtures/ashby'
+import { ASHBY_COMBOBOX, ASHBY_YESNO_EN, SHARED_WRAPPER_FIRST_LAST, ASHBY_RADIO_FIELDSET, ASHBY_CONSENT_SINGLE } from './fixtures/ashby'
 
 beforeEach(() => { document.body.innerHTML = '' })
 
@@ -171,6 +171,31 @@ describe('groupLabelFor', () => {
   it('returns null when no group container labels the radios', () => {
     document.body.innerHTML = `<label><input type="radio" name="x" id="x1"> Yes</label>`
     expect(groupLabelFor(document.getElementById('x1')!).text).toBeNull()
+  })
+
+  it('repairs the Ashby radio fieldset: group label is the question, never an option', () => {
+    document.body.innerHTML = ASHBY_RADIO_FIELDSET
+    const b = groupLabelFor(document.querySelector('input[type="radio"]')!)
+    expect(b.text).toBe('Have you previously worked in a remote or hybrid environment?')
+    expect(b.source).toBe('dangling')
+    expect(b.text).not.toBe('Yes, fully remote')
+  })
+
+  it('binds the single-option consent group to the policy statement, not "I agree"', () => {
+    document.body.innerHTML = ASHBY_CONSENT_SINGLE
+    const b = groupLabelFor(document.querySelector('input[type="radio"]')!)
+    expect(b.text).toMatch(/^By submitting your application/)
+  })
+
+  it('climbs for a group label under the same guards as labelFor', () => {
+    document.body.innerHTML = `
+      <div><h4>Preferred contact method</h4>
+        <div>
+          <label><input type="radio" name="cm" id="cm1"> Email</label>
+          <label><input type="radio" name="cm"> Phone</label>
+        </div>
+      </div>`
+    expect(groupLabelFor(document.getElementById('cm1')!)).toMatchObject({ text: 'Preferred contact method', source: 'climb' })
   })
 })
 
