@@ -2353,7 +2353,7 @@ git commit -m "feat(host): SQLite schema and repositories for profile, answer ba
   - `BASELINE_RECOGNIZERS: { match: RegExp; key: FieldKey }[]`
   - `recognize(label: string, db?: Database.Database): FieldKey | null` — learned mapping wins over baseline.
 
-- [ ] **Step 1: Write the failing normalization test**
+- [x] **Step 1: Write the failing normalization test**
 
 `host/src/resolve/normalize.test.ts`:
 
@@ -2393,12 +2393,12 @@ describe('detectLanguage', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/resolve/normalize.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement normalization**
+- [x] **Step 3: Implement normalization**
 
 `host/src/resolve/normalize.ts`:
 
@@ -2414,6 +2414,11 @@ export function normalizeQuestion(s: string): string {
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '') // strip combining accent marks
+    // A hyphen BETWEEN two alphanumerics joins rather than separates, so the two
+    // label spellings "E-mail" and "email" collide on one key. Guarded on both
+    // sides: a hyphen used as a separator ("Salary - expected") keeps its
+    // surrounding spaces and still collapses below, as do en/em dashes.
+    .replace(/([a-z0-9])-(?=[a-z0-9])/g, '$1')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .slice(0, MAX_NORMALIZED)
@@ -2432,12 +2437,12 @@ export function detectLanguage(s: string): 'en' | 'pt' {
 }
 ```
 
-- [ ] **Step 4: Run the normalization test to verify it passes**
+- [x] **Step 4: Run the normalization test to verify it passes**
 
 Run: `npx vitest run host/src/resolve/normalize.test.ts`
 Expected: PASS (6 tests).
 
-- [ ] **Step 5: Write the failing recognizer test**
+- [x] **Step 5: Write the failing recognizer test**
 
 `host/src/resolve/recognizers.test.ts`:
 
@@ -2502,12 +2507,12 @@ describe('recognize', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run host/src/resolve/recognizers.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 7: Implement the recognizers**
+- [x] **Step 7: Implement the recognizers**
 
 `host/src/resolve/recognizers.ts`:
 
@@ -2561,12 +2566,12 @@ export function recognize(label: string, db?: Database.Database): FieldKey | nul
 }
 ```
 
-- [ ] **Step 8: Run the recognizer test to verify it passes**
+- [x] **Step 8: Run the recognizer test to verify it passes**
 
 Run: `npx vitest run host/src/resolve/recognizers.test.ts`
 Expected: PASS (24 tests). If `Company name` still matches `firstName`, the `\bnome\b(?!\s+da\s+empresa)` lookahead is not the culprit (that pattern is PT-only); confirm the English branch is `first name` and not `name`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A
