@@ -4492,7 +4492,7 @@ git commit -m "feat(host): self-check with cached auth probe, idempotent request
   - `nativeManifestPath(home: string): string`
   - `host/scripts/install.mjs`, run with `npm run install-host -w @jff/host`.
 
-- [ ] **Step 1: Write the failing template test**
+- [x] **Step 1: Write the failing template test**
 
 `host/src/install/templates.test.ts`:
 
@@ -4548,12 +4548,12 @@ describe('nativeManifestPath', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/install/templates.test.ts`
 Expected: FAIL — cannot resolve `./templates.js`.
 
-- [ ] **Step 3: Implement the templates**
+- [x] **Step 3: Implement the templates**
 
 `host/src/install/templates.ts`:
 
@@ -4595,12 +4595,12 @@ export function nativeManifestPath(home: string): string {
 }
 ```
 
-- [ ] **Step 4: Run the template test to verify it passes**
+- [x] **Step 4: Run the template test to verify it passes**
 
 Run: `npx vitest run host/src/install/templates.test.ts`
 Expected: PASS (8 tests).
 
-- [ ] **Step 5: Write the install script**
+- [x] **Step 5: Write the install script**
 
 `host/scripts/install.mjs`:
 
@@ -4688,7 +4688,7 @@ console.log('Next: fully quit and reopen Chrome, load extension/dist as an unpac
 console.log('then open the side panel and confirm the self-check banner is green.')
 ```
 
-- [ ] **Step 6: Run the install script end to end**
+- [x] **Step 6: Run the install script end to end**
 
 ```bash
 npm run build -w @jff/shared && npm run build -w @jff/host
@@ -4699,7 +4699,7 @@ sh -n host/bin/jff-host.sh && echo "wrapper syntax ok"
 
 Expected: the manifest prints with the right `path` and `allowed_origins`, and the wrapper passes `sh -n`.
 
-- [ ] **Step 7: Verify the wrapper actually starts the host**
+- [x] **Step 7: Verify the wrapper actually starts the host**
 
 ```bash
 printf '' | ./host/bin/jff-host.sh; echo "exit=$?"
@@ -4708,7 +4708,7 @@ tail -3 ~/.job-form-filler/host.log
 
 Expected: exit 0, and the log's last lines contain `host started` then `stdin closed, exiting`. Nothing is printed to the terminal by the wrapper itself.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
