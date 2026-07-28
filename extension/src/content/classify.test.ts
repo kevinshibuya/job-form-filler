@@ -62,8 +62,8 @@ describe('isDemographic', () => {
 })
 
 describe('hasActiveCaptcha', () => {
-  const big: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 304, height: 78 })
-  const tiny: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 0, height: 0 })
+  const big: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 304, height: 78, clipped: false })
+  const tiny: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 0, height: 0, clipped: false })
 
   it('flags a visible reCAPTCHA v2 challenge widget', () => {
     document.body.innerHTML = `<div class="g-recaptcha" data-sitekey="x"></div>`

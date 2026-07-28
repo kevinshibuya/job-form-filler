@@ -1,5 +1,5 @@
 import type { EnumField, WidgetKind } from '@jff/shared'
-import { countUnreachableWidgets, groupLabelFor, kindOf, labelFor, optionLabelOf, scopeOf, walkElements } from './dom'
+import { countUnreachableWidgets, groupLabelFor, isSoleControl, kindOf, labelFor, optionLabelOf, scopeOf, walkElements } from './dom'
 
 export interface Measure {
   display: string
@@ -7,8 +7,18 @@ export interface Measure {
   ariaHidden: boolean
   width: number
   height: number
+  /** The visually-hidden recipe: a ≤1px box, or clip/clip-path collapse. */
+  clipped: boolean
 }
 export type MeasureFn = (el: Element) => Measure
+
+/** Pure so the recipe is unit-testable (jsdom computes 0×0 rects; the real
+ *  computation is exercised by the Playwright fixtures in later slices). */
+export function isClipped(width: number, height: number, clip: string, clipPath: string): boolean {
+  return (width <= 1 && height <= 1)
+    || /^rect\(\s*0(?:px)?\s*[,\s]\s*0(?:px)?\s*[,\s]\s*0(?:px)?\s*[,\s]\s*0(?:px)?\s*\)$/.test(clip)
+    || /^inset\(\s*(?:50|100)%\s*\)$/.test(clipPath)
+}
 
 export const defaultMeasure: MeasureFn = (el) => {
   const st = window.getComputedStyle(el)
@@ -19,7 +29,48 @@ export const defaultMeasure: MeasureFn = (el) => {
     ariaHidden: el.getAttribute('aria-hidden') === 'true',
     width: rect.width,
     height: rect.height,
+    clipped: isClipped(rect.width, rect.height, st.clip ?? '', st.clipPath ?? ''),
   }
+}
+
+/** Named bounds: they encode "a segmented control, not a toolbar", so fixtures
+ *  and code cannot drift apart. */
+export const CHOICE_MIN_BUTTONS = 2
+export const CHOICE_MAX_BUTTONS = 5
+export const CHOICE_MAX_OPTION_CHARS = 30
+
+export interface ChoiceDetection { wrapper: Element; buttons: HTMLButtonElement[]; options: string[] }
+
+export function selfHidden(m: Measure): boolean {
+  return m.display === 'none' || m.visibility === 'hidden' || m.clipped
+}
+
+/**
+ * A3 structural detection, from the hidden input outward: the nearest
+ * button-holding ancestor is THE wrapper; it qualifies iff it holds 2–5 short
+ * buttons and no enumerable control besides the input itself (radios sharing
+ * the input's name count as that one control). Structural only — the caller
+ * gates on selfHidden(measure). EXPORTED because B1's fillChoice must re-detect
+ * with this same function, so filler and enumerator can never disagree.
+ */
+export function detectChoice(el: Element): ChoiceDetection | null {
+  if (!(el instanceof HTMLInputElement) || (el.type !== 'checkbox' && el.type !== 'radio')) return null
+  let wrapper: Element | null = el.parentElement
+  let levels = 0
+  while (wrapper !== null && levels < 5) {
+    if (wrapper.tagName === 'FORM' || wrapper === document.body || wrapper === document.documentElement) return null
+    const buttons = Array.from(wrapper.querySelectorAll('button'))
+    if (buttons.length > 0) {
+      if (buttons.length < CHOICE_MIN_BUTTONS || buttons.length > CHOICE_MAX_BUTTONS) return null
+      const options = buttons.map((b) => (b.textContent ?? '').replace(/\s+/g, ' ').trim())
+      if (options.some((t) => t === '' || t.length > CHOICE_MAX_OPTION_CHARS)) return null
+      if (!isSoleControl(wrapper, el)) return null
+      return { wrapper, buttons, options }
+    }
+    wrapper = wrapper.parentElement
+    levels++
+  }
+  return null
 }
 
 export interface EnumerateOptions {
