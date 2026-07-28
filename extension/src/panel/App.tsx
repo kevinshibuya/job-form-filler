@@ -13,6 +13,17 @@ import { createTabScope } from './tabScope'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
 
+/**
+ * `chrome.tabs.Tab.url` is `''` — not `undefined` — for a tab that has not committed
+ * a navigation yet, and `new URL('')` THROWS. onScan runs from a `void`-ed effect, so
+ * that throw surfaces as an unhandled rejection: a console error plus a scan that
+ * silently never happens. Any unparseable url just means "no hostname".
+ */
+export const hostnameOf = (url: string | undefined): string => {
+  if (url === undefined || url === '') return ''
+  try { return new URL(url).hostname } catch { return '' }
+}
+
 export function App() {
   const portRef = useRef<HostPort | null>(null)
   // Seeded from the clock, not 0: storage.session snapshot rows outlive a panel
@@ -159,7 +170,7 @@ export function App() {
         .filter((k) => { const m = SNAPSHOT_KEY_RE.exec(k); return m !== null && Number(m[1]) === tabId })
       if (staleKeys.length > 0) await chrome.storage.session.remove(staleKeys)
 
-      const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
+      const hostname = hostnameOf(tab.url)
       // Company: the user's edit always wins; guess only while the field is empty.
       const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
       if (co !== null && companyOrNull === null) setCompany(co)
@@ -265,7 +276,7 @@ export function App() {
     if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
     setJobText(p.pick.text)
     const tab = await getTab()
-    const hostname = tab?.url === undefined ? '' : new URL(tab.url).hostname
+    const hostname = hostnameOf(tab?.url)
     if (hostname !== '') {
       await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
     }
