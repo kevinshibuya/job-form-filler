@@ -1,5 +1,5 @@
 import type { EnumField, WidgetKind } from '@jff/shared'
-import { countUnreachableWidgets, groupLabelFor, labelFor, optionLabelOf, scopeOf, walkElements } from './dom'
+import { countUnreachableWidgets, groupLabelFor, kindOf, labelFor, optionLabelOf, scopeOf, walkElements } from './dom'
 
 export interface Measure {
   display: string
@@ -31,29 +31,14 @@ export interface EnumerateOptions {
 }
 
 const FID_ATTR = 'data-jff-fid'
-const SKIPPED_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image'])
 
 let currentEpoch = -1
 export const getEpoch = (): number => currentEpoch
 export const setEpoch = (e: number): void => { currentEpoch = e }
 
-function isCombobox(el: Element): boolean {
-  return el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox'
-}
-
-function kindOf(el: Element): WidgetKind | null {
-  if (isCombobox(el)) return 'combobox'
-  const tag = el.tagName.toLowerCase()
-  if (tag === 'select') return 'select'
-  if (tag === 'textarea') return 'textarea'
-  if (tag !== 'input') return null
-  const type = ((el as HTMLInputElement).type || 'text').toLowerCase()
-  if (SKIPPED_INPUT_TYPES.has(type)) return null
-  if (type === 'radio') return 'radiogroup'
-  if (type === 'checkbox') return 'checkbox'
-  if (type === 'file') return 'file'
-  return 'text'
-}
+// kindOf / isCombobox / SKIPPED_INPUT_TYPES moved to ./dom (unchanged logic):
+// the label-recovery heuristics need "is this an enumerable control?" and dom.ts
+// must not import enumerate.ts.
 
 /** Options of an ARIA combobox: aria-owns/aria-controls, then a sibling listbox. */
 function comboboxOptions(el: Element): string[] {
@@ -128,7 +113,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
         frameId: -1, fid, epoch: opts.epoch,
         // groupLabelFor, NOT labelFor: the wrapping <label> of the first radio is
         // that OPTION's text ("Remote"), never the group's ("Work model").
-        label: groupLabelFor(el), name, idAttr: el.id === '' ? null : el.id,
+        label: groupLabelFor(el).text, name, idAttr: el.id === '' ? null : el.id,
         kind: 'radiogroup', options: [optionLabel],
         required: (el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true',
         visible, currentValue: checked ? optionLabel : null,
@@ -155,7 +140,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
     el.setAttribute(FID_ATTR, String(fid))
     fields.push({
       frameId: -1, fid, epoch: opts.epoch,
-      label: labelFor(el), name: el.getAttribute('name'), idAttr: el.id === '' ? null : el.id,
+      label: labelFor(el).text, name: el.getAttribute('name'), idAttr: el.id === '' ? null : el.id,
       kind, options,
       required: (el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true',
       visible, currentValue: currentValueOf(el, kind),
