@@ -55,6 +55,7 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
     params: z.object({
       handle: FieldHandleSchema,
       questionRaw: z.string(),
+      description: z.string().optional(),
       jobText: z.string(),
       company: z.string().nullable(),
     }),

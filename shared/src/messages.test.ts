@@ -19,6 +19,24 @@ describe('EnumFieldSchema', () => {
       options: [], required: false, visible: true, currentValue: null, demographic: false,
     })).toThrow()
   })
+
+  it('accepts the choice kind with a description', () => {
+    const r = EnumFieldSchema.safeParse({
+      frameId: 0, fid: 1, epoch: 2, label: 'Authorized to work?', name: 'u1', idAttr: null,
+      kind: 'choice', options: ['Yes', 'No'], required: true, visible: false,
+      currentValue: null, demographic: false, description: 'Answer for your current country.',
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('accepts a field WITHOUT description (stale content script)', () => {
+    const r = EnumFieldSchema.safeParse({
+      frameId: 0, fid: 1, epoch: 2, label: 'X', name: null, idAttr: null,
+      kind: 'text', options: [], required: false, visible: true,
+      currentValue: null, demographic: false,
+    })
+    expect(r.success).toBe(true)
+  })
 })
 
 describe('HostRequestSchema', () => {
@@ -36,6 +54,26 @@ describe('HostRequestSchema', () => {
 
   it('rejects a missing requestId', () => {
     expect(() => HostRequestSchema.parse({ method: 'selfCheck', params: {} })).toThrow()
+  })
+
+  it('accepts a generate request with and without a description', () => {
+    const base = {
+      requestId: 'r1', method: 'generate' as const,
+      params: { handle: { frameId: 0, fid: 1, epoch: 2 }, questionRaw: 'Q', jobText: '', company: null },
+    }
+    expect(HostRequestSchema.safeParse(base).success).toBe(true)
+    expect(HostRequestSchema.safeParse({
+      ...base, params: { ...base.params, description: 'Please include a timeline.' },
+    }).success).toBe(true)
+  })
+
+  it('round-trips the generate description instead of stripping it', () => {
+    const parsed = HostRequestSchema.parse({
+      requestId: 'r2', method: 'generate',
+      params: { handle: { frameId: 0, fid: 1, epoch: 2 }, questionRaw: 'Q', jobText: '', company: null, description: 'D' },
+    })
+    if (parsed.method !== 'generate') throw new Error('wrong branch')
+    expect(parsed.params.description).toBe('D')
   })
 })
 
