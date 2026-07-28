@@ -105,7 +105,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   /** Everything a scan produced. Cleared on ANY tab-scope reset. All setters are
    *  stable, so the bind effect below may close over this once. */
-  const resetScanState = (): void => {
+  const resetScanState = (reason: 'activated' | 'navigated' | 'removed'): void => {
     // Invalidate whatever scan is in flight BEFORE clearing: its results describe
     // the page that just went away.
     resetGenRef.current++
@@ -124,7 +124,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // A scan still draining cannot be cancelled (host-protocol change, deferred to
     // a future slice), and its own writes are dropped — so a blank line here is
     // minutes of a frozen-looking panel. Say what is being waited on instead.
-    setScanStatus(scanningRef.current ? { kind: 'superseded' } : null)
+    setScanStatus(scanningRef.current && reason === 'navigated' ? { kind: 'superseded' } : null)
     setFrameReports([])
   }
 
@@ -152,7 +152,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (id === null) return
       stop = createTabScope(id, (reason) => {
         setResetCount((n) => n + 1)
-        resetScanState()
+        resetScanState(reason)
         // Clearing and re-scanning are different decisions. Re-scanning on every
         // tab ACTIVATION would spend one batched `claude -p` resolve per tab
         // switch; on a tab CLOSE it would scan a tab that no longer exists.
@@ -237,7 +237,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const gen = resetGenRef.current
     try {
       const tab = await getTab()
-      if (tab === null) return // the tab closed between the trigger and here
+      // The tab closed between the trigger and here — this replay is a dead end.
+      // A lingering 'superseded' from the reset that queued this replay would
+      // otherwise promise a rescan that is never coming.
+      if (tab === null) { setScanStatus((s) => (s !== null && s.kind === 'superseded' ? null : s)); return }
       // A previous application on this same tab may have left snapshot rows in
       // storage.session; they must never merge into this scan's save.
       const staleKeys = Object.keys(await chrome.storage.session.get(null))
@@ -472,6 +475,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setJobText(p.pick.text)
       clearActionFailure()
       const tab = await getTab()
+      if (resetGenRef.current !== gen) return
       const hostname = hostnameOf(tab?.url)
       if (hostname !== '') {
         await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
