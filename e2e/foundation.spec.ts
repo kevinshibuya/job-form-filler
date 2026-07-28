@@ -160,3 +160,38 @@ test('job text is captured from the fixture job-description block by the heurist
     await t.close()
   }
 })
+
+test('the panel surfaces scan outcomes: captcha on the fixture form, empty on a blank page', async () => {
+  // Real UI, real relay, fake host (seam build). The fixture form carries an
+  // ACTIVE reCAPTCHA stub, so its deterministic outcome is `captcha`.
+  // 60s assertion budgets: the repo's measured worst case for a foundation test
+  // is 31.4s under load (playwright.config.ts); full-loop already runs at 60s.
+  const target = await ext.context.newPage()
+  await target.goto(`${fixtures.origin}/fixture-form.html`)
+  // chrome.tabs is only available to EXTENSION pages: the finder must be a panel
+  // page, not a plain about:blank page.
+  const finder = await ext.context.newPage()
+  await finder.goto(panelUrl(ext.extensionId))
+  const tabId = await finder.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ url: '*://*/fixture-form.html' })
+    return tabs[tabs.length - 1]!.id!
+  })
+  const panel = await ext.context.newPage()
+  await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
+  await expect(panel.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'captcha', { timeout: 60_000 })
+
+  // A page with zero fields must settle to `empty` (after the one-shot retry)
+  // and expose the per-frame diagnostics disclosure.
+  const blank = await ext.context.newPage()
+  await blank.goto(`${fixtures.origin}/blank.html`)
+  const blankTabId = await finder.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ url: '*://*/blank.html' })
+    return tabs[tabs.length - 1]!.id!
+  })
+  const panel2 = await ext.context.newPage()
+  await panel2.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${blankTabId}`))
+  await expect(panel2.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'empty', { timeout: 60_000 })
+  await expect(panel2.locator('[data-jff-diagnostics]')).toBeAttached()
+
+  await panel2.close(); await blank.close(); await panel.close(); await finder.close(); await target.close()
+})
