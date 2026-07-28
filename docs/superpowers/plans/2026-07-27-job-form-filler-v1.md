@@ -1628,7 +1628,8 @@ Expected: FAIL — cannot resolve `./framing.js`.
 /**
  * Chrome native-messaging stdio framing: 4-byte little-endian byte length,
  * then that many bytes of UTF-8 JSON. This module owns the ONLY bytes ever
- * written to stdout. Nothing else in host/ may touch process.stdout.
+ * written to stdout. Nothing else in host/ may touch that stream; index.ts is
+ * its only caller (enforced by the Task 11 Step 10 grep gate and ESLint).
  */
 
 export const MAX_HOST_TO_EXT_BYTES = 1_048_576 // Chrome's host->extension hard cap
@@ -3921,7 +3922,7 @@ git commit -m "feat(host): honesty-first generation prompt with fenced untrusted
 
 **`qa.list` has no panel consumer in v1 — deliberately.** It exists as the executable proof of the `{ page, done }` chunking protocol (verification row 34) and is exercised by `handlers.test.ts`. A "browse saved answers" view can consume it later without any host change.
 
-- [ ] **Step 1: Write the failing self-check test**
+- [x] **Step 1: Write the failing self-check test**
 
 `host/src/selfcheck.test.ts`:
 
@@ -3986,12 +3987,12 @@ describe('selfCheck', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/selfcheck.test.ts`
 Expected: FAIL — cannot resolve `./selfcheck.js`.
 
-- [ ] **Step 3: Implement config and self-check**
+- [x] **Step 3: Implement config and self-check**
 
 `host/src/config.ts`:
 
@@ -4110,12 +4111,12 @@ export function realProbeAuth(claudePath: string): () => Promise<{ ok: boolean; 
 export const realFileExists = (p: string): boolean => existsSync(p)
 ```
 
-- [ ] **Step 4: Run the self-check test to verify it passes**
+- [x] **Step 4: Run the self-check test to verify it passes**
 
 Run: `npx vitest run host/src/selfcheck.test.ts`
 Expected: PASS (6 tests).
 
-- [ ] **Step 5: Write the failing handler test**
+- [x] **Step 5: Write the failing handler test**
 
 `host/src/handlers.test.ts`:
 
@@ -4129,11 +4130,14 @@ let db: Database.Database
 let deps: HandlerDeps
 
 // `complete` is generic on ClaudeRunner, so a plain vi.fn needs an explicit cast.
-const runner = { complete: vi.fn(async () => []) } as unknown as HandlerDeps['runner']
+// The mock is kept in its own binding: the cast erases the Mock type, so
+// `runner.complete.mockClear()` would not typecheck through `runner`.
+const complete = vi.fn(async () => [])
+const runner = { complete } as unknown as HandlerDeps['runner']
 
 beforeEach(() => {
   db = openDb(':memory:')
-  runner.complete.mockClear()
+  complete.mockClear()
   deps = {
     db,
     runner,
@@ -4210,12 +4214,12 @@ describe('handleRequest', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run host/src/handlers.test.ts`
 Expected: FAIL — cannot resolve `./handlers.js`.
 
-- [ ] **Step 7: Implement the handlers**
+- [x] **Step 7: Implement the handlers**
 
 `host/src/handlers.ts`:
 
@@ -4370,12 +4374,12 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
 }
 ```
 
-- [ ] **Step 8: Run the handler test to verify it passes**
+- [x] **Step 8: Run the handler test to verify it passes**
 
 Run: `npx vitest run host/src/handlers.test.ts`
 Expected: PASS (9 tests).
 
-- [ ] **Step 9: Write the stdio entry point**
+- [x] **Step 9: Write the stdio entry point**
 
 `host/src/index.ts`:
 
@@ -4447,7 +4451,7 @@ process.on('uncaughtException', (e) => { log('error', 'uncaught', { message: Str
 log('info', 'host started', { dbPath: config.dbPath, claudePath: config.claudePath })
 ```
 
-- [ ] **Step 10: Verify the stdout purity rule mechanically**
+- [x] **Step 10: Verify the stdout purity rule mechanically**
 
 Run:
 
@@ -4458,12 +4462,12 @@ grep -rn "console\.log\|process\.stdout" host/src --include=*.ts | grep -v "host
 
 Expected: no output (only `index.ts` touches stdout).
 
-- [ ] **Step 11: Run everything**
+- [x] **Step 11: Run everything**
 
 Run: `npx vitest run && npm run typecheck && npm run lint`
 Expected: PASS.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add -A
