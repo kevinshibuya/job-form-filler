@@ -2,10 +2,21 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { enumerateFields, elementByFid, detectChoice, isClipped, CHOICE_MAX_OPTION_CHARS, type MeasureFn } from './enumerate'
-import { ASHBY_YESNO_EN, ASHBY_YESNO_PT, ASHBY_CHOICE_RADIO, STYLED_HIDDEN_CHECKBOX } from './fixtures/ashby'
+import {
+  ASHBY_CHOICE_RADIO, ASHBY_COMBOBOX, ASHBY_COMBOBOX_WITH_DESCRIPTION, ASHBY_CONSENT_SINGLE,
+  ASHBY_EEO_YESNO, ASHBY_ESSAY_WITH_DESCRIPTION, ASHBY_OPTIONAL_FIELD, ASHBY_RADIO_FIELDSET,
+  ASHBY_YESNO_EN, ASHBY_YESNO_PT, SELECT_WITH_PLACEHOLDER, SHARED_WRAPPER_FIRST_LAST,
+  STAR_REQUIRED_FIELD, STYLED_HIDDEN_CHECKBOX,
+} from './fixtures/ashby'
 
 // jsdom does no layout, so tests drive visibility through the injected measure.
 const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 200, height: 30, clipped: false })
+
+/** Hides checkbox/radio inputs the way Ashby's CSS does; everything else visible. */
+const hideToggles: MeasureFn = (el) => ({
+  display: el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio') ? 'none' : 'block',
+  visibility: 'visible', ariaHidden: false, width: 100, height: 20, clipped: false,
+})
 
 const FIXTURE = resolve(__dirname, '../../../e2e/fixtures/greenhouse-apply/fixture-form.html')
 
@@ -100,10 +111,21 @@ describe('enumerateFields', () => {
     expect(fields[0]!.name).toBe('real')
   })
 
-  it('always treats a file input as visible even when the page hides it', () => {
+  it('records honest visibility for file inputs (the panel decides what to keep)', () => {
     document.body.innerHTML = `<label for="cv">Resume</label><input type="file" id="cv">`
     const measure: MeasureFn = () => ({ display: 'none', visibility: 'hidden', ariaHidden: false, width: 0, height: 0, clipped: false })
-    expect(enumerateFields({ root: document, epoch: 1, measure }).fields[0]!.visible).toBe(true)
+    const f = enumerateFields({ root: document, epoch: 1, measure }).fields[0]!
+    expect(f.visible).toBe(false)
+    expect(f.label).toBe('Resume') // the panel keeps it via this label
+  })
+
+  it('counts CLIPPED as not visible — the Ashby autofill pane is a hidden file input', () => {
+    // The pane's real recipe: laid out and displayed, but clipped to nothing.
+    document.body.innerHTML = `<input type="file" class="visually-hidden">`
+    const measure: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 1, height: 1, clipped: true })
+    const f = enumerateFields({ root: document, epoch: 1, measure }).fields[0]!
+    expect(f.visible).toBe(false)
+    expect(f.label).toBeNull() // unlabelled + hidden => the panel filter drops it (Task 10)
   })
 
   it('marks non-file fields hidden when display:none, visibility:hidden or aria-hidden', () => {
@@ -223,5 +245,148 @@ describe('detectChoice', () => {
   it('returns null for non-checkbox/radio elements', () => {
     document.body.innerHTML = '<div><input type="text" id="tx"><button>A</button><button>B</button></div>'
     expect(detectChoice(document.getElementById('tx')!)).toBeNull()
+  })
+})
+
+describe('enumerateFields — Ashby label recovery (A1/A2)', () => {
+  it('labels the dangling-label combobox with the question, required via class token', () => {
+    document.body.innerHTML = ASHBY_COMBOBOX
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f).toMatchObject({ kind: 'combobox', label: 'Select your country of employment', required: true })
+    expect(f.label).not.toBe('Start typing...')
+  })
+
+  it('keeps distinct labels for two inputs under one wrapper', () => {
+    document.body.innerHTML = SHARED_WRAPPER_FIRST_LAST
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    expect(fields.map((f) => f.label)).toEqual(['First name', 'Last name'])
+  })
+
+  it('leaves the optional field required:false', () => {
+    document.body.innerHTML = ASHBY_OPTIONAL_FIELD
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!.required).toBe(false)
+  })
+
+  it('marks required from a literal * in the raw label text', () => {
+    document.body.innerHTML = STAR_REQUIRED_FIELD
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f).toMatchObject({ label: 'Phone', required: true })
+  })
+
+  it('labels the radio fieldset with the question and the options with the radio labels', () => {
+    document.body.innerHTML = ASHBY_RADIO_FIELDSET
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    expect(fields).toHaveLength(1)
+    expect(fields[0]).toMatchObject({
+      kind: 'radiogroup',
+      label: 'Have you previously worked in a remote or hybrid environment?',
+      options: ['Yes, fully remote', 'Yes, hybrid', 'No'],
+      required: true,
+    })
+  })
+
+  it('labels the single-option consent with the policy statement, option "I agree"', () => {
+    document.body.innerHTML = ASHBY_CONSENT_SINGLE
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f.label).toMatch(/^By submitting your application/)
+    expect(f.options).toEqual(['I agree'])
+  })
+})
+
+describe('enumerateFields — choice kind (A3)', () => {
+  it('enumerates the hidden yes/no checkbox as ONE choice field with button-text options', () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: hideToggles })
+    expect(fields).toHaveLength(1)
+    expect(fields[0]).toMatchObject({
+      kind: 'choice',
+      label: 'Are you legally authorized to work in your current country of employment?',
+      options: ['Yes', 'No'],
+      required: true,
+      currentValue: null,
+    })
+    // fid is stamped on the hidden input: the filler re-finds the buttons from it
+    expect(document.querySelector('input[type="checkbox"]')!.getAttribute('data-jff-fid')).toBe('0')
+  })
+
+  it('captures Sim/Não verbatim', () => {
+    document.body.innerHTML = ASHBY_YESNO_PT
+    expect(enumerateFields({ root: document, epoch: 1, measure: hideToggles }).fields[0]!.options).toEqual(['Sim', 'Não'])
+  })
+
+  it('enumerates the radio-backed variant as ONE choice field, not a radiogroup', () => {
+    document.body.innerHTML = ASHBY_CHOICE_RADIO
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: hideToggles })
+    expect(fields).toHaveLength(1)
+    expect(fields[0]).toMatchObject({ kind: 'choice', options: ['Yes', 'No'] })
+  })
+
+  it('keeps a styled hidden checkbox with a resolvable label as kind checkbox', () => {
+    document.body.innerHTML = STYLED_HIDDEN_CHECKBOX
+    const f = enumerateFields({ root: document, epoch: 1, measure: hideToggles }).fields[0]!
+    expect(f).toMatchObject({ kind: 'checkbox', label: 'I agree to the terms of service' })
+  })
+
+  it('a VISIBLE checkbox near buttons stays a checkbox (self-hidden gate)', () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f.kind).toBe('checkbox')
+  })
+})
+
+describe('enumerateFields — demographic by recovered label (A1)', () => {
+  it('marks the EEO yes/no choice demographic from its recovered label alone', () => {
+    document.body.innerHTML = ASHBY_EEO_YESNO
+    const f = enumerateFields({ root: document, epoch: 1, measure: hideToggles }).fields[0]!
+    expect(f.kind).toBe('choice')
+    expect(f.demographic).toBe(true)
+  })
+
+  it('still honors the injected isDemographic', () => {
+    document.body.innerHTML = '<label for="x">Favorite color</label><input id="x">'
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible, isDemographic: () => true }).fields[0]!
+    expect(f.demographic).toBe(true)
+  })
+})
+
+describe('enumerateFields — description capture (A4)', () => {
+  it('captures the essay sibling description', () => {
+    document.body.innerHTML = ASHBY_ESSAY_WITH_DESCRIPTION
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f.description).toBe('Please include: • What made it challenging? • The total timeline from start to finish')
+  })
+
+  it("captures the combobox's uncle description", () => {
+    document.body.innerHTML = ASHBY_COMBOBOX_WITH_DESCRIPTION
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f.description).toBe('If unsure, choose the option that most closely matches your experience.')
+  })
+
+  it('leaves description undefined when there is none', () => {
+    document.body.innerHTML = ASHBY_OPTIONAL_FIELD
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!.description).toBeUndefined()
+  })
+})
+
+describe('enumerateFields — select placeholder (A5)', () => {
+  it('yields currentValue null for a selected empty-value "Select…" option', () => {
+    document.body.innerHTML = SELECT_WITH_PLACEHOLDER
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f.currentValue).toBeNull()
+    expect(f.options).toContain('Brazil')
+  })
+
+  it('yields currentValue null for a selected DISABLED option', () => {
+    document.body.innerHTML = `
+      <label for="s2">Country</label>
+      <select id="s2"><option disabled selected>Choose</option><option value="br">Brazil</option></select>`
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!.currentValue).toBeNull()
+  })
+
+  it('still reports a real selection', () => {
+    document.body.innerHTML = `
+      <label for="s3">Country</label>
+      <select id="s3"><option value="">Select…</option><option value="br" selected>Brazil</option></select>`
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!.currentValue).toBe('Brazil')
   })
 })
