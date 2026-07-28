@@ -2607,7 +2607,7 @@ git commit -m "feat(host): question normalization, PT/EN detection, baseline lab
 | `process` (any other non-zero exit) | transient | 1, after a 2s sleep |
 | `invalid_output` (stdout is not schema-valid JSON) | parse | 1, immediately (no backoff) |
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `host/src/llm/claudeCli.test.ts`:
 
@@ -2704,12 +2704,12 @@ describe('createClaudeRunner', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/claudeCli.test.ts`
 Expected: FAIL — cannot resolve `./claudeCli.js`.
 
-- [ ] **Step 3: Implement the runner**
+- [x] **Step 3: Implement the runner**
 
 `host/src/llm/claudeCli.ts`:
 
@@ -2842,12 +2842,12 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run host/src/llm/claudeCli.test.ts`
 Expected: PASS (10 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
