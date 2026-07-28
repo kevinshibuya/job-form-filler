@@ -28,7 +28,10 @@ this slice's diagnostics are the instrument that will identify it on the next ma
 1. Feedback UI: one status line under the action row + spinner/disabled on the Scan button.
    Not banners, not a per-phase checklist.
 2. 0-field scans: auto-retry the enumeration once (~1.5s delay), then show the empty state.
-   `resolve` is never called with zero fields.
+   `resolve` is never called with zero fields — including after the post-resume re-enumeration.
+   EXCEPTION: if the first pass flagged an active CAPTCHA, there is NO retry — the captcha
+   outcome returns immediately (an observed active challenge must never be waited out and then
+   filled past).
 3. Failures: human-readable status line + collapsible details disclosure with raw per-frame
    evidence.
 4. Scope: all async buttons get busy states (Scan, Save answers, Pick job description, per-row
@@ -92,7 +95,14 @@ Rendered directly under the action row, always present once a scan has started. 
 errors must be as loud as scan errors, but must not read as "Scan failed". `connecting` covers the
 mount-to-selfCheck gap when the auto-scan is queued behind the host answer (the auto-scan effect
 waits for the selfCheck to answer or fail before its first run; a manual Scan starts at
-`injecting`). The existing "Checking the local host…" pending banner (`Banner.tsx`) stays; its copy is
+`injecting`). The wait is bounded: if the host neither answers nor fails within 10s, the auto-scan
+proceeds anyway (the resolve step then surfaces the host problem loudly) — a wedged host must not
+silently pin the panel on `connecting` forever.
+
+A scan that fails AFTER enumeration (jobtext/resolve relay failure) keeps the per-frame evidence
+already collected: the thrown error carries the frame reports, and the synthetic relay-error row
+is APPENDED to them, not substituted for them. The `empty` state's frame count is the number of
+DISTINCT frames in the reports (a frame that errored then replied on the retry counts once). The existing "Checking the local host…" pending banner (`Banner.tsx`) stays; its copy is
 untouched. `llmError` outcomes render `failed` here; the existing `hostError` banner behavior is
 unchanged.
 
@@ -112,8 +122,14 @@ field count or error string — plus the inject/broadcast error when that is wha
   renders "Accepting…", Fill renders "Filling…", both disabled while their send is in flight.
   Generate keeps its existing spinner prop.
 - Accept/Fill/Pick failures are NOT silent: `fillOne` goes through the throwing relay wrapper and
-  checks the frame's reply; a failure surfaces as `action_failed` in the status line, and a failed
-  Accept does not promote the row's tier (a failed Fill does not mark "on the page").
+  checks the frame's reply INCLUDING the per-field `fill.failed` array (the content script answers
+  `ok: true` with per-field failure reasons like `no-matching-option` / `element-not-found`); any
+  failed handle throws with its reason. A failure surfaces as `action_failed` in the status line,
+  a failed Accept does not promote the row's tier, and a failed Fill does not mark "on the page".
+- While one row's Accept/Fill is in flight, EVERY row's Accept/Fill/Generate is visibly disabled
+  (the serialization is global, so the lockout must be too — a silently no-op'ing enabled button
+  is the bug class this slice removes).
+- The Scan button flips to its busy state synchronously with the re-entry guard, before any await.
 - Shared helper in `ui.ts` for the busy label/disabled pair to keep the pattern uniform.
 
 ### 5. Testing
