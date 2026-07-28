@@ -3715,7 +3715,7 @@ git commit -m "feat(host): resolution waterfall with confidence tiers, EEO skip 
 7. Never use a spaced em-dash or en-dash as sentence punctuation. Use a comma, a semicolon or a full stop.
 8. No filler openers ("I am thrilled to", "I am passionate about").
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `host/src/llm/generate.test.ts`:
 
@@ -3805,12 +3805,12 @@ describe('runGeneration', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/llm/generate.test.ts`
 Expected: FAIL — cannot resolve `./generate.js`.
 
-- [ ] **Step 3: Implement generation**
+- [x] **Step 3: Implement generation**
 
 `host/src/llm/generate.ts`:
 
@@ -3889,12 +3889,12 @@ export async function runGeneration(runner: ClaudeRunner, input: GenerationInput
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run host/src/llm/generate.test.ts`
 Expected: PASS (13 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
