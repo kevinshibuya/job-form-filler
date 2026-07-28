@@ -3,20 +3,30 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "engines": { "node": ">=20" },
-  "workspaces": ["shared", "host", "extension"],
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "shared",
+    "host",
+    "extension"
+  ],
   "scripts": {
     "build": "npm run build -w @jff/shared && npm run build -w @jff/host && npm run build -w @jff/extension",
     "typecheck": "tsc -b shared host extension && tsc -p e2e && tsc -p extension/tsconfig.node.json",
     "test": "vitest run",
-    "smoke": "JFF_TEST_SEAM=1 npm run build && playwright test"
+    "smoke": "JFF_TEST_SEAM=1 npm run build && playwright test",
+    "lint": "eslint host/src extension/src shared/src --ext .ts,.tsx"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "@types/node": "^22.0.0",
-    "typescript": "^5.6.0",
-    "vitest": "^3.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "eslint": "8.57.1",
     "jsdom": "^25.0.0",
-    "@playwright/test": "^1.49.0"
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
   },
   "dependencies": {
     "zod": "^3.23.0"

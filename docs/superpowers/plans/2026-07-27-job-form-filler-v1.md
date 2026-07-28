@@ -1554,7 +1554,7 @@ git commit -m "feat(extension): MV3 scaffold with pinned key, dumb SW relay, pan
   - `paginate<T>(items: T[], page: number, budgetBytes?: number): { page: number; done: boolean; items: T[]; omitted: number }` — an item that alone exceeds the budget is dropped and counted in `omitted`, never emitted (it could not be framed).
   - `log(level: 'info' | 'warn' | 'error', msg: string, extra?: unknown): void` — writes to stderr AND `~/.job-form-filler/host.log`, never stdout.
 
-- [ ] **Step 1: Write the failing framing test**
+- [x] **Step 1: Write the failing framing test**
 
 `host/src/framing.test.ts`:
 
@@ -1615,12 +1615,12 @@ describe('FrameReader', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run host/src/framing.test.ts`
 Expected: FAIL — cannot resolve `./framing.js`.
 
-- [ ] **Step 3: Implement the framing codec**
+- [x] **Step 3: Implement the framing codec**
 
 `host/src/framing.ts`:
 
@@ -1672,12 +1672,12 @@ export class FrameReader {
 }
 ```
 
-- [ ] **Step 4: Run the framing test to verify it passes**
+- [x] **Step 4: Run the framing test to verify it passes**
 
 Run: `npx vitest run host/src/framing.test.ts`
 Expected: PASS (7 tests).
 
-- [ ] **Step 5: Write the failing chunking test**
+- [x] **Step 5: Write the failing chunking test**
 
 `host/src/chunk.test.ts`:
 
@@ -1741,12 +1741,12 @@ describe('paginate', () => {
 })
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `npx vitest run host/src/chunk.test.ts`
 Expected: FAIL — cannot resolve `./chunk.js`.
 
-- [ ] **Step 7: Implement chunking**
+- [x] **Step 7: Implement chunking**
 
 `host/src/chunk.ts`:
 
@@ -1796,12 +1796,12 @@ export function paginate<T>(items: T[], page: number, budgetBytes: number = DEFA
 }
 ```
 
-- [ ] **Step 8: Run the chunk test to verify it passes**
+- [x] **Step 8: Run the chunk test to verify it passes**
 
 Run: `npx vitest run host/src/chunk.test.ts`
 Expected: PASS (5 tests).
 
-- [ ] **Step 9: Implement the stdout-safe logger**
+- [x] **Step 9: Implement the stdout-safe logger**
 
 `host/src/log.ts`:
 
@@ -1836,7 +1836,7 @@ function safe(v: unknown): string {
 export const HOST_LOG_PATH = LOG_PATH
 ```
 
-- [ ] **Step 10: Add the ESLint setup and the stdout guard rule**
+- [x] **Step 10: Add the ESLint setup and the stdout guard rule**
 
 Install the toolchain at the workspace root. **ESLint is pinned to 8, exactly**: v9 ignores
 `.eslintrc.cjs` entirely and removed `--ext`, so an unpinned `^8` range that resolves to 9
@@ -1888,7 +1888,7 @@ Add to root `package.json` `scripts`: `"lint": "eslint host/src extension/src sh
 and add the three packages above to root `devDependencies` with the versions npm resolved
 (`eslint` must read exactly `"8.57.1"`, no caret).
 
-- [ ] **Step 11: Run the full test suite, typecheck and lint**
+- [x] **Step 11: Run the full test suite, typecheck and lint**
 
 Run: `npx vitest run && npm run typecheck && npm run lint`
 Expected: PASS, and `npm run lint` exits 0 having actually linted files. Sanity-check that it
@@ -1896,7 +1896,7 @@ is not a no-op: `npx eslint host/src --ext .ts -f json | head -c 200` must list 
 not `[]`. If ESLint reports "No files matching the pattern", the `--ext` flag was dropped or
 eslint resolved to v9; re-check the pin.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add -A
