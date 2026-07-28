@@ -1,0 +1,150 @@
+import { z } from 'zod'
+import { EnumFieldSchema, FieldHandleSchema, ResolutionSchema } from './field.js'
+import { FIELD_KEYS } from './keys.js'
+
+// Re-exported so `./messages.js` alone carries the field-identity types it
+// builds its request/response schemas from (see shared/src/messages.test.ts).
+export { EnumFieldSchema, FieldHandleSchema, ResolutionSchema } from './field.js'
+
+/* ---------------------------------------------------------------- host RPC */
+
+export const HOST_ERROR_KINDS = [
+  'not_installed', 'not_authed', 'rate_limit', 'timeout',
+  'process', 'invalid_output', 'db', 'bad_request', 'unreachable',
+] as const
+export const HostErrorKindSchema = z.enum(HOST_ERROR_KINDS)
+export type HostErrorKind = z.infer<typeof HostErrorKindSchema>
+
+export const SavedQaSchema = z.object({
+  id: z.number().int(),
+  questionRaw: z.string(),
+  answer: z.string(),
+  language: z.enum(['en', 'pt']),
+  reusability: z.enum(['reusable', 'company_specific']),
+})
+export type SavedQa = z.infer<typeof SavedQaSchema>
+
+export const SaveItemSchema = z.object({
+  handle: FieldHandleSchema,
+  questionRaw: z.string(),
+  answer: z.string(),
+  reusability: z.enum(['reusable', 'company_specific']),
+  fieldKey: z.enum(FIELD_KEYS).nullable(),
+})
+export type SaveItem = z.infer<typeof SaveItemSchema>
+
+export const HostRequestSchema = z.discriminatedUnion('method', [
+  z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
+  z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
+  z.object({ requestId: z.string().min(1), method: z.literal('profile.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
+  z.object({ requestId: z.string().min(1), method: z.literal('answerBank.get'), params: z.object({}).passthrough() }),
+  z.object({ requestId: z.string().min(1), method: z.literal('answerBank.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
+  z.object({
+    requestId: z.string().min(1), method: z.literal('resolve'),
+    params: z.object({
+      epoch: z.number().int(),
+      url: z.string(),
+      hostname: z.string(),
+      company: z.string().nullable(),
+      jobText: z.string(),
+      fields: z.array(EnumFieldSchema),
+    }),
+  }),
+  z.object({
+    requestId: z.string().min(1), method: z.literal('generate'),
+    params: z.object({
+      handle: FieldHandleSchema,
+      questionRaw: z.string(),
+      jobText: z.string(),
+      company: z.string().nullable(),
+    }),
+  }),
+  z.object({
+    requestId: z.string().min(1), method: z.literal('save'),
+    params: z.object({
+      url: z.string(),
+      company: z.string().nullable(),
+      items: z.array(SaveItemSchema),
+      generatedCount: z.number().int().nonnegative(),
+    }),
+  }),
+  z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
+  z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
+  z.object({ requestId: z.string().min(1), method: z.literal('mapping.confirm'), params: z.object({ label: z.string(), fieldKey: z.enum(FIELD_KEYS) }) }),
+  z.object({ requestId: z.string().min(1), method: z.literal('qa.list'), params: z.object({ page: z.number().int().nonnegative() }) }),
+])
+export type HostRequest = z.infer<typeof HostRequestSchema>
+export type HostMethod = HostRequest['method']
+
+export const SelfCheckSchema = z.object({
+  node: z.object({ ok: z.boolean(), version: z.string() }),
+  claude: z.object({ ok: z.boolean(), path: z.string(), detail: z.string() }),
+  auth: z.object({ ok: z.boolean(), detail: z.string() }),
+  db: z.object({ ok: z.boolean(), path: z.string() }),
+})
+export type SelfCheck = z.infer<typeof SelfCheckSchema>
+
+export const HostResponseSchema = z.union([
+  z.object({ requestId: z.string(), ok: z.literal(true), result: z.unknown() }),
+  z.object({
+    requestId: z.string(), ok: z.literal(false),
+    error: z.object({ kind: HostErrorKindSchema, message: z.string() }),
+  }),
+])
+export type HostResponse = z.infer<typeof HostResponseSchema>
+
+/** Any response that can grow uses this envelope; the panel loops until done. */
+export const PageEnvelopeSchema = z.object({
+  page: z.number().int().nonnegative(),
+  done: z.boolean(),
+  items: z.array(z.unknown()),
+  /** Items dropped because they alone exceed the byte budget (see host/src/chunk.ts). */
+  omitted: z.number().int().nonnegative(),
+})
+
+// There is deliberately NO customQuestions list here: the panel offers [Generate]
+// on EVERY needs-input row (spec, "Needs input — each with a [Generate with AI]
+// button"), so a separate list would be dead payload. The reason string `custom`
+// marks the rows the LLM classified as free-text.
+export const ResolveResultSchema = z.object({
+  epoch: z.number().int(),
+  resolutions: z.array(ResolutionSchema),
+})
+export type ResolveResult = z.infer<typeof ResolveResultSchema>
+
+/* ------------------------------------------------ panel <-> content script */
+
+export const ContentMessageSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('JFF_PROBE') }),
+  z.object({ type: z.literal('JFF_SCAN'), epoch: z.number().int().nonnegative() }),
+  z.object({
+    type: z.literal('JFF_FILL'), epoch: z.number().int().nonnegative(),
+    fills: z.array(z.object({ handle: FieldHandleSchema, value: z.string() })),
+  }),
+  z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
+  z.object({ type: z.literal('JFF_PICK'), epoch: z.number().int().nonnegative() }),
+  z.object({ type: z.literal('JFF_JOBTEXT'), epoch: z.number().int().nonnegative(), selector: z.string().nullable() }),
+])
+export type ContentMessage = z.infer<typeof ContentMessageSchema>
+
+// Both schemas below have a REAL runtime consumer: the content script `safeParse`s
+// its own JFF_SCAN / JFF_FILL reply before returning it (Task 14 Step 5, Task 15
+// Step 5). Validating our own output is the cheapest guard against enumerator or
+// filler drift shipping a malformed field into the host's `resolve` call, where it
+// would fail as an opaque bad_request instead of naming the offending frame.
+export const ScanResultSchema = z.object({
+  epoch: z.number().int(),
+  fields: z.array(EnumFieldSchema),
+  unreachableWidgets: z.number().int().nonnegative(),
+  activeCaptcha: z.boolean(),
+})
+export type ScanResult = z.infer<typeof ScanResultSchema>
+
+export const FillReportSchema = z.object({
+  epoch: z.number().int(),
+  filled: z.array(FieldHandleSchema),
+  failed: z.array(z.object({ handle: FieldHandleSchema, reason: z.string() })),
+})
+export type FillReport = z.infer<typeof FillReportSchema>
+
+export const STALE_EPOCH = 'stale_epoch' as const

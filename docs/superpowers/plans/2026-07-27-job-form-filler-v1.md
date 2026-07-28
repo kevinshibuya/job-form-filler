@@ -512,7 +512,7 @@ git commit -m "chore: npm workspace skeleton, strict tsconfig, vitest projects, 
   - `HostErrorKind` union, `HostRequestSchema` / `HostRequest`, `HostResponseSchema` / `HostResponse`
   - `ContentMessageSchema` / `ContentMessage` (`JFF_PROBE` | `JFF_SCAN` | `JFF_FILL` | `JFF_SNAPSHOT` | `JFF_PICK` | `JFF_JOBTEXT`)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `shared/src/messages.test.ts`:
 
@@ -584,12 +584,12 @@ describe('ContentMessageSchema', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run shared/src/messages.test.ts`
 Expected: FAIL — cannot resolve `./messages.js`.
 
-- [ ] **Step 3: Implement the field identity types**
+- [x] **Step 3: Implement the field identity types**
 
 `shared/src/field.ts`:
 
@@ -654,7 +654,7 @@ export const ResolutionSchema = z.object({
 export type Resolution = z.infer<typeof ResolutionSchema>
 ```
 
-- [ ] **Step 4: Implement the message schemas**
+- [x] **Step 4: Implement the message schemas**
 
 `shared/src/messages.ts`:
 
@@ -807,7 +807,7 @@ export type FillReport = z.infer<typeof FillReportSchema>
 export const STALE_EPOCH = 'stale_epoch' as const
 ```
 
-- [ ] **Step 5: Extend the barrel**
+- [x] **Step 5: Extend the barrel**
 
 `shared/src/index.ts`:
 
@@ -817,17 +817,17 @@ export * from './field.js'
 export * from './messages.js'
 ```
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [x] **Step 6: Run the test to verify it passes**
 
 Run: `npx vitest run shared/src/messages.test.ts`
 Expected: PASS (8 tests).
 
-- [ ] **Step 7: Build shared and typecheck**
+- [x] **Step 7: Build shared and typecheck**
 
 Run: `npm run build -w @jff/shared && npm run typecheck`
 Expected: exit 0.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
