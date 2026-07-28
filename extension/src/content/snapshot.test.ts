@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { snapshotValues, installSnapshotListeners } from './snapshot'
 import { enumerateFields, type MeasureFn } from './enumerate'
 
-const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 100, height: 20 })
+const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 100, height: 20, clipped: false })
 beforeEach(() => { document.documentElement.innerHTML = '<head></head><body></body>' })
 
 describe('snapshotValues', () => {

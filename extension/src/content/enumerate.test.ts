@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { enumerateFields, elementByFid, type MeasureFn } from './enumerate'
+import { enumerateFields, elementByFid, detectChoice, isClipped, CHOICE_MAX_OPTION_CHARS, type MeasureFn } from './enumerate'
+import { ASHBY_YESNO_EN, ASHBY_YESNO_PT, ASHBY_CHOICE_RADIO, STYLED_HIDDEN_CHECKBOX } from './fixtures/ashby'
 
 // jsdom does no layout, so tests drive visibility through the injected measure.
-const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 200, height: 30 })
+const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 200, height: 30, clipped: false })
 
 const FIXTURE = resolve(__dirname, '../../../e2e/fixtures/greenhouse-apply/fixture-form.html')
 
@@ -101,13 +102,13 @@ describe('enumerateFields', () => {
 
   it('always treats a file input as visible even when the page hides it', () => {
     document.body.innerHTML = `<label for="cv">Resume</label><input type="file" id="cv">`
-    const measure: MeasureFn = () => ({ display: 'none', visibility: 'hidden', ariaHidden: false, width: 0, height: 0 })
+    const measure: MeasureFn = () => ({ display: 'none', visibility: 'hidden', ariaHidden: false, width: 0, height: 0, clipped: false })
     expect(enumerateFields({ root: document, epoch: 1, measure }).fields[0]!.visible).toBe(true)
   })
 
   it('marks non-file fields hidden when display:none, visibility:hidden or aria-hidden', () => {
     document.body.innerHTML = `<label for="x">X</label><input id="x">`
-    const measure: MeasureFn = () => ({ display: 'none', visibility: 'visible', ariaHidden: false, width: 0, height: 0 })
+    const measure: MeasureFn = () => ({ display: 'none', visibility: 'visible', ariaHidden: false, width: 0, height: 0, clipped: false })
     expect(enumerateFields({ root: document, epoch: 1, measure }).fields[0]!.visible).toBe(false)
   })
 
@@ -153,5 +154,74 @@ describe('enumerateFields', () => {
     // the unbindable "mystery" field still gets a handle, with a null label
     expect(fields.find((f) => f.idAttr === 'mystery')).toMatchObject({ label: null, required: true })
     expect(fields.every((f) => f.epoch === 9)).toBe(true)
+  })
+})
+
+describe('isClipped', () => {
+  it('flags the 1px visually-hidden box', () => {
+    expect(isClipped(1, 1, '', '')).toBe(true)
+    expect(isClipped(0, 0, '', '')).toBe(true)
+    expect(isClipped(200, 30, '', '')).toBe(false)
+  })
+
+  it('flags clip:rect(0 0 0 0) and clip-path:inset(50%|100%)', () => {
+    expect(isClipped(200, 30, 'rect(0px, 0px, 0px, 0px)', '')).toBe(true)
+    expect(isClipped(200, 30, '', 'inset(50%)')).toBe(true)
+    expect(isClipped(200, 30, '', 'inset(100%)')).toBe(true)
+    expect(isClipped(200, 30, 'auto', 'none')).toBe(false)
+  })
+})
+
+describe('detectChoice', () => {
+  it('detects the Ashby yes/no checkbox pattern with verbatim button texts', () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    const d = detectChoice(document.querySelector('input[type="checkbox"]')!)
+    expect(d).not.toBeNull()
+    expect(d!.options).toEqual(['Yes', 'No'])
+    expect(d!.buttons).toHaveLength(2)
+  })
+
+  it('captures i18n option texts verbatim, never boolean-mapped', () => {
+    document.body.innerHTML = ASHBY_YESNO_PT
+    expect(detectChoice(document.querySelector('input[type="checkbox"]')!)!.options).toEqual(['Sim', 'Não'])
+  })
+
+  it('detects the radio-backed variant (radios sharing a name count as one control)', () => {
+    document.body.innerHTML = ASHBY_CHOICE_RADIO
+    const d = detectChoice(document.querySelector('input[type="radio"]')!)
+    expect(d).not.toBeNull()
+    expect(d!.options).toEqual(['Yes', 'No'])
+  })
+
+  it('returns null for a styled hidden checkbox with no sibling buttons', () => {
+    document.body.innerHTML = STYLED_HIDDEN_CHECKBOX
+    expect(detectChoice(document.getElementById('tos-check')!)).toBeNull()
+  })
+
+  it('returns null for a toolbar (too many buttons)', () => {
+    document.body.innerHTML = `
+      <div><input type="checkbox" id="tb">
+        <button>A</button><button>B</button><button>C</button><button>D</button><button>E</button><button>F</button>
+      </div>`
+    expect(detectChoice(document.getElementById('tb')!)).toBeNull()
+  })
+
+  it('returns null when a button text exceeds the option cap', () => {
+    document.body.innerHTML = `
+      <div><input type="checkbox" id="lg2">
+        <button>Yes</button><button>${'n'.repeat(CHOICE_MAX_OPTION_CHARS + 1)}</button>
+      </div>`
+    expect(detectChoice(document.getElementById('lg2')!)).toBeNull()
+  })
+
+  it('returns null when the wrapper holds another enumerable control', () => {
+    document.body.innerHTML = `
+      <div><input type="checkbox" id="oc"><button>Yes</button><button>No</button><input type="text"></div>`
+    expect(detectChoice(document.getElementById('oc')!)).toBeNull()
+  })
+
+  it('returns null for non-checkbox/radio elements', () => {
+    document.body.innerHTML = '<div><input type="text" id="tx"><button>A</button><button>B</button></div>'
+    expect(detectChoice(document.getElementById('tx')!)).toBeNull()
   })
 })

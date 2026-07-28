@@ -35,7 +35,7 @@ if (typeof globalThis.DataTransfer === 'undefined') {
   })
 }
 
-const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 100, height: 20 })
+const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 100, height: 20, clipped: false })
 beforeEach(() => { document.documentElement.innerHTML = '<head></head><body></body>' })
 
 describe('setNativeValue', () => {
