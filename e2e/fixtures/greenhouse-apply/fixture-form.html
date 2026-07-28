@@ -138,6 +138,12 @@
   // it before snapshotting, and distinguish "not yet rendered" from "absent".
   setTimeout(function () {
     var form = document.getElementById('application-form');
+    // PROJECT-OWNED change: the confirmation swap replaces main.innerHTML and can
+    // land BEFORE this deferred injection fires (a submit smoke reaches the button
+    // in under 400ms). A torn-down form is not an error, there is just nothing left
+    // to inject into — without this guard the fixture itself throws an uncaught
+    // TypeError that pollutes the suite-wide zero-console-errors assertion.
+    if (form === null) return;
     var wrap = document.createElement('div');
     wrap.className = 'field';
     wrap.id = 'injected-field';

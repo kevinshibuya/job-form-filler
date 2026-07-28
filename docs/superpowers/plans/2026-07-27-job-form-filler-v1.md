@@ -1234,6 +1234,25 @@ branch's first line so it reads:
     var main = document.querySelector('main');
 ```
 
+**(d) Guard the deferred field injection against the confirmation swap** (added during
+Task 16 — see the deviation note there). The `setTimeout(..., 400)` that injects `#phone`
+looks its container up at fire time; once a smoke clicks Submit, `main.innerHTML` is
+replaced and `#application-form` no longer exists. A submit smoke reaches the button in
+well under 400 ms, so the timer then throws an uncaught `TypeError` FROM THE FIXTURE, which
+lands in `ext.consoleErrors` and fails the suite-wide zero-console-errors assertion.
+Add the null guard immediately after the lookup:
+
+```js
+  setTimeout(function () {
+    var form = document.getElementById('application-form');
+    // PROJECT-OWNED change: the confirmation swap replaces main.innerHTML and can
+    // land BEFORE this deferred injection fires (a submit smoke reaches the button
+    // in under 400ms). A torn-down form is not an error, there is just nothing left
+    // to inject into — without this guard the fixture itself throws an uncaught
+    // TypeError that pollutes the suite-wide zero-console-errors assertion.
+    if (form === null) return;
+```
+
 Also add one line to the HTML comment at the top of the file: `PROJECT-OWNED copy —
 modified from job-finder's fixture (job-description block, hard_bug question, real submit
 event); do not re-copy over it.`
@@ -6414,6 +6433,18 @@ test('a real submit pushes a per-tab-per-frame snapshot into storage.session', a
   }
 })
 ```
+
+**Deviation (fixture, not extension code):** this is the first smoke that clicks `#submit_app`,
+and it exposed a latent race in the fixture. `fixture-form.html` injects `#phone` from a
+`setTimeout(..., 400)` that resolves `#application-form` at fire time; the confirmation swap
+replaces `main.innerHTML`, so when the smoke reaches the button in under 400 ms the timer
+throws `Cannot read properties of null (reading 'insertBefore')`. That uncaught error is
+raised BY THE FIXTURE, but it lands in `ext.consoleErrors` and fails `foundation.spec.ts`'s
+suite-wide zero-console-errors assertion in `afterAll` — reproduced at roughly 1 run in 3.
+Fixed at the root, in the fixture, with a null guard (now recorded as Task 3 Step 7 item (d)),
+NOT by adding a wait to this test: Task 22's full-loop smoke clicks the same button and would
+inherit the same flake, and a fixture that crashes itself would mask real extension console
+errors that this assertion exists to catch.
 
 - [x] **Step 7: Rebuild and run the smoke**
 
