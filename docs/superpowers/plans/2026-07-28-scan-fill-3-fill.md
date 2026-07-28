@@ -39,9 +39,9 @@ Plus house rules:
 | Task | Model + effort | Why | Per-task verify |
 | --- | --- | --- | --- |
 | 1. Fill-side fixtures | editor-sonnet-low | Inert data, full content given verbatim. | `npm run typecheck && npm run lint` |
-| 2. `fillChoice` + `fillOne` routing (B1) | implementer-sonnet-medium | Full code given, but the two-step/verify semantics span many branch tests that must land coherently. | `npx vitest run extension/src/content/fill.test.ts && npm run typecheck` |
+| 2. `fillChoice` + `fillOne` routing (B1) | integrator-opus-high | Highest blast radius in the slice: a wrong branch order or a mis-gated click writes to a LIVE application — worst case clicking a submit control. The two-step/verify semantics span many branch tests that must land coherently. | `npx vitest run extension/src/content/fill.test.ts && npm run typecheck` |
 | 3. `fillCombobox` hardening (B2) | implementer-sonnet-medium | Full code given; two existing tests adapt deliberately; real-timer waits need care. | `npx vitest run extension/src/content/fill.test.ts && npm run typecheck` |
-| 4. `scan.ts` — collect fill reports, delete interim guard (B3) | implementer-sonnet-medium | Contained edit at plan 2's designated collection site, exact code given, but every return site of the evidence contract is touched. | `npx vitest run extension/src/panel/scan.test.ts && npm run typecheck` |
+| 4. `scan.ts` — collect fill reports, delete interim guard (B3) | integrator-opus-high | Touches every return site of the ScanError/evidence contract in the orchestration — same rationale as plan 2 Task 6, which is why that one was opus too. | `npx vitest run extension/src/panel/scan.test.ts && npm run typecheck` |
 | 5. `App.tsx` — page-accepted `filled`, failed-row demotion (B3) | implementer-sonnet-medium | Small prod diff + a React-harness stub migration across the App suite. | `npx vitest run extension/src/panel && npm run typecheck` |
 | 6. e2e — choice fill end-to-end + batch-failure surfacing | integrator-opus-high | Fixture becomes a controlled widget; judgment about what the browser can prove; extends the election spec without breaking its A6/A7 assertions. | `npm run smoke` |
 | 7. Slice verification + dist restore + spec TODO ticks | verifier-sonnet-low | Mechanical command-set run + evidence. | `npm run verify && npm run build` |
@@ -77,9 +77,10 @@ Plus house rules:
 
 ```ts
 /** Radio-backed choice whose radio VALUES are opaque tokens that match no
- *  button text — only fillChoice's index alignment can name the option;
- *  fillRadioGroup would answer no-matching-option. Proves the dispatch order
- *  (choice BEFORE radio) with a distinguishable outcome. */
+ *  button text: nothing NAMES the option on the input side, so fillChoice must
+ *  answer through the (ungated) buttons — while fillRadioGroup would answer
+ *  no-matching-option. Proves the dispatch order (choice BEFORE radio) with a
+ *  distinguishable outcome. */
 export const CHOICE_RADIO_OPAQUE_VALUES = `
 <div class="_fieldEntry_1e3gg_28">
   <label class="_label_1e3gg_42" for="ov-uuid-0001">Do you require visa sponsorship?</label>
@@ -152,17 +153,18 @@ Expected: clean (inert data; nothing imports the new exports yet).
 - Modify: `extension/src/content/fill.test.ts` (new describe)
 
 **Interfaces:**
-- Consumes: `detectChoice`, `ChoiceDetection` from `./enumerate` (plan 1); `optionLabelOf` from `./dom` (already imported).
-- Produces: `export async function fillChoice(el: HTMLInputElement, detection: ChoiceDetection, value: string): Promise<FillOutcome>`; `fillOne` routes checkbox/radio inputs with a non-null `detectChoice` through it, immediately after the combobox branch. New refusal reasons on the wire: `choice-needs-user-click`, `no-state-change`. Task 6's e2e and the manual gate observe which step fires.
+- Consumes: `detectChoice`, `selfHidden`, `defaultMeasure`, `ChoiceDetection` from `./enumerate` (plan 1); `optionLabelOf` from `./dom` (already imported).
+- Produces: `export async function fillChoice(el: HTMLInputElement, detection: ChoiceDetection, value: string): Promise<FillOutcome>`; `fillOne` routes SELF-HIDDEN checkbox/radio inputs with a non-null `detectChoice` through it, immediately after the combobox branch — the enumerator's full re-kinding predicate, so a visible checkbox near buttons is never treated as a choice. New refusal reasons on the wire: `choice-needs-user-click`, `no-state-change`. Task 6's e2e and the manual gate observe which step fires.
 - No import cycle: `enumerate.ts` does not import `fill.ts` (verified), so `fill → enumerate` is one-directional.
 
 Behavioral contract (spec B1 + Plan decisions 1–2 below — the executor implements the code given, which encodes it):
 
 - **Step 1 — the hidden input, but only when a click can NAME the requested option.**
-  - Radio-backed: the same-name member whose `value` attr or `optionLabelOf` normalizes to the value wins; else, when member count equals option count, the member at the matching option's INDEX (buttons and radios are parallel arrays in this pattern). No nameable member → straight to step 2.
+  - Radio-backed: the same-name member whose `value` attr or `optionLabelOf` normalizes to the value wins. INDEX ALIGNMENT IS NOT A STEP-1 CANDIDATE — "buttons and radios are parallel arrays" is an assumption about the page, and a wrong index answers the wrong question. No nameable member → straight to step 2; index alignment returns only as step 2's last resort (below).
   - Checkbox-backed: the value must map through the affirmative/negative vocabulary (`/^(true|yes|sim|on|1|checked)$/i` / `/^(false|no|não|nao|off|0)$/i`). Click only when `el.checked !== want` — when `checked === want` already, a click would toggle AWAY from the desired state, and silently reporting ok would be exactly the "filling No silently no-ops" lie the spec kills: fall through to step 2 so the page's real state machine (the buttons) registers the answer. Unmappable value → step 2.
   - Verification: snapshot → click → NEXT-FRAME re-snapshot → any delta = done, no button touched; no delta = fall through to step 2.
-- **Step 2 — the gated button click.** The matching button (normalized text == normalized value) must (a) be a descendant of the detected wrapper (structural by construction — `detectChoice` collects buttons from the wrapper — but asserted anyway), (b) NOT match `/^(submit|apply|send|continue|next|enviar|candidatar)/i`, (c) have `type="button"` OR no `<form>` ancestor. Gate failure or no matching button → `{ok:false, reason:'choice-needs-user-click'}`. Gate pass → snapshot → click → next-frame re-snapshot → delta = ok, none = `{ok:false, reason:'no-state-change'}`.
+- **Step 2 — the gated button click.** The matching button (normalized text == normalized value) must (a) be a descendant of the detected wrapper (structural by construction — `detectChoice` collects buttons from the wrapper — but asserted anyway), (b) NOT match `/^(submit|apply|send|continue|next|enviar|candidatar)/i`, (c) have `type="button"` OR no `<form>` ancestor. Gate pass → snapshot → click → next-frame re-snapshot → delta = ok, none = `{ok:false, reason:'no-state-change'}`.
+- **Last resort, only after the gate REFUSES** (no matching button, or a gate that failed): retry step 1 with the index-aligned member radio (member count == option count). Delta = ok; otherwise `{ok:false, reason:'choice-needs-user-click'}`. Ordering matters: the safest working step first, the risky one only when the alternative is giving up.
 - **Snapshot contents:** every same-name member's `checked`+`value`, plus every button's `className`, `aria-pressed`, `aria-checked`, `data-state` (spec's exact list).
 - The general BUTTON rail at the top of `fillOne` is byte-identical.
 
@@ -208,16 +210,38 @@ describe('fillOne — choice widgets (B1)', () => {
     expect(clicks).toEqual([])
   })
 
-  it('radio-backed with opaque values: index alignment names the option (fillRadioGroup could not)', async () => {
+  it('radio-backed with opaque values: answers through the ungated button (fillRadioGroup could not)', async () => {
     document.body.innerHTML = CHOICE_RADIO_OPAQUE_VALUES
+    pressableButtons()
     const { clicks } = spyButtons()
     const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
     await expect(fillOne(first, 'Não')).resolves.toEqual({ ok: true })
     // Proof it routed through fillChoice BEFORE the radio branch: the radios'
     // values (opt_0/opt_1) match neither 'Não' nor any option label, so
-    // fillRadioGroup would have answered no-matching-option.
+    // fillRadioGroup would have answered no-matching-option. Nothing NAMES the
+    // option on the input side, so step 1 is skipped (index alignment is not a
+    // step-1 candidate) and the ungated button carries the answer.
+    expect(clicks).toEqual(['Não'])
+    expect(document.querySelectorAll('button')[1]!.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('falls back to index alignment ONLY after the button gate refuses', async () => {
+    // Untyped buttons inside a <form> fail gate (c); with no nameable member
+    // radio, index alignment is the last thing left before asking the user.
+    document.body.innerHTML = `
+      <form action="/apply">
+        <div class="_container_1svni_28 _yesno_1e3gg_148">
+          <button class="_option_1svni_32">Sim</button>
+          <button class="_option_1svni_32">Não</button>
+          <input type="radio" class="_input_1svni_78" name="ix-uuid" value="opt_0">
+          <input type="radio" class="_input_1svni_78" name="ix-uuid" value="opt_1">
+        </div>
+      </form>`
+    const { clicks } = spyButtons()
+    const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
+    await expect(fillOne(first, 'Não')).resolves.toEqual({ ok: true })
     expect(document.querySelector<HTMLInputElement>('input[value="opt_1"]')!.checked).toBe(true)
-    expect(clicks).toEqual([])
+    expect(clicks).toEqual([]) // the in-form button was never clicked
   })
 
   it('checkbox-backed, click-accepting: fills affirmative with ZERO button clicks', async () => {
@@ -310,7 +334,7 @@ Expected: the new describe FAILS — checkbox-backed choices route into `fillChe
 
 - [ ] **Step 3: Implement in `extension/src/content/fill.ts`**
 
-Extend the enumerate import: `import { detectChoice, elementByFid, type ChoiceDetection } from './enumerate'`.
+Extend the enumerate import: `import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'`.
 
 Add below `fillCheckbox`:
 
@@ -362,16 +386,20 @@ function choiceFingerprint(members: HTMLInputElement[], buttons: HTMLButtonEleme
  * first, success ONLY on an observable state change.
  *
  * Step 1 — the hidden input itself, but only when a click can NAME the
- * requested option: the value-matching (or index-aligned) member radio, or the
- * checkbox when the value maps through the yes/no vocabulary AND the click
- * moves TOWARD the desired state. A checkbox already at the desired state gets
- * no click and no silent ok — the buttons are the page's real state machine,
- * and "filling No silently no-ops" is the exact lie this function exists to
- * kill (spec B1).
+ * requested option: the value-matching member radio, or the checkbox when the
+ * value maps through the yes/no vocabulary AND the click moves TOWARD the
+ * desired state. A checkbox already at the desired state gets no click and no
+ * silent ok — the buttons are the page's real state machine, and "filling No
+ * silently no-ops" is the exact lie this function exists to kill (spec B1).
  *
  * Step 2 — the gated button click: text match, never submit-worded, and
  * type="button" or no <form> ancestor. The motivating Ashby page has NO <form>
  * at all, so gates (a)/(b) carry the rail there.
+ *
+ * Last resort — index alignment (member radio at the matching option's index),
+ * tried ONLY when step 2's gate refused. It assumes the page renders buttons
+ * and radios as parallel arrays; that assumption is cheap to be wrong about
+ * only when the alternative is refusing the fill outright.
  */
 export async function fillChoice(
   el: HTMLInputElement,
@@ -382,37 +410,48 @@ export async function fillChoice(
   const members = choiceMembers(el, wrapper)
   const target = norm(value)
 
-  // STEP 1
+  const clickAndVerify = async (input: HTMLElement): Promise<boolean> => {
+    const before = choiceFingerprint(members, buttons)
+    input.click()
+    await nextFrame()
+    return choiceFingerprint(members, buttons) !== before
+  }
+
+  // STEP 1 — only an input that NAMES the option: the member whose value attr
+  // or option label matches. Index alignment is deliberately NOT a step-1
+  // candidate: "buttons and radios are parallel arrays" is an assumption about
+  // the page, and when it is wrong the click answers the WRONG option — a
+  // misfill, which is worse than asking the user. It comes back below as a last
+  // resort, once the safer button path has refused.
+  const optIndex = options.findIndex((o) => norm(o) === target)
+  const byIndex = el.type === 'radio' && members.length === options.length && optIndex >= 0
+    ? members[optIndex] ?? null
+    : null
+
   let stepOneTarget: HTMLInputElement | null = null
   if (el.type === 'radio') {
     const byValue = members.find((m) => norm(m.value) === target)
     const byLabel = members.find((m) => norm(optionLabelOf(m)) === target)
-    const optIndex = options.findIndex((o) => norm(o) === target)
-    const byIndex = members.length === options.length && optIndex >= 0 ? members[optIndex] ?? null : null
-    stepOneTarget = byValue ?? byLabel ?? byIndex
+    stepOneTarget = byValue ?? byLabel ?? null
   } else if (AFFIRMATIVE_RE.test(target) || NEGATIVE_RE.test(target)) {
     const want = AFFIRMATIVE_RE.test(target)
     if (el.checked !== want) stepOneTarget = el
   }
-  if (stepOneTarget !== null) {
-    const before = choiceFingerprint(members, buttons)
-    stepOneTarget.click()
-    await nextFrame()
-    if (choiceFingerprint(members, buttons) !== before) return { ok: true }
-  }
+  if (stepOneTarget !== null && await clickAndVerify(stepOneTarget)) return { ok: true }
 
-  // STEP 2
+  // STEP 2 — the gated button click.
   const btn = buttons.find((b) => norm(b.textContent ?? '') === target)
-  if (btn === undefined) return { ok: false, reason: 'choice-needs-user-click' }
-  const gated =
-    !wrapper.contains(btn) // (a) — structural by construction, asserted anyway
+  const gated = btn === undefined
+    || !wrapper.contains(btn) // (a) — structural by construction, asserted anyway
     || SUBMIT_WORD_RE.test(norm(btn.textContent ?? '')) // (b)
     || (btn.type !== 'button' && btn.closest('form') !== null) // (c)
-  if (gated) return { ok: false, reason: 'choice-needs-user-click' }
-  const before = choiceFingerprint(members, buttons)
-  btn.click()
-  await nextFrame()
-  if (choiceFingerprint(members, buttons) !== before) return { ok: true }
+  if (gated) {
+    // The gate REFUSED (or no button matched). Only now is index alignment
+    // worth its risk — the alternative left is handing the row back to the user.
+    if (byIndex !== null && byIndex !== stepOneTarget && await clickAndVerify(byIndex)) return { ok: true }
+    return { ok: false, reason: 'choice-needs-user-click' }
+  }
+  if (await clickAndVerify(btn)) return { ok: true }
   return { ok: false, reason: 'no-state-change' }
 }
 ```
@@ -422,15 +461,18 @@ Then insert the routing into `fillOne`, between the combobox line and the `HTMLS
 ```ts
   if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') return fillCombobox(el, value)
   // B1: choice widgets dispatch on LIVE structure — the same detectChoice the
-  // enumerator used, so filler and enumerator can never disagree — and BEFORE
-  // the radio and checkbox branches: radio dispatches first below, and a later
-  // placement would swallow radio-backed choices into fillRadioGroup.
-  if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox')) {
+  // enumerator used, under the same selfHidden gate, so filler and enumerator
+  // can never disagree — and BEFORE the radio and checkbox branches: radio
+  // dispatches first below, and a later placement would swallow radio-backed
+  // choices into fillRadioGroup.
+  if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox') && selfHidden(defaultMeasure(el))) {
     const choice = detectChoice(el)
     if (choice !== null) return fillChoice(el, choice, value)
   }
   if (el instanceof HTMLSelectElement) return fillSelect(el, value)
 ```
+
+The gate is the enumerator's FULL predicate, not just `detectChoice`: `enumerateFields` only re-kinds a control to `choice` when `selfHidden(measure(el))` is true, so a VISIBLE checkbox that merely happens to sit next to two short buttons must keep the plain checkbox path here too. Executor note: in jsdom `getBoundingClientRect()` is 0×0, so `isClipped` → true → `selfHidden` → true, and every Task 2 unit test below passes unchanged; the gate only bites in a real browser — which is exactly where the visible-checkbox false positive lives.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -450,8 +492,8 @@ Expected: the new describe green, every pre-existing content test still green �
 - Modify: `extension/src/content/fill.test.ts` (new describe; TWO existing tests adapted deliberately)
 
 **Interfaces:**
-- Consumes: `attributableListbox` from `./harvest` (plan 2 — the ONE definition of the attribution rule), `setNativeValue`, `nextFrame` (Task 2), `TWO_OPEN_COMBOBOX` (Task 1).
-- Produces: a `fillCombobox` that (1) never touches an unattributable listbox, (2) drives the typeahead with `setNativeValue` when the target option is not mounted, (3) selects EXACT normalized matches only (prefix fallback deleted), (4) verifies the committed value/text contains the choice, (5) restores the pre-fill snapshot and closes the listbox (Escape + blur, harvest's recipe) on every failure path. `listboxOf` is DELETED (its only caller was `fillCombobox`).
+- Consumes: `attributableListbox` + `mountedListboxes` from `./harvest` (plan 2 — the ONE definition of the attribution rule and of its `before` snapshot), `setNativeValue`, `nextFrame` (Task 2), `TWO_OPEN_COMBOBOX` (Task 1).
+- Produces: a `fillCombobox` that (1) never touches an unattributable listbox, (2) drives the typeahead with `setNativeValue` when the target option is not mounted, (3) selects EXACT normalized matches only (prefix fallback deleted), (4) verifies the committed value/text EQUALS the choice (normalized), (5) restores the pre-fill snapshot and closes the listbox (Escape + blur, harvest's recipe) on every failure path. `listboxOf` is DELETED (its only caller was `fillCombobox`).
 - Import note: this creates the module pair `harvest.ts ⇄ fill.ts` (`harvest` already imports `setNativeValue` from `fill`). Both edges bind hoisted function declarations used only at call time, no top-level execution depends on the other module, and no `import/no-cycle` lint rule exists in this repo — safe under Vite and Vitest (Plan decision 5).
 
 Behavioral contract (spec B2, exact):
@@ -459,7 +501,7 @@ Behavioral contract (spec B2, exact):
 1. Snapshot the control's value BEFORE anything (never restore to `''` unless `''` WAS the snapshot). Snapshot the set of mounted `[role=listbox]` elements. Real `.click()` to open.
 2. Poll (50ms) up to 500ms for an attributable listbox containing an EXACT normalized match. Break early as soon as the attributable listbox has options but no exact match (waiting longer adds nothing — the typeahead is the next move).
 3. No attributable listbox at all within the window → fail `no-matching-option` (restore + close). Options mounted but no exact match: if the control is not a typeable input → fail `no-matching-option` (restore + close); else `setNativeValue(el, value)` to drive the typeahead, then poll the FULL 500ms for an exact match (no early break — the page filters asynchronously). Still none → restore + close, fail `no-matching-option`.
-4. Exact hit → `.click()` it → next frame → verify the committed value (`input.value`, else `textContent`) normalized-contains the normalized choice. Mismatch → restore + close, fail `no-matching-option`.
+4. Exact hit → `.click()` it → next frame → verify the committed value (`input.value`, else `textContent`) is normalized-EQUAL to the normalized choice — never "contains": a committed 'United States Minor Outlying Islands' must not pass a 'United States' fill. Mismatch → restore the snapshot + close, fail `no-matching-option`.
 
 - [ ] **Step 1: Write the failing tests + adapt two existing ones**
 
@@ -592,7 +634,7 @@ Expected: the new describe FAILS — the cross-combobox test selects 'Portuguese
 
 - [ ] **Step 3: Implement in `extension/src/content/fill.ts`**
 
-Add the import: `import { attributableListbox } from './harvest'`.
+Add the import: `import { attributableListbox, mountedListboxes } from './harvest'` — the attribution rule AND its matching pre-interaction snapshot are defined once, in `harvest.ts` (plan 2 Task 3); both search the control's scope (open shadow root) and the document.
 
 DELETE `listboxOf` entirely. Replace `fillCombobox` with:
 
@@ -614,7 +656,7 @@ const COMBOBOX_POLL_MS = 50
 async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
   const snapshot = input === null ? null : input.value
-  const before = new Set<Element>(Array.from(document.querySelectorAll('[role="listbox"]')))
+  const before = mountedListboxes(document, el)
   ;(el as HTMLElement).click()
   const target = norm(value)
 
@@ -666,8 +708,11 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
 
   hit.click()
   await nextFrame()
+  // EXACT normalized equality, never `includes`: a widget that committed
+  // 'United States Minor Outlying Islands' would false-pass a 'United States'
+  // fill, which is a misfill reported as success — the class this slice kills.
   const committed = input !== null ? input.value : (el.textContent ?? '')
-  if (!norm(committed).includes(target)) return failClosed()
+  if (norm(committed) !== target) return failClosed()
   return { ok: true }
 }
 ```
@@ -690,7 +735,7 @@ Expected: fill.test fully green (new describe + both adapted tests + every untou
 - Modify: `extension/src/panel/scan.test.ts` (one rewritten test + one new describe + a mechanical outcome-literal sweep)
 
 **Interfaces:**
-- Consumes: the per-frame auto-fill `try/catch` (plan 2's designated collection site), `FillReport` + `FieldHandle` types from `@jff/shared`, plan 1's interim `choiceRefs` guard (to delete).
+- Consumes: the per-frame auto-fill `try/catch` (plan 2's designated collection site), `FillReport` + `FieldHandle` types from `@jff/shared`, plan 1's interim `choiceRefs` guard (to delete), and plan 1 Task 10's file-scope `depsWithFields` test helper.
 - Produces: `export interface FillFailure { handle: FieldHandle; reason: string }`; `export interface CollectedFill { filled: FieldHandle[]; failed: FillFailure[] }`; `ScanOutcome.fill: CollectedFill` (insert after `resolutions`). Panel-internal types only — NO shared-schema change. Consumed by Task 5 (`App.tsx`) and Task 6 (e2e).
 
 Design constraints (each is load-bearing):
@@ -758,7 +803,7 @@ In `extension/src/panel/scan.test.ts`:
   })
 ```
 
-(b) Append a new describe (reuse the file's `field`/`makeDeps`/`depsWithFields` helpers; `depsWithFields` is plan 1 Task 10's — if its fill reply is the `makeDeps` default `{ ok: true, fill: { epoch, filled: [], failed: [] } }`, the echo/failure behaviors below override `sendToTab` per test):
+(b) Append a new describe (reuse the file's `field`/`makeDeps`/`depsWithFields` helpers; `depsWithFields` is plan 1 Task 10's and lives at FILE SCOPE, below `makeDeps`, precisely so this describe can call it — if its fill reply is the `makeDeps` default `{ ok: true, fill: { epoch, filled: [], failed: [] } }`, the echo/failure behaviors below override `sendToTab` per test. `depsWithFields` pushes to `sent` only for the message it answers itself, so the wrappers below must push their own `JFF_FILL` — as `reportingDeps` does):
 
 ```ts
 describe('runScan — B3 fill report collection', () => {
@@ -854,7 +899,7 @@ Expected: ALL scan tests green — especially plan 2's election/harvest describe
 
 - [ ] **Step 1: Migrate the App.test.tsx JFF_FILL stubs, then add the failing describe**
 
-(a) MIGRATION (mechanical): the suite's default `chrome.runtime.sendMessage` stub (and any per-test stub) that answers generic `toContent` messages with `{ ok: true, replies: [{ ..., payload: { ok: true, fill: { epoch: 1, filled: [], failed: [] } } }], failures: [] }` must now ECHO the attempted fills as accepted, mirroring the real content script — otherwise every pre-existing test with `tier: 'auto'` resolutions would show `0 filled` and any count assertion would break. Change each such stub's fill branch to:
+(a) NO STUB MIGRATION IS REQUIRED — no existing App test yields a `tier: 'auto'` resolution, so the scan-time auto-fill loop never runs there and `out.fill` is empty. Do NOT touch `fillRefused`/`fillReply` (App.test.tsx:449, 854): their `failed[]` payloads are the subject of the per-action refusal tests. Run the suite; if a test regresses, add an echoing `JFF_FILL` branch to that stub only:
 
 ```ts
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
@@ -863,7 +908,7 @@ Expected: ALL scan tests green — especially plan 2's election/harvest describe
       }
 ```
 
-(placed BEFORE the generic `toContent` fallback in each stub; keep each stub's existing frameId if it differs). Sweep: `rg -n "fill: \{ epoch" extension/src/panel/App.test.tsx`.
+(placed BEFORE that stub's generic `toContent` fallback; keep its existing frameId if it differs.)
 
 (b) Append the new describe (reuse the suite's render/scan harness conventions — `SELF_CHECK`, `HostResponse`, the `installTwoFrameScan`-style stub pattern from plan 2's election describe):
 
@@ -1037,9 +1082,16 @@ The buttons stay UNTYPED and the page still has NO `<form>` — gate (c)'s no-fo
     // TODO 18, "neither count lies": filled = page-accepted only (first, last,
     // choice) — the failed combobox is counted as needing input, never as filled.
     await expect(panel.locator('[data-jff-status]')).toContainText('✓ 3 filled, 0 already on page, 0 proposed, 3 need input')
+
+    // The clipped autofill pane is junk (clipped ⇒ visible:false ⇒ unlabelled,
+    // zero-scoring file input dropped by keepField): it renders no row and it
+    // never receives a file — the upload-target trap, proven page-side.
+    await expect(panel.locator('[data-jff-rows] li', { hasText: '(unlabelled field)' })).toHaveCount(0)
+    expect(await appFrame.locator('input.visually-hidden[type="file"]')
+      .evaluate((n) => (n as HTMLInputElement).files?.length ?? 0)).toBe(0)
 ```
 
-The existing listbox-residue assertions (`[role="listbox"]` count 0, combobox value `''`) now ALSO prove B2's close-and-restore on the failed fill — keep them exactly where they are, AFTER the status-line wait so the fill has settled. If the counts in the status-line assertion drift because the fixture's field census changes, recount from the fixture (elected fields: first, last, choice, combobox, resume file, autofill-pane trap is junk-filtered, essay) — do not loosen to a regex.
+The existing listbox-residue assertions (`[role="listbox"]` count 0, combobox value `''`) now ALSO prove B2's close-and-restore on the failed fill — keep them exactly where they are, AFTER the status-line wait so the fill has settled. If the counts in the status-line assertion drift because the fixture's field census changes, recount from the fixture — do NOT loosen to a regex. The census: SIX kept elected fields — first, last, choice, combobox, resume file, essay. The autofill-pane input is not among them (clipping makes it `visible:false`, and an unlabelled file input with no A8 score is junk-filtered), so `3 filled` (first, last, choice) + `3 need input` (combobox demoted after its failed fill, resume file, essay) accounts for all six.
 
 4. **Pasted-job-text block**: the second scan re-runs the same fills. Its assertions are count-based (`resolveCalls.length`) and unaffected; verify the status line settles again before the final `consoleErrors` check.
 
@@ -1096,15 +1148,20 @@ Slice B (all 7):
 
 ## Plan decisions (interpretations an executor must not re-litigate)
 
-1. **Step 1 clicks only an input that can NAME the requested option.** The spec's step 1 says "real `.click()` on the hidden input itself". Applied literally to a radio-backed choice it would always click the fid-stamped FIRST radio — selecting "Yes" when the value is "No", a misfill worse than the no-op the spec kills; and the spec's own radio-backed TODO ("radio-backed choice fixture proves it") is only satisfiable by member matching. So step 1 resolves the value to a specific input first: matching member radio (value attr → optionLabel → index alignment when member count equals option count), or the checkbox when the affirmative/negative vocabulary maps the value AND the click moves toward the desired state. An input click that cannot name the option falls through to step 2 — which is also the spec's own fallback for "no observable change".
+1. **Step 1 clicks only an input that can NAME the requested option; index alignment is a LAST resort, not a step-1 candidate.** The spec's step 1 says "real `.click()` on the hidden input itself". Applied literally to a radio-backed choice it would always click the fid-stamped FIRST radio — selecting "Yes" when the value is "No", a misfill worse than the no-op the spec kills; and the spec's own radio-backed TODO ("radio-backed choice fixture proves it") is only satisfiable by member matching. So step 1 resolves the value to a specific input first: matching member radio (value attr → optionLabel), or the checkbox when the affirmative/negative vocabulary maps the value AND the click moves toward the desired state. Index alignment (member at the matching option's index) is a guess about the page's markup — parallel arrays — so it is tried ONLY after step 2's gate refuses, where the alternative is refusing the fill outright. An input click that cannot name the option falls through to step 2 — which is also the spec's own fallback for "no observable change".
 2. **A checkbox already AT the desired state gets no silent ok.** `fillCheckbox`'s correct-no-op rule is right for plain checkboxes and is preserved for them; for a CHOICE, "unchecked" does not mean "answered No" (the Ashby ground fact), so `checked === want` proceeds to the button step instead of reporting ok. This is the direct reading of TODO "Filling 'No' can never silently no-op".
 3. **`CollectedFill` is a panel-internal type, not a schema.** `FillReportSchema` and the `{ok, fill}` reply envelope already exist and already carry `filled`/`failed` per frame (verified in `shared/src/messages.ts` and `content/index.ts`); B3 aggregates them panel-side. The spec's enumerated-changes rule is satisfied with ZERO shared-schema edits.
 4. **Failed-fill rows demote IN APP STATE (tier → `needs_input`, reason → fill reason).** This reuses every existing rail instead of adding a parallel one: needs-input styling and the tier badge flip automatically, `REASON_HINT` renders the hint, Generate/Fill give the user the recovery path, and Accept stays structurally impossible. Save semantics are unchanged: demotion preserves `resolution.value`, so `engine === final` still drops unedited rows, and a user-corrected row saves exactly like any needs-input row. The status counts run over the demoted array so they always describe the rows on screen.
 5. **The `harvest.ts ⇄ fill.ts` import pair is accepted.** Plan 2 fixed `attributableListbox`'s home in `harvest.ts` and mandated B2 reuse it; `harvest` imports `setNativeValue` from `fill`. Both edges bind hoisted function declarations used at call time only — safe under Vite/Vitest ESM, and no import-cycle lint rule exists here. Moving the function would break plan 2's published interface for zero behavioral gain.
-6. **`fillCombobox` closes (Escape + blur) on every failure path.** The spec mandates restore-on-failure; leaving the dropdown open after a failed batched fill would strand visible UI residue on the page (and break the election spec's no-residue assertions). The close recipe is harvest's own, applied to the failure paths only — on success the page's option-click handler owns the close, as it does for real users.
-7. **The existing div-combobox happy-path test adapts, not loosens.** B2's committed-value verification is a spec requirement; an inert fixture that commits nothing can no longer represent a working combobox. The adapted test wires the commit the way every real widget does. The no-matching-option test is untouched.
-8. **App.test's default JFF_FILL stub echoes accepted handles.** Once `filled` counts page-accepted fills, a stub answering "accepted nothing" would demote every auto row in every pre-existing test. Echoing the attempted handles as filled mirrors the real content script's behavior for writable fields and keeps those tests' subjects unchanged.
+6. **Retro note (deliberately NOT fixed in v1): `no-matching-option` is overloaded.** B2 returns it both when the target option genuinely is not in the list and when the combobox could not be opened/attributed at all — two different user recoveries ("pick another value" vs "open this dropdown yourself") behind one string. A follow-up would add ONE reason, `combobox-not-openable`, for the unattributable/never-mounted case; the panel renders reasons verbatim and `REASON_HINT` is a plain map, so the change is a string plus a hint entry. Kept out of this slice on purpose: it widens the wire vocabulary for a distinction no current test or spec TODO asserts.
+7. **`fillCombobox` closes (Escape + blur) on every failure path.** The spec mandates restore-on-failure; leaving the dropdown open after a failed batched fill would strand visible UI residue on the page (and break the election spec's no-residue assertions). The close recipe is harvest's own, applied to the failure paths only — on success the page's option-click handler owns the close, as it does for real users.
+8. **The existing div-combobox happy-path test adapts, not loosens.** B2's committed-value verification is a spec requirement; an inert fixture that commits nothing can no longer represent a working combobox. The adapted test wires the commit the way every real widget does. The no-matching-option test is untouched.
+9. **No blanket App.test stub migration.** The concern was that once `filled` counts page-accepted fills, a stub answering "accepted nothing" would demote every auto row. Verified against the suite: NO existing App test yields a `tier: 'auto'` resolution, so the scan-time auto-fill loop never runs there and `out.fill` stays empty — there is nothing to migrate. `fillRefused`/`fillReply` (App.test.tsx:449, 854) stay untouched: their `failed[]` payloads are the subject of the per-action refusal tests, which go through `fillOne`, not the batch path. If some test does regress, add the echoing `JFF_FILL` branch to THAT stub only (Task 5 Step 1a).
 
 ## Post-slice manual gate (spec's out-of-scope live validation)
 
-After Task 7, reload the unpacked extension (`npm run build`, then chrome://extensions → Reload) and run a real scan on the TRM/Ashby page (`https://www.trmlabs.com/careers?ashby_jid=6edf242b-984d-41fb-8027-5f133a6353d4`). For each yes/no choice the scan auto-fills, RECORD WHICH fillChoice step fired (step 1 hidden-input click vs step 2 gated button click vs refusal) — observable from the row outcome plus the page state: input checked with no button highlight = step 1; button highlighted = step 2; `choice-needs-user-click` hint = refusal. This is the spec's deferred live validation of the click-behavior design; feed the result into the retro (and into a follow-up spec if the real page refuses both steps).
+After Task 7, reload the unpacked extension (`npm run build`, then chrome://extensions → Reload) and run a real scan on the TRM/Ashby page (`https://www.trmlabs.com/careers?ashby_jid=6edf242b-984d-41fb-8027-5f133a6353d4`).
+
+RE-COUNT the `(unlabelled field)` rows on that live page: spec TODO 1's "17/17 dangling labels recovered" is only unit-proven on distilled fixtures, and the e2e fixture is a distillation too. Zero `(unlabelled field)` rows among the elected frame's real questions is the live confirmation; any that remain are a label-recovery gap to feed into the retro (and a follow-up spec), not a reason to widen a heuristic on the spot.
+
+For each yes/no choice the scan auto-fills, RECORD WHICH fillChoice step fired (step 1 hidden-input click vs step 2 gated button click vs refusal) — observable from the row outcome plus the page state: input checked with no button highlight = step 1; button highlighted = step 2; `choice-needs-user-click` hint = refusal. This is the spec's deferred live validation of the click-behavior design; feed the result into the retro (and into a follow-up spec if the real page refuses both steps).

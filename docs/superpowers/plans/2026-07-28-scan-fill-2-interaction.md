@@ -61,7 +61,7 @@ Plus house rules:
 - **The interim choice auto-fill guard** (`choiceRefs` skip in `scan.ts`, from plan 1 Task 10) is STILL PRESENT after this plan. B1/B3 (plan 3) delete it when `fillChoice` + report consumption land.
 - **`ScanUiState` `done` shape** (`extension/src/panel/ScanStatus.tsx`): `{ kind: 'done'; filled: number; alreadyOnPage: number; proposed: number; needsInput: number }`. `alreadyOnPage` is exact already. `filled` is an INTERIM attempted-count (marked with a `B3` comment in `App.tsx`); B3 replaces only the *count source* with the page-accepted number from collected FillReports — the type and copy do not change again.
 - **`REASON_HINT`** (`extension/src/panel/FieldRow.tsx`): `Record<string, string>` mapping first-class refusal reasons to row hints. The `'choice-needs-user-click'` entry ("Select this answer on the page yourself.") ships NOW, so B1 only has to *return* the reason for the hint to render.
-- **`attributableListbox(root, el, before)`** exported from `extension/src/content/harvest.ts`: the listbox-attribution rule (aria-owns/controls, else appeared-after-interaction; NO document-wide fallback). B2's `fillCombobox` hardening reuses it instead of re-deriving the rule.
+- **`attributableListbox(root, el, before)`** and **`mountedListboxes(root, el)`** exported from `extension/src/content/harvest.ts`: the listbox-attribution rule (aria-owns/controls, else appeared-after-interaction; NO document-wide "any listbox" fallback), searched over `scopeOf(el)` then the document so open-shadow-root widgets and portaled listboxes both work. B2's `fillCombobox` hardening reuses BOTH — the rule and the matching `before` snapshot — instead of re-deriving them.
 - **`EnumField.accept?: string`** (`shared/src/field.ts`) and **`scoreResumeField` / `pickResumeTarget`** (`extension/src/panel/resumeTarget.ts`) — shared by `scan.ts` (upload target) and `App.tsx` (which file row gets "Put on page"); both recompute from the same pure function so they can never disagree.
 - **`buildRows(fields, resolutions, electedFrameId)` + `FOREIGN_REASON = 'other-frame'`** (`extension/src/panel/group.ts`).
 - **Two-origin e2e harness**: `startFixtureServer(root?)` + `e2e/fixtures/ashby-host/` + `e2e/fixtures/ashby-embed/` — plan 3's choice-fill e2e drives the same fixture pair.
@@ -226,11 +226,11 @@ Expected: green, clean.
 
 **Interfaces:**
 - Consumes: `setNativeValue` (`./fill`), `elementByFid` (`./enumerate`), `JFF_HARVEST` (Task 1).
-- Produces: `export const HARVEST_LISTBOX_TIMEOUT_MS = 500`; `export function attributableListbox(root: Document, el: Element, before: ReadonlySet<Element>): Element | null` (**B2 reuses this exact function** — plan 3); `export async function harvestOptions(root: Document, fids: number[]): Promise<Record<string, string[]>>` (string keys: the reply travels as JSON). The `JFF_HARVEST` branch in `index.ts` answers `{ ok: true, options }`.
+- Produces: `export const HARVEST_LISTBOX_TIMEOUT_MS = 500`; `export function attributableListbox(root: Document, el: Element, before: ReadonlySet<Element>): Element | null` (**B2 reuses this exact function** — plan 3); `export function mountedListboxes(root: Document, el: Element): Set<Element>` (the matching pre-interaction snapshot — B2 builds its `before` set with it); `export async function harvestOptions(root: Document, fids: number[]): Promise<Record<string, string[]>>` (string keys: the reply travels as JSON). The `JFF_HARVEST` branch in `index.ts` answers `{ ok: true, options }`.
 
 Behavioral contract (spec A6, exact):
 - Per fid: resolve via `elementByFid`; anything that is not combobox-shaped (`role=combobox` or `aria-haspopup=listbox`) answers `[]`.
-- Snapshot the control's value BEFORE anything. Snapshot the set of mounted `[role=listbox]` elements. Real `.click()` to open. Poll (50ms) up to 500ms for an ATTRIBUTABLE listbox: aria-owns/aria-controls first (even if pre-mounted), else a `[role=listbox]` NOT in the pre-click set. Read `[role=option]` texts (whitespace-normalized, empties dropped). Close via Escape `keydown` then `blur()`. If the value changed, restore the SNAPSHOT via `setNativeValue` — the restore target is always the snapshot itself, never a clear-to-`''` reset (Plan decision 4). No typing, ever.
+- Snapshot the control's value BEFORE anything. Snapshot the set of mounted `[role=listbox]` elements — over `scopeOf(el)` AND the document, so a shadow-root widget is snapshotted in the same scopes attribution will search (shadow-DOM walking is a standing no-regression constraint; portaled listboxes are why the document is searched too). Real `.click()` to open. Poll (50ms) up to 500ms for an ATTRIBUTABLE listbox: aria-owns/aria-controls first (even if pre-mounted, resolved in the control's scope before the document), else a `[role=listbox]` NOT in the pre-click set. Read `[role=option]` texts (whitespace-normalized, empties dropped). Close via Escape `keydown` then `blur()`. If the value changed, restore the SNAPSHOT via `setNativeValue` — the restore target is always the snapshot itself, never a clear-to-`''` reset (Plan decision 4). No typing, ever.
 - Any per-combobox throw degrades to `[]` — one broken widget never kills the batch, and the batch never fails the scan.
 
 - [ ] **Step 1: Write `extension/src/content/harvest.test.ts` (failing)**
@@ -315,6 +315,17 @@ describe('harvestOptions', () => {
     document.body.innerHTML = '<input type="text" data-jff-fid="3">'
     await expect(harvestOptions(document, [3, 99])).resolves.toEqual({ 3: [], 99: [] })
   })
+
+  it('harvests a combobox inside an OPEN SHADOW ROOT (ids resolve in its own scope)', async () => {
+    // `elementByFid` already pierces open shadow roots (walkElements); the
+    // attribution lookup must too, or a shadow widget silently harvests nothing.
+    document.body.innerHTML = '<my-combo></my-combo>'
+    const shadow = document.querySelector('my-combo')!.attachShadow({ mode: 'open' })
+    shadow.innerHTML = `
+      <input role="combobox" data-jff-fid="0" aria-controls="lb-s">
+      <ul role="listbox" id="lb-s"><li role="option">Alpha</li><li role="option">Beta</li></ul>`
+    await expect(harvestOptions(document, [0])).resolves.toEqual({ 0: ['Alpha', 'Beta'] })
+  })
 })
 
 describe('attributableListbox', () => {
@@ -350,6 +361,7 @@ Expected: FAIL — module missing.
 ```ts
 import { setNativeValue } from './fill'
 import { elementByFid } from './enumerate'
+import { scopeOf } from './dom'
 
 /** How long one combobox may take to mount an attributable listbox after our
  *  click. Past it the harvest degrades to `[]` — it never fails the scan. */
@@ -363,26 +375,52 @@ function isComboboxShaped(el: Element): boolean {
   return el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox'
 }
 
+/** The control's OWN scope first (an open shadow root), then the document —
+ *  shadow-DOM walking is a standing no-regression constraint, and ids inside a
+ *  shadow root are invisible to `document.querySelector`. The document is still
+ *  consulted because real widgets portal their listbox to `<body>`. */
+function listboxScopes(root: Document, el: Element): (Document | ShadowRoot)[] {
+  const scope = scopeOf(el)
+  return scope === root ? [root] : [scope as ShadowRoot, root]
+}
+
 /**
  * The listbox ATTRIBUTION rule (A6, reused by B2's fillCombobox hardening): a
  * listbox belongs to the control iff the control points at it
  * (aria-owns/aria-controls) or it appeared AFTER our interaction (`before` =
  * the listboxes mounted pre-click). The document-wide "any listbox" fallback is
- * exactly the cross-combobox bug the spec kills — never add it back.
+ * exactly the cross-combobox bug the spec kills — never add it back. Both
+ * lookups run over the control's scope AND the document, in that order.
  */
 export function attributableListbox(root: Document, el: Element, before: ReadonlySet<Element>): Element | null {
+  const scopes = listboxScopes(root, el)
   const owns = el.getAttribute('aria-owns') ?? el.getAttribute('aria-controls')
   if (owns !== null) {
     const first = owns.split(/\s+/)[0]
     if (first !== undefined && first !== '') {
-      const found = root.querySelector(`[id="${escAttr(first)}"]`)
-      if (found !== null) return found
+      for (const s of scopes) {
+        const found = s.querySelector(`[id="${escAttr(first)}"]`)
+        if (found !== null) return found
+      }
     }
   }
-  for (const lb of Array.from(root.querySelectorAll('[role="listbox"]'))) {
-    if (!before.has(lb)) return lb
+  for (const s of scopes) {
+    for (const lb of Array.from(s.querySelectorAll('[role="listbox"]'))) {
+      if (!before.has(lb)) return lb
+    }
   }
   return null
+}
+
+/** The pre-interaction listbox set, over the SAME scopes attribution searches —
+ *  a shadow listbox missing from `before` would be misread as "appeared after
+ *  our click". Exported because B2's fillCombobox must build it identically. */
+export function mountedListboxes(root: Document, el: Element): Set<Element> {
+  const out = new Set<Element>()
+  for (const s of listboxScopes(root, el)) {
+    for (const lb of Array.from(s.querySelectorAll('[role="listbox"]'))) out.add(lb)
+  }
+  return out
 }
 
 function optionTexts(listbox: Element): string[] {
@@ -395,7 +433,7 @@ async function harvestOne(root: Document, el: Element): Promise<string[]> {
   // Snapshot BEFORE touching anything: a page-sourced value (e.g. the ATS
   // resume auto-parse) must survive the harvest identically.
   const snapshot = el instanceof HTMLInputElement ? el.value : null
-  const before = new Set<Element>(Array.from(root.querySelectorAll('[role="listbox"]')))
+  const before = mountedListboxes(root, el)
 
   ;(el as HTMLElement).click()
 
@@ -1053,7 +1091,7 @@ describe('runScan — A6 combobox harvest', () => {
 })
 ```
 
-NOTE for the implementer: `twoFrameDeps` is defined inside the first describe — hoist it to module level (below `makeDeps`) so the harvest describe can use it, or export it from the first describe's scope by defining it at file scope. Define it ONCE at file scope.
+NOTE for the implementer: as written above, `topFields`, `appFields` AND `twoFrameDeps` all live inside the first describe, and the harvest describe uses `twoFrameDeps` — which closes over BOTH `topFields` and `appFields`. Hoist all THREE together to file scope (below `makeDeps`), defined ONCE; hoisting `twoFrameDeps` alone leaves it referencing names the outer scope does not have.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1098,7 +1136,10 @@ Append inside `describe('buildMappingPrompt', ...)`:
       jobText: '', company: null, candidates: [],
     })
     expect(p).toContain('kind=combobox (closed set; options may be partial)')
-    expect(prompt).not.toContain('closed set') // the original input has no combobox
+    // Assert the FULL annotation, not the bare phrase: mapping.ts:70 already
+    // contains 'Closed set of known factual keys', so `not.toContain('closed
+    // set')` would only pass on the luck of its capital C.
+    expect(prompt).not.toContain('kind=combobox (closed set') // the original input has no combobox
   })
 ```
 
@@ -1139,7 +1180,7 @@ Expected: green, clean.
 
 **Interfaces:**
 - Consumes: `EnumField`, `Resolution`, `refOf`.
-- Produces: `export const FOREIGN_REASON = 'other-frame'`; `export interface PanelRows { main: Row[]; foreign: Row[] }`; `export function buildRows(fields: EnumField[], resolutions: Resolution[], electedFrameId: number | null): PanelRows`. Foreign rows carry a panel-side SYNTHETIC resolution `{ tier: 'needs_input', source: null, value: null, key: null, answerId: null, reason: 'other-frame' }` — minted HERE, never sent to the host, never stored in App state (so `buildSaveItems`, which reads the REAL resolutions array, keeps skipping foreign fields with zero changes).
+- Produces: `export const FOREIGN_REASON = 'other-frame'`; `export interface PanelRows { main: Row[]; foreign: Row[] }`; `export function buildRows(fields: EnumField[], resolutions: Resolution[], electedFrameId: number | null): PanelRows`. Foreign rows carry a panel-side SYNTHETIC resolution `{ tier: 'needs_input', source: null, value: null, key: null, answerId: null, reason: 'other-frame' }` — except a foreign DEMOGRAPHIC field, which gets `{ tier: 'skipped', reason: 'eeo' }` so it keeps the read-only skipped affordance. Both are minted HERE, never sent to the host, never stored in App state (so `buildSaveItems`, which reads the REAL resolutions array, keeps skipping foreign fields with zero changes).
 
 - [ ] **Step 1: Add failing tests to `group.test.ts`**
 
@@ -1182,6 +1223,12 @@ describe('buildRows', () => {
       tier: 'needs_input', value: null, source: null, key: null, answerId: null,
       reason: FOREIGN_REASON,
     })
+  })
+
+  it('keeps the skipped affordance for a FOREIGN demographic field', () => {
+    const demo = { ...field(7, 'Gender', 0), demographic: true }
+    const { foreign } = buildRows([demo], resolutions, 1)
+    expect(foreign[0]!.resolution).toMatchObject({ tier: 'skipped', reason: 'eeo' })
   })
 
   it('treats every field as main when no election happened', () => {
@@ -1236,8 +1283,13 @@ export function buildRows(fields: EnumField[], resolutions: Resolution[], electe
         ref, field,
         resolution: {
           handle: { frameId: field.frameId, fid: field.fid, epoch: field.epoch },
-          tier: 'needs_input', value: null, source: null, key: null, answerId: null,
-          reason: FOREIGN_REASON,
+          // A demographic field keeps the SKIPPED affordance even outside the
+          // elected frame: FieldRow's skipped early-return renders it read-only,
+          // which is the visible half of demographic skipping. Foreign fields
+          // never reach the host, so nothing else would mark them.
+          tier: field.demographic ? 'skipped' as const : 'needs_input' as const,
+          value: null, source: null, key: null, answerId: null,
+          reason: field.demographic ? 'eeo' : FOREIGN_REASON,
         },
       })
       continue
@@ -1706,7 +1758,15 @@ Design constraints for the integrator:
   const resumeTargetRef = resumeTargetField === null ? null : refOf(resumeTargetField)
 ```
 
-3. **Action lookups** (each keeps its tier check): `onAccept` finds in `main`; `onGenerate` finds in `main` (foreign rows never generate); `onFill` finds in `[...main, ...foreign]` — the manual Fill path is exactly what foreign rows keep. No other body changes: the generation guards, `fillOne`, and `clearActionFailure` stay byte-for-byte.
+3. **Action lookups** — the tier check IS the collection today, so a bare ref-find would silently delete three guards. Use these three lines verbatim:
+
+```ts
+    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'proposed')      // onAccept
+    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'needs_input')   // onGenerate (foreign rows never generate)
+    const row = [...main, ...foreign].find((r) => r.ref === ref && r.resolution.tier === 'needs_input') // onFill
+```
+
+The manual Fill path spanning `[...main, ...foreign]` is exactly what foreign rows keep. No other body changes: the generation guards, `fillOne`, and `clearActionFailure` stay byte-for-byte.
 4. **`onFillResume`** (new, next to `onFill`) — same generation/acting discipline as the other page-writing actions:
 
 ```ts
@@ -1802,7 +1862,7 @@ export const electedFrameName = (e: ElectionOutcome | null): string => {
 }
 ```
 
-6. **Resume note** — inside the existing `data-jff-resume` label, after the name span:
+6. **Resume note** — inside the existing `data-jff-resume` label, immediately after the resume-name inline expression (App.tsx:583 renders `Resume {resumeName === null ? '(none stored)' : \`(${resumeName})\`}` — an inline expression, NOT a `<span>`; do not go looking for a span to append to):
 
 ```tsx
         {resumeName !== null && main.some((r) => r.field.kind === 'file') && resumeTargetRef === null && (
@@ -2074,7 +2134,7 @@ export async function startFixtureServer(root = 'fixtures/greenhouse-apply'): Pr
 </html>
 ```
 
-NOTE: the autofill-pane input is clip-hidden, NOT `display:none` — in a real browser `defaultMeasure` computes `clipped: true` while `visible` stays true, which is exactly the honest-visibility contract; the bypass this fixture proves is the UPLOAD target, not the junk filter.
+NOTE: the autofill-pane input is clip-hidden, NOT `display:none` — and clipping IS a `visible` term (plan 1 Task 7), so in a real browser `defaultMeasure` computes `clipped: true` and the pane enumerates `visible: false`. Unlabelled and scoring 0 on A8, it is therefore JUNK-FILTERED: it never reaches resolve and never renders a row. The real resume input is clipped-free, labelled and required, so it is kept and still gives its frame the file bonus in the election (score unchanged). What this fixture proves in the browser is twofold: the junk filter dropping the pane (no `(unlabelled field)` row), and the upload landing on the labelled input — the pane's `files` list stays empty.
 
 - [ ] **Step 3: Write `e2e/election.spec.ts`**
 
@@ -2150,7 +2210,11 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
     // A7: the resolve payload is elected-frame-only — the newsletter field
     // (frame 0) never left the panel and never cost resolve payload.
     expect(resolveCalls).toHaveLength(1)
-    expect(resolveCalls[0]!.fields.length).toBeGreaterThanOrEqual(5)
+    // Census of KEPT elected fields: first, last, choice, combobox, resume
+    // file, essay = 6. The clipped autofill pane is NOT among them — clipping
+    // makes it visible:false, and unlabelled + zero A8 score makes it junk.
+    expect(resolveCalls[0]!.fields).toHaveLength(6)
+    expect(resolveCalls[0]!.fields.filter((f) => f.kind === 'file')).toHaveLength(1)
     expect(resolveCalls[0]!.fields.every((f) => f.frameId !== 0)).toBe(true)
     expect(resolveCalls[0]!.fields.map((f) => f.label)).toContain('First name')
     expect(resolveCalls[0]!.fields.map((f) => f.label)).not.toContain('Email')
@@ -2175,6 +2239,13 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
     const firstLabel = panel.locator('[data-jff-rows] li label.font-semibold').first()
     await expect(firstLabel).toHaveText('First name')
     await expect(panel.locator('[data-jff-editor="segmented"]').first()).toBeAttached()
+    // The junk-filtered autofill pane renders NO row at all…
+    await expect(panel.locator('[data-jff-rows] li', { hasText: '(unlabelled field)' })).toHaveCount(0)
+    // …and page-side it never received a file (A8 upload-target bypass; this
+    // run stores no resume, so the count is 0 either way — the assertion is the
+    // permanent guard once one is stored).
+    expect(await appFrame.locator('input.visually-hidden[type="file"]')
+      .evaluate((n) => (n as HTMLInputElement).files?.length ?? 0)).toBe(0)
     // …and the newsletter field sits demoted under a header NAMING the elected
     // frame by host:port (the two origins share 127.0.0.1; the port disambiguates).
     const foreign = panel.locator('[data-jff-foreign]')
@@ -2262,7 +2333,7 @@ NOT ticked here — TODO 18 ("The status line separates `filled` (page-accepted 
 3. **Harvest targets only comboboxes whose enumerated `options` are empty.** The spec says "openable comboboxes"; opening a combobox whose options are already known adds mutation risk for zero information. A statically-readable listbox needs no click.
 4. **Harvest restore writes the literal snapshot, even when the snapshot was `''`.** The spec's "never `''`" bans clear-to-empty as a *restore strategy* for a page-sourced value; when the pre-harvest value WAS empty, restoring `''` is the identical-value guarantee, not a clear.
 5. **Election re-runs after the post-resume re-enumeration.** Fids were re-stamped under a new epoch, so the pre-upload election object is stale by construction. The recomputation is deterministic and the application frame only gains signal from its own resume-parse.
-6. **"Picker with typeahead" = input + native `<datalist>`.** Native typeahead, keyboard-accessible, zero dependencies, and the committed value still flows through the one `edits[ref]` path every action already reads. A custom dropdown would re-implement the browser for no spec'd gain.
+6. **"Picker with typeahead" = input + native `<datalist>`.** Native typeahead, keyboard-accessible, zero dependencies, and the committed value still flows through the one `edits[ref]` path every action already reads. A custom dropdown would re-implement the browser for no spec'd gain. Known limitation, accepted for v1: Chrome renders `input[list]` as FREE TEXT with suggestions, not a constrained picker — the user can commit a non-option. Accepted because both fill paths verify against the real options (B2's exact-match combobox fill and `fillSelect`), so a non-option fails loudly instead of misfilling; revisit if users commit non-options often.
 7. **The "resume field not identified" note and the winning row are RECOMPUTED panel-side** with the same `pickResumeTarget` scan.ts used, instead of plumbing a fid through `ScanOutcome`. Same pure function + same field list = same answer, with no risk of a stale fid after re-enumeration.
 8. **`data-jff-group` selectors migrate to `data-jff-tier` row badges** in App.test.tsx and full-loop.spec.ts. The spec's A9 note pre-authorizes this: those tests "assert on the old semantics and change with this".
-9. **Foreign rows keep Accept structurally impossible** (their synthetic tier is always `needs_input`), and the `onFill` lookup spanning `[...main, ...foreign]` is the ONLY action path that can touch them.
+9. **Foreign rows keep Accept structurally impossible** (their synthetic tier is only ever `needs_input`, or `skipped` for demographic fields — never `proposed`), and the `onFill` lookup spanning `[...main, ...foreign]` is the ONLY action path that can touch them. A foreign demographic row renders through FieldRow's skipped early-return, so it has no actions at all.
