@@ -4,15 +4,38 @@ import type { StoredResume } from './resume'
 
 export interface FrameReply {
   frameId: number
+  url?: string | null
   payload: unknown
 }
+
+export interface RelayFailure { frameId: number; url: string | null; error: string }
+
+export interface SendResult { replies: FrameReply[]; failures: RelayFailure[] }
+
+/** One row of scan diagnostics: what each frame contributed, or why it could not. */
+export interface FrameReport { frameId: number; url: string | null; fields: number | null; error: string | null }
+
+export type ScanProgress =
+  | { phase: 'injecting' }
+  | { phase: 'enumerating'; frames: number }
+  | { phase: 'retrying' }
+  | { phase: 'resolving'; fields: number }
+
+/** A page can report zero fields transiently (an iframe mid-navigation is skipped
+ *  by executeScript). One delayed re-look absorbs that; more would turn the panel
+ *  into a poller. */
+export const RETRY_DELAY_MS = 1_500
 
 export interface ScanDeps {
   tabId: number
   /** Monotonic epoch source. The PANEL owns it; content scripts only store it. */
   nextEpoch: () => number
+  /** THROWS on relay failure — a page we cannot reach is an error, not an empty scan. */
   inject: () => Promise<number[]>
-  sendToTab: (frameId: number | undefined, message: ContentMessage) => Promise<FrameReply[]>
+  /** THROWS on relay failure, same contract as inject. */
+  sendToTab: (frameId: number | undefined, message: ContentMessage) => Promise<SendResult>
+  onProgress: (p: ScanProgress) => void
+  sleep: (ms: number) => Promise<void>
   port: HostPort
   getResume: () => Promise<StoredResume | null>
   pastedJobText: string
@@ -29,36 +52,74 @@ export interface ScanOutcome {
   activeCaptcha: boolean
   jobText: string
   llmError: { kind: HostErrorKind; message: string } | null
+  frameReports: FrameReport[]
 }
 
 interface ScanPayload {
   ok: boolean
+  error?: string
   scan?: { epoch: number; fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean }
 }
 
+interface Enumeration {
+  fields: EnumField[]
+  unreachableWidgets: number
+  activeCaptcha: boolean
+  reports: FrameReport[]
+}
+
 /** Broadcast a SCAN and stamp each field with the frame its reply came from. */
-async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<{ fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean }> {
-  const replies = await deps.sendToTab(undefined, { type: 'JFF_SCAN', epoch })
+async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumeration> {
+  const { replies, failures } = await deps.sendToTab(undefined, { type: 'JFF_SCAN', epoch })
+  const reports: FrameReport[] = failures.map((f) => ({ frameId: f.frameId, url: f.url, fields: null, error: f.error }))
   const fields: EnumField[] = []
   let unreachableWidgets = 0
   let activeCaptcha = false
   for (const r of replies) {
     const p = r.payload as ScanPayload
-    if (p?.ok !== true || p.scan === undefined) continue
+    if (p?.ok !== true || p.scan === undefined) {
+      // A malformed or refused reply is diagnostic evidence, not noise.
+      reports.push({ frameId: r.frameId, url: r.url ?? null, fields: null, error: p?.error ?? 'unrecognized reply' })
+      continue
+    }
     unreachableWidgets += p.scan.unreachableWidgets
     activeCaptcha = activeCaptcha || p.scan.activeCaptcha
     // The content script cannot know its own frame id, so the panel stamps it here.
     for (const f of p.scan.fields) fields.push({ ...f, frameId: r.frameId, epoch })
+    reports.push({ frameId: r.frameId, url: r.url ?? null, fields: p.scan.fields.length, error: null })
   }
-  return { fields, unreachableWidgets, activeCaptcha }
+  return { fields, unreachableWidgets, activeCaptcha, reports }
+}
+
+async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; frameCount: number; enumd: Enumeration }> {
+  deps.onProgress({ phase: 'injecting' })
+  const frames = await deps.inject()
+  const epoch = deps.nextEpoch()
+  deps.onProgress({ phase: 'enumerating', frames: frames.length })
+  return { epoch, frameCount: frames.length, enumd: await enumerateAllFrames(deps, epoch) }
 }
 
 export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
-  await deps.inject()
-
-  // PHASE 0 — first enumeration.
-  let epoch = deps.nextEpoch()
-  let { fields, unreachableWidgets, activeCaptcha } = await enumerateAllFrames(deps, epoch)
+  // PHASE 0 — first enumeration, with ONE delayed retry on an all-empty result.
+  let { epoch, frameCount, enumd } = await injectAndEnumerate(deps)
+  if (enumd.fields.length === 0) {
+    // First-attempt ERRORS are evidence (they may be WHY the page looked empty);
+    // they survive the retry. First-attempt field counts are superseded.
+    const firstErrors = enumd.reports.filter((r) => r.error !== null)
+    deps.onProgress({ phase: 'retrying' })
+    await deps.sleep(RETRY_DELAY_MS)
+    ;({ epoch, frameCount, enumd } = await injectAndEnumerate(deps))
+    enumd.reports = [...firstErrors, ...enumd.reports]
+    if (enumd.fields.length === 0) {
+      // An empty page must cost zero host round-trips: no selector.get, no resolve.
+      return {
+        epoch, fields: [], resolutions: [],
+        unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: enumd.activeCaptcha,
+        jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
+      }
+    }
+  }
+  let { fields, unreachableWidgets, activeCaptcha, reports } = enumd
 
   // Job text: the user's paste always wins; otherwise learned selector, then heuristics.
   let jobText = deps.pastedJobText.trim()
@@ -66,7 +127,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     const hostname = deps.hostname ?? ''
     const learned = await deps.port.request<{ selector: string | null }>('selector.get', { hostname, purpose: 'job_description' })
     const selector = learned.ok ? learned.result.selector : null
-    const replies = await deps.sendToTab(0, { type: 'JFF_JOBTEXT', epoch, selector })
+    const { replies } = await deps.sendToTab(0, { type: 'JFF_JOBTEXT', epoch, selector })
     const payload = replies[0]?.payload as { ok: boolean; jobText?: { text: string; selector: string | null; source: string } } | undefined
     if (payload?.ok === true && payload.jobText !== undefined && payload.jobText.source !== 'none') {
       jobText = payload.jobText.text
@@ -78,33 +139,43 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
   if (activeCaptcha) {
     // An active challenge means the extension does nothing at all on this page.
-    return { epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null }
+    return { epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
   }
 
   // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
   const resume = await deps.getResume()
   const fileField = fields.find((f) => f.kind === 'file')
   if (resume !== null && fileField !== undefined) {
-    await deps.sendToTab(fileField.frameId, {
-      type: 'JFF_FILL_RESUME', epoch,
-      handle: { frameId: fileField.frameId, fid: fileField.fid, epoch },
-      fileName: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64,
-    })
+    let resumeError: FrameReport | null = null
+    try {
+      await deps.sendToTab(fileField.frameId, {
+        type: 'JFF_FILL_RESUME', epoch,
+        handle: { frameId: fileField.frameId, fid: fileField.fid, epoch },
+        fileName: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64,
+      })
+    } catch (e) {
+      // A dead resume-upload relay must not discard the whole scan: the field
+      // list and the paid resolve are still worth having. Report and continue.
+      resumeError = { frameId: fileField.frameId, url: null, fields: null, error: `resume upload failed: ${String(e)}` }
+    }
     epoch = deps.nextEpoch()
+    deps.onProgress({ phase: 'enumerating', frames: frameCount })
     const again = await enumerateAllFrames(deps, epoch)
     fields = again.fields
     unreachableWidgets = again.unreachableWidgets
     activeCaptcha = again.activeCaptcha
+    reports = resumeError === null ? again.reports : [...again.reports, resumeError]
 
     if (activeCaptcha) {
       // Uploading a resume is a common trigger for an ATS challenge. Re-reading
       // activeCaptcha and then filling anyway would be worse than never re-reading
       // it: same blast radius, plus a paid resolve call.
-      return { epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null }
+      return { epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
   }
 
   // PHASE 2 — the host resolves everything that is still open.
+  deps.onProgress({ phase: 'resolving', fields: fields.length })
   const resolved = await deps.port.request<ResolveResult>('resolve', {
     epoch,
     url: deps.url ?? '',
@@ -116,7 +187,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   if (!resolved.ok) {
     return {
       epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText,
-      llmError: resolved.error,
+      llmError: resolved.error, frameReports: reports,
     }
   }
 
@@ -129,7 +200,13 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     byFrame.set(r.handle.frameId, list)
   }
   for (const [frameId, fills] of byFrame) {
-    await deps.sendToTab(frameId, { type: 'JFF_FILL', epoch, fills })
+    try {
+      await deps.sendToTab(frameId, { type: 'JFF_FILL', epoch, fills })
+    } catch (e) {
+      // A frame that vanished mid-fill (wizard advanced, iframe swapped) is
+      // evidence, not a reason to throw away the resolved scan.
+      reports = [...reports, { frameId, url: null, fields: null, error: `fill failed: ${String(e)}` }]
+    }
   }
 
   return {
@@ -137,5 +214,6 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     resolutions: resolved.result.resolutions,
     unreachableWidgets, activeCaptcha, jobText,
     llmError: resolved.result.llmError,
+    frameReports: reports,
   }
 }
