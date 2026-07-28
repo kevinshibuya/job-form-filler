@@ -1,7 +1,8 @@
 /**
  * Chrome native-messaging stdio framing: 4-byte little-endian byte length,
  * then that many bytes of UTF-8 JSON. This module owns the ONLY bytes ever
- * written to stdout. Nothing else in host/ may touch process.stdout.
+ * written to stdout. Nothing else in host/ may touch that stream; index.ts is
+ * its only caller (enforced by the Task 11 Step 10 grep gate and ESLint).
  */
 
 export const MAX_HOST_TO_EXT_BYTES = 1_048_576 // Chrome's host->extension hard cap
