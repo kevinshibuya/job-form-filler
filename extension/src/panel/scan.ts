@@ -127,7 +127,14 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     const firstErrors = enumd.reports.filter((r) => r.error !== null)
     deps.onProgress({ phase: 'retrying' })
     await deps.sleep(RETRY_DELAY_MS)
-    ;({ epoch, frameCount, enumd } = await injectAndEnumerate(deps))
+    try {
+      ;({ epoch, frameCount, enumd } = await injectAndEnumerate(deps))
+    } catch (e) {
+      // The retry runs under the SAME evidence contract as everything below: a
+      // relay that dies here must not throw away the first pass's per-frame rows,
+      // which are frequently the reason the page enumerated empty at all.
+      throw new ScanError(e instanceof Error ? e.message : String(e), firstErrors)
+    }
     enumd.reports = [...firstErrors, ...enumd.reports]
     if (enumd.fields.length === 0) {
       // An empty page must cost zero host round-trips: no selector.get, no resolve.

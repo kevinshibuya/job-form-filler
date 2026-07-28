@@ -44,6 +44,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // Ignore-while-running guard: the mount auto-scan and a Scan click must not
   // produce two overlapping runScans racing each other's epoch.
   const scanningRef = useRef(false)
+  // Bumped by every tab-scope reset. A resolve can take minutes, so a scan very
+  // often outlives the page it was started for; its results belong to a dead
+  // generation and must never be written back over the reset.
+  const resetGenRef = useRef(0)
+  // A trigger the guard above swallowed. Only a NAVIGATION re-runs the auto-scan
+  // effect, so this can only be set by a page the panel has never scanned.
+  const pendingRescanRef = useRef(false)
+  // The last SETTLED scan outcome. An action_failed line is transient: when the
+  // retried action succeeds the panel goes back to what the scan said.
+  const lastOutcomeRef = useRef<ScanUiState | null>(null)
   const [check, setCheck] = useState<SelfCheck | null>(null)
   const [hostError, setHostError] = useState<string | null>(null)
   const [tabId, setTabId] = useState<number | null>(null)
@@ -93,10 +103,24 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   /** Everything a scan produced. Cleared on ANY tab-scope reset. All setters are
    *  stable, so the bind effect below may close over this once. */
   const resetScanState = (): void => {
+    // Invalidate whatever scan is in flight BEFORE clearing: its results describe
+    // the page that just went away.
+    resetGenRef.current++
+    lastOutcomeRef.current = null
     setFields([]); setResolutions([]); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
     setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
     setReuseOverrides({})
     setScanStatus(null); setFrameReports([])
+  }
+
+  /** A SETTLED scan outcome (done/empty/captcha/failed) — remembered so a later
+   *  action_failed line can be rolled back to it. */
+  const setOutcome = (s: ScanUiState): void => { lastOutcomeRef.current = s; setScanStatus(s) }
+
+  /** An Accept/Fill/Pick that succeeded retires the red line its failed attempt
+   *  left behind; anything the scan itself put there stays. */
+  const clearActionFailure = (): void => {
+    setScanStatus((s) => (s !== null && s.kind === 'action_failed' ? lastOutcomeRef.current : s))
   }
 
   useEffect(() => {
@@ -183,11 +207,19 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const onScan = async (): Promise<void> => {
     const port = portRef.current
-    if (port === null || tabId === null || scanningRef.current) return
+    if (port === null || tabId === null) return
+    if (scanningRef.current) {
+      // Dropping this trigger silently is how a mid-scan navigation left the new
+      // page unscanned forever. Remember it; the running scan replays it.
+      pendingRescanRef.current = true
+      return
+    }
     // Busy state and re-entry guard flip TOGETHER, before any await: between them
     // the scan is already committed while the button would still read 'Scan'.
     scanningRef.current = true
     setScanning(true)
+    // Every write below is conditional on this still being the current generation.
+    const gen = resetGenRef.current
     try {
       const tab = await getTab()
       if (tab === null) return // the tab closed between the trigger and here
@@ -212,11 +244,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           return r.frames ?? []
         },
         sendToTab,
-        onProgress: (p: ScanProgress) => setScanStatus(
-          p.phase === 'enumerating' ? { kind: 'enumerating', frames: p.frames }
-          : p.phase === 'resolving' ? { kind: 'resolving', fields: p.fields }
-          : { kind: p.phase },
-        ),
+        onProgress: (p: ScanProgress) => {
+          if (resetGenRef.current !== gen) return
+          setScanStatus(
+            p.phase === 'enumerating' ? { kind: 'enumerating', frames: p.frames }
+            : p.phase === 'resolving' ? { kind: 'resolving', fields: p.fields }
+            : { kind: p.phase },
+          )
+        },
         sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
         port,
         getResume: loadResume,
@@ -225,6 +260,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         url: tab.url ?? '',
         company: co,
       })
+      // The bound tab navigated (or closed) while this scan ran: these fields,
+      // resolutions and counts describe a page that is no longer on screen, and
+      // every JFF_FILL they claim was answered stale_epoch. Drop the whole write.
+      if (resetGenRef.current !== gen) return
       setFields(out.fields)
       setResolutions(out.resolutions)
       setUnreachable(out.unreachableWidgets)
@@ -246,7 +285,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const needsInput = out.resolutions.filter((r) => r.tier === 'needs_input').length
       // Precedence: captcha > empty > llm failure > done. A captcha'd page may
       // also be field-less; the captcha is the actionable fact.
-      setScanStatus(
+      setOutcome(
         out.activeCaptcha ? { kind: 'captcha' }
         // DISTINCT frames: a frame that errored first-pass and replied on the retry
         // contributes two reports but is still one frame on the page.
@@ -255,8 +294,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         : { kind: 'done', filled, proposed, needsInput },
       )
     } catch (e) {
+      // Same rule as the success path: a dead generation's failure is not this
+      // page's failure.
+      if (resetGenRef.current !== gen) return
       const reason = e instanceof Error ? e.message : String(e)
-      setScanStatus({ kind: 'failed', reason })
+      setOutcome({ kind: 'failed', reason })
       // Synthetic relay report (frameId -1): without it the diagnostics
       // disclosure could NEVER render for inject/broadcast failures, because
       // frameReports was cleared at scan start. ScanStatus renders -1 as "relay".
@@ -267,6 +309,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     } finally {
       setScanning(false)
       scanningRef.current = false
+      // Replay a trigger the guard swallowed. Bumping the nonce (rather than
+      // calling onScan here) re-runs the auto-scan effect, so the replay reads
+      // the CURRENT render's state instead of this run's dead-page closure.
+      // Only `navigated` bumps the nonce in the first place, so a tab switch or a
+      // tab close still clears without spending another batched `claude -p`.
+      if (pendingRescanRef.current) {
+        pendingRescanRef.current = false
+        setScanNonce((n) => n + 1)
+      }
     }
   }
 
@@ -328,6 +379,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // engine === final in buildSaveItems and silently drop every user correction
       // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
       setResolutions((rs) => rs.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)))
+      clearActionFailure()
     } catch (e) {
       setScanStatus({ kind: 'action_failed', reason: `Accept failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
@@ -347,6 +399,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     try {
       await fillOne(row, value)
       setFilledRefs((f) => (f.includes(ref) ? f : [...f, ref]))
+      clearActionFailure()
     } catch (e) {
       setScanStatus({ kind: 'action_failed', reason: `Fill failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
@@ -383,6 +436,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
       if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
       setJobText(p.pick.text)
+      clearActionFailure()
       const tab = await getTab()
       const hostname = hostnameOf(tab?.url)
       if (hostname !== '') {

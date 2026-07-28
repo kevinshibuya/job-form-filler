@@ -161,7 +161,7 @@ test('job text is captured from the fixture job-description block by the heurist
   }
 })
 
-test('the panel surfaces scan outcomes: captcha on the fixture form, empty on a blank page', async () => {
+test('the panel surfaces scan outcomes: captcha on the fixture form, done on a captcha-free form, empty on a blank page', async () => {
   // Real UI, real relay, fake host (seam build). The fixture form carries an
   // ACTIVE reCAPTCHA stub, so its deterministic outcome is `captcha`.
   // 60s assertion budgets: the repo's measured worst case for a foundation test
@@ -180,6 +180,19 @@ test('the panel surfaces scan outcomes: captcha on the fixture form, empty on a 
   await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
   await expect(panel.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'captcha', { timeout: 60_000 })
 
+  // A form with NO challenge markup must settle to `done`: fields were found and
+  // the (fake) host resolved them. This is the leg that proves the happy outcome
+  // is reachable end to end, not just the two degraded ones.
+  const plain = await ext.context.newPage()
+  await plain.goto(`${fixtures.origin}/plain-form.html`)
+  const plainTabId = await finder.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ url: '*://*/plain-form.html' })
+    return tabs[tabs.length - 1]!.id!
+  })
+  const panelPlain = await ext.context.newPage()
+  await panelPlain.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${plainTabId}`))
+  await expect(panelPlain.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'done', { timeout: 60_000 })
+
   // A page with zero fields must settle to `empty` (after the one-shot retry)
   // and expose the per-frame diagnostics disclosure.
   const blank = await ext.context.newPage()
@@ -193,5 +206,6 @@ test('the panel surfaces scan outcomes: captcha on the fixture form, empty on a 
   await expect(panel2.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'empty', { timeout: 60_000 })
   await expect(panel2.locator('[data-jff-diagnostics]')).toBeAttached()
 
-  await panel2.close(); await blank.close(); await panel.close(); await finder.close(); await target.close()
+  await panel2.close(); await blank.close(); await panelPlain.close(); await plain.close()
+  await panel.close(); await finder.close(); await target.close()
 })
