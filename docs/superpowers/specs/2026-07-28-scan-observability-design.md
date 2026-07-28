@@ -111,7 +111,10 @@ handlers (success and failure alike) are dropped when the reset generation chang
 `action_failed` rollback target is cleared by the reset so it can never restore a previous
 page's outcome. While an invalidated scan is still draining (its resolve cannot be cancelled —
 cancellation is a host-protocol change deferred to a future slice), the panel shows `superseded`
-instead of a blank line; the replayed scan starts when the dead one settles. A GUESSED company
+instead of a blank line — but ONLY for a `navigated` reset, the one reset that actually replays a
+scan. Tab-switch and tab-close resets clear the line to blank: `superseded`'s copy promises a
+rescan, and those resets never rescan by design. The replay's own dead-end (tab closed before it
+ran) also clears the line. The replayed scan starts when the dead one settles. A GUESSED company
 is cleared by the reset (a user-typed one is kept); `hostError` deliberately survives resets —
 it is host-scoped, not page-scoped, and the next scan re-derives it. The existing "Checking the local host…" pending banner (`Banner.tsx`) stays; its copy is
 untouched. `llmError` outcomes render `failed` here; the existing `hostError` banner behavior is
