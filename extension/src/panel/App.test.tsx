@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { HostResponse, Resolution } from '@jff/shared'
 import { App, hostnameOf } from './App'
 
@@ -324,6 +324,102 @@ describe('App scan status', () => {
   })
 })
 
+describe('App mid-scan navigation', () => {
+  const statusNow = (): string | null | undefined =>
+    document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')
+
+  const scanReplyFor = (label: string) => ({
+    ok: true,
+    replies: [{
+      frameId: 0, url: 'https://jobs.acme.com/apply',
+      payload: { ok: true, scan: { epoch: 1, fields: [{ frameId: -1, fid: 0, epoch: 1, label, name: 'q', idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false }], unreachableWidgets: 0, activeCaptcha: false } },
+    }],
+    failures: [],
+  })
+
+  /** Fire the tab-scope listener the panel registered, exactly as Chrome would
+   *  when the bound tab starts loading a new document. */
+  const navigateBoundTab = async (): Promise<void> => {
+    const onUpdated = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } })
+      .chrome.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status: string }) => void
+    await act(async () => { onUpdated(7, { status: 'loading' }) })
+  }
+
+  beforeEach(() => {
+    // A resolution is required for the field to render as a row at all.
+    installHostBridge(async (method) => {
+      if (method === 'selfCheck') return SELF_CHECK
+      if (method === 'selector.get') return { selector: null }
+      if (method === 'resolve') {
+        const resolutions: Resolution[] = [
+          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: '', source: null, key: null, answerId: null, reason: 'unknown' },
+        ]
+        return { epoch: 1, resolutions, llmError: null }
+      }
+      return {}
+    })
+  })
+
+  it('drops the results of a scan whose page navigated away mid-flight', async () => {
+    // A resolve can take minutes, so a scan routinely outlives its page. Writing
+    // its fields/status back after the navigation showed a filled form for a page
+    // that no longer exists (its JFF_FILLs were all answered stale_epoch).
+    let releaseFirstScan: (() => void) | null = null
+    let scans = 0
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        scans++
+        // The SECOND scan (the one for the new page) parks forever: while it is in
+        // flight the panel must be showing nothing at all from the dead page.
+        if (scans > 1) return await new Promise(() => undefined)
+        return await new Promise((r) => { releaseFirstScan = () => r(scanReplyFor('Dead page field')) })
+      }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(releaseFirstScan).not.toBeNull() })
+    await navigateBoundTab()
+    releaseFirstScan!()
+    await waitFor(() => { expect(scans).toBe(2) })
+    await waitFor(() => { expect(statusNow()).toBe('enumerating') })
+    // Nothing the dead scan produced reached the screen: no row, no ✓ N filled.
+    expect(screen.queryByText('Dead page field')).toBeNull()
+    expect(document.querySelector('[data-jff-group]')).toBeNull()
+    expect(statusNow()).not.toBe('done')
+  })
+
+  it('replays a navigation trigger the scan guard swallowed', async () => {
+    // The navigation's own auto-scan trigger hits `scanningRef` and returns; without
+    // the replay the new page is never scanned and the panel just sits empty.
+    let releaseFirstScan: (() => void) | null = null
+    let scans = 0
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        scans++
+        if (scans > 1) return scanReplyFor('Live page field')
+        return await new Promise((r) => { releaseFirstScan = () => r(scanReplyFor('Dead page field')) })
+      }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      return { ok: true }
+    })
+    render(<App />)
+    await waitFor(() => { expect(releaseFirstScan).not.toBeNull() })
+    await navigateBoundTab()
+    releaseFirstScan!()
+    await waitFor(() => { expect(scans).toBe(2) })
+    await waitFor(() => { expect(statusNow()).toBe('done') })
+    // The new page's fields, and the nonce the replay spent to get them.
+    expect(await screen.findByText('Live page field')).toBeTruthy()
+    expect(screen.queryByText('Dead page field')).toBeNull()
+    expect(document.querySelector('[data-jff-scans]')?.getAttribute('data-jff-scans')).toBe('2')
+  })
+})
+
 describe('App per-field fill failures', () => {
   const enumField = (fid: number, label: string) => ({
     frameId: -1, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
@@ -407,6 +503,32 @@ describe('App per-field fill failures', () => {
     await renderScanned()
     fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
     expect(await screen.findByText('on the page')).toBeTruthy()
+  })
+
+  it('retires the action_failed line once the retried fill succeeds', async () => {
+    // The red line is about ONE attempt. Left on screen after the user fixed the
+    // value and the retry went through, it reads as a still-broken page.
+    let pageAccepts = false
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    const base = send.getMockImplementation()!
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL' && pageAccepts) {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 1, epoch: 1 }], failed: [] } } }], failures: [] }
+      }
+      return base(msg)
+    })
+    await renderScanned()
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed')
+    })
+    pageAccepts = true
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    // Back to what the SCAN said, not stuck on the failed attempt.
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done')
+    })
+    expect(screen.queryByText(/Fill failed/)).toBeNull()
   })
 
   it('locks every row while one row is acting', async () => {

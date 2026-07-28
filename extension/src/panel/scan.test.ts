@@ -284,6 +284,33 @@ describe('runScan', () => {
     ])
   })
 
+  it('keeps the first-pass evidence when the RETRY itself dies on the relay', async () => {
+    // The retry is the one leg that used to run outside the ScanError contract:
+    // a relay death there threw a bare Error and the panel lost the first pass's
+    // rows — the exact evidence that explains an empty enumeration.
+    let injects = 0
+    const { deps } = makeDeps({
+      getResume: async () => null,
+      inject: vi.fn(async () => {
+        injects++
+        if (injects === 2) throw new Error('relay died during the retry')
+        return [0]
+      }),
+      sendToTab: vi.fn(async (_f, message: ContentMessage) => {
+        if (message.type === 'JFF_SCAN') {
+          return { replies: [{ frameId: 0, url: 'https://top.example/', payload: { ok: false, error: 'bad_scan' } }], failures: [] }
+        }
+        return { replies: [], failures: [] }
+      }),
+    })
+    const err = await runScan(deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ScanError)
+    expect((err as ScanError).message).toBe('relay died during the retry')
+    expect((err as ScanError).frameReports).toEqual([
+      { frameId: 0, url: 'https://top.example/', fields: null, error: 'bad_scan' },
+    ])
+  })
+
   it('reports a failed auto-fill send in frameReports instead of discarding the scan', async () => {
     const { deps } = makeDeps({
       getResume: async () => null,
