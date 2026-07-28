@@ -6475,7 +6475,7 @@ git commit -m "feat(content): capture-phase submit and beforeunload snapshot wit
   - `startPicker(root: Document, onPick: (pick: { selector: string; text: string } | null) => void): () => void` — `onPick(null)` on Escape, so the caller's promise ALWAYS settles
   - `MIN_JOB_TEXT = 400`, `PICK_TIMEOUT_MS = 120_000`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `extension/src/content/jobpost.test.ts`:
 
@@ -6584,12 +6584,12 @@ describe('startPicker', () => {
 })
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx vitest run extension/src/content/jobpost.test.ts`
 Expected: FAIL — `Cannot find module './jobpost'`.
 
-- [ ] **Step 3: Implement job-post capture and the picker**
+- [x] **Step 3: Implement job-post capture and the picker**
 
 `extension/src/content/jobpost.ts`:
 
@@ -6641,13 +6641,24 @@ export function captureJobText(
   return { text: '', selector: null, source: 'none' }
 }
 
+/**
+ * `CSS.escape` when the runtime provides it (every real browser this content script
+ * ever runs in); jsdom, the extension unit-test environment, does not define a
+ * global `CSS`, so this falls back to a minimal escape covering the identifier
+ * characters ids/classes actually use. Production behavior is unaffected.
+ */
+function escapeIdent(s: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s)
+  return s.replace(/([^a-zA-Z0-9_-])/g, '\\$1')
+}
+
 /** A stable-enough selector for one element: id, else an nth-of-type path. */
 export function cssPathOf(el: Element): string {
-  if (el.id !== '') return `#${CSS.escape(el.id)}`
+  if (el.id !== '') return `#${escapeIdent(el.id)}`
   const parts: string[] = []
   let node: Element | null = el
   while (node !== null && node !== document.documentElement) {
-    if (node.id !== '') { parts.unshift(`#${CSS.escape(node.id)}`); break }
+    if (node.id !== '') { parts.unshift(`#${escapeIdent(node.id)}`); break }
     const tag = node.tagName.toLowerCase()
     const parent: Element | null = node.parentElement
     if (parent === null) { parts.unshift(tag); break }
@@ -6712,12 +6723,22 @@ export function startPicker(root: Document, onPick: (pick: { selector: string; t
 }
 ```
 
-- [ ] **Step 4: Run the job-post test to verify it passes**
+- [x] **Step 4: Run the job-post test to verify it passes**
 
 Run: `npx vitest run extension/src/content/jobpost.test.ts`
 Expected: PASS (13 tests).
 
-- [ ] **Step 5: Wire `JFF_JOBTEXT` and `JFF_PICK`**
+**Deviation (plan defect, fixed above):** the verbatim `cssPathOf` called `CSS.escape`
+directly. jsdom — the `extension` vitest project's environment — does not define a
+global `CSS`, so every `startPicker`/`cssPathOf` test calling into an id branch threw
+`Cannot read properties of undefined (reading 'escape')`. Real Chrome always has
+`CSS.escape`, so this is an environment gap, not a behavior disagreement between the
+snippet and the test: `cssPathOf` is now routed through a local `escapeIdent()` helper
+that uses `CSS.escape` when present and falls back to a minimal identifier-escape
+otherwise, matching production behavior exactly and only exercising the fallback path
+under jsdom.
+
+- [x] **Step 5: Wire `JFF_JOBTEXT` and `JFF_PICK`**
 
 In `extension/src/content/index.ts`, below the epoch guard, add:
 
@@ -6753,7 +6774,7 @@ The panel needs no Cancel button: `onPickJobText` already treats any non-`ok` re
 user changed their mind" and leaves the pasted job text untouched. Escape on the page is the
 cancel gesture, and it now produces a real reply instead of silence.
 
-- [ ] **Step 6: Verify job-text capture in the browser**
+- [x] **Step 6: Verify job-text capture in the browser**
 
 The project-owned fixture carries a real `#job-description` block (Task 3 Step 7a) with the
 `FIXTURE-JD` marker and >400 chars of prose, so the heuristic tier has something honest to
@@ -6779,12 +6800,12 @@ test('job text is captured from the fixture job-description block by the heurist
 
 (The `source: 'none'` fall-back-to-paste-box path is covered by the jobpost unit tests.)
 
-- [ ] **Step 7: Rebuild and run the smoke**
+- [x] **Step 7: Rebuild and run the smoke**
 
 Run: `JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test e2e/foundation.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A

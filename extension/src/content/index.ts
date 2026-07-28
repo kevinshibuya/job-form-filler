@@ -2,6 +2,7 @@ import { ContentMessageSchema, FillReportSchema, ScanResultSchema, STALE_EPOCH }
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
 import { fillFields } from './fill'
+import { captureJobText, PICK_TIMEOUT_MS, startPicker } from './jobpost'
 import { installSnapshotListeners, snapshotValues } from './snapshot'
 
 declare global {
@@ -53,6 +54,30 @@ async function handle(raw: unknown): Promise<unknown> {
 
   // Every other message must match the epoch this frame was last scanned at.
   if (msg.epoch !== getEpoch()) return { ok: false, error: STALE_EPOCH }
+
+  if (msg.type === 'JFF_JOBTEXT') {
+    return { ok: true, jobText: captureJobText(document, msg.selector) }
+  }
+
+  if (msg.type === 'JFF_PICK') {
+    // ALWAYS settles: on click, on Escape (pick_cancelled), or at PICK_TIMEOUT_MS.
+    // A pending promise here would hold the runtime message channel open for the
+    // life of the frame, and the panel's `await sendToTab(...)` with it.
+    return await new Promise((resolve) => {
+      let stop: (() => void) | null = null
+      let timer: ReturnType<typeof setTimeout> | null = null
+      let done = false
+      const settle = (pick: { selector: string; text: string } | null): void => {
+        if (done) return
+        done = true
+        if (timer !== null) clearTimeout(timer)
+        if (stop !== null) stop() // idempotent: startPicker already stopped on click/Escape
+        resolve(pick === null ? { ok: false, error: 'pick_cancelled' } : { ok: true, pick })
+      }
+      stop = startPicker(document, settle)
+      timer = setTimeout(() => settle(null), PICK_TIMEOUT_MS)
+    })
+  }
 
   if (msg.type === 'JFF_SNAPSHOT') {
     return { ok: true, snapshot: { epoch: msg.epoch, values: snapshotValues(document) } }
