@@ -145,3 +145,18 @@ test('a real submit pushes a per-tab-per-frame snapshot into storage.session', a
     await t.close()
   }
 })
+
+test('job text is captured from the fixture job-description block by the heuristic tier', async () => {
+  const t = await openFixtureTab()
+  try {
+    await t.send({ type: 'JFF_SCAN', epoch: 5 }) // JOBTEXT sits below the epoch guard
+    const jt = await t.send({ type: 'JFF_JOBTEXT', epoch: 5, selector: null })
+    type JtPayload = { ok: boolean; jobText?: { text: string; selector: string | null; source: string } }
+    const payload = (jt.replies.find((r) => r.frameId === 0)!.payload as JtPayload).jobText!
+    expect(payload.source).toBe('heuristic')
+    expect(payload.text).toContain('FIXTURE-JD')
+    expect(payload.selector).toBe('#job-description')
+  } finally {
+    await t.close()
+  }
+})
