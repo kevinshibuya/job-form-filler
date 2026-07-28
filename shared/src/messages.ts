@@ -129,6 +129,16 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_PICK'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_JOBTEXT'), epoch: z.number().int().nonnegative(), selector: z.string().nullable() }),
+  z.object({
+    type: z.literal('JFF_FILL_RESUME'),
+    epoch: z.number().int().nonnegative(),
+    handle: FieldHandleSchema,
+    // The resume travels as base64 because chrome runtime messaging is JSON, not
+    // structured clone: a File or Blob would not survive the trip.
+    fileName: z.string(),
+    mimeType: z.string(),
+    dataBase64: z.string(),
+  }),
 ])
 export type ContentMessage = z.infer<typeof ContentMessageSchema>
 

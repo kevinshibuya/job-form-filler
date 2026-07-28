@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import type { EnumField, Resolution, SelfCheck } from '@jff/shared'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import type { ContentMessage, EnumField, Resolution, SelfCheck } from '@jff/shared'
+import { SNAPSHOT_KEY_RE } from '../snapshotKey'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
+import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
 import { groupRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, type HostPort } from './port'
 import { ProfileEditor } from './ProfileEditor'
+import { loadResume, saveResume } from './resume'
+import { runScan, type FrameReply } from './scan'
 import { createTabScope } from './tabScope'
 import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
 
@@ -31,6 +35,16 @@ export function App() {
   // The editor must not be savable before profile.get/answerBank.get answer: the
   // host DELETES a key written as '' (Task 5 writeKv).
   const [factsLoaded, setFactsLoaded] = useState(false)
+  const [resumeName, setResumeName] = useState<string | null>(null)
+  // Seeded from the clock, not 0. storage.session snapshot rows outlive a panel
+  // instance, so a fresh panel restarting at epoch 1 on the same tab would happily
+  // merge a PREVIOUS application's snapshot into this application's save, attributing
+  // old answers to new fids. A per-session base makes that collision impossible.
+  const epochRef = useRef(Date.now())
+  // Ignore-while-running. The panel auto-scans on open, and the user can also press
+  // Scan; two overlapping runScans race, and the loser's fills land under a stale
+  // epoch and are rejected, leaving fields half-filled nondeterministically.
+  const scanningRef = useRef(false)
 
   const groups = groupRows(fields, resolutions)
   const companyOrNull = company.trim() === '' ? null : company.trim()
@@ -48,6 +62,14 @@ export function App() {
     return () => port.disconnect()
   }, [])
 
+  /** Everything a scan produced. Cleared on ANY tab-scope reset; only a navigation
+   *  additionally re-scans. All the setters are stable, so closing over this once
+   *  from the bind effect is safe. */
+  const resetScanState = (): void => {
+    setFields([]); setResolutions([]); setEdits({}); setFilledRefs([])
+    setUnreachable(0); setActiveCaptcha(false); setJobText('')
+  }
+
   useEffect(() => {
     let stop: (() => void) | null = null
     // Unmounting before tabs.query resolves would otherwise register listeners
@@ -59,12 +81,18 @@ export function App() {
       if (id === null) return
       stop = createTabScope(id, (reason) => {
         setResetCount((n) => n + 1)
+        resetScanState()
+        // Only a navigation is a new page. Re-scanning on every tab ACTIVATION would
+        // spend one batched `claude -p` resolve per tab switch, and on a tab CLOSE the
+        // scan would run against a tab that no longer exists.
         if (reason === 'navigated') setScanNonce((n) => n + 1)
       })
     }
     void chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => bind(tabs[0]?.id ?? null))
     return () => { cancelled = true; if (stop !== null) stop() }
   }, [])
+
+  useEffect(() => { void loadResume().then((r) => setResumeName(r?.name ?? null)) }, [])
 
   // Pre-fill the facts editor from the host. `factsLoaded` is what unlocks Save in
   // the ProfileEditor, so the editor is inert until this resolves. Task 20 Step 9
@@ -85,9 +113,91 @@ export function App() {
 
   const onEdit = (ref: string, value: string): void => setEdits((e) => ({ ...e, [ref]: value }))
 
-  // Placeholder so the Scan button below typechecks and this task verifies green.
-  // Task 20 Step 9 REPLACES this whole binding with the real runScan orchestration.
-  const onScan = async (): Promise<void> => { /* wired in Task 20 */ }
+  const sendToTab = async (frameId: number | undefined, message: ContentMessage): Promise<FrameReply[]> => {
+    const res = await chrome.runtime.sendMessage({ kind: 'toContent', tabId, frameId, message })
+    return (res as { replies?: FrameReply[] }).replies ?? []
+  }
+
+  /** chrome.tabs.get REJECTS once the bound tab is gone. Every caller here runs
+   *  from an event the user does not control, so a raw call is an unhandled
+   *  rejection waiting for a tab close. */
+  const getTab = async (): Promise<chrome.tabs.Tab | null> => {
+    if (tabId === null) return null
+    try { return await chrome.tabs.get(tabId) } catch { return null }
+  }
+
+  const onScan = async (): Promise<void> => {
+    const port = portRef.current
+    if (port === null || tabId === null || scanningRef.current) return
+    const tab = await getTab()
+    if (tab === null) return // tab closed between the trigger and here
+    scanningRef.current = true
+    try {
+      // A previous application on this same tab may have left snapshot rows in
+      // storage.session. They must never merge into this scan's save.
+      const keys = Object.keys(await chrome.storage.session.get(null))
+        .filter((k) => { const m = SNAPSHOT_KEY_RE.exec(k); return m !== null && Number(m[1]) === tabId })
+      if (keys.length > 0) await chrome.storage.session.remove(keys)
+
+      const hostname = tab.url === undefined ? '' : new URL(tab.url).hostname
+      // Company: the user's edit always wins; guess only while the field is empty.
+      const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
+      if (co !== null && companyOrNull === null) setCompany(co)
+      const out = await runScan({
+        tabId,
+        nextEpoch: () => ++epochRef.current,
+        inject: async () => {
+          const r = await chrome.runtime.sendMessage({ kind: 'inject', tabId })
+          return (r as { frames?: number[] }).frames ?? []
+        },
+        sendToTab,
+        port,
+        getResume: loadResume,
+        pastedJobText: jobText,
+        hostname,
+        url: tab.url ?? '',
+        company: co,
+      })
+      setFields(out.fields)
+      setResolutions(out.resolutions)
+      setUnreachable(out.unreachableWidgets)
+      setActiveCaptcha(out.activeCaptcha)
+      setEdits({})
+      setFilledRefs([])
+      if (out.jobText !== '') setJobText(out.jobText)
+      if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
+    } finally {
+      scanningRef.current = false
+    }
+  }
+
+  const onPickJobText = async (): Promise<void> => {
+    // Spec's element picker: the user clicks the element holding the job text;
+    // the selector is learned per hostname so future scans find it directly.
+    // The content script always replies (click, Escape or timeout, Task 17 Step 5).
+    if (tabId === null || fields.length === 0) return
+    const replies = await sendToTab(0, { type: 'JFF_PICK', epoch: epochRef.current })
+    const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
+    if (p?.ok !== true || p.pick === undefined) return // cancelled or timed out
+    setJobText(p.pick.text)
+    const tab = await getTab()
+    const hostname = tab?.url === undefined ? '' : new URL(tab.url).hostname
+    if (hostname !== '') {
+      await portRef.current?.request('selector.save', { hostname, purpose: 'job_description', selector: p.pick.selector })
+    }
+  }
+
+  const onPickResume = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0]
+    if (file === undefined) return
+    await saveResume(file)
+    setResumeName(file.name)
+  }
+
+  // Auto-scan on open and after the bound tab navigates (a wizard step is new DOM).
+  // `resetScanState` has already cleared jobText, so this scan can never feed the
+  // PREVIOUS page's job description to resolve.
+  useEffect(() => { if (tabId !== null) void onScan() }, [tabId, scanNonce])
 
   /** Put one value on the page. Shared by Accept and Fill; the difference between
    *  them is what they additionally CONFIRM, which is why this is not a component. */
@@ -188,6 +298,16 @@ export function App() {
         </button>
       </div>
 
+      <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
+        Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}
+        <input
+          type="file"
+          accept=".pdf,.doc,.docx,.txt,.rtf"
+          onChange={onPickResume}
+          className="mt-1 block w-full text-[12px] file:mr-2 file:cursor-pointer file:rounded-md file:border file:border-neutral-300 file:bg-transparent file:px-2 file:py-1 file:text-[12px] file:text-inherit dark:file:border-neutral-600"
+        />
+      </label>
+
       <label className={`my-2 block ${MUTED}`} data-jff-company="1">
         Company
         <input
@@ -201,6 +321,9 @@ export function App() {
       <label className={`my-2.5 block ${MUTED}`} data-jff-paste="1">
         Job description (paste here if the scan could not find it)
         <textarea className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} onChange={(e) => setJobText(e.target.value)} />
+        <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0} onClick={onPickJobText}>
+          Pick job description
+        </button>
       </label>
 
       {showEditor
