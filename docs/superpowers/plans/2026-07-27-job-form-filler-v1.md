@@ -8261,7 +8261,7 @@ npm i -D fake-indexeddb -w @jff/extension
 - Produces (`scan.ts`): `type FrameReply`, `type ScanDeps`, `type ScanOutcome`, `runScan(deps: ScanDeps): Promise<ScanOutcome>`
 - Produces (`company.ts`): `guessCompany(title: string, hostname: string): string | null` — "at Company" from the tab title, else the second-level domain of a company-owned host; null for ATS platform hosts, IPs and localhost. The guess pre-fills the panel's Company field; the user's edit always wins.
 
-- [ ] **Step 1: Add the resume message to the shared schema**
+- [x] **Step 1: Add the resume message to the shared schema**
 
 In `shared/src/messages.ts`, add this member to `ContentMessageSchema`'s union (keep every existing member):
 
@@ -8283,7 +8283,7 @@ rebuild the extension tests below run against stale types):
 
 Run: `npm run build -w @jff/shared && npx vitest run shared/src/messages.test.ts` — still PASS.
 
-- [ ] **Step 2: Write the failing settle test**
+- [x] **Step 2: Write the failing settle test**
 
 `extension/src/content/settle.test.ts`:
 
@@ -8328,7 +8328,7 @@ describe('waitForSettle', () => {
 })
 ```
 
-- [ ] **Step 3: Run it to verify it fails, then implement**
+- [x] **Step 3: Run it to verify it fails, then implement**
 
 Run: `npx vitest run extension/src/content/settle.test.ts` → FAIL (module not found).
 
@@ -8368,7 +8368,7 @@ export function waitForSettle(root: Document, opts: { quietMs?: number; maxMs?: 
 
 Run again: PASS (3 tests).
 
-- [ ] **Step 4: Write the failing resume-store test**
+- [x] **Step 4: Write the failing resume-store test**
 
 `extension/src/panel/resume.test.ts`:
 
@@ -8376,6 +8376,28 @@ Run again: PASS (3 tests).
 import { describe, it, expect, beforeEach } from 'vitest'
 import 'fake-indexeddb/auto'
 import { saveResume, loadResume, clearResume } from './resume'
+
+/**
+ * jsdom's Blob implements only `slice`/`size`/`type` — `arrayBuffer()`, `text()`
+ * and `stream()` are all missing (same class of gap as the DataTransfer shim in
+ * content/fill.test.ts). Chrome has had Blob.arrayBuffer since 76, well below the
+ * MV3 floor, so production stays unmodified; this only fills the jsdom hole, and
+ * the `typeof` guard makes it inert anywhere the real method exists.
+ */
+if (typeof Blob.prototype.arrayBuffer !== 'function') {
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+    configurable: true,
+    writable: true,
+    value(this: Blob): Promise<ArrayBuffer> {
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as ArrayBuffer)
+        reader.onerror = () => reject(reader.error)
+        reader.readAsArrayBuffer(this)
+      })
+    },
+  })
+}
 
 beforeEach(async () => { await clearResume() })
 
@@ -8405,7 +8427,7 @@ describe('resume store', () => {
 })
 ```
 
-- [ ] **Step 5: Run it to verify it fails, then implement**
+- [x] **Step 5: Run it to verify it fails, then implement**
 
 Run: `npx vitest run extension/src/panel/resume.test.ts` → FAIL (module not found).
 
@@ -8470,7 +8492,7 @@ export async function clearResume(): Promise<void> {
 
 Run again: PASS (4 tests).
 
-- [ ] **Step 6: Handle `JFF_FILL_RESUME` in the content script**
+- [x] **Step 6: Handle `JFF_FILL_RESUME` in the content script**
 
 In `extension/src/content/index.ts`, below the epoch guard, add:
 
@@ -8490,7 +8512,7 @@ In `extension/src/content/index.ts`, below the epoch guard, add:
 
 with `import { fillFields, fillFile } from './fill'`, `import { elementByFid } from './enumerate'` and `import { waitForSettle } from './settle'` at the top.
 
-- [ ] **Step 7: Write the failing scan-orchestration test**
+- [x] **Step 7: Write the failing scan-orchestration test**
 
 `extension/src/panel/scan.test.ts`:
 
@@ -8516,7 +8538,6 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
     nextEpoch: () => ++epoch,
     inject: vi.fn(async () => [0]),
     sendToTab: vi.fn(async (_frameId, message) => {
-      sent.push(message)
       if (message.type === 'JFF_SCAN') return [scanReply(0, [field(0, 0), field(0, 1, { kind: 'file' })])]
       if (message.type === 'JFF_JOBTEXT') return [{ frameId: 0, payload: { ok: true, jobText: { text: 'JD TEXT', selector: '#jd', source: 'heuristic' } } }]
       if (message.type === 'JFF_FILL_RESUME') return [{ frameId: 0, payload: { ok: true } }]
@@ -8543,6 +8564,12 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
     pastedJobText: '',
     ...over,
   }
+  // Record AFTER merging `over`, not inside the default stub. Several tests below
+  // replace sendToTab wholesale; if only the default stub logged, their
+  // `expect(sent).not.toContain('JFF_FILL')` would pass against an empty array —
+  // a vacuously green assertion on the "never fill under a live CAPTCHA" rule.
+  const inner = deps.sendToTab
+  deps.sendToTab = vi.fn(async (frameId, message) => { sent.push(message); return inner(frameId, message) })
   return { deps, sent }
 }
 
@@ -8691,7 +8718,7 @@ describe('runScan', () => {
 })
 ```
 
-- [ ] **Step 8: Run it to verify it fails, then implement**
+- [x] **Step 8: Run it to verify it fails, then implement**
 
 Run: `npx vitest run extension/src/panel/scan.test.ts` → FAIL (module not found).
 
@@ -8843,7 +8870,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
 Run again: `npx vitest run extension/src/panel/scan.test.ts` → PASS (12 tests).
 
-- [ ] **Step 8b: The company guess helper (test first, then implement)**
+- [x] **Step 8b: The company guess helper (test first, then implement)**
 
 The company-specificity guard and the `applications` history row both need a company value;
 hard-coding `null` everywhere would make the guard dead code. The panel guesses once per
@@ -8905,7 +8932,7 @@ export function guessCompany(title: string, hostname: string): string | null {
 
 Run again: `npx vitest run extension/src/panel/company.test.ts` → PASS (3 tests).
 
-- [ ] **Step 9: Wire scan + the resume picker into App**
+- [x] **Step 9: Wire scan + the resume picker into App**
 
 Add to `extension/src/panel/App.tsx` (`onScan` REPLACES the Task 19 placeholder binding of
 the same name; everything else is new, and all of it lives above the return).
@@ -9080,7 +9107,7 @@ add the auto-scan effect keyed on `scanNonce` (NOT `resetCount`):
   useEffect(() => { if (tabId !== null) void onScan() }, [tabId, scanNonce])
 ```
 
-- [ ] **Step 10: Typecheck, test, rebuild, smoke**
+- [x] **Step 10: Typecheck, test, rebuild, smoke**
 
 ```bash
 npm run typecheck && npx vitest run && JFF_TEST_SEAM=1 npm run build -w @jff/extension && npx playwright test
@@ -9088,7 +9115,7 @@ npm run typecheck && npx vitest run && JFF_TEST_SEAM=1 npm run build -w @jff/ext
 
 Expected: all PASS.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add -A

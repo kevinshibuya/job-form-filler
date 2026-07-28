@@ -1,9 +1,10 @@
 import { ContentMessageSchema, FillReportSchema, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
 import { hasActiveCaptcha, isDemographic } from './classify'
-import { enumerateFields, getEpoch } from './enumerate'
-import { fillFields } from './fill'
+import { elementByFid, enumerateFields, getEpoch } from './enumerate'
+import { fillFields, fillFile } from './fill'
 import { captureJobText, PICK_TIMEOUT_MS, startPicker } from './jobpost'
 import { installSnapshotListeners, snapshotValues } from './snapshot'
+import { waitForSettle } from './settle'
 
 declare global {
   interface Window { __jffLoaded?: boolean }
@@ -54,6 +55,18 @@ async function handle(raw: unknown): Promise<unknown> {
 
   // Every other message must match the epoch this frame was last scanned at.
   if (msg.epoch !== getEpoch()) return { ok: false, error: STALE_EPOCH }
+
+  if (msg.type === 'JFF_FILL_RESUME') {
+    const el = elementByFid(document, msg.handle.fid)
+    if (el === null) return { ok: false, error: 'element-not-found' }
+    const bytes = Uint8Array.from(atob(msg.dataBase64), (c) => c.charCodeAt(0))
+    const file = new File([bytes], msg.fileName, { type: msg.mimeType })
+    const out = fillFile(el, file)
+    if (!out.ok) return { ok: false, error: out.reason }
+    // Let the ATS's async resume auto-parse finish BEFORE anything else is filled.
+    await waitForSettle(document)
+    return { ok: true }
+  }
 
   if (msg.type === 'JFF_JOBTEXT') {
     return { ok: true, jobText: captureJobText(document, msg.selector) }
