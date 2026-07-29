@@ -968,3 +968,52 @@ describe('App per-field fill failures', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'Fill' }) as HTMLButtonElement).disabled).toBe(false))
   })
 })
+
+describe('App generate request', () => {
+  it('sends the field description along with the Generate request', async () => {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return {
+          ok: true,
+          replies: [{
+            frameId: 0, url: 'https://jobs.acme.com/apply',
+            payload: { ok: true, scan: { epoch: 1, fields: [{
+              frameId: -1, fid: 0, epoch: 1, label: 'Authorized to work?', name: null, idAttr: null, kind: 'text',
+              options: [], required: false, visible: true, currentValue: null, demographic: false,
+              description: 'Answer for your current country.',
+            }], unreachableWidgets: 0, activeCaptcha: false } },
+          }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      return { ok: true }
+    })
+
+    const generateCalls: unknown[] = []
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        return { requestId, ok: true, result: { epoch: 1, resolutions: [
+          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' },
+        ], llmError: null } }
+      }
+      if (method === 'generate') { generateCalls.push(params); return { requestId, ok: true, result: { draft: 'A draft' } } }
+      return { requestId, ok: true, result: {} }
+    }
+
+    render(<App />)
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done')
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate with AI' }))
+
+    await waitFor(() => expect(generateCalls).toHaveLength(1))
+    expect(generateCalls[0]).toMatchObject({
+      questionRaw: 'Authorized to work?',
+      description: 'Answer for your current country.',
+    })
+  })
+})
