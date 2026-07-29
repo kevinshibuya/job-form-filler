@@ -6,7 +6,7 @@
 
 **Architecture:** Four slices, executed O → A → C → S (spec §Execution, binding). O (Tasks 1–3) composes existing profile blocks behind a tri-state completeness gate. A (Tasks 4–8) adds the host `applied_jobs` table + `applied.*` methods, then panel mark/detect/badge/list; the A slices deliberately land BEFORE sessions exist, carrying a small `startUrl` state that Task 14 folds into the Session shape. C (Tasks 9–10) implements the C1 spike recipe verbatim (pointer+mouse open gesture; committed-text fallback to the widget's visible value) plus a Greenhouse-shaped e2e fixture. S (Tasks 11–16) retires the clear-on-activate era in one test batch, builds the sessions + navigation-signal modules pure-first, then rewires App.tsx in three integrator slices ordered by risk surface: session lifecycle (S2/S5/S6), label-keyed answer carry (S4), concurrency + routing (S7). Task 17 is the e2e batch (all e2e adaptation to the onboarding/session era happens HERE, in one batch); Tasks 18–19 are the verify gate and the live manual gate on <https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002>.
 
-**Tech Stack:** TypeScript workspaces (shared/host/extension), zod, vitest (baseline 618 tests / 43 files), Playwright e2e (baseline 13/13), React 18 MV3 side panel (vite 7 + @crxjs), better-sqlite3 host, `chrome.storage.session`, `chrome.webNavigation` (permission already granted — `extension/manifest.config.ts:22`).
+**Tech Stack:** TypeScript workspaces (shared/host/extension), zod, vitest (baseline 618 tests / 43 files), Playwright e2e (baseline 13/13), React 18 MV3 side panel (vite 7 + @crxjs), better-sqlite3 host, `chrome.storage.session`, `chrome.webNavigation` (permission already granted — `extension/manifest.config.ts:24`).
 
 ## Worker preamble (read before every task)
 
@@ -15,7 +15,7 @@
 - **Blocked returns are successes.** If anything in your task is ambiguous FOR YOUR RUNG, stop and return `blocked: <the specific ambiguity>`.
 - `@jff/shared` resolves to `shared/dist/index.js` at test time. After ANY edit under `shared/src`, run `npm run build -w @jff/shared` before running host/extension tests, or they exercise the stale build.
 - Run tests from the repo root: `npx vitest run <path>` (the root config fans out to the host/extension projects).
-- **Do NOT run the full Playwright suite in Tasks 3–16.** Task 3 makes the panel gate on onboarding, and the e2e specs that mount the panel against an empty host DB go red by design until Task 17 adapts them in one batch (standing rule: stale tests are a batch, not serial surprises). Per-task Verify commands are unit + typecheck + lint only, except where a task names its own spec file.
+- **Do NOT run the full Playwright suite in Tasks 3–16.** Task 3 makes the panel gate on onboarding, and the e2e specs that mount the panel against an empty host DB go red by design until Task 17 adapts them in one batch (standing rule: stale tests are a batch, not serial surprises). Within that range, per-task Verify commands are unit + typecheck + lint only — with ONE exception: Task 10 runs ONLY its scoped `npx playwright test e2e/foundation.spec.ts -g 'react-select'` filter (the rest of foundation.spec.ts's panel-mount tests are knowingly red until Task 17 seeds the onboarded persona). Task 17 then runs the full Playwright suite.
 
 ## Global Constraints
 
@@ -331,7 +331,7 @@ describe('OnboardingView (O2)', () => {
 
 - [ ] **Step 2: Run to see it fail** — `npx vitest run extension/src/panel/OnboardingView.test.tsx` — FAILS (no module).
 
-- [ ] **Step 3: Refactor `ProfileEditor.tsx`** — rename the private `LABELS` const to an exported `FACT_LABELS` (same content), and extract the field-rendering `.map` (currently lines 74–79) into:
+- [ ] **Step 3: Refactor `ProfileEditor.tsx`** — rename the private `LABELS` const to `FACT_LABELS` (same content, STILL module-private — only `FactFields` is exported; no other module needs the label map), and extract the field-rendering `.map` (currently lines 74–79) into:
 
 ```tsx
 /** O2: the one fact-grid renderer OnboardingView and ProfileEditor share.
@@ -485,7 +485,7 @@ git commit -m "feat(onboarding): OnboardingView over shared FactFields; CV uploa
 **Interfaces:**
 - Consumes: `profileCompleteness`/`Completeness` (Task 1), `OnboardingView` (Task 2), existing `saveResume`/`loadResumeText`, `facts.extract`, `profile.set`/`answerBank.set`.
 - Produces: App renders `OnboardingView` INSTEAD of the scan UI when the completeness decision is `incomplete`; the auto-scan effect additionally requires a settled decision. `unknown` = normal panel + host banner, scan proceeds.
-- Consumed by: Task 7 (precedence: onboarding gate > applied badge > host gate > scan), Task 17 (e2e gate flow).
+- Consumed by: Task 7 (precedence: onboarding gate > host gate > applied badge > scan), Task 17 (e2e gate flow).
 
 **Model:** implementer-sonnet-medium (escalate to integrator-opus-high only if the effect-ordering tests fight after a FIX-AND-REPORT attempt).
 
@@ -529,7 +529,7 @@ function installHostBridge(answer: (method: string) => Promise<unknown>): void {
 ```
 
   and add `await clearResume()` in the `afterEach`.
-  - **Mechanical sweep:** `grep -n '__jffHostBridge = async' extension/src/panel/App.test.tsx` — for EVERY inline bridge found, insert as the FIRST statement of its body:
+  - **Mechanical sweep:** `grep -n '__jffHostBridge = async' extension/src/panel/App.test.tsx` — for EVERY inline bridge found EXCEPT the one inside `installHostBridge` (already rewritten above — do not edit it twice), insert as the FIRST statement of its body:
 
 ```ts
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
@@ -625,6 +625,30 @@ describe('App — onboarding gate (O1/O3)', () => {
     await waitFor(() => expect(document.querySelector('[data-jff-onboarding]')).toBeNull())
     await waitFor(() => expect(scanCount()).toBe(1))
   })
+
+  it('a failed profile.set keeps the gate closed — nothing unlocks on a lie', async () => {
+    await clearResume()
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.set') return { requestId, ok: false, error: { kind: 'db', message: 'disk full' } }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await screen.findByText('Welcome — set up your profile')
+    fireEvent.change(document.querySelector('[data-jff-ob-resume] input[type="file"]')!,
+      { target: { files: [new File(['cv'], 'cv.txt', { type: 'text/plain' })] } })
+    await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
+    fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
+    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    const finish = screen.getByRole('button', { name: 'Finish setup' })
+    await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(finish)
+    // The failure surfaced; the gate stays; no scan ever fires.
+    await new Promise((r) => setTimeout(r, 100))
+    expect(document.querySelector('[data-jff-onboarding]')).not.toBeNull()
+    expect(scanCount()).toBe(0)
+  })
 })
 ```
 
@@ -658,24 +682,28 @@ describe('App — onboarding gate (O1/O3)', () => {
   }, [])
 ```
 
-  - Deciding effect (place after the `gateOpen` effect):
+  - Deciding effects (place after the `gateOpen` effect). The deadline is anchored ONCE at mount — an effect keyed on the settle states would RESTART the clock on every partial settle (facts landing at t=9s with a hanging resume load would stretch the wait to 19s):
 
 ```ts
+  // O3 deadline, anchored ONCE at mount: a port that never answers must not
+  // pin a fresh panel on 'pending' forever, and a PARTIAL settle must not
+  // restart the clock. Past the deadline an unsettled decision becomes
+  // 'unknown' (normal panel + banner) — the gate can ONLY ever be shown by a
+  // successful load proving incompleteness.
+  useEffect(() => {
+    const timer = setTimeout(() => setCompleteness((c) => (c === 'pending' ? 'unknown' : c)), hostWaitMs)
+    return () => clearTimeout(timer)
+  }, [])
+
   // O3: the completeness decision LATCHES on its first settled verdict — a
   // facts load limping in after the deadline must not flip a working panel
   // into (or out of) onboarding mid-session. Only Finish moves it afterwards.
-  // The bounded wait mirrors the host gate: a port that never answers resolves
-  // to 'unknown' (normal panel + banner) — the gate can ONLY ever be shown by
-  // a successful load proving incompleteness.
   useEffect(() => {
     if (completeness !== 'pending') return
     if (factsOk !== null && resumeOk !== null) {
       setCompleteness(profileCompleteness(facts, resumeName !== null, factsOk && resumeOk))
-      return
     }
-    const timer = setTimeout(() => setCompleteness((c) => (c === 'pending' ? 'unknown' : c)), hostWaitMs)
-    return () => clearTimeout(timer)
-  }, [factsOk, resumeOk, completeness, hostWaitMs])
+  }, [factsOk, resumeOk, completeness])
 ```
 
   - Auto-scan effect (currently `if (!gateOpen) { setScanStatus({ kind: 'connecting' }); return } void onScan()` keyed `[tabId, scanNonce, gateOpen]`) becomes:
@@ -714,8 +742,13 @@ describe('App — onboarding gate (O1/O3)', () => {
   const onOnboardingFinish = async (profile: Record<string, string>, bank: Record<string, string>): Promise<void> => {
     const port = portRef.current
     if (port === null) return
-    await port.request('profile.set', { values: profile })
-    await port.request('answerBank.set', { values: bank })
+    // A failed write must NOT unlock scanning: nothing was persisted, and a
+    // 'complete' verdict here would be a lie the next panel open disproves.
+    // Surface the banner and stay in onboarding — Finish is retryable.
+    const p = await port.request('profile.set', { values: profile })
+    if (!p.ok) { setHostError(ERROR_COPY[p.error.kind]); return }
+    const b = await port.request('answerBank.set', { values: bank })
+    if (!b.ok) { setHostError(ERROR_COPY[b.error.kind]); return }
     setFacts((f) => ({ ...f, ...profile, ...bank }))
     // The gate's one sanctioned exit; the nonce re-fires the (blocked) auto-scan
     // effect exactly once.
@@ -763,11 +796,12 @@ git commit -m "feat(onboarding): hard gate wired — settled tri-state decision 
 - Modify: `host/src/db/repos.ts` (three repo functions + `AppliedJob`)
 - Modify: `shared/src/messages.ts` (three `HostRequestSchema` union entries)
 - Modify: `host/src/handlers.ts` (three `compute()` arms + imports)
+- Modify: `extension/src/panel/port.ts` (canned-fake entries for the three new methods — every seam-built panel and every unit test without an explicit bridge hits the canned map, and a MISSING entry answers `{}`, which downstream code must never have to defend against)
 - Modify: `shared/src/messages.test.ts`, `host/src/handlers.test.ts`
 
 **Interfaces:**
 - Produces:
-  - `canonicalUrl(raw: string): string` — lowercase host, strip fragment + trailing slash, drop tracking params (`utm_*`, `gh_src`, `ref`, `source`), keep every other param (identity params `ashby_jid`/`gh_jid`/`jobId` are thereby kept) sorted for stability. Unparseable input passes through trimmed.
+  - `canonicalUrl(raw: string): string` — canonical form is `host/path?params`, NO scheme, NO leading `www.`: lowercase host, strip fragment + trailing slash, drop tracking params (`utm_*`, `gh_src`, `ref`, `source`), keep every other param (identity params `ashby_jid`/`gh_jid`/`jobId` are thereby kept) sorted for stability. Unparseable input passes through trimmed.
   - `AppliedJob { id, url, canonicalUrl, company: string | null, jobTitle: string | null, markedAt: string }`.
   - `markApplied(db, { url, company, jobTitle }): AppliedJob` — upsert by canonical_url; **`marked_at` is NOT in the update set** (re-marking keeps the ORIGINAL date).
   - `checkApplied(db, url): AppliedJob | null`, `listApplied(db): AppliedJob[]` (newest first).
@@ -787,26 +821,27 @@ import { describe, expect, it } from 'vitest'
 import { canonicalUrl } from './canonicalUrl.js'
 
 describe('canonicalUrl (A1)', () => {
-  it('ashby: the identity param survives; tracking params drop; host lowercases', () => {
+  it('ashby: the identity param survives; tracking params, scheme and www. drop; host lowercases', () => {
     expect(canonicalUrl('https://www.TRMLabs.com/careers/?ashby_jid=6edf242b&utm_source=x&gh_src=abc'))
-      .toBe('https://www.trmlabs.com/careers?ashby_jid=6edf242b')
+      .toBe('trmlabs.com/careers?ashby_jid=6edf242b')
   })
 
   it('greenhouse: path identity survives; gh_src/ref/source and the fragment drop', () => {
     expect(canonicalUrl('https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002?gh_src=abc&ref=li&source=tw#app'))
-      .toBe('https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002')
+      .toBe('job-boards.greenhouse.io/deliveryassociates/jobs/8517393002')
   })
 
   it('keeps jobId and unknown params, sorted for stability', () => {
-    expect(canonicalUrl('https://x.com/a?z=1&jobId=9&a=2')).toBe('https://x.com/a?a=2&jobId=9&z=1')
+    expect(canonicalUrl('https://x.com/a?z=1&jobId=9&a=2')).toBe('x.com/a?a=2&jobId=9&z=1')
   })
 
-  it('two spellings of the same posting collide on one canonical form', () => {
-    expect(canonicalUrl('https://X.com/jobs/1/?utm_campaign=a#top')).toBe(canonicalUrl('https://x.com/jobs/1'))
+  it('scheme, www., trailing slash, fragment and param order all collide on ONE canonical form', () => {
+    expect(canonicalUrl('https://X.com/jobs/1/?utm_campaign=a#top')).toBe(canonicalUrl('http://www.x.com/jobs/1'))
   })
 
-  it('path case is preserved (only the host lowercases); trailing slash strips', () => {
-    expect(canonicalUrl('https://Jobs.Acme.COM/Apply/')).toBe('https://jobs.acme.com/Apply')
+  it('path case is preserved (only the host lowercases); a bare root path drops', () => {
+    expect(canonicalUrl('https://Jobs.Acme.COM/Apply/')).toBe('jobs.acme.com/Apply')
+    expect(canonicalUrl('https://acme.com/')).toBe('acme.com')
   })
 
   it('an unparseable url passes through trimmed', () => {
@@ -823,11 +858,13 @@ describe('canonicalUrl (A1)', () => {
 /**
  * A1: one job posting, one row. Raw URLs disagree between ATSes — the Ashby
  * job's identity IS its query param (?ashby_jid=…) while Greenhouse's is the
- * path with gh_src/utm_* as tracking noise. Policy: drop the KNOWN tracking
- * params, keep everything else (identity params like ashby_jid/gh_jid/jobId
- * are thereby kept; an unknown param kept means at worst a missed badge on
- * revisit — safer than merging two different jobs by over-dropping), sorted
- * so param order can never split one job into two rows.
+ * path with gh_src/utm_* as tracking noise. The canonical form is
+ * `host/path?params` — NO scheme (http vs https is transport, not identity)
+ * and NO leading `www.` (the same posting is shared both ways). Policy on
+ * params: drop the KNOWN tracking set, keep everything else (identity params
+ * like ashby_jid/gh_jid/jobId are thereby kept; an unknown param kept means
+ * at worst a missed badge on revisit — safer than merging two different jobs
+ * by over-dropping), sorted so param order can never split one job into two.
  */
 const isTracking = (key: string): boolean => {
   const k = key.toLowerCase()
@@ -837,14 +874,15 @@ const isTracking = (key: string): boolean => {
 export function canonicalUrl(raw: string): string {
   let u: URL
   try { u = new URL(raw.trim()) } catch { return raw.trim() }
-  u.hash = ''
-  u.hostname = u.hostname.toLowerCase()
+  const host = u.hostname.toLowerCase().replace(/^www\./, '')
+  let path = u.pathname.length > 1 && u.pathname.endsWith('/') ? u.pathname.replace(/\/+$/, '') : u.pathname
+  if (path === '/') path = ''
   const kept = [...u.searchParams].filter(([k]) => !isTracking(k))
   kept.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  u.search = ''
-  for (const [k, v] of kept) u.searchParams.append(k, v)
-  if (u.pathname.length > 1 && u.pathname.endsWith('/')) u.pathname = u.pathname.replace(/\/+$/, '')
-  return u.toString()
+  const query = kept.length === 0
+    ? ''
+    : `?${kept.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')}`
+  return `${host}${path}${query}`
 }
 ```
 
@@ -916,7 +954,7 @@ export function listApplied(db: Database.Database): AppliedJob[] {
 }
 ```
 
-- [ ] **Step 7: Protocol.** In `shared/src/messages.ts`, append to the `HostRequestSchema` union (after the `qa.list` entry):
+- [ ] **Step 7: Protocol.** In `shared/src/messages.ts`, append to the `HostRequestSchema` `discriminatedUnion('method', …)` entries (after the `qa.list` entry):
 
 ```ts
   z.object({
@@ -958,38 +996,45 @@ describe('HostRequestSchema — applied.* (A1)', () => {
         return ok(req.requestId, { jobs: listApplied(db) })
 ```
 
-- [ ] **Step 9: Handler tests.** Append to `host/src/handlers.test.ts`, following that file's existing deps/request-builder helpers (adapt names to the file — FIX-AND-REPORT if the helper shape differs; use a DISTINCT requestId per call, the idempotency ledger replays repeats):
+- [ ] **Step 8b: Canned fake entries.** In `extension/src/panel/port.ts`, add to `createFakeHostPort`'s canned map (beside the Task-3 `profile.get` persona entry):
+
+```ts
+        // A1: the canned persona has applied to NOTHING — the revisit badge
+        // (Task 7) reads `applied` off this shape, so the miss must be an
+        // explicit null, never a missing key answering {}.
+        'applied.check': { applied: null },
+        'applied.list': { jobs: [] },
+        'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString() },
+```
+
+- [ ] **Step 9: Handler tests.** Append to `host/src/handlers.test.ts`. That file has NO deps factory — it uses a module-scope `let deps: HandlerDeps` assigned in `beforeEach` (fresh in-memory db per test); the snippets below use `deps` directly. Use a DISTINCT requestId per call — the idempotency ledger replays repeats. (If the file's harness shape differs from this description, adapt and FIX-AND-REPORT.)
 
 ```ts
 describe('applied.* (A1)', () => {
   it('mark → check round-trips through the canonical url', async () => {
-    const d = testDeps()
-    const marked = await handleRequest(d, { requestId: 'am-1', method: 'applied.mark', params: { url: 'https://x.com/j/1?utm_source=a', company: 'Acme', jobTitle: 'Eng' } })
+    const marked = await handleRequest(deps, { requestId: 'am-1', method: 'applied.mark', params: { url: 'https://x.com/j/1?utm_source=a', company: 'Acme', jobTitle: 'Eng' } })
     expect(marked.ok).toBe(true)
-    const checked = await handleRequest(d, { requestId: 'am-2', method: 'applied.check', params: { url: 'https://x.com/j/1?utm_medium=b' } })
-    expect(checked).toMatchObject({ ok: true, result: { applied: { company: 'Acme', jobTitle: 'Eng', canonicalUrl: 'https://x.com/j/1' } } })
+    const checked = await handleRequest(deps, { requestId: 'am-2', method: 'applied.check', params: { url: 'https://x.com/j/1?utm_medium=b' } })
+    expect(checked).toMatchObject({ ok: true, result: { applied: { company: 'Acme', jobTitle: 'Eng', canonicalUrl: 'x.com/j/1' } } })
   })
 
   it('re-marking preserves the ORIGINAL marked_at and updates the rest', async () => {
-    const d = testDeps()
-    const first = await handleRequest(d, { requestId: 'am-3', method: 'applied.mark', params: { url: 'https://x.com/j/2', company: null, jobTitle: null } })
+    const first = await handleRequest(deps, { requestId: 'am-3', method: 'applied.mark', params: { url: 'https://x.com/j/2', company: null, jobTitle: null } })
     const firstAt = (first as { result: { markedAt: string } }).result.markedAt
-    const again = await handleRequest(d, { requestId: 'am-4', method: 'applied.mark', params: { url: 'https://x.com/j/2/?utm_source=x', company: 'Acme', jobTitle: 'Eng II' } })
+    const again = await handleRequest(deps, { requestId: 'am-4', method: 'applied.mark', params: { url: 'https://x.com/j/2/?utm_source=x', company: 'Acme', jobTitle: 'Eng II' } })
     expect((again as { result: { markedAt: string } }).result.markedAt).toBe(firstAt)
     expect(again).toMatchObject({ ok: true, result: { company: 'Acme', jobTitle: 'Eng II' } })
   })
 
   it('check misses on a different job', async () => {
-    const d = testDeps()
-    const r = await handleRequest(d, { requestId: 'am-5', method: 'applied.check', params: { url: 'https://x.com/j/999' } })
+    const r = await handleRequest(deps, { requestId: 'am-5', method: 'applied.check', params: { url: 'https://x.com/j/999' } })
     expect(r).toMatchObject({ ok: true, result: { applied: null } })
   })
 
   it('list returns newest-first', async () => {
-    const d = testDeps()
-    await handleRequest(d, { requestId: 'am-6', method: 'applied.mark', params: { url: 'https://x.com/j/a', company: null, jobTitle: 'A' } })
-    await handleRequest(d, { requestId: 'am-7', method: 'applied.mark', params: { url: 'https://x.com/j/b', company: null, jobTitle: 'B' } })
-    const r = await handleRequest(d, { requestId: 'am-8', method: 'applied.list', params: {} })
+    await handleRequest(deps, { requestId: 'am-6', method: 'applied.mark', params: { url: 'https://x.com/j/a', company: null, jobTitle: 'A' } })
+    await handleRequest(deps, { requestId: 'am-7', method: 'applied.mark', params: { url: 'https://x.com/j/b', company: null, jobTitle: 'B' } })
+    const r = await handleRequest(deps, { requestId: 'am-8', method: 'applied.list', params: {} })
     const jobs = (r as { result: { jobs: { jobTitle: string }[] } }).result.jobs
     expect(jobs.map((j) => j.jobTitle)).toEqual(['B', 'A'])
   })
@@ -1003,8 +1048,8 @@ describe('applied.* (A1)', () => {
 - [ ] **Step 11: Commit**
 
 ```bash
-git add host/src shared/src
-git commit -m "feat(host): applied_jobs table, canonicalUrl, applied.mark/check/list plumbing (A1)"
+git add host/src shared/src extension/src/panel/port.ts
+git commit -m "feat(host): applied_jobs table, canonicalUrl, applied.mark/check/list plumbing + canned fake entries (A1)"
 ```
 
 ---
@@ -1325,11 +1370,18 @@ describe('App — submission detection prompt (A3)', () => {
     render(<App />)
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
     state.done = true
+    // The wizard advanced: the TAB now sits on the confirmation url, so the
+    // start-vs-current assertion below is distinguishable, not vacuous.
+    const tabs = (globalThis as unknown as { chrome: { tabs: { get: ReturnType<typeof vi.fn> } } }).chrome.tabs
+    tabs.get.mockResolvedValue({ id: 7, url: 'https://jobs.acme.com/apply/done', title: 'Engineer at Acme' })
     navigate()
     await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull())
     expect(screen.getByText(/Mark as applied\?/)).toBeTruthy()
     expect(marks.length).toBe(0) // never a silent write
-    fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
+    // data hook, not getByRole: the actions row has its own 'Mark applied'
+    // button (Task 5), and two buttons sharing the accessible name would make
+    // getByRole throw "Found multiple elements".
+    fireEvent.click(document.querySelector('[data-jff-prompt-mark]')!)
     await waitFor(() => expect(marks.length).toBe(1))
     // Wizard flow: the RECORDED url is the START page, not the confirmation step.
     expect(marks[0]).toMatchObject({ url: 'https://jobs.acme.com/apply' })
@@ -1343,7 +1395,7 @@ describe('App — submission detection prompt (A3)', () => {
     state.done = true
     navigate()
     await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull())
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    fireEvent.click(document.querySelector('[data-jff-prompt-dismiss]')!)
     expect(document.querySelector('[data-jff-submit-prompt]')).toBeNull()
     // A manual re-scan of the SAME page load must not resurrect the prompt.
     fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
@@ -1419,8 +1471,10 @@ describe('App — submission detection prompt (A3)', () => {
         <div className={BANNER_BASE} role="status" data-jff-submit-prompt="1">
           Looks like this application was submitted. Mark as applied?
           <span className="ml-2 inline-flex gap-2">
-            <button type="button" className={BTN} onClick={() => { setSubmitPrompt(false); void onMarkApplied() }}>Mark applied</button>
-            <button type="button" className={BTN} onClick={() => { setSubmitPrompt(false); promptDismissedGenRef.current = resetGenRef.current }}>Dismiss</button>
+            {/* data hooks: the actions row already owns a 'Mark applied'
+                accessible name (Task 5); tests target these, not roles. */}
+            <button type="button" className={BTN} data-jff-prompt-mark="1" onClick={() => { setSubmitPrompt(false); void onMarkApplied() }}>Mark applied</button>
+            <button type="button" className={BTN} data-jff-prompt-dismiss="1" onClick={() => { setSubmitPrompt(false); promptDismissedGenRef.current = resetGenRef.current }}>Dismiss</button>
           </span>
         </div>
       )}
@@ -1446,8 +1500,8 @@ git commit -m "feat(applied): submission detection prompt — fields-vanished + 
 - Modify: `extension/src/panel/App.test.tsx`
 
 **Interfaces:**
-- Consumes: `applied.check` (Task 4), `appliedHit` badge state (Task 5).
-- Produces: pre-scan `applied.check` inside `onScan`; a hit renders `Already applied on <date>.` + `Scan anyway` INSTEAD of scanning. Precedence: onboarding gate (Task 3 blocks `onScan` entirely) > applied badge (this check, first thing a scan does) > host gate (`gateOpen`, already ahead of the effect) > scan. A check FAILURE proceeds as not-applied.
+- Consumes: `applied.check` (Task 4), the canned-fake applied entries (Task 4 Step 8b — this task's code relies on `applied: null` misses being explicit), `appliedHit` badge state (Task 5).
+- Produces: pre-scan `applied.check` inside `onScan`; a hit renders `Already applied on <date>.` + `Scan anyway` INSTEAD of scanning. Precedence: onboarding gate (Task 3 blocks `onScan` entirely) > host gate (`gateOpen` — the check IS a host call, so it necessarily runs behind it) > applied badge (this check, first thing a scan does) > scan. A check FAILURE proceeds as not-applied.
 - Consumed by: Task 17 (e2e), Task 19 (manual gate).
 
 **Model:** implementer-sonnet-medium.
@@ -1508,15 +1562,19 @@ describe('App — revisit badge (A4)', () => {
   - In `onScan`, immediately after the Task-5 start-url capture line:
 
 ```ts
-      // A4: the applied badge outranks the host gate and the scan itself — but
-      // never the user's explicit override, and a check FAILURE proceeds as
-      // not-applied (spec, Error handling). Precedence: onboarding gate (the
-      // auto-scan effect never calls us while incomplete) > this badge > scan.
+      // A4: the applied badge outranks the scan itself — but never the user's
+      // explicit override, and a check FAILURE proceeds as not-applied (spec,
+      // Error handling). Precedence: onboarding gate (the auto-scan effect
+      // never calls us while incomplete) > host gate (gateOpen — this check IS
+      // a host call, so it necessarily runs after it) > this badge > scan.
+      // `?? null` is load-bearing: the canned fake answers unknown methods {},
+      // and an `undefined` here must read as a MISS, never as a hit.
       if (!appliedOverrideRef.current) {
         const chk = await port.request<{ applied: { markedAt: string } | null }>('applied.check', { url: tab.url ?? '' })
         if (resetGenRef.current !== gen) return
-        if (chk.ok && chk.result.applied !== null) {
-          setAppliedHit({ markedAt: chk.result.applied.markedAt })
+        const hit = chk.ok ? (chk.result.applied ?? null) : null
+        if (hit !== null) {
+          setAppliedHit({ markedAt: hit.markedAt })
           setScanStatus(null)
           return
         }
@@ -1540,7 +1598,7 @@ describe('App — revisit badge (A4)', () => {
       )}
 ```
 
-- [ ] **Step 4: Run everything** — `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — PASS / clean. (Task 5/6 tests must stay green: their bridges answer `applied.check` via the `result: {}` fallback → `applied` undefined → treated as no-hit. If any now break on the check call, fix the FIXTURE to answer `applied.check` with `{ applied: null }` and report.)
+- [ ] **Step 4: Run everything** — `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — PASS / clean. (Task 5/6 tests must stay green: their bridges answer `applied.check` via the `result: {}` fallback → `applied` is `undefined` → the Step-3 `?? null` guard reads that as a MISS and the scan proceeds. If any still break on the check call, fix the FIXTURE to answer `applied.check` with `{ applied: null }` and report.)
 
 - [ ] **Step 5: Commit**
 
@@ -1559,7 +1617,7 @@ git commit -m "feat(applied): revisit badge checks applied.check before scanning
 
 **Interfaces:**
 - Consumes: `applied.list` (Task 4).
-- Produces: `view: 'session' | 'editor' | 'applications'` replaces `showEditor` (three mutually exclusive views, header-toggled). `ApplicationsView({ load })` — read-only v1: date, company, title, link out.
+- Produces: `view: 'session' | 'editor' | 'applications'` replaces `showEditor` — three mutually exclusive views, toggled from the actions row (`div[data-jff-actions]`, App.tsx:714–721; that is where the existing facts-editor toggle lives, not the `<header>`). `ApplicationsView({ load })` — read-only v1: date, company, title, link out.
 - Consumed by: Task 14 (view is PANEL-GLOBAL state per the partition table), Task 19.
 
 **Model:** implementer-sonnet-medium.
@@ -1655,7 +1713,7 @@ export function ApplicationsView({ load }: { load: () => Promise<AppliedJobRow[]
 
 - [ ] **Step 4: Wire the three-view model in `App.tsx`.**
   - Replace `const [showEditor, setShowEditor] = useState(false)` with `const [view, setView] = useState<'session' | 'editor' | 'applications'>('session')`.
-  - Replace every `setShowEditor(false)` with `setView('session')` and the header toggle with:
+  - Replace every `setShowEditor(false)` with `setView('session')` and the actions-row toggle (inside `div[data-jff-actions]`) with:
 
 ```tsx
         <button type="button" className={BTN} onClick={() => setView((v) => (v === 'editor' ? 'session' : 'editor'))}>
@@ -1674,7 +1732,9 @@ export function ApplicationsView({ load }: { load: () => Promise<AppliedJobRow[]
     if (port === null) return null
     const r = await port.request<{ jobs: AppliedJobRow[] }>('applied.list', {})
     if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
-    return r.result.jobs
+    // `?? []`: a fake/stale host answering {} must render the empty state,
+    // never crash the view on `jobs.map`.
+    return r.result.jobs ?? []
   }
 ```
 
@@ -1722,7 +1782,7 @@ git commit -m "feat(applied): applications list view + three-view header navigat
 
 **Interfaces:**
 - Consumes: the C1 spike's proven recipe (spec §Design C — binding): (1) react-select opens ONLY on the full synthetic sequence `pointerdown → mousedown → pointerup → mouseup → click` (el.click(), lone mousedown, ArrowDown, input-while-closed are all no-ops); `aria-controls` exists only while open, after which `attributableListbox` works as-is. (2) A successful commit CLEARS the input; the committed text lives in the widget's visible value container.
-- Produces: `dispatchOpenGesture(el)` (replaces the bare open click), `visibleCommittedText(input, optionTextNorm)` (structural walk, NEVER react-select class names, listbox-content excluded), and the amended verification: an EMPTY `input.value` post-commit consults the fallback before the verdict.
+- Produces: `dispatchOpenGesture(el)` (replaces the bare open click); `commitScopeLeaves(input)` + `visibleCommittedText(input, optionTextNorm, preTexts)` (structural walk, NEVER react-select class names; listbox content excluded; hardened per plan review: only a VISIBLE node whose text CHANGED INTO the option's across the commit click counts — a pre-click snapshot of the scope's leaf texts feeds the comparison); and the amended verification: an EMPTY `input.value` post-commit consults the fallback before the verdict.
 - Consumed by: Task 10 (e2e fixture), Task 19 (Degree dropdown on the real page).
 
 **Model:** implementer-sonnet-medium.
@@ -1739,13 +1799,17 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
    *  arrived, filters on input, and on commit CLEARS the input while rendering
    *  the committed text in a sibling value container. A permanently-mounted
    *  hidden decoy listbox (the intl-tel-input country list) sits elsewhere. */
-  function mountReactSelect(options: string[], { updateHolder = true } = {}): { input: HTMLInputElement } {
+  function mountReactSelect(
+    options: string[],
+    { updateHolder = true, prefixFilter = false, hiddenHolder = false, staleText = null as string | null } = {},
+  ): { input: HTMLInputElement } {
     document.body.innerHTML = `
       <ul role="listbox" id="decoy" style="display:none">
         ${options.map((o) => `<li role="option">${o}</li>`).join('')}
       </ul>
       <div id="control">
-        <div id="value-holder"></div>
+        ${staleText === null ? '' : `<span id="stale">${staleText}</span>`}
+        <div id="value-holder"${hiddenHolder ? ' style="display:none"' : ''}></div>
         <input id="c" role="combobox" aria-haspopup="true">
       </div>`
     const input = document.getElementById('c') as HTMLInputElement
@@ -1760,7 +1824,11 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
       lb.id = 'menu'
       lb.setAttribute('role', 'listbox')
       const filter = input.value.trim().toLowerCase()
-      for (const t of options.filter((o) => o.toLowerCase().includes(filter))) {
+      // prefixFilter mirrors widgets whose own filtering is startsWith — the
+      // page can then disambiguate what our substring ladder cannot.
+      const match = (o: string): boolean =>
+        prefixFilter ? o.toLowerCase().startsWith(filter) : o.toLowerCase().includes(filter)
+      for (const t of options.filter(match)) {
         const li = document.createElement('li')
         li.setAttribute('role', 'option')
         li.textContent = t
@@ -1797,6 +1865,15 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     expect(input.value).toBe('')
   }, 10_000)
 
+  it('drives the typeahead when the mounted list is ambiguous: page-side prefix filtering disambiguates', async () => {
+    // 'oth' is a substring of BOTH Other and Another, so the open-click poll
+    // fails on ambiguity; typing lets the widget's own (prefix) filter shrink
+    // the list to exactly Other — the B1a leg through the new open gesture.
+    const { input } = mountReactSelect(['Another', 'Other'], { prefixFilter: true })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: true, committed: 'Other' })
+    expect(document.getElementById('value-holder')!.textContent).toBe('Other')
+  }, 10_000)
+
   it('never reads committed text out of a listbox (the decoy stays excluded)', async () => {
     // Sabotaged commit: the input clears but the value container never updates —
     // the only 'Other' text left on the page lives inside listboxes. The fill
@@ -1805,15 +1882,30 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
     expect(input.value).toBe('')
   }, 10_000)
+
+  it('pre-existing text that merely MATCHES the option never verifies a commit', async () => {
+    // A '<span>Other</span>' sat in the walk scope from the start; the commit
+    // clears the input but updates nothing. Text that did not CHANGE INTO the
+    // option is not evidence the widget committed anything.
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false, staleText: 'Other' })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+  }, 10_000)
+
+  it('a HIDDEN value container never verifies a commit', async () => {
+    // The holder receives the committed text but is display:none — invisible
+    // text is not the page-visible commit the verification promises.
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { hiddenHolder: true })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+  }, 10_000)
 })
 ```
 
 (A "non-empty input.value stays authoritative" test is deliberately NOT added: the existing session-7 test `'selects a UNIQUE substring match and reports the committed canonical text'` already pins exactly that path — the commit writes the input back and the verdict reads it. It must stay green through this task; a near-identical duplicate would be pure noise.)
 
-- [ ] **Step 2: Run to see the RED** — `npx vitest run extension/src/content/fill.test.ts -t 'react-select'` — both FAIL (today: the open click alone never opens the fixture → `combobox-no-listbox`).
+- [ ] **Step 2: Run to see the RED** — `npx vitest run extension/src/content/fill.test.ts -t 'react-select'` — all five FAIL today (the widget never opens on the click-only gesture → `combobox-no-listbox`; the stale-text and hidden-holder tests additionally pin rules a naive fallback would get wrong once the gesture lands).
 
 - [ ] **Step 3: Implement in `fill.ts`.**
-  - Add the two helpers directly ABOVE `fillCombobox`:
+  - Add the helpers directly ABOVE `fillCombobox`:
 
 ```ts
 /**
@@ -1839,24 +1931,54 @@ function dispatchOpenGesture(el: HTMLElement): void {
   el.dispatchEvent(new MouseEvent('click', opts))
 }
 
-/**
- * C2: react-select commits by CLEARING its input and rendering the committed
- * text in a sibling value container (.select__single-value on the real page —
- * but the walk is STRUCTURAL, never class-named): the nearest ancestor (≤5
- * levels) containing a leaf element whose normalized text equals the clicked
- * option's. The input itself and anything inside ANY listbox — including the
- * page's permanently-mounted intl-tel-input decoy — are excluded, so a menu
- * remnant or decoy option can never false-verify a commit.
- */
-function visibleCommittedText(input: HTMLInputElement, optionTextNorm: string): string | null {
+/** The candidate leaves the commit fallback may read: every childless element
+ *  within ≤5 ancestor levels of the input, excluding the input itself and
+ *  anything inside ANY listbox (menu remnants and the page's permanently-
+ *  mounted intl-tel-input decoy included). */
+function commitScopeLeaves(input: HTMLInputElement): HTMLElement[] {
+  const out: HTMLElement[] = []
   let scope: Element | null = input.parentElement
   for (let depth = 0; scope !== null && depth < 5; depth++, scope = scope.parentElement) {
     for (const node of Array.from(scope.querySelectorAll<HTMLElement>('*'))) {
       if (node === input || node.closest('[role="listbox"]') !== null) continue
-      if (node.children.length === 0 && norm(node.textContent ?? '') === optionTextNorm) {
-        return (node.textContent ?? '').trim()
-      }
+      if (node.children.length === 0) out.push(node)
     }
+  }
+  return out
+}
+
+/** Computed-style walk, NOT offsetParent/rects: jsdom renders no layout (every
+ *  rect is zero), and display:none / visibility:hidden are exactly what the
+ *  decoy and closed-menu remnants wear in both environments. */
+const isDisplayHidden = (node: HTMLElement): boolean => {
+  for (let el: HTMLElement | null = node; el !== null; el = el.parentElement) {
+    const cs = getComputedStyle(el)
+    if (cs.display === 'none' || cs.visibility === 'hidden') return true
+  }
+  return false
+}
+
+/**
+ * C2: react-select commits by CLEARING its input and rendering the committed
+ * text in a sibling value container (.select__single-value on the real page —
+ * but the walk is STRUCTURAL, never class-named). Hardened two ways (plan
+ * review): the node must be VISIBLE, and its text must have CHANGED INTO the
+ * option's across the commit click — pre-existing page text that merely
+ * matches ('Other', 'Yes', …) is not evidence the widget committed anything.
+ * A node absent from the pre-click snapshot is a fresh value render and counts.
+ */
+function visibleCommittedText(
+  input: HTMLInputElement,
+  optionTextNorm: string,
+  preTexts: WeakMap<HTMLElement, string>,
+): string | null {
+  for (const node of commitScopeLeaves(input)) {
+    if (isDisplayHidden(node)) continue
+    const text = node.textContent ?? ''
+    if (norm(text) !== optionTextNorm) continue
+    const before = preTexts.get(node)
+    if (before !== undefined && norm(before) === optionTextNorm) continue
+    return text.trim()
   }
   return null
 }
@@ -1876,16 +1998,25 @@ function visibleCommittedText(input: HTMLInputElement, optionTextNorm: string): 
   if (el instanceof HTMLElement) dispatchOpenGesture(el)
 ```
 
-  - Replace the verification tail (the block starting `const committed = input !== null ? input.value : (el.textContent ?? '').trim()` through the final `return`) with:
+  - Replace the commit-and-verify tail (the block starting `const optionText = norm(hit.textContent ?? '')` through the final `return`) with:
 
 ```ts
+  const optionText = norm(hit.textContent ?? '')
+  // C2 hardening: snapshot the candidate leaves' texts BEFORE the commit
+  // click, so the fallback can demand a CHANGE into the option text.
+  const preTexts = new WeakMap<HTMLElement, string>()
+  if (input !== null) {
+    for (const node of commitScopeLeaves(input)) preTexts.set(node, node.textContent ?? '')
+  }
+  hit.click()
+  await nextFrame()
   let committed = input !== null ? input.value : (el.textContent ?? '').trim()
   // C2 (Greenhouse): a successful react-select commit leaves input.value EMPTY
   // — the committed text lives in the widget's visible value container. Only
   // an EMPTY input consults the structural fallback; a non-empty input.value
   // stays authoritative, so the Ashby arm's verification is untouched (B1c).
   if (input !== null && committed === '') {
-    committed = visibleCommittedText(input, optionText) ?? ''
+    committed = visibleCommittedText(input, optionText, preTexts) ?? ''
   }
   if (norm(committed) !== optionText) return failClosed('no-matching-option')
   return { ok: true, committed: committed === value ? null : committed }
@@ -1918,7 +2049,7 @@ git commit -m "fix(fill): react-select open gesture + committed-text fallback to
 
 **Model:** integrator-opus-high — browser/timing judgment; the fixture below is binding, the spec-test plumbing may be adapted to the harness (FIX-AND-REPORT any deviation).
 
-**Verify:** `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts` (this file only — the full suite is Task 17's business), then `npm run build` (plain dist back).
+**Verify:** `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts -g 'react-select'` — the SCOPED filter only. After Task 3 the seam-built panel gates on onboarding (no stored resume exists in the extension-origin IndexedDB until Task 17's `seedResume`), so foundation's panel-mount tests (`:164-207`) render OnboardingView and are knowingly red until Task 17 — the full file CANNOT go green here. Then `npm run build` (plain dist back).
 
 - [ ] **Step 1: Create the fixture** — `e2e/fixtures/greenhouse-apply/react-select-form.html`:
 
@@ -1937,7 +2068,10 @@ git commit -m "fix(fill): react-select open gesture + committed-text fallback to
 <!-- Permanently-mounted decoy: the intl-tel-input country listbox (244 options). -->
 <ul role="listbox" id="country-decoy" style="display:none"></ul>
 <script>
-  const OPTIONS = ['Associate', 'Bachelor', 'Doctorate', 'Master', 'Other']
+  // 'Another' + 'Other' + prefix filtering mirror the unit suite's typeahead-leg
+  // case: 'oth' is ambiguous on the mounted list, so the fill must TYPE and let
+  // the widget's own filter disambiguate (plan review N2).
+  const OPTIONS = ['Another', 'Associate', 'Bachelor', 'Doctorate', 'Master', 'Other']
   const decoy = document.getElementById('country-decoy')
   for (let i = 0; i < 244; i++) {
     const li = document.createElement('li')
@@ -1959,7 +2093,7 @@ git commit -m "fix(fill): react-select open gesture + committed-text fallback to
     lb.id = 'degree-menu'
     lb.setAttribute('role', 'listbox')
     const filter = input.value.trim().toLowerCase()
-    for (const t of OPTIONS.filter((o) => o.toLowerCase().includes(filter))) {
+    for (const t of OPTIONS.filter((o) => o.toLowerCase().startsWith(filter))) {
       const li = document.createElement('li')
       li.setAttribute('role', 'option')
       li.textContent = t
@@ -1988,7 +2122,7 @@ git commit -m "fix(fill): react-select open gesture + committed-text fallback to
 </body>
 ```
 
-- [ ] **Step 2: Write the failing spec test** — append to `e2e/foundation.spec.ts`, following the file's existing launch + fixture-server + extension-origin relay pattern:
+- [ ] **Step 2: Write the failing spec test** — append to `e2e/foundation.spec.ts`, following the file's existing launch + fixture-server + extension-origin relay pattern. Parameterize the file's fixture-opening helper as `openFixtureTab(file = 'fixture-form.html')` — thread the parameter through both the `goto` and the `chrome.tabs.query` URL glob — so the five existing callers stay unchanged and this test opens `react-select-form.html` through the same path:
 
 ```ts
 test('the Greenhouse react-select shape fills through the gesture + value-container recipe (C2/C3)', async () => {
@@ -2003,9 +2137,13 @@ test('the Greenhouse react-select shape fills through the gesture + value-contai
 
 (The body is the integrator's to write against the real harness; the four assertions are binding.)
 
-- [ ] **Step 3: Run RED** — the test fails before Task 9's dist is rebuilt with the seam (`JFF_TEST_SEAM=1 npm run build` first); confirm it then PASSES against the current tree. If it passes trivially without the C2 code (it must not — verify by stashing is NOT required, reason from the fixture's gesture gate), report.
+- [ ] **Step 3: Prove the fixture catches the ORIGINAL bug (RED-proof).** Task 9's fix is already committed, so the new spec cannot demonstrate RED against the current tree — without this step it never proves it would have caught the C1 bug. Temporarily restore the pre-Task-9 `fill.ts`:
+  1. `git log --oneline -- extension/src/content/fill.ts` — identify Task 9's commit (message `fix(fill): react-select open gesture…`); call its sha `<task9>`.
+  2. `git show <task9>^:extension/src/content/fill.ts > extension/src/content/fill.ts`
+  3. `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts -g 'react-select'` — expected: **FAIL** (the widget never opens on the old click-only gesture; the fill reports `combobox-no-listbox` — the fixture catches the original bug).
+  4. `git checkout HEAD -- extension/src/content/fill.ts` — `git status` must show `fill.ts` clean again.
 
-- [ ] **Step 4: Run the file** — `npx playwright test e2e/foundation.spec.ts` — all green (re-run isolated if `:128`/`:149` flake).
+- [ ] **Step 4: Run GREEN, scoped** — `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts -g 'react-select'` — expected: **PASS**. Do NOT run the unfiltered file: its panel-mount tests are knowingly red until Task 17 (see Verify above); an unrelated failure there is not this task's signal.
 
 - [ ] **Step 5: Restore the plain dist** — `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` → `0`.
 
@@ -2048,7 +2186,7 @@ git commit -m "test(panel): retire clear-on-activate era tests in one batch befo
 ### Task 12: S1/S5/S6 — the `sessions` module family (pure, App-free)
 
 **Files:**
-- Create: `shared/src/normalize.ts`; Modify: `shared/src/index.ts`, `host/src/resolve/normalize.ts`
+- Modify: `shared/src/norm.ts` (gains `normalizeQuestion` — folded into the EXISTING normalization module, no new file), `host/src/resolve/normalize.ts`
 - Create: `extension/src/sessionKey.ts`, `extension/src/sessionKey.test.ts`
 - Create: `extension/src/panel/site.ts`, `extension/src/panel/site.test.ts`
 - Create: `extension/src/panel/sessions.ts`, `extension/src/panel/sessions.test.ts`
@@ -2098,8 +2236,35 @@ export interface Session {
 }
 ```
 
-  - `newSession(tabId, startUrl): Session`, `capForStorage(s): Session` (every `fields[].options` sliced to `MAX_PERSISTED_OPTIONS`), `parseStoredSession(raw): Session | null` (version-mismatch or structurally corrupt → null, never throws), `answerKey(label) = normalizeQuestion(label)`.
-  - `createSessionStore(area?, debounceMs?)` → `{ load, loadAll, save, flush, remove, prune }`: `save` debounced (`SESSION_SAVE_DEBOUNCE_MS = 500`) latest-wins per tab; `flush` writes every pending row NOW; `remove` cancels the tab's pending write then deletes; `prune(liveTabIds)` drops rows whose tab is gone; a quota/`set` failure evicts the oldest PARKED stored session (by `createdAt`, never the session being written) and retries ONCE, else degrades to in-memory (write dropped silently).
+  - `newSession(tabId: number, startUrl = ''): Session` — the default `''` is the LAZILY-created case (a tab with no scan yet: `site: ''` until the first settled scan captures both); an explicit url is the "already scanned" case. `capForStorage(s): Session` (every `fields[].options` sliced to `MAX_PERSISTED_OPTIONS`), `parseStoredSession(raw): Session | null` (version-mismatch or structurally corrupt → null, never throws), `answerKey(label) = normalizeQuestion(label)`.
+  - `createSessionStore(area?, debounceMs?, onWarn?)` → `SessionStore`:
+
+```ts
+export interface SessionStore {
+  /** Pending-first: a debounced row not yet flushed IS the truth (read-your-writes). */
+  load(tabId: number): Promise<Session | null>
+  loadAll(): Promise<Session[]>
+  /** Debounced latest-wins per tab (`SESSION_SAVE_DEBOUNCE_MS = 500`). */
+  save(session: Session): void
+  /**
+   * THE way concurrent/settling writers touch a session they do not display
+   * (Task 16). Reads pending-first, chains per-tab on an internal
+   * Map<number, Promise<void>> so concurrent mutates for one tab QUEUE (none
+   * lost, no last-writer-wins), writes THROUGH immediately, and supersedes any
+   * pending debounced row for that tab (a stale debounce flush must never
+   * clobber a newer mutate). `fn` returning null writes nothing — the drop arm.
+   */
+  mutate(tabId: number, fn: (s: Session | null) => Session | null): Promise<void>
+  /** Write every pending row NOW (tab switch, pagehide, hidden, session end). */
+  flush(): Promise<void>
+  /** Cancels the tab's pending write, then deletes the stored row. */
+  remove(tabId: number): Promise<void>
+  /** Drop stored sessions whose tab no longer exists. */
+  prune(liveTabIds: ReadonlySet<number>): Promise<void>
+}
+```
+
+    Quota/`set` failure policy (S6): evict the oldest PARKED stored session (by `createdAt`, never the session being written) and retry ONCE; with NO parked candidate, KEEP the row in the in-memory pending map (the next flush retries it) and call `onWarn` once per failure — the write is deferred, never silently discarded.
 
 **Model:** implementer-sonnet-medium.
 
@@ -2107,7 +2272,7 @@ export interface Session {
 
 **Boundaries:** NO App.tsx changes (Task 14 wires). NO chrome globals inside `sessions.ts` except the default parameter (`area = chrome.storage.session`) — every function takes its dependencies, tests pass a fake area.
 
-- [ ] **Step 1: Move `normalizeQuestion` to shared.** Create `shared/src/normalize.ts` with the EXACT function body currently at `host/src/resolve/normalize.ts:1-21` (`MAX_NORMALIZED` + `normalizeQuestion`, comments included). Add `export * from './normalize.js'` to `shared/src/index.ts`. Rewrite `host/src/resolve/normalize.ts` to:
+- [ ] **Step 1: Move `normalizeQuestion` to shared.** Append to `shared/src/norm.ts` the EXACT block currently at `host/src/resolve/normalize.ts:1-21` (`MAX_NORMALIZED` + `normalizeQuestion`, comments included) — `norm.ts` is the existing one-normalization-module and is already `export * from './norm.js'`-ed by `shared/src/index.ts`, so no index change. Rewrite `host/src/resolve/normalize.ts` to:
 
 ```ts
 import { normalizeQuestion } from '@jff/shared'
@@ -2325,13 +2490,57 @@ describe('sessions module (S1/S6)', () => {
     expect(rows[sessionKey(7)]).toBeDefined()        // the write landed on retry
   })
 
-  it('quota failure with NO parked session degrades to in-memory (write dropped, no throw)', async () => {
+  it('quota failure with NO parked candidate warns, keeps the row PENDING, and the next flush retries it', async () => {
     const { rows, area, failNextSet } = fakeArea()
-    const store = createSessionStore(area, 0)
+    const warn = vi.fn()
+    const store = createSessionStore(area, 0, warn)
     failNextSet.on = true
     store.save(newSession(7, 'https://active.com'))
-    await expect(store.flush()).resolves.toBeUndefined()
-    expect(rows[sessionKey(7)]).toBeUndefined()
+    await expect(store.flush()).resolves.toBeUndefined() // never throws
+    expect(rows[sessionKey(7)]).toBeUndefined()          // deferred, not stored yet…
+    expect(warn).toHaveBeenCalledTimes(1)                // …and VISIBLY so
+    await store.flush()                                  // area recovered: retry lands
+    expect(rows[sessionKey(7)]).toBeDefined()
+  })
+
+  it('load during a pending debounced write sees the pending value (read-your-writes)', async () => {
+    const { area } = fakeArea()
+    const store = createSessionStore(area, 500)
+    store.save({ ...newSession(7, 'https://a.com'), company: 'pending-co' })
+    expect((await store.load(7))!.company).toBe('pending-co')
+  })
+
+  it('two concurrent mutates for one tab both land (serialized, never last-writer-wins)', async () => {
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 0)
+    store.save(newSession(7, 'https://a.com'))
+    await store.flush()
+    await Promise.all([
+      store.mutate(7, (s) => (s === null ? null : { ...s, filledRefs: [...s.filledRefs, 'a'] })),
+      store.mutate(7, (s) => (s === null ? null : { ...s, generatedRefs: [...s.generatedRefs, 'b'] })),
+    ])
+    const row = rows[sessionKey(7)] as Session
+    expect(row.filledRefs).toContain('a')
+    expect(row.generatedRefs).toContain('b')
+  })
+
+  it('mutate reads the PENDING row, writes through, and supersedes the stale debounce', async () => {
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 500)
+    store.save({ ...newSession(7, 'https://a.com'), company: 'from-display' })   // debounced, unflushed
+    await store.mutate(7, (s) => (s === null ? null : { ...s, jobText: 'from-settle' }))
+    const row = rows[sessionKey(7)] as Session
+    expect(row.company).toBe('from-display')  // the mutate SAW the pending row
+    expect(row.jobText).toBe('from-settle')   // …and wrote through immediately
+    await vi.advanceTimersByTimeAsync(1000)   // the old debounce must not clobber it
+    expect((rows[sessionKey(7)] as Session).jobText).toBe('from-settle')
+  })
+
+  it('mutate on a missing session with fn returning null writes nothing (the drop arm)', async () => {
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 0)
+    await store.mutate(42, (s) => s)  // s === null → returns null → no write
+    expect(rows[sessionKey(42)]).toBeUndefined()
   })
 
   it('answerKey is normalizeQuestion — accent/hyphen/case insensitive', () => {
@@ -2343,7 +2552,7 @@ describe('sessions module (S1/S6)', () => {
 
 Run — FAIL (no module).
 
-- [ ] **Step 6: Create `extension/src/panel/sessions.ts`** implementing the Interfaces contract above verbatim (types as quoted; `answerKey` delegates to `normalizeQuestion` from `@jff/shared`; store internals — pending `Map<number, Session>`, one shared timer, quota-eviction path — are the implementer's local choices as long as every Step-5 test passes; `newSession` seeds `epoch: Date.now()` and `createdAt: Date.now()`, both for the reason App's old `epochRef` was clock-seeded).
+- [ ] **Step 6: Create `extension/src/panel/sessions.ts`** implementing the Interfaces contract above verbatim (types and the `SessionStore` interface as quoted, `newSession`'s `startUrl` defaulting to `''`; `answerKey` delegates to `normalizeQuestion` from `@jff/shared`; store internals — pending `Map<number, Session>`, one shared debounce timer, the per-tab `Map<number, Promise<void>>` mutate chain, the quota-eviction/deferral path — are the implementer's local choices as long as every Step-5 test passes; `newSession` seeds `epoch: Date.now()` and `createdAt: Date.now()`, both for the reason App's old `epochRef` was clock-seeded).
 
 - [ ] **Step 7: Run everything** — `npm run build -w @jff/shared && npx vitest run extension/src shared host && npm run typecheck && npm run lint` — PASS / clean.
 
@@ -2426,13 +2635,22 @@ describe('createNavSignals (S3)', () => {
     const seen: NavEvent[] = []
     createNavSignals(1, (e) => seen.push(e))
     ;(listenerOf(events.committed) as (d: { tabId: number; frameId: number; url: string }) => void)({ tabId: 7, frameId: 0, url: 'https://a.com' })
-    ;(listenerOf(events.updated) as (id: number, c: { status?: string; url?: string }) => void)(7, { status: 'loading' })
+    ;(listenerOf(events.updated) as (id: number, c: { status?: string; url?: string }) => void)(7, { status: 'loading', url: 'https://a.com/x' })
     expect(seen.length).toBe(1) // deduped
     vi.advanceTimersByTime(NAV_FALLBACK_DEDUPE_MS + 1)
     ;(listenerOf(events.updated) as (id: number, c: { status?: string; url?: string }) => void)(7, { status: 'loading', url: 'https://b.com' })
     expect(seen[1]).toEqual({ type: 'navigated', tabId: 7, frameId: 0, url: 'https://b.com' })
     ;(listenerOf(events.updated) as (id: number, c: { status?: string; url?: string }) => void)(7, { status: 'complete' })
     expect(seen.length).toBe(2) // non-loading updates are noise
+  })
+
+  it('a loading tick WITHOUT a url emits NOTHING — Chrome omits url unless it changed, and an empty url would misread as a cross-site move', () => {
+    const events = installChrome()
+    const seen: NavEvent[] = []
+    createNavSignals(1, (e) => seen.push(e))
+    vi.advanceTimersByTime(NAV_FALLBACK_DEDUPE_MS + 1) // no recent webNav — dedupe is NOT what drops it
+    ;(listenerOf(events.updated) as (id: number, c: { status?: string }) => void)(7, { status: 'loading' })
+    expect(seen.length).toBe(0)
   })
 
   it('activation is filtered to the panel window; removal always forwards', () => {
@@ -2488,9 +2706,13 @@ export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => voi
   const onHistory = (d: { tabId: number; frameId: number; url: string }): void => navigated(d)
   const onUpdated = (id: number, change: chrome.tabs.TabChangeInfo): void => {
     if (change.status !== 'loading') return
+    // Chrome omits `url` unless it CHANGED. A URL-less loading tick carries
+    // nothing webNavigation doesn't already provide — and forwarding '' would
+    // classify as a cross-site move and PARK a live session mid-wizard.
+    if (change.url === undefined) return
     const t = lastWebNav.get(id)
     if (t !== undefined && Date.now() - t < NAV_FALLBACK_DEDUPE_MS) return
-    onEvent({ type: 'navigated', tabId: id, frameId: 0, url: change.url ?? '' })
+    onEvent({ type: 'navigated', tabId: id, frameId: 0, url: change.url })
   }
   const onActivated = (info: chrome.tabs.TabActiveInfo): void => {
     if (info.windowId !== windowId) return
@@ -2544,16 +2766,16 @@ git commit -m "feat(sessions): webNavigation-first navigation signals with windo
 
 #### Work (design intent + binding constraints)
 
-1. **The partition table is EXHAUSTIVE and BINDING** (spec §S Design). Per-session persisted: the `Session` shape from Task 12 (note `companyGuessedRef` is now `session.companyGuessed` — per-session BY NAME in the spec: tab B's guess must never overwrite tab A's user-typed company). Per-session in-flight, NOT persisted: scanning-latch participation, `generatingRefs`, `generateAll`, `acting`, `saving`, `picking`, `saveMsg`, pending-rescan. Panel-global: `check`, `hostError`, `gateOpen`, active `tabId`, `windowId`, `facts`/`factsLoaded`/`factsOk`, `resumeName`, `cvText`, `resumeOk`, `completeness`, `view`. Task 5's `startUrl`/`appliedHit` states dissolve INTO the session (`session.startUrl`, `session.appliedHit`); Task 6's refs (`fieldsCountRef`, `lastScanHostRef`, `navRescanRef`, `promptDismissedGenRef`) become per-session-scoped equivalents (in-flight).
-2. **Lifecycle table (binding):** panel mount → rehydrate all + `prune` against `chrome.tabs.query({})`, display the active tab's session (or empty state), then the existing gate chain (onboarding → applied badge → host gate) decides whether the auto-scan fires. Tab switch → existing session: flush the outgoing session, display the incoming one, NO scan. Tab switch → no session: empty state, NO scan, session created lazily on Scan click or navigation. Same-site nav (top frame OR elected frame; other subframes ignored; url from the EVENT): session survives, re-scan fires. Cross-site nav: session PARKED (`parked: true`, flushed); returning to `session.site` unparks, restores, re-scans. Tab close / Mark applied / explicit Discard: session DELETED (`store.remove`). Precedence: onboarding gate > applied badge > host gate > scan.
+1. **The partition table is EXHAUSTIVE and BINDING** (spec §S Design). Per-session persisted: the `Session` shape from Task 12 (note `companyGuessedRef` is now `session.companyGuessed` — per-session BY NAME in the spec: tab B's guess must never overwrite tab A's user-typed company). Per-session in-flight, NOT persisted: scanning-latch participation, `generatingRefs`, `generateAll`, `acting`, `saving`, `picking`, `saveMsg`, pending-rescan. Panel-global: `check`, `hostError`, `gateOpen`, active `tabId`, `windowId`, `facts`/`factsLoaded`/`factsOk`, `resumeName`, `cvText`, `resumeOk`, `completeness`, `view`, and `markedMsg: { markedAt: string } | null` — the TRANSIENT post-mark confirmation (see the Mark-applied rule below), cleared on tab switch and navigation. Task 5's `startUrl`/`appliedHit` states dissolve INTO the session (`session.startUrl`, `session.appliedHit` — the latter serves the PRE-delete revisit badge, A4); Task 6's refs (`fieldsCountRef`, `lastScanHostRef`, `navRescanRef`, `promptDismissedGenRef`) become per-session-scoped equivalents (in-flight). **Mark-applied rule (plan review B8):** Mark applied DELETES the session, so nothing session-borne can render afterwards — the post-mark UI is the empty state plus the panel-global `markedMsg`, rendered with the SAME `data-jff-applied="1"` badge markup and the copy `Marked as applied on {date}.` (no "Scan anyway" button — there is nothing to override). The DURABLE badge on a later revisit comes from `applied.check` as designed.
+2. **Lifecycle table (binding):** panel mount → rehydrate all + `prune` against `chrome.tabs.query({})`, display the active tab's session (or empty state), then the existing gate chain (onboarding → host gate → applied badge) decides whether the auto-scan fires. Tab switch → existing session: flush the outgoing session, display the incoming one, NO scan. Tab switch → no session: empty state, NO scan, session created lazily on Scan click or navigation. Same-site nav (top frame OR elected frame; other subframes ignored; url from the EVENT): session survives, re-scan fires. Cross-site nav: session PARKED (`parked: true`, flushed); returning to `session.site` unparks, restores, re-scans. Tab close / Mark applied / explicit Discard: session DELETED (`store.remove`). Precedence: onboarding gate > host gate > applied badge > scan.
 3. **Window binding:** `chrome.windows.getCurrent()` at mount supplies `windowId` to `createNavSignals`. **In `?tabId=` override mode (the e2e/test harness), `activated` events are IGNORED entirely** — the harness pins the panel to one tab; navigation/removal events still apply to the bound tab. (Plan decision; keeps the e2e panel-as-page pattern sound.)
-4. **Navigation classification:** for a `navigated` event on tab T with frame F and url U, the event is a wizard step iff `F === 0` or `F === session.election?.frameId`. Same-site iff `sameSite(U, session.startUrl)` — with the empty-start exception: a session that never scanned (`site === ''`) treats the nav as same-site and lets the next scan capture `startUrl`. Task 6's same-hostname approximation is REPLACED by this (update its code comment).
+4. **Navigation classification:** for a `navigated` event on tab T with frame F and url U, the event is a wizard step iff `F === 0` or `F === session.election?.frameId`. Same-site iff `sameSite(U, session.startUrl)` — with the empty-start exception: a session that never scanned (`site === ''`) treats the nav as same-site and lets the next scan capture `startUrl`. Belt-and-braces over Task 13's url guard: **a `navigated` event whose url is empty is NEVER a site change** — it must not park, unpark, or rewrite `site` (treat as same-site). Task 6's same-hostname approximation is REPLACED by this (update its code comment).
 5. **Parked display:** when the displayed session is parked, render (in place of the rows):
    `Session parked — return to {session.site} to continue. Scanning is paused on this page.` (`data-jff-parked="1"`), with the Scan button DISABLED and a `Discard session` button (`data-jff-discard="1"`) that deletes the session and shows the empty state. The Discard button also renders in the normal session view (small, beside Save answers) — spec S5 names explicit discard as a deletion path.
 6. **Empty state copy:** `No application session on this tab yet. Click Scan to start.` (`data-jff-empty-session="1"`).
-7. **Durability:** every displayed-session mutation goes through the store's debounced `save`; `flush()` on: tab switch (before swap), `pagehide`, `visibilitychange` → hidden (add both listeners in a mount effect), Mark applied, Discard, tab close. Un-debounced (direct `save`+`flush`) on session-ending events.
+7. **Durability:** every displayed-session mutation goes through the store's debounced `save`; `flush()` on: tab switch (before swap), `pagehide`, `visibilitychange` → hidden (add both listeners in a mount effect), Mark applied, Discard, tab close. Un-debounced (direct `save`+`flush`) on session-ending events. The store is created with an `onWarn` that surfaces the quota-deferral warning through the existing banner path — copy: `Session storage is full — recent changes may not survive closing the panel.` (Task 12/S12: a deferred write is retried, but the user must SEE the degradation.)
 8. **Mid-flight invalidation survives:** the resetGen/generation-guard INVARIANTS from the old code still hold — a scan/generate/fill settling after its page died must not write into the wrong display. In this task the guard may remain display-scoped (settles for non-displayed sessions may be DROPPED); Task 16 upgrades drops to routed writes. The kept invariant tests (`'drops the results of a scan whose page navigated away mid-flight'`, the dead-draft/dead-fill/dead-company tests, `'replays a navigation trigger the scan guard swallowed'`, `'keeps a company the user typed across a navigation'`, `'never lets a dead scan company guess name the live page employer'`) MUST pass — adapt their harnesses to the new chrome fakes (FIX-AND-REPORT each adaptation), never their assertions.
-9. **Harness upgrade (global `beforeEach` in App.test.tsx):** add `chrome.windows = { getCurrent: vi.fn(async () => ({ id: 1 })) }`, `chrome.webNavigation = { onCommitted: listenerFake, onHistoryStateUpdated: listenerFake }`, and make `chrome.storage.session` STATEFUL (get/set/remove over a shared `rows` object, reset per test). Because the harness uses the `?tabId=7` override, the acceptance tests below drive tab switching through a helper that RE-RENDERS with a different override... **No** — override mode ignores activation (constraint 3). Instead the acceptance tests mount WITHOUT the override: change the harness to also support `window.history.replaceState(null, '', '/?jffFakeHost=1')` (no tabId) + `chrome.tabs.query({active:true,currentWindow:true})` answering tab 7, so `activated` events work. The existing tests keep the override; the session suite uses the query path.
+9. **Harness upgrade (global `beforeEach` in App.test.tsx):** the unit harness already binds WITHOUT any `?tabId=` override — `?jffFakeHost=1` plus the mocked `chrome.tabs.query` answering tab 7 (App.test.tsx:47-52) — so `activated` events work in unit tests as-is; the `?tabId=` override is e2e-only (constraint 3 applies there). Add to the existing chrome fake: `chrome.windows = { getCurrent: vi.fn(async () => ({ id: 1 })) }`; `chrome.webNavigation = { onCommitted: {addListener: vi.fn(), removeListener: vi.fn()}, onHistoryStateUpdated: {addListener: vi.fn(), removeListener: vi.fn()} }`; and make `chrome.storage.session` STATEFUL — get/set/remove over a per-test `rows` object (the current fake at App.test.tsx:78 answers `get` with `{}` and has NO `set` at all).
 10. **The two `SNAPSHOT_KEY_RE` call sites** (`onScan` stale-key sweep, `onSaveAnswers` stored merge) keep filtering by `SNAPSHOT_KEY_RE` — session rows now share the storage area, and the disjointness invariant (Task 12's test) is what keeps them correct. Do not "generalize" them.
 
 #### Acceptance suite (plan-authored, RED until the integration lands — append to App.test.tsx; plumbing may be adapted FIX-AND-REPORT, assertions may not)
@@ -2561,15 +2783,16 @@ git commit -m "feat(sessions): webNavigation-first navigation signals with windo
 ```tsx
 describe('App — per-tab sessions (S2/S5/S6)', () => {
   // Helpers the integrator implements against the upgraded harness:
-  //   mountWithoutOverride()  — render <App/> on the tabs.query path (active tab 7, window 1)
+  //   mountPanel()            — render <App/>; the harness already binds via the
+  //                             mocked chrome.tabs.query (active tab 7, window 1)
   //   activate(tabId)         — fire the captured tabs.onActivated listener with { tabId, windowId: 1 }
   //   commit(tabId, url)      — fire the captured webNavigation.onCommitted listener with { tabId, frameId: 0, url }
   //   storageRows()           — the stateful chrome.storage.session backing object
 
   it('a tab switch saves the session and displays the activated tab: empty state, NO scan', async () => {
-    // scan settles on tab 7 (one field, edit typed into it), then activate(8):
-    //  - panel shows the empty-state copy and data-jff-session="none"… wait — 8 has no session:
-    //    expect data-jff-session === 'none', the empty-state text, zero rows
+    // scan settles on tab 7 (one field, edit typed into it), then activate(8) —
+    // tab 8 has no session:
+    //  - expect data-jff-session === 'none', the empty-state copy, zero rows
     //  - NO JFF_SCAN was sent for tab 8 (scan count unchanged)
     //  - storageRows() contains jff:session:7 with the edit persisted
   })
@@ -2603,7 +2826,12 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
   })
 
   it('Mark applied deletes the session instead of hand-clearing state', async () => {
-    // scan settles; click Mark applied → applied badge shows, storage row for 7 is gone
+    // scan settles; click Mark applied →
+    //  - the storage row for 7 is GONE and the empty state renders
+    //  - the TRANSIENT confirmation shows: [data-jff-applied] with
+    //    'Marked as applied on <date>.' (panel-global markedMsg — the session
+    //    it would have ridden on no longer exists; B8)
+    //  - activate(8) then back: the confirmation is gone (cleared on switch)
   })
 
   it('Discard deletes the session', async () => {
@@ -2648,7 +2876,7 @@ git commit -m "feat(sessions): per-tab sessions replace tab-scope clearing — s
 #### Work (design intent + binding constraints)
 
 1. **Writes into the map** (all scoped to the owning session): `onEdit` → `{ value, provenance: 'user', fieldKey: resolution.key ?? null }`; a settled generate draft → `{ value: draft, provenance: 'generated', fieldKey }`; a successful Accept/Fill → provenance `'user'` with the value that went to the page (committed text wins). Fields with an empty/null label NEVER enter the map (no key, no carry — by design; `save.ts` has the same rule).
-2. **Projection** runs after EVERY resolve that lands in a session which already carried answers: for each new field with label L and resolution R — primary hit `answers[answerKey(L)]`; secondary hit (only when primary missed and `R.key !== null`): the SINGLE map entry whose `fieldKey === R.key` (two or more candidates = no hit — never guess). A hit seeds `edits[newRef] = value`; provenance `'generated'` additionally re-enters `generatedRefs` (the draft badge survives the wizard step). NO hit → NOTHING is attached (the spec's acceptance test).
+2. **Projection** runs after EVERY resolve that lands in a session which already carried answers: for each new field with label L and resolution R — primary hit `answers[answerKey(L)]`; secondary hit (only when primary missed and `R.key !== null`): the SINGLE map entry whose `fieldKey === R.key` (two or more candidates = no hit — never guess). A hit seeds `edits[newRef] = value`; provenance `'generated'` additionally re-enters `generatedRefs` (the draft badge survives the wizard step). NO hit → NOTHING is attached (the spec's acceptance test). **Collision rule:** `committedEdits` — the batch fill's page-canonical seeds (B1c) — is authoritative for any ref the batch fill touched; label-projection seeds ONLY refs absent from `committedEdits`. The row must keep speaking the page's language.
 3. **The epoch invariant holds:** refs are meaningless across re-scans (`fid` restarts at 0 — `enumerate.ts:153`); nothing ref-keyed may survive one. `mergeStoredSnapshots`' epoch rejection and `buildSaveItems`' rules are untouched.
 4. Same-site navigation within a session KEEPS `company`/`companyGuessed`/`jobText` (they ride the session); cross-site parking already handles the employer boundary (Task 14). The S8-deleted "clears a GUESSED company on navigation" behavior is intentionally inverted — the replacement assertion lives in this task's suite.
 
@@ -2675,6 +2903,8 @@ describe('App — label-keyed answer carry (S4)', () => {
     //   the draft text re-appears on the label-matched row AND its generated badge renders
     //   filledRefs is empty (no 'on the page' badge anywhere), the save preview
     //   reflects an empty snapshot
+    //   a row scan 2's BATCH FILL committed keeps its committedEdits value —
+    //   the label-projection never overwrites it (S6 collision rule)
   })
 
   it('the fieldKey fallback rescues a relabelled field only when it is UNAMBIGUOUS', async () => {
@@ -2723,8 +2953,8 @@ git commit -m "feat(sessions): label-keyed answer carry re-projects drafts acros
 
 1. **Scan latch stays GLOBAL single-flight** (`scanningRef` semantics): tab switching must never multiply paid `claude -p` resolves. A due re-scan for a session that cannot run now (latch busy, or its tab is backgrounded) queues in a per-session pending-rescan; when the latch frees, pending re-scans drain FIFO. A pending re-scan whose session died is dropped, not run.
 2. **Epochs are per-session:** `epochRef` dies; `runScan`'s `nextEpoch` bumps THE OWNING SESSION's `epoch`. Generation counters (the resetGen concept) are per-session too — a session swap does NOT invalidate the outgoing session's in-flight work; only that session's OWN navigation/death does.
-3. **Routed settling writes:** every async settle (scan outcome, generate draft, fill confirmation, snapshotPush, `onSaveAnswers`' merge) carries its target `(tabId, epoch/generation)` from dispatch time. On settle: target is the DISPLAYED session and still-live generation → setState as today; target is a BACKGROUND session → `store.load(tabId)` → epoch/generation matches → merge the write into the stored row (`save` + `flush`); session missing or generation dead → drop silently. A settle must NEVER write into the visible session when its target was another tab.
-4. **`snapshotPush` routing:** the runtime-message listener compares `m.tabId` against sessions, not against the active tab: active-session push → epoch-check against THAT session's epoch → merge to state; background push → epoch-check against the STORED session's epoch → merge to storage; no session / stale epoch → drop. The service worker's storage fallback (`jff:snap:*`) is UNTOUCHED.
+3. **Routed settling writes:** every async settle (scan outcome, generate draft, fill confirmation, snapshotPush, `onSaveAnswers`' merge) carries its target `(tabId, epoch/generation)` from dispatch time. On settle: target is the DISPLAYED session and still-live generation → setState as today; target is a BACKGROUND session → the write goes through `store.mutate(tabId, fn)` — NEVER load+save (B6: `mutate` is read-your-writes over the pending debounce and serializes per-tab, so a settle inside the debounce window cannot read a stale storage row and clobber the newer pending one, and two concurrent settles for one tab queue instead of last-writer-winning). Inside `fn`: session null or epoch/generation mismatch → return null (the drop arm); else return the merged session. A settle must NEVER write into the visible session when its target was another tab.
+4. **`snapshotPush` routing:** the runtime-message listener compares `m.tabId` against sessions, not against the active tab: active-session push → epoch-check against THAT session's epoch → merge to state; background push → `store.mutate(m.tabId, fn)` with the epoch-check against the row `fn` receives (stored-or-pending) → merge, or null-drop on mismatch/missing. The service worker's storage fallback (`jff:snap:*`) is UNTOUCHED.
 5. **`onSaveAnswers`** merges stored snapshots with the SESSION's `tabId` + `epoch` (not panel-globals).
 6. **Background same-site nav:** marks the session's pending-rescan (per constraint 1). Its eventual scan targets the background tab via the existing relay (`tabId` parameter), and its outcome routes per constraint 3 — the visible panel never flickers.
 
@@ -2830,7 +3060,7 @@ git commit -m "test(e2e): onboarding/session era batch — seeding helper, wizar
 - [ ] **Step 1:** `npx vitest run` — all green (record count; expect ≳ 618 + this plan's additions).
 - [ ] **Step 2:** `npm run verify` on an IDLE machine (`pkill -f legacyScreenSaver` first). Foundation flake caveat: isolated re-run before judging `:128`/`:149`.
 - [ ] **Step 3:** `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` → `0` (plain dist restored — the user's Chrome loads this directory).
-- [ ] **Step 4 (A6): seed the session-7 job as applied** — against the REAL host DB (this machine's `~/.job-form-filler`, honoring a custom `dbPath` in config):
+- [ ] **Step 4 (A6): seed the session-7 job as applied** — against the REAL host DB (this machine's `~/.job-form-filler`, honoring a custom `dbPath` in config). **First quit Chrome (or at least close the side panel)** so the native host child releases the WAL-mode DB — this script is a second writer on the user's live database. Note this run is also the live DB's `applied_jobs` MIGRATION: `openDb` runs `migrate()` (`CREATE TABLE IF NOT EXISTS`), creating the table on the real DB for the first time.
 
 ```bash
 npm run build -w @jff/shared && npm run build -w @jff/host
@@ -2844,6 +3074,7 @@ const row = markApplied(db, {
   jobTitle: null,
 })
 console.log('seeded:', row.canonicalUrl, row.markedAt)
+db.close()
 "
 ```
 
@@ -2867,6 +3098,7 @@ Checklist (spec's final TODO, all six live):
 - [ ] **Onboarding, fresh profile:** with a temporarily-empty profile (back up + clear `~/.job-form-filler/db.sqlite` profile rows, clear the stored resume), the panel shows the onboarding view and NO scan fires; complete it (real CV upload → auto-extract prefill → Finish) → scanning unlocks. Restore/keep the real DB state afterwards — record what was done.
 - [ ] **Scan** the Greenhouse application page: fields enumerate, statuses sane.
 - [ ] **Fill incl. the Degree dropdown:** `oth` (or the profile's degree value) commits `Other` on the REAL react-select — the C1 bug is dead on the page it was filmed on.
+- [ ] **Ashby regression, live:** on the TRM/Ashby posting (now marked applied — enter via "Scan anyway"), one session-7-style combobox fill (e.g. `bra` → Brazil) still commits under the NEW pointer-sequence open gesture. "Click-open widgets see a strict subset" is thereby proven on the page it matters on, not only in fixtures — the claim is untested live for mousedown-toggling widgets until this box is ticked.
 - [ ] **Tab-switch round-trip:** mid-application, switch to another tab and back — the work (drafts, edits, company) is intact; a second window's tab switches don't disturb it.
 - [ ] **Mark applied** → the session ends and the applications list shows the entry (plus the seeded TRM row from A6).
 - [ ] **Revisit badge:** re-open the posting URL → `Already applied on <date>` renders instead of a scan; `Scan anyway` works.
@@ -2881,14 +3113,15 @@ git commit -m "docs: manual gate on the real Greenhouse page — session/applied
 
 ## Post-execution reviews (NOT plan tasks — standing rules)
 
-- **Dual plan review BEFORE Task 1:** fresh-context Opus 5 pass over this plan's mandated code (runtime/boot assumptions, forward-compat traps, dead flags) + one codex-review cross-vendor pass. Findings fix the PLAN before execution.
+- **Dual plan review BEFORE Task 1:** fresh-context Opus 5 pass over this plan's mandated code (runtime/boot assumptions, forward-compat traps, dead flags) + one codex-review cross-vendor pass. Findings fix the PLAN before execution. **Status: DONE (2026-07-29) — 8 blockers + 14 should-fixes + 9 notes folded into this revision.**
+- **Scoped re-review BEFORE execution:** after the fix wave above, a fresh-context Opus xhigh pass re-reviews Tasks 12/14/15/16 specifically — the `mutate()` concurrency contract is a NEW data-integrity boundary introduced by the fix wave itself and has not yet been reviewed.
 - **Consolidated branch review after Task 18, at effort xhigh** (spec §Execution, binding): the S slices rewrite the panel's core state machine — concurrency + data integrity over 850+ lines. The reviewer pays specific attention to the three silent-wrong-data surfaces: S4 merge keying (label-keyed, never ref-keyed), S7 single-flight + push routing, per-session company provenance. Code review is ALWAYS Opus in a fresh context.
 
 ## Plan-time decisions the reviews should scrutinize
 
 Decisions this plan made where the spec was silent or approximate (flagged for the dual plan review):
 
-1. **`canonicalUrl` keeps unknown params** (sorted) and drops only the named tracking set — the spec's identity list becomes documentation, not an allowlist. Rationale: a kept unknown param means at worst a missed badge; over-dropping merges distinct jobs.
+1. **`canonicalUrl` keeps unknown params** (sorted) and drops only the named tracking set — the spec's identity list becomes documentation, not an allowlist. Rationale: a kept unknown param means at worst a missed badge; over-dropping merges distinct jobs. Review-adjudicated addition: the canonical form is SCHEME-LESS and strips a leading `www.` (`host/path?params`) — http/https and www-vs-bare are transport/vanity, not job identity.
 2. **A3 page text** travels over a NEW `JFF_PAGETEXT` content message (body `innerText`, 4000-char cap) — the spec named the patterns, not the transport.
 3. **A3 pre-sessions trigger** approximates same-site as same-hostname until Task 14 upgrades it to registrable-domain classification.
 4. **A2 pre-sessions `startUrl`** is a panel state surviving only `navigated` resets; Task 14 dissolves it into `Session.startUrl`.
@@ -2899,8 +3132,10 @@ Decisions this plan made where the spec was silent or approximate (flagged for t
 9. **S4 fieldKey fallback** projects only on a UNIQUE fieldKey match (ambiguity = no projection).
 10. **Parked sessions disable Scan** on the parked tab (Discard is the escape hatch) — the tabId-keyed store cannot hold a parked and a live session for one tab.
 11. **`?tabId=` override mode ignores `activated` events** — keeps the e2e panel-as-page pattern sound; in-window swap coverage lives in the unit acceptance suite.
-12. **S6 quota eviction with no parked candidate degrades to in-memory** (write dropped silently) — never evicts the active session, never throws.
+12. **S6 quota eviction with no parked candidate degrades to in-memory WITH the pending row retained** (the next flush retries it) **and a visible warning** via the store's `onWarn` → host-banner path — never evicts the active session, never throws, never silently discards (review-adjudicated; the original "drop silently" was a blocker-adjacent should-fix).
 13. **`data-jff-resets` dies with `resetCount`;** `data-jff-session` is the session-aware debug hook; `data-jff-scans` survives (the replay counter still exists).
+14. **Post-mark confirmation is a PANEL-GLOBAL transient (`markedMsg`)** rendered as the same `data-jff-applied` badge markup — Mark applied deletes the session, so nothing session-borne can carry the badge; the durable badge on revisit comes from `applied.check` (review B8 adjudication).
+15. **`SessionStore.mutate` is the ONLY write path for settling work targeting a non-displayed session** — read-your-writes over the pending debounce, per-tab serialization, write-through, null-drop arm (review B6). This contract is the subject of the pre-execution scoped Opus xhigh re-review.
 
 ## Manual handshake log
 
