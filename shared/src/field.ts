@@ -37,6 +37,10 @@ export const EnumFieldSchema = FieldHandleSchema.extend({
    *  whitespace-normalized textContent, capped at 500 chars in the enumerator.
    *  Optional: a stale content script simply omits it. */
   description: z.string().optional(),
+  /** A8: the file input's raw `accept` attribute, captured so the panel's
+   *  resume scorer can read it (+1 for pdf/doc). File kinds only; optional so
+   *  a stale content script simply omits it. */
+  accept: z.string().optional(),
 })
 export type EnumField = z.infer<typeof EnumFieldSchema>
 

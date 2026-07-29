@@ -140,6 +140,14 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
     mimeType: z.string(),
     dataBase64: z.string(),
   }),
+  z.object({
+    // A6: open the listed comboboxes, read their mounted options, close and
+    // restore. ELECTED-frame-only is the PANEL's decision (it addresses the
+    // frame directly); the content script enforces only the epoch gate.
+    type: z.literal('JFF_HARVEST'),
+    epoch: z.number().int().nonnegative(),
+    fids: z.array(z.number().int().nonnegative()),
+  }),
 ])
 export type ContentMessage = z.infer<typeof ContentMessageSchema>
 

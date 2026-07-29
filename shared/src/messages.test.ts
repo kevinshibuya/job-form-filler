@@ -101,3 +101,35 @@ describe('ContentMessageSchema', () => {
     expect(msg.type).toBe('JFF_FILL')
   })
 })
+
+describe('ContentMessageSchema — JFF_HARVEST (A6)', () => {
+  it('accepts a harvest request', () => {
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3, fids: [0, 4, 9] }).success).toBe(true)
+  })
+
+  it('rejects a harvest request without fids or with a negative epoch', () => {
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3 }).success).toBe(false)
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: -1, fids: [] }).success).toBe(false)
+  })
+})
+
+describe('EnumFieldSchema — accept attribute (A8)', () => {
+  it('accepts a file field carrying accept, and one without (stale content script)', () => {
+    const base = {
+      frameId: 0, fid: 1, epoch: 2, label: 'Resume', name: 'resume', idAttr: null,
+      kind: 'file', options: [], required: true, visible: true,
+      currentValue: null, demographic: false,
+    }
+    expect(EnumFieldSchema.safeParse({ ...base, accept: '.pdf,.doc,.docx' }).success).toBe(true)
+    expect(EnumFieldSchema.safeParse(base).success).toBe(true)
+  })
+
+  it('round-trips accept instead of stripping it', () => {
+    const parsed = EnumFieldSchema.parse({
+      frameId: 0, fid: 1, epoch: 2, label: null, name: null, idAttr: null,
+      kind: 'file', options: [], required: false, visible: false,
+      currentValue: null, demographic: false, accept: 'application/pdf',
+    })
+    expect(parsed.accept).toBe('application/pdf')
+  })
+})
