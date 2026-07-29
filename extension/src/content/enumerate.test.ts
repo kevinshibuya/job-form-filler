@@ -390,3 +390,20 @@ describe('enumerateFields — select placeholder (A5)', () => {
     expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!.currentValue).toBe('Brazil')
   })
 })
+
+describe('enumerateFields — file accept capture (A8)', () => {
+  it('captures the accept attribute on file inputs', () => {
+    document.body.innerHTML = '<label for="cv">Resume</label><input type="file" id="cv" accept=".pdf,.doc,.docx">'
+    const f = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields[0]!
+    expect(f.accept).toBe('.pdf,.doc,.docx')
+  })
+
+  it('leaves accept undefined for non-file kinds and accept-less file inputs', () => {
+    document.body.innerHTML = `
+      <label for="x">Name</label><input id="x" type="text" accept=".pdf">
+      <label for="y">Portfolio</label><input type="file" id="y">`
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    expect(fields[0]!.accept).toBeUndefined()
+    expect(fields[1]!.accept).toBeUndefined()
+  })
+})
