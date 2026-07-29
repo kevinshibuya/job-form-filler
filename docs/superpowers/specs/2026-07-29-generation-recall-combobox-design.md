@@ -10,37 +10,37 @@ considered.
 
 Implementation status. Tick as each lands with its tests.
 
-- [ ] B1a `fillCombobox` always drives the typeahead: focus + `setNativeValue` after the
+- [x] B1a `fillCombobox` always drives the typeahead: focus + `setNativeValue` after the
       open click even when no listbox mounted; post-type wait ≥ 2000ms (async option fetch)
-- [ ] B1b matching ladder: exact normalized match, else UNIQUE normalized-substring match;
+- [x] B1b matching ladder: exact normalized match, else UNIQUE normalized-substring match;
       zero or ambiguous → fail
-- [ ] B1c verification: committed control text must normalized-equal the CLICKED option's
+- [x] B1c verification: committed control text must normalized-equal the CLICKED option's
       text; `FillReport.filled` entries become `{handle, committed}` and the panel
       canonicalizes the row value from `committed`
-- [ ] B1d new reason `combobox-no-listbox` (never opened/attributed) split from
+- [x] B1d new reason `combobox-no-listbox` (never opened/attributed) split from
       `no-matching-option` (Plan-3 Decision 6 debt), both with `REASON_HINT` copy
-- [ ] B2a CV text extraction at resume upload (pdfjs-dist legacy in the panel), stored
+- [x] B2a CV text extraction at resume upload (pdfjs-dist legacy in the panel), stored
       beside the blob in IndexedDB; lazy re-extract for an already-stored resume
-- [ ] B2b `generate` request carries `cvText`; prompt gains trusted CV block + projects
+- [x] B2b `generate` request carries `cvText`; prompt gains trusted CV block + projects
       block; rules split factual (facts/CV only, refuse if absent) vs subjective
       (compose from CV × job post, never refuse)
-- [ ] B2c host `projectsPaths` config: local project files read + capped into the prompt
-- [ ] B2d codex reviewer pass (`codex` CLI, gpt-5.6-sol) refines the draft; graceful
+- [x] B2c host `projectsPaths` config: local project files read + capped into the prompt
+- [x] B2d codex reviewer pass (`codex` CLI, gpt-5.6-sol) refines the draft; graceful
       fallback to the unreviewed draft on any codex failure
-- [ ] B3 per-field generating state (`Set<string>`), gen-epoch guard on `onGenerate`
-- [ ] B4 "Generate all remaining (N)" sequential loop with per-row spinners + progress
+- [x] B3 per-field generating state (`Set<string>`), gen-epoch guard on `onGenerate`
+- [x] B4 "Generate all remaining (N)" sequential loop with per-row spinners + progress
       label, aborts on re-scan or terminal host error
-- [ ] B5a waterfall tier-1 (`already-on-page`) also attaches the recognized `key`
-- [ ] B5b `buildSaveItems` lets page-sourced rows with a factual key through (profile /
+- [x] B5a waterfall tier-1 (`already-on-page`) also attaches the recognized `key`
+- [x] B5b `buildSaveItems` lets page-sourced rows with a factual key through (profile /
       answer_bank learning); qa_memory still never sees page-sourced text
-- [ ] B5c recognized-key / llm-key rows with NO stored value fall through to the exact
+- [x] B5c recognized-key / llm-key rows with NO stored value fall through to the exact
       qa_memory match before landing on needs_input
-- [ ] B5d `FieldRow` choice highlight + committed values compare NORMALIZED, not `===`
-- [ ] B5e `fillChoice` step 0: page already verified at the requested state → `{ok:true}`
+- [x] B5d `FieldRow` choice highlight + committed values compare NORMALIZED, not `===`
+- [x] B5e `fillChoice` step 0: page already verified at the requested state → `{ok:true}`
       (kills the re-scan demotion of correct answers — the handoff OPEN FINDING)
-- [ ] B6 ProfileEditor "Generate from CV": host `facts.extract` maps CV text onto the 18
+- [x] B6 ProfileEditor "Generate from CV": host `facts.extract` maps CV text onto the 18
       fact keys; panel merges into EMPTY draft fields only
-- [ ] E2E: fixture combobox loads options only after typed input (async, filtered);
+- [x] E2E: fixture combobox loads options only after typed input (async, filtered);
       choice re-scan stays green; combobox canonicalization covered
 - [ ] Manual browser gate on the real TRM/Ashby page, every workflow step printed
 
