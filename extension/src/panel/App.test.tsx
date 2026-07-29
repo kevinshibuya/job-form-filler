@@ -471,7 +471,7 @@ describe('App generation discipline', () => {
   }
   const fillAccepted = {
     ok: true,
-    replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 1, epoch: 1 }], failed: [] } } }],
+    replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ handle: { frameId: 0, fid: 1, epoch: 1 }, committed: null }], failed: [] } } }],
     failures: [],
   }
 
@@ -724,7 +724,7 @@ describe('App generation discipline', () => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
-        return await new Promise((r) => { releaseFill = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 0, epoch: 1 }], failed: [] } } }], failures: [] }) })
+        return await new Promise((r) => { releaseFill = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ handle: { frameId: 0, fid: 0, epoch: 1 }, committed: null }], failed: [] } } }], failures: [] }) })
       }
       if (msg?.kind === 'toContent') return jobTextReply
       return { ok: true }
@@ -933,7 +933,7 @@ describe('App per-field fill failures', () => {
     const base = send.getMockImplementation()!
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
-        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 1, epoch: 1 }], failed: [] } } }], failures: [] }
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ handle: { frameId: 0, fid: 1, epoch: 1 }, committed: null }], failed: [] } } }], failures: [] }
       }
       return base(msg)
     })
@@ -950,7 +950,7 @@ describe('App per-field fill failures', () => {
     const base = send.getMockImplementation()!
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL' && pageAccepts) {
-        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ frameId: 0, fid: 1, epoch: 1 }], failed: [] } } }], failures: [] }
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ handle: { frameId: 0, fid: 1, epoch: 1 }, committed: null }], failed: [] } } }], failures: [] }
       }
       return base(msg)
     })
@@ -1164,7 +1164,7 @@ describe('App — B3 page-accepted fills and failure surfacing', () => {
           ok: true,
           replies: [{ frameId: 0, payload: { ok: true, fill: {
             epoch: 1,
-            filled: fills.filter((f) => f.handle.fid === 0).map((f) => f.handle),
+            filled: fills.filter((f) => f.handle.fid === 0).map((f) => ({ handle: f.handle, committed: null })),
             failed: fills.filter((f) => f.handle.fid === 1).map((f) => ({ handle: f.handle, reason: 'choice-needs-user-click' })),
           } } }],
           failures: [],
@@ -1202,5 +1202,80 @@ describe('App — B3 page-accepted fills and failure surfacing', () => {
     const kept = Array.from(document.querySelectorAll('li[data-jff-tier="auto"]'))
       .find((li) => li.textContent?.includes('First name'))
     expect(kept).toBeDefined()
+  })
+})
+
+describe('App — committed canonical text (B1c)', () => {
+  function installComboScan(committed: string | null, tier: 'needs_input' | 'auto'): void {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return {
+          ok: true,
+          replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: true, scan: { epoch: 1, fields: [
+            { frameId: -1, fid: 0, epoch: 1, label: 'Country', name: null, idAttr: null, kind: 'combobox', options: [], required: false, visible: true, currentValue: null, demographic: false },
+          ], unreachableWidgets: 0, activeCaptcha: false } } }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [{ handle: { frameId: 0, fid: 0, epoch: 1 }, committed }], failed: [] } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [], failures: [] }
+      return { ok: true }
+    })
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        return { requestId, ok: true, result: { epoch: 1, resolutions: [{
+          handle: { frameId: 0, fid: 0, epoch: 1 }, tier,
+          value: tier === 'auto' ? 'bra' : null,
+          source: tier === 'auto' ? 'profile' : null,
+          key: null, answerId: null, reason: tier === 'auto' ? 'test' : 'custom',
+        }], llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it('a single-row Fill adopts the page-accepted canonical text into the row value', async () => {
+    installComboScan('Brazil', 'needs_input')
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(screen.getByLabelText('Country'), { target: { value: 'bra' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    await screen.findByText('on the page')
+    expect((screen.getByLabelText('Country') as HTMLInputElement).value).toBe('Brazil')
+  })
+
+  it('a batched scan fill seeds the row value with the committed text', async () => {
+    installComboScan('Brazil', 'auto')
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    expect((screen.getByLabelText('Country') as HTMLInputElement).value).toBe('Brazil')
+  })
+
+  it('never confirms a fill the report does not mention (fill unreported)', async () => {
+    installComboScan(null, 'needs_input')
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    const base = send.getMockImplementation()!
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        // Schema-valid, but the fill appears in NEITHER list.
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [], failed: [] } } }], failures: [] }
+      }
+      return base(msg)
+    })
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(screen.getByLabelText('Country'), { target: { value: 'bra' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed'))
+    expect(screen.getAllByText(/fill unreported/).length).toBeGreaterThan(0)
+    expect(screen.queryByText('on the page')).toBeNull()
   })
 })

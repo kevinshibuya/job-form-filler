@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema } from './messages.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -131,5 +131,23 @@ describe('EnumFieldSchema — accept attribute (A8)', () => {
       currentValue: null, demographic: false, accept: 'application/pdf',
     })
     expect(parsed.accept).toBe('application/pdf')
+  })
+})
+
+describe('FillReportSchema — committed canonical text (B1c)', () => {
+  const handle = { frameId: 0, fid: 1, epoch: 7 }
+
+  it('accepts filled entries carrying the committed page text (or null)', () => {
+    const r = FillReportSchema.safeParse({
+      epoch: 7,
+      filled: [{ handle, committed: 'Brazil' }, { handle, committed: null }],
+      failed: [],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects the old bare-handle filled shape', () => {
+    const r = FillReportSchema.safeParse({ epoch: 7, filled: [handle], failed: [] })
+    expect(r.success).toBe(false)
   })
 })

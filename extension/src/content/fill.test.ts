@@ -439,7 +439,7 @@ describe('fillFields', () => {
       { handle: { frameId: 0, fid: 99, epoch: 4 }, value: 'gone' },
     ])
     expect((document.getElementById('a') as HTMLInputElement).value).toBe('hello')
-    expect(report.filled).toEqual([{ frameId: 0, fid: 0, epoch: 4 }])
+    expect(report.filled).toEqual([{ handle: { frameId: 0, fid: 0, epoch: 4 }, committed: null }])
     expect(report.failed.map((f) => f.reason)).toEqual(['no-matching-option', 'element-not-found'])
   })
 })

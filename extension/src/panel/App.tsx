@@ -318,7 +318,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setUnreachable(out.unreachableWidgets)
       setActiveCaptcha(out.activeCaptcha)
       setFrameReports(out.frameReports)
-      setEdits({})
+      // B1c: batch fills that committed canonical text different from the sent
+      // value seed `edits`, so the row, the save diff and the choice highlight
+      // all speak the page's language ('bra' → 'Brazil').
+      const committedEdits: Record<string, string> = {}
+      for (const f of out.fill.filled) {
+        if (f.committed !== null) committedEdits[refOf(f.handle)] = f.committed
+      }
+      setEdits(committedEdits)
       setGeneratedRefs([])
       setFilledRefs([])
       setSnapshot({})
@@ -396,9 +403,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   /** Put one value on the page. Shared by Accept and Fill; what they additionally
    *  CONFIRM is the only difference between them. THROWS if the relay or the
-   *  frame refused the fill — callers must not confirm anything on a throw. */
-  const fillOne = async (row: Row, value: string): Promise<void> => {
-    if (tabId === null || value === '') return
+   *  frame refused the fill — callers must not confirm anything on a throw.
+   *  Returns the page-accepted canonical text when it differs from what was
+   *  sent (B1c: 'bra' commits 'Brazil'), else null. */
+  const fillOne = async (row: Row, value: string): Promise<string | null> => {
+    if (tabId === null || value === '') return null
     const { replies } = await sendToTab(row.field.frameId, {
       type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }],
     })
@@ -410,6 +419,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // marked "on the page" while the page never took the value.
     const failed = p.fill?.failed ?? []
     if (failed.length > 0) throw new Error(failed[0]!.reason)
+    // Codex-review hardening: an ok envelope whose report mentions this fill
+    // in NEITHER list is not a success — confirming on it is the "marked on
+    // the page while the page never took the value" bug in a new coat.
+    const mine = p.fill?.filled.find((f) =>
+      f.handle.frameId === row.resolution.handle.frameId && f.handle.fid === row.resolution.handle.fid) ?? null
+    if (mine === null) throw new Error('fill unreported')
+    return mine.committed
   }
 
   const onAccept = async (ref: string): Promise<void> => {
@@ -423,8 +439,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const gen = resetGenRef.current
     setActing({ ref, action: 'accept' })
     try {
-      await fillOne(row, value)
+      const committed = await fillOne(row, value)
       if (resetGenRef.current !== gen) return
+      if (committed !== null) setEdits((e) => ({ ...e, [ref]: committed }))
       // Accepting an AI key match IS the user confirmation the spec's
       // learned_mappings flow needs: promote it to a deterministic mapping.
       if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
@@ -456,8 +473,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const gen = resetGenRef.current
     setActing({ ref, action: 'fill' })
     try {
-      await fillOne(row, value)
+      const committed = await fillOne(row, value)
       if (resetGenRef.current !== gen) return
+      if (committed !== null) setEdits((e) => ({ ...e, [ref]: committed }))
       setFilledRefs((f) => (f.includes(ref) ? f : [...f, ref]))
       clearActionFailure()
     } catch (e) {
