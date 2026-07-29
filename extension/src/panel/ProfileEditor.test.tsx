@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ProfileEditor } from './ProfileEditor'
 
 describe('ProfileEditor', () => {
@@ -30,5 +30,29 @@ describe('ProfileEditor', () => {
     // Clearing a fact must still reach the host as a delete; only keys the editor
     // never saw are omitted.
     expect((onSave.mock.calls[0] as [Record<string, string>])[0]).toEqual({ email: '' })
+  })
+
+  it('disables Generate from CV when no resume text exists', () => {
+    render(<ProfileEditor values={{}} loaded={true} onSave={vi.fn()} onExtract={null} />)
+    expect((screen.getByRole('button', { name: 'Generate from CV' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('merges extracted facts into EMPTY fields only and never auto-saves', async () => {
+    const onSave = vi.fn()
+    const onExtract = vi.fn(async () => ({ email: 'cv@x.com', firstName: 'Kevin' }))
+    render(<ProfileEditor values={{}} loaded={true} onSave={onSave} onExtract={onExtract} />)
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'typed@x.com' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate from CV' }))
+    await waitFor(() => expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Kevin'))
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('typed@x.com') // user-typed wins
+    expect(onSave).not.toHaveBeenCalled() // the user still reviews and presses Save
+  })
+
+  it('a failed extraction (null) leaves the draft untouched', async () => {
+    const onExtract = vi.fn(async () => null)
+    render(<ProfileEditor values={{}} loaded={true} onSave={vi.fn()} onExtract={onExtract} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Generate from CV' }))
+    await waitFor(() => expect(onExtract).toHaveBeenCalled())
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('')
   })
 })

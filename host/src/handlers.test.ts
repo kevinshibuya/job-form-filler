@@ -150,4 +150,13 @@ describe('handleRequest', () => {
     expect(r).toMatchObject({ ok: false, error: { kind: 'rate_limit' } })
     expect(codexComplete).not.toHaveBeenCalled()
   })
+
+  it('facts.extract maps CV text onto the closed key set, stripping unknown keys', async () => {
+    complete.mockResolvedValueOnce({ email: 'k@x.com', ssn: '123', salary: ' R$ 18k ' })
+    const r = await handleRequest(deps, { requestId: 'fx1', method: 'facts.extract', params: { cvText: 'CV BODY' } })
+    expect(r).toMatchObject({ ok: true, result: { email: 'k@x.com', salary: 'R$ 18k' } })
+    const result = (r as { result: Record<string, string> }).result
+    expect('ssn' in result).toBe(false)
+    expect(complete.mock.calls[0]![0] as string).toContain('CV BODY')
+  })
 })
