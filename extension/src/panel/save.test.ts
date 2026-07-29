@@ -110,7 +110,7 @@ describe('buildSaveItems', () => {
   })
 
   it('never saves a value that was already on the page, even after the user edits it there', () => {
-    // engine !== final here, so ONLY the source==='page' guard can drop this row.
+    // engine !== final and key === null here, so ONLY the keyless-page guard can drop this row.
     expect(buildSaveItems({
       ...base,
       fields: [field(0, 'First Name')],
@@ -144,6 +144,45 @@ describe('buildSaveItems', () => {
     })
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ answer: 'R$ 22k', fieldKey: 'salary' })
+  })
+
+  // B5b: the Ashby resume auto-parse fills Full Name/Email/Phone as page-sourced
+  // values. With the recognized key attached they are learnable facts; without a
+  // key they stay ATS noise that must never be saved.
+  it('saves a page-sourced row that carries a factual key, routed by fieldKey', () => {
+    const items = buildSaveItems({
+      ...base,
+      fields: [field(0, 'First Name')],
+      resolutions: [res(0, { tier: 'auto', value: 'Kevin', source: 'page', key: 'firstName' })],
+    })
+    expect(items).toEqual([{
+      handle: { frameId: 0, fid: 0, epoch: 1 },
+      questionRaw: 'First Name',
+      answer: 'Kevin',
+      reusability: 'reusable',
+      fieldKey: 'firstName',
+    }])
+  })
+
+  it('saves a page-sourced keyed row even when engine === final (nothing-new rule is waived)', () => {
+    // The whole point: the page value IS the new learning. The host upsert is
+    // idempotent, so re-saving the same fact is harmless.
+    const items = buildSaveItems({
+      ...base,
+      fields: [field(0, 'Email')],
+      resolutions: [res(0, { tier: 'auto', value: 'k@x.com', source: 'page', key: 'email' })],
+      snapshot: { '0:0': 'k@x.com' },
+    })
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ fieldKey: 'email', answer: 'k@x.com' })
+  })
+
+  it('still skips a page-sourced row with NO key', () => {
+    expect(buildSaveItems({
+      ...base,
+      fields: [field(0, 'Some ATS artifact')],
+      resolutions: [res(0, { tier: 'auto', value: 'noise', source: 'page', key: null })],
+    })).toEqual([])
   })
 })
 

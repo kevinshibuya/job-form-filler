@@ -63,7 +63,11 @@ export function buildSaveItems(input: SaveInput): SaveItem[] {
     const resolution = byRef.get(ref)
     if (resolution === undefined) continue
     if (field.demographic || resolution.tier === 'skipped') continue
-    if (resolution.source === 'page') continue
+    // B5b: page-sourced rows pass through ONLY with a factual key — the host's
+    // save routing sends keyed items to profile/answer_bank, so qa_memory never
+    // sees page text. Keyless page rows stay out (ATS noise).
+    const pageKeyed = resolution.source === 'page' && resolution.key !== null
+    if (resolution.source === 'page' && !pageKeyed) continue
 
     const question = (field.label ?? '').trim()
     if (question === '') continue
@@ -73,7 +77,9 @@ export function buildSaveItems(input: SaveInput): SaveItem[] {
     if (final === '') continue
 
     const engine = (resolution.value ?? '').trim()
-    if (engine !== '' && engine === final) continue // nothing new was learned
+    // For a page-keyed row the page value IS the learning, so the nothing-new
+    // drop is waived (the host upsert is idempotent).
+    if (engine !== '' && engine === final && !pageKeyed) continue
 
     items.push({
       handle: resolution.handle,
