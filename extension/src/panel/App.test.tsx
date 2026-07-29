@@ -1403,4 +1403,59 @@ describe('App — per-field generating state (B3)', () => {
     await act(async () => { finish!() })
     expect(screen.queryByDisplayValue('Dead-page draft')).toBeNull()
   })
+
+  it('generates all remaining sequentially with a progress label', async () => {
+    const calls: number[] = []
+    const pending: ((draft: string) => void)[] = []
+    installNeedsInputScan((params, requestId) => new Promise((resolve) => {
+      calls.push(params.handle.fid)
+      pending.push((draft) => resolve({ requestId, ok: true, result: { draft } }))
+    }))
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Generate all remaining (2)' }))
+    // Sequential: exactly ONE request in flight, with row-by-row progress.
+    await screen.findByRole('button', { name: 'Generating 1/2…' })
+    expect(calls).toEqual([0])
+    await act(async () => { pending[0]!('Draft zero') })
+    await screen.findByRole('button', { name: 'Generating 2/2…' })
+    expect(calls).toEqual([0, 1])
+    await act(async () => { pending[1]!('Draft one') })
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('Draft zero')).toBeTruthy()
+      expect(screen.getByDisplayValue('Draft one')).toBeTruthy()
+    })
+    // Everything drafted: nothing left to batch-generate.
+    expect(screen.queryByRole('button', { name: /Generate all remaining/ })).toBeNull()
+  })
+
+  it('skips a transiently-failing row and continues the batch', async () => {
+    const calls: number[] = []
+    installNeedsInputScan((params, requestId) => {
+      calls.push(params.handle.fid)
+      return params.handle.fid === 0
+        ? { requestId, ok: false, error: { kind: 'timeout', message: 'slow' } }
+        : { requestId, ok: true, result: { draft: 'Draft one' } }
+    })
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Generate all remaining (2)' }))
+    await waitFor(() => expect(screen.getByDisplayValue('Draft one')).toBeTruthy())
+    expect(calls).toEqual([0, 1])
+    // The skipped row is still eligible afterwards.
+    expect(screen.getByRole('button', { name: 'Generate all remaining (1)' })).toBeTruthy()
+  })
+
+  it('stops the batch on a terminal host error kind', async () => {
+    const calls: number[] = []
+    installNeedsInputScan((params, requestId) => {
+      calls.push(params.handle.fid)
+      return { requestId, ok: false, error: { kind: 'rate_limit', message: 'limit' } }
+    })
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Generate all remaining (2)' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate all remaining (2)' })).toBeTruthy())
+    expect(calls).toEqual([0]) // row 1 was never attempted
+  })
 })
