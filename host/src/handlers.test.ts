@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { openDb, setProfile, getProfile, getSelector, getLearnedMapping, upsertAnswer } from './db/repos.js'
 import { handleRequest, type HandlerDeps } from './handlers.js'
+import { ClaudeError } from './llm/claudeCli.js'
+import { CodexError } from './llm/codexCli.js'
 
 let db: Database.Database
 let deps: HandlerDeps
@@ -12,12 +14,22 @@ let deps: HandlerDeps
 const complete = vi.fn(async (_prompt: string, _schema?: unknown): Promise<unknown> => [])
 const runner = { complete } as unknown as HandlerDeps['runner']
 
+const codexComplete = vi.fn(async (_prompt: string, _schema?: unknown): Promise<unknown> => ({ draft: 'reviewed' }))
+const codex = { complete: codexComplete } as unknown as HandlerDeps['codex']
+
+const genReq = (requestId: string) => ({
+  requestId, method: 'generate' as const,
+  params: { handle: { frameId: 0, fid: 3, epoch: 1 }, questionRaw: 'Why us?', jobText: '', company: null },
+})
+
 beforeEach(() => {
   db = openDb(':memory:')
   complete.mockClear()
+  codexComplete.mockClear()
   deps = {
     db,
     runner,
+    codex,
     config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json' },
     selfCheckFn: async () => ({
       node: { ok: true, version: 'v20.0.0' },
@@ -91,6 +103,9 @@ describe('handleRequest', () => {
 
   it('passes the generate description through to the prompt, fenced', async () => {
     complete.mockResolvedValueOnce({ draft: 'ok' })
+    // Task 9: generate now pipes the claude draft through the codex reviewer
+    // before returning, so the result reflects codexComplete's mocked reply.
+    codexComplete.mockResolvedValueOnce({ draft: 'ok' })
     const r = await handleRequest(deps, {
       requestId: 'gen1', method: 'generate',
       params: {
@@ -103,5 +118,36 @@ describe('handleRequest', () => {
     expect(r).toMatchObject({ ok: true, result: { draft: 'ok' } })
     const prompt = complete.mock.calls[0]![0] as string
     expect(prompt).toContain('<field_description>Please include: timeline and impact</field_description>')
+  })
+
+  it('pipes the claude draft through the codex reviewer and returns the sanitized reviewed draft', async () => {
+    complete.mockResolvedValueOnce({ draft: 'claude draft' })
+    codexComplete.mockResolvedValueOnce({ draft: 'reviewed draft — tight.' })
+    const r = await handleRequest(deps, genReq('gen-r1'))
+    // sanitizeDraft applies to the FINAL text: the reviewer's spaced em-dash is scrubbed.
+    expect(r).toMatchObject({ ok: true, result: { draft: 'reviewed draft, tight.' } })
+    expect(codexComplete.mock.calls[0]![0] as string).toContain('claude draft')
+  })
+
+  it('falls back to the unreviewed claude draft on ANY codex failure class', async () => {
+    const failures = [
+      Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }),
+      new CodexError('timeout', 'codex exec exceeded 120000ms'),
+      new CodexError('invalid_output', 'no JSON'),
+      new CodexError('process', 'exit 1'),
+    ]
+    for (let i = 0; i < failures.length; i++) {
+      complete.mockResolvedValueOnce({ draft: 'claude draft' })
+      codexComplete.mockRejectedValueOnce(failures[i]!)
+      const r = await handleRequest(deps, genReq(`gen-fb-${i}`)) // unique ids — the response cache replays repeats
+      expect(r).toMatchObject({ ok: true, result: { draft: 'claude draft' } })
+    }
+  })
+
+  it('a claude failure surfaces as the host error and codex is never consulted', async () => {
+    complete.mockRejectedValueOnce(new ClaudeError('rate_limit', 'limit'))
+    const r = await handleRequest(deps, genReq('gen-cf'))
+    expect(r).toMatchObject({ ok: false, error: { kind: 'rate_limit' } })
+    expect(codexComplete).not.toHaveBeenCalled()
   })
 })

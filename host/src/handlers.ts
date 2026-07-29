@@ -11,8 +11,10 @@ import {
   saveSelector, setAnswerBank, setProfile, upsertAnswer,
 } from './db/repos.js'
 import { ClaudeError, type ClaudeRunner } from './llm/claudeCli.js'
-import { buildProfileSummary, runGeneration, type GenerationInput } from './llm/generate.js'
+import { CodexError, type CodexRunner } from './llm/codexCli.js'
+import { buildProfileSummary, runGeneration, sanitizeDraft, type GenerationInput } from './llm/generate.js'
 import { readProjectNotes } from './llm/projects.js'
+import { reviewDraft } from './llm/reviewDraft.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFields } from './resolve/waterfall.js'
 import { log } from './log.js'
@@ -20,6 +22,8 @@ import { log } from './log.js'
 export interface HandlerDeps {
   db: Database.Database
   runner: ClaudeRunner
+  /** B2d: the codex reviewer. Failures degrade; it never blocks generation. */
+  codex: CodexRunner
   config: HostConfig
   selfCheckFn: () => Promise<SelfCheck>
 }
@@ -92,7 +96,18 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           references,
         }
         const draft = await runGeneration(deps.runner, input)
-        return ok(req.requestId, { draft })
+        // B2d: claude draft → codex review → final. ANY reviewer failure
+        // degrades to the unreviewed draft — codex never blocks generation.
+        let final = draft
+        try {
+          final = sanitizeDraft(await reviewDraft(deps.codex, input, draft))
+        } catch (e) {
+          const kind = e instanceof CodexError ? e.kind : 'process'
+          log('warn', 'codex review failed; returning unreviewed draft', {
+            kind, message: e instanceof Error ? e.message : String(e),
+          })
+        }
+        return ok(req.requestId, { draft: final })
       }
 
       case 'save': {

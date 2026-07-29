@@ -4,6 +4,7 @@ import { loadConfig } from './config.js'
 import { openDb } from './db/repos.js'
 import { encodeMessage, FrameReader, MessageTooLarge } from './framing.js'
 import { createClaudeRunner } from './llm/claudeCli.js'
+import { createCodexRunner } from './llm/codexCli.js'
 import { handleRequest, type HandlerDeps } from './handlers.js'
 import { log } from './log.js'
 import { realAuthCache, realFileExists, realProbeAuth, selfCheck } from './selfcheck.js'
@@ -11,10 +12,11 @@ import { realAuthCache, realFileExists, realProbeAuth, selfCheck } from './selfc
 const config = loadConfig()
 const db = openDb(config.dbPath)
 const runner = createClaudeRunner({ claudePath: config.claudePath })
+const codex = createCodexRunner({ codexPath: config.codexPath })
 const authCache = realAuthCache(config.authCachePath)
 
 const deps: HandlerDeps = {
-  db, runner, config,
+  db, runner, codex, config,
   selfCheckFn: () => selfCheck({
     claudePath: config.claudePath,
     dbPath: config.dbPath,

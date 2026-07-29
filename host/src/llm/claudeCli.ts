@@ -48,7 +48,7 @@ export function defaultRun(claudePath: string): RunFn {
 }
 
 /** Model output may be wrapped in prose or code fences; find the JSON body. */
-function parseLooseJson(text: string): unknown {
+export function parseLooseJson(text: string): unknown {
   const t = text.trim()
   try { return JSON.parse(t) } catch { /* fall through */ }
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(t)

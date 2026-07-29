@@ -31,6 +31,11 @@ export async function startHost(opts: { mode?: string } = {}): Promise<HostChild
   // so nothing in this suite can reach a real `claude` (or a real network).
   writeFileSync(join(home, 'config.json'), JSON.stringify({
     claudePath: join(FAKE_BIN, 'claude'),
+    // Nonexistent ON PURPOSE: spawn → ENOENT → not_installed → the generate
+    // pipeline degrades to the claude draft. e2e must never spawn (or pay
+    // for) a real codex, and a real reviewer call would also blow the
+    // per-step budgets. Determinism beats fidelity here.
+    codexPath: join(home, 'no-codex'),
     dbPath: join(home, 'db.sqlite'),
   }))
 
