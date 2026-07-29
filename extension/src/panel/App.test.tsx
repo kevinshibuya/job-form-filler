@@ -1320,3 +1320,87 @@ describe('App — committed canonical text (B1c)', () => {
     expect(screen.queryByText('on the page')).toBeNull()
   })
 })
+
+describe('App — per-field generating state (B3)', () => {
+  const twoFieldScan = {
+    ok: true,
+    replies: [{
+      frameId: 0, url: 'https://jobs.acme.com/apply',
+      payload: { ok: true, scan: { epoch: 1, fields: [
+        { frameId: -1, fid: 0, epoch: 1, label: 'Why us?', name: null, idAttr: null, kind: 'textarea', options: [], required: false, visible: true, currentValue: null, demographic: false },
+        { frameId: -1, fid: 1, epoch: 1, label: 'Biggest achievement?', name: null, idAttr: null, kind: 'textarea', options: [], required: false, visible: true, currentValue: null, demographic: false },
+      ], unreachableWidgets: 0, activeCaptcha: false } },
+    }],
+    failures: [],
+  }
+
+  function installNeedsInputScan(
+    onGen: (params: { handle: { fid: number } }, requestId: string) => HostResponse | Promise<HostResponse>,
+  ): void {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return twoFieldScan
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [], failures: [] }
+      return { ok: true }
+    })
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        return { requestId, ok: true, result: { epoch: 1, resolutions: [0, 1].map((fid) => ({
+          handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input' as const, value: null, source: null, key: null, answerId: null, reason: 'custom',
+        })), llmError: null } }
+      }
+      if (method === 'generate') return await onGen(params as { handle: { fid: number } }, requestId)
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it("keeps each row's spinner independent under concurrent generates", async () => {
+    const pending: Record<number, (draft: string) => void> = {}
+    installNeedsInputScan((params, requestId) => new Promise((resolve) => {
+      pending[params.handle.fid] = (draft) => resolve({ requestId, ok: true, result: { draft } })
+    }))
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    const buttons = screen.getAllByRole('button', { name: 'Generate with AI' })
+    expect(buttons).toHaveLength(2)
+    fireEvent.click(buttons[0]!)
+    fireEvent.click(buttons[1]!)
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Drafting…' })).toHaveLength(2))
+    await act(async () => { pending[1]!('Second draft') })
+    // Completing ONE request must not steal the other's spinner (the old
+    // single-generatingRef bug: the first completion nulled the second's).
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Drafting…' })).toHaveLength(1)
+      expect(screen.getByDisplayValue('Second draft')).toBeTruthy()
+    })
+    await act(async () => { pending[0]!('First draft') })
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Drafting…' })).toBeNull()
+      expect(screen.getByDisplayValue('First draft')).toBeTruthy()
+    })
+  })
+
+  it('drops a draft that resolves after a tab-scope reset (gen-epoch guard)', async () => {
+    let finish: (() => void) | null = null
+    installNeedsInputScan((params, requestId) => new Promise((resolve) => {
+      finish = () => resolve({ requestId, ok: true, result: { draft: 'Dead-page draft' } })
+    }))
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Generate with AI' })[0]!)
+    await waitFor(() => expect(finish).not.toBeNull())
+    // The bound tab navigates: tabScope fires 'navigated' on status:'loading'.
+    const chromeMock = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } }).chrome
+    const onUpdated = chromeMock.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status?: string }) => void
+    act(() => { onUpdated(7, { status: 'loading' }) })
+    // The reset triggers a re-scan; let it settle, THEN let the dead generate answer.
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    await act(async () => { finish!() })
+    expect(screen.queryByDisplayValue('Dead-page draft')).toBeNull()
+  })
+})
