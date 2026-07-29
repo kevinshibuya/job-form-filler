@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { CodexRunner } from './codexCli.js'
-import { CAPS, UNTRUSTED_PREAMBLE } from './fence.js'
+import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 import { buildTrustedContext, type GenerationInput } from './generate.js'
 
 const ReviewResponseSchema = z.object({ draft: z.string() })
@@ -17,7 +17,7 @@ export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): 
     ...buildTrustedContext(input),
     '',
     'DRAFT under review:',
-    claudeDraft.slice(0, CAPS.answer),
+    fence('draft_under_review', claudeDraft, CAPS.answer),
     '',
     'Rewrite the draft, applying ONLY these fixes:',
     '1. Remove or correct any factual claim (employer, technology, metric, degree, date) not grounded in the trusted blocks above. Never add a new factual claim.',

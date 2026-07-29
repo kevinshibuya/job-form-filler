@@ -429,6 +429,58 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
     expect(el.value).toBe('Kept')
   })
 
+  it('refuses a 2-character value even against a unique substring hit — never guesses Ukraine for "UK"', async () => {
+    document.body.innerHTML = `
+      <div>
+        <input id="c" role="combobox" aria-controls="lb" value="orig">
+        <ul role="listbox" id="lb"><li role="option">Ukraine</li><li role="option">United Kingdom</li></ul>
+      </div>`
+    const el = document.getElementById('c') as HTMLInputElement
+    const picked = vi.fn()
+    for (const o of Array.from(document.querySelectorAll('[role="option"]'))) o.addEventListener('click', picked)
+    // 'united kingdom' does not contain 'uk' contiguously; 'ukraine' does — the
+    // old un-gated substring tier would have clicked Ukraine here, which is
+    // exactly the misfill this length gate exists to prevent.
+    await expect(fillOne(el, 'UK')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    expect(picked).not.toHaveBeenCalled()
+    expect(el.value).toBe('orig')
+  }, 10_000) // runs the real 500ms fast-path + 2000ms post-type windows
+
+  it('never clicks a transiently unique substring match — waits for the settled option set and fails closed once ambiguous', async () => {
+    vi.useFakeTimers()
+    try {
+      document.body.innerHTML = `
+        <div>
+          <input id="c" role="combobox" aria-controls="lb">
+          <ul role="listbox" id="lb"><li role="option">Brazil</li></ul>
+        </div>`
+      const el = document.getElementById('c') as HTMLInputElement
+      const lb = document.getElementById('lb')!
+      const picked: string[] = []
+      for (const o of Array.from(lb.querySelectorAll('[role="option"]'))) {
+        o.addEventListener('click', () => picked.push(o.textContent ?? ''))
+      }
+      // Brasilia mounts 10ms after the fill starts — inside the FIRST 50ms poll
+      // interval — so the fast path must never trust the transient single-Brazil
+      // read: by the time two consecutive polls agree, both 'Brazil' and
+      // 'Brasilia' are present and 'bra' is genuinely ambiguous.
+      setTimeout(() => {
+        const o = document.createElement('li')
+        o.setAttribute('role', 'option')
+        o.textContent = 'Brasilia'
+        o.addEventListener('click', () => picked.push('Brasilia'))
+        lb.appendChild(o)
+      }, 10)
+
+      const resultPromise = fillOne(el, 'bra')
+      await vi.runAllTimersAsync()
+      await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+      expect(picked).toEqual([]) // Brazil was NEVER clicked on the transient read
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('closes the listbox via Escape on failure so no dropdown is left open', async () => {
     document.body.innerHTML = '<div><input id="c" role="combobox"></div>'
     const el = document.getElementById('c') as HTMLInputElement

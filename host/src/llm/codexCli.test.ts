@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createCodexRunner, type CodexRunFn } from './codexCli.js'
+import { createCodexRunner, isTimeoutSignal, type CodexRunFn } from './codexCli.js'
 
 const schema = z.object({ draft: z.string() })
 const okRun = (output: string): CodexRunFn => async () => ({ code: 0, output, stderr: '', timedOut: false })
@@ -30,5 +30,23 @@ describe('createCodexRunner', () => {
     const run = vi.fn<CodexRunFn>(okRun('not json at all'))
     await expect(createCodexRunner({ run }).complete('p', schema)).rejects.toMatchObject({ kind: 'invalid_output' })
     expect(run).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('isTimeoutSignal (review fix: SIGKILL deadline)', () => {
+  it('classifies a SIGTERM-killed close as a timeout', () => {
+    expect(isTimeoutSignal(null, 'SIGTERM')).toBe(true)
+  })
+
+  it('classifies a SIGKILL-killed close as a timeout (a SIGTERM-trapping codex escalated to SIGKILL)', () => {
+    expect(isTimeoutSignal(null, 'SIGKILL')).toBe(true)
+  })
+
+  it('does not classify a normal exit as a timeout', () => {
+    expect(isTimeoutSignal(0, null)).toBe(false)
+  })
+
+  it('does not classify an unrelated signal as a timeout', () => {
+    expect(isTimeoutSignal(null, 'SIGINT')).toBe(false)
   })
 })
