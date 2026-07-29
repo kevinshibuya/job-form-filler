@@ -10,46 +10,46 @@ applied, 2026-07-28).
 
 Slice A — scan correctness:
 
-- [ ] Every dangling-label field on the Ashby fixture set (17/17: comboboxes, yes/no,
+- [x] Every dangling-label field on the Ashby fixture set (17/17: comboboxes, yes/no,
       radio groups) resolves to its question title — e.g. "Select your country of
       employment", "Are you legally authorized to work in your current country of
       employment?" — with zero "(unlabelled field)" rows for them.
-- [ ] An option label is never returned as a field or group label: on the radio-group
+- [x] An option label is never returned as a field or group label: on the radio-group
       fixture the group label is the question title, not "Yes, fully remote"; on the
       single-option consent fixture it is the policy statement, not "I agree".
-- [ ] The ancestor climb never crosses a boundary containing another enumerated control
+- [x] The ancestor climb never crosses a boundary containing another enumerated control
       (radios sharing the target's `name` count as one control): on a
       two-inputs-under-one-wrapper fixture (First/Last name) the inputs keep distinct
       labels instead of sharing the wrapper label.
-- [ ] Placeholder text becomes a label only when every other source misses: the combobox
+- [x] Placeholder text becomes a label only when every other source misses: the combobox
       fixture's label is the question title, never "Start typing...".
-- [ ] A recovered label matching DEMOGRAPHIC_RE marks the field demographic (tier
+- [x] A recovered label matching DEMOGRAPHIC_RE marks the field demographic (tier
       `skipped`), including choice fields — an Ashby-style EEO yes/no in a plain div is
       never resolvable or fillable.
-- [ ] `required` is true for fields whose bound label element carries a literal `*` in
+- [x] `required` is true for fields whose bound label element carries a literal `*` in
       its RAW text or a `required` class token (Ashby pattern), and stays false on the
       optional-field fixture; the LLM prompt and the panel `*` both reflect it.
-- [ ] A hidden checkbox OR radio whose wrapper contains 2–5 short-text sibling buttons
+- [x] A hidden checkbox OR radio whose wrapper contains 2–5 short-text sibling buttons
       and no other control enumerates as kind `choice` with options = the button texts
       verbatim (fixtures include Sim/Não texts and a radio-backed variant); a styled
       hidden checkbox with a resolvable label and no sibling buttons stays kind
       `checkbox`.
-- [ ] `EnumField.description` is captured wrapper-scoped (aria-describedby first, else a
+- [x] `EnumField.description` is captured wrapper-scoped (aria-describedby first, else a
       description/help/hint class-token block inside the field wrapper), as
       whitespace-normalized textContent only (markup and hrefs discarded), capped at 500
       chars, never from a block containing a form control, never from a block whose
       class matches /error|invalid|validation/i; both the essay fixture (control
       sibling) and the combobox fixture (control's uncle inside the wrapper) capture.
-- [ ] The description text reaches BOTH the mapping prompt and the generation prompt
+- [x] The description text reaches BOTH the mapping prompt and the generation prompt
       through the real message path (schema changes of A4), inside the untrusted-content
       fencing.
-- [ ] `visible:false` fields are excluded from the resolve payload, the auto-fill loop,
+- [x] `visible:false` fields are excluded from the resolve payload, the auto-fill loop,
       and the rendered list: the `g-recaptcha-response` textarea appears in none of
       them. Still kept: file inputs that score under A8 or carry a resolvable label,
       choice-pattern hidden inputs, and hidden checkboxes/radios with a resolvable
       label. The content script still enumerates and fid-stamps everything (snapshot and
       fid numbering unchanged).
-- [ ] A select whose selected option has an empty `value` or is disabled (a "Select…"
+- [x] A select whose selected option has an empty `value` or is disabled (a "Select…"
       placeholder) yields `currentValue: null` and resolves through the normal waterfall
       instead of being treated as already-on-page.
 - [x] Scan-time combobox harvest records the mounted options for openable comboboxes in
