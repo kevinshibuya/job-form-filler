@@ -10645,6 +10645,41 @@ negative architectural constraint, checked by inspection during review.
 
 _(Task 23 Step 8 appends dated entries here.)_
 
+**2026-07-29 — session-7 post-implementation gate (agent-driven, real TRM/Ashby page).**
+Chrome: Playwright Chromium (bundled) + freshly built unpacked extension
+`oigkjociebfhgldfhijgdilhijkeamfb`; transport: seam bridge into the REAL host binary
+(`JFF_HOME=~/.job-form-filler`, real claude at `~/.local/bin/claude`, real codex reviewer),
+because branded Chrome ≥137 ignores `--load-extension` and Playwright Chromium does not read
+user-level NativeMessagingHosts — the native-messaging pipe itself is user-proven. Pre-gate DB
+backed up and restored after; step-by-step transcripts in the session scratchpad
+(`gate-run.log`, `gate-b.log`, screenshots `gate-0*.png`). Results against the live form
+(33 rows, Senior SWE Full Stack posting):
+
+- Scan: `✓ 13 filled, 0 already on page, 3 proposed, 17 need input`; **1 `(unlabelled field)`
+  row remains** (proposed tier; spec TODO 1 wanted 0 live — label-recovery gap, retro item).
+- B1 combobox: Accept of stored `bra` → page committed **"Brazil" within 1s**; after
+  save+reload+rescan the row recalls `auto` with the canonicalized "Brazil". (An earlier
+  "failure" reading was a probe artifact — the probe read a different `[role=combobox]`.)
+- B2 generation: both screenshot questions produced grounded, non-refusing drafts (CV+job-post
+  connected; honest about missing metrics without refusing); codex gpt-5.6-sol reviewer ran
+  in-pipeline (no degradation warnings in host log).
+- B3: two concurrent generates → both spinners alive simultaneously; first completion left the
+  second running.
+- B4: "Generate all remaining (15)" → sequential `Generating 1/15… → 2/15…`; reload mid-batch
+  aborted it silently (no error banner) — spec abort semantics confirmed.
+- B5 recall: manually-typed answer → Save → reload → re-scan came back `auto` /
+  `exact-match` **verbatim** and auto-filled (15 filled on scan 2); choice row
+  "remote or hybrid" stayed `auto` with panel highlight "Yes, fully remote" —
+  **no re-scan demotion** (the session-6 OPEN FINDING is closed on the live page).
+- B6: "Generate from CV" populated 8 empty fact fields from the extracted CV text
+  (empty-only merge held; Save remained manual).
+- Console: zero extension errors (page-side marquee/permissions-policy noise only).
+- **Which fillChoice step fired (v1 gate question):** Ashby's selected buttons carry
+  className ONLY (no `aria-pressed`/`aria-checked`/`data-state`; hidden checkbox inputs
+  `value=on`) — so step 0's input-checked arm and step 1/2 clicks carry the flow; the
+  button-fingerprint arm of step 0 can never fire on Ashby (review NOTE 16; retro item,
+  benign today because the input arm covers the observed widgets).
+
 ---
 
 ## Self-review (run before executing this plan)
