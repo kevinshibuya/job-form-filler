@@ -1,6 +1,8 @@
 import type { ContentMessage, EnumField, HostErrorKind, Resolution, ResolveResult } from '@jff/shared'
+import { electFrame } from './election'
 import { dropJunk } from './junk'
 import type { HostPort } from './port'
+import { pickResumeTarget } from './resumeTarget'
 import type { StoredResume } from './resume'
 
 export interface FrameReply {
@@ -54,10 +56,16 @@ export interface ScanDeps {
   company?: string | null
 }
 
+/** A7's verdict, flattened for the panel: WHICH frame is the application, how
+ *  strong the signal was, and where it lives (so a mis-election is explainable). */
+export interface ElectionOutcome { frameId: number; score: number; url: string | null }
+
 export interface ScanOutcome {
   epoch: number
   fields: EnumField[]
   resolutions: Resolution[]
+  /** null when nothing was elected: no fields survived, or none were seen yet. */
+  election: ElectionOutcome | null
   unreachableWidgets: number
   activeCaptcha: boolean
   jobText: string
@@ -118,7 +126,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       // the delay, so a second pass can find fields with the flag back to false —
       // and the scan would then fill past a challenge we already saw.
       return {
-        epoch, fields: [], resolutions: [],
+        epoch, fields: [], resolutions: [], election: null,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: true,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
@@ -140,7 +148,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     if (enumd.fields.length === 0) {
       // An empty page must cost zero host round-trips: no selector.get, no resolve.
       return {
-        epoch, fields: [], resolutions: [],
+        epoch, fields: [], resolutions: [], election: null,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: enumd.activeCaptcha,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
@@ -151,6 +159,20 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   // numbering unchanged); the panel drops junk before anything costs money or
   // touches the page. Raw counts above (retry/empty checks) stay raw on purpose.
   let kept = dropJunk(fields)
+
+  // A7: election happens immediately after enumeration/junk-filtering, BEFORE
+  // jobText, resume, harvest and resolve — everything page-touching or paid is
+  // scoped to the elected frame. Scored over KEPT fields: junk (the hidden
+  // reCAPTCHA textarea) must not be able to tilt the election.
+  let election = electFrame(kept)
+  const electedOf = (fs: EnumField[]): EnumField[] =>
+    election === null ? fs : fs.filter((f) => f.frameId === election!.frameId)
+  const electionOut = (): ElectionOutcome | null =>
+    election === null ? null : {
+      frameId: election.frameId,
+      score: election.score,
+      url: reports.find((r) => r.frameId === election!.frameId && r.url !== null)?.url ?? null,
+    }
 
   // Everything past the enumeration runs under ScanError: a jobtext/resolve/fill
   // relay death must reach the panel WITH the per-frame evidence already collected,
@@ -174,13 +196,15 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
     if (activeCaptcha) {
       // An active challenge means the extension does nothing at all on this page.
-      return { epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, fields: kept, resolutions: [], election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
     // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
     const resume = await deps.getResume()
-    const fileField = kept.find((f) => f.kind === 'file')
-    if (resume !== null && fileField !== undefined) {
+    // A8: never `find(kind === 'file')` — score the ELECTED frame's candidates;
+    // zero positive scorers means NO upload (the autofill-pane trap).
+    const fileField = pickResumeTarget(electedOf(kept))
+    if (resume !== null && fileField !== null) {
       let resumeError: FrameReport | null = null
       try {
         await deps.sendToTab(fileField.frameId, {
@@ -201,38 +225,73 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       unreachableWidgets = again.unreachableWidgets
       activeCaptcha = again.activeCaptcha
       reports = resumeError === null ? again.reports : [...again.reports, resumeError]
+      // Fids were re-stamped under a new epoch; re-elect deterministically over
+      // the fresh kept set. The application frame only gains signal from its
+      // own resume-parse, so a flip means the form itself changed.
+      election = electFrame(kept)
 
       if (activeCaptcha) {
         // Uploading a resume is a common trigger for an ATS challenge. Re-reading
         // activeCaptcha and then filling anyway would be worse than never re-reading
         // it: same blast radius, plus a paid resolve call.
-        return { epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, fields: kept, resolutions: [], election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
       if (fields.length === 0) {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
-        return { epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, fields: kept, resolutions: [], election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      }
+    }
+
+    // A6: harvest mounted combobox options — ELECTED frame only, never
+    // demographic, and only where enumeration found nothing (mutation
+    // containment: open/close, no typing, snapshot-restored value).
+    if (election !== null) {
+      const harvestFids = electedOf(kept)
+        .filter((f) => f.kind === 'combobox' && !f.demographic && f.options.length === 0)
+        .map((f) => f.fid)
+      if (harvestFids.length > 0) {
+        try {
+          const { replies } = await deps.sendToTab(election.frameId, { type: 'JFF_HARVEST', epoch, fids: harvestFids })
+          const p = replies[0]?.payload as { ok?: boolean; options?: Record<string, string[]> } | undefined
+          if (p?.ok === true && p.options !== undefined) {
+            const opts = p.options
+            const merge = (f: EnumField): EnumField => {
+              const found = f.frameId === election!.frameId ? opts[String(f.fid)] : undefined
+              return found !== undefined && found.length > 0 ? { ...f, options: found } : f
+            }
+            // Merged BEFORE resolve: the mapping prompt sees the harvested lists.
+            fields = fields.map(merge)
+            kept = kept.map(merge)
+          }
+        } catch (e) {
+          // Harvest is best-effort by spec: degrade to options [], never fail
+          // the scan. The failure is still evidence.
+          reports = [...reports, { frameId: election.frameId, url: null, fields: null, error: `harvest failed: ${String(e)}` }]
+        }
       }
     }
 
     if (kept.length === 0) {
       // Only junk on the page: resolve is NEVER called with zero real fields.
-      return { epoch, fields: [], resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, fields: [], resolutions: [], election: null, unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
-    // PHASE 2 — the host resolves everything that is still open.
-    deps.onProgress({ phase: 'resolving', fields: kept.length })
+    // PHASE 2 — the host pays only for the ELECTED frame. Foreign fields still
+    // come back in `fields`; they are review-only, never resolved and never filled.
+    const resolveFields = electedOf(kept)
+    deps.onProgress({ phase: 'resolving', fields: resolveFields.length })
     const resolved = await deps.port.request<ResolveResult>('resolve', {
       epoch,
       url: deps.url ?? '',
       hostname: deps.hostname ?? '',
       company: deps.company ?? null,
       jobText,
-      fields: kept,
+      fields: resolveFields,
     })
     if (!resolved.ok) {
       return {
-        epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText,
+        epoch, fields: kept, resolutions: [], election: electionOut(), unreachableWidgets, activeCaptcha, jobText,
         llmError: resolved.error, frameReports: reports,
       }
     }
@@ -264,6 +323,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     return {
       epoch, fields: kept,
       resolutions: resolved.result.resolutions,
+      election: electionOut(),
       unreachableWidgets, activeCaptcha, jobText,
       llmError: resolved.result.llmError,
       frameReports: reports,
