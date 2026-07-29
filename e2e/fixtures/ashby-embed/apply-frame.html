@@ -35,7 +35,12 @@
     </div>
   </div>
 
-  <!-- dangling-label combobox whose listbox mounts on click and closes on Escape -->
+  <!-- dangling-label TYPE-TO-LOAD combobox, the real Ashby shape: clicking
+       mounts NOTHING; options mount only after an input event, async (150ms),
+       substring-filtered. Zero matches on a NON-EMPTY query mounts an EMPTY
+       listbox; an EMPTY query mounts nothing at all — which also keeps the
+       fixture deterministic when a failed fill restores '' (the restore is
+       itself an input event; review blocker 2). -->
   <div class="_fieldEntry_1e3gg_28">
     <label class="_label_1e3gg_42 _required_f7cvd_91" for="country-uuid">Select your country of employment</label>
     <div class="_inputContainer_d7ago_28">
@@ -61,17 +66,31 @@
   <script>
     const combo = document.querySelector('[role="combobox"]')
     const wrap = combo.parentElement
-    combo.addEventListener('click', () => {
-      if (wrap.querySelector('[role="listbox"]')) return
+    const COUNTRIES = ['Brazil', 'Portugal', 'United States']
+    const renderOptions = (query) => {
+      wrap.querySelector('[role="listbox"]')?.remove()
+      // Real "Start typing..." behavior: an empty query renders NOTHING. This
+      // also keeps the page residue-free when a failed fill restores '' —
+      // that restore write is an input event and would otherwise re-mount a
+      // full listbox after the extension already closed it.
+      if (query.trim() === '') return
       const lb = document.createElement('ul')
       lb.setAttribute('role', 'listbox')
-      for (const t of ['Brazil', 'Portugal', 'United States']) {
+      for (const t of COUNTRIES.filter((c) => c.toLowerCase().includes(query.trim().toLowerCase()))) {
         const o = document.createElement('li')
         o.setAttribute('role', 'option')
         o.textContent = t
+        o.addEventListener('click', () => {
+          combo.value = t
+          wrap.querySelector('[role="listbox"]')?.remove()
+        })
         lb.appendChild(o)
       }
       wrap.appendChild(lb)
+    }
+    // Type-to-load: options mount only AFTER keystrokes, asynchronously.
+    combo.addEventListener('input', () => {
+      setTimeout(() => renderOptions(combo.value), 150)
     })
     combo.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') wrap.querySelector('[role="listbox"]')?.remove()
