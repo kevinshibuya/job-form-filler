@@ -18,7 +18,7 @@ beforeEach(() => {
   deps = {
     db,
     runner,
-    config: { claudePath: '/bin/true', dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json' },
+    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json' },
     selfCheckFn: async () => ({
       node: { ok: true, version: 'v20.0.0' },
       claude: { ok: true, path: '/bin/true', detail: 'found' },

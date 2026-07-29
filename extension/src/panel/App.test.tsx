@@ -3,6 +3,7 @@ import 'fake-indexeddb/auto'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { HostResponse, Resolution } from '@jff/shared'
 import { App, hostnameOf } from './App'
+import { clearResume, saveResume } from './resume'
 
 /** The fake port forwards to `window.__jffHostBridge` when one is installed, so
  *  this is how a test gives the panel real resolutions (the canned fake answers
@@ -1035,6 +1036,46 @@ describe('App generate request', () => {
       questionRaw: 'Authorized to work?',
       description: 'Answer for your current country.',
     })
+  })
+
+  it('sends stored CV text with the Generate request', async () => {
+    await saveResume(new File(['%PDF-1.4'], 'cv.pdf', { type: 'application/pdf' }), async () => 'MY CV TEXT')
+    try {
+      const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+      send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+        if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+        if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+          return {
+            ok: true,
+            replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: true, scan: { epoch: 1, fields: [{
+              frameId: -1, fid: 0, epoch: 1, label: 'Why us?', name: null, idAttr: null, kind: 'textarea',
+              options: [], required: false, visible: true, currentValue: null, demographic: false,
+            }], unreachableWidgets: 0, activeCaptcha: false } } }],
+            failures: [],
+          }
+        }
+        if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+        return { ok: true }
+      })
+      const generateCalls: unknown[] = []
+      window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+        if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+        if (method === 'resolve') {
+          return { requestId, ok: true, result: { epoch: 1, resolutions: [
+            { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' },
+          ], llmError: null } }
+        }
+        if (method === 'generate') { generateCalls.push(params); return { requestId, ok: true, result: { draft: 'A draft' } } }
+        return { requestId, ok: true, result: {} }
+      }
+      render(<App />)
+      await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+      fireEvent.click(screen.getByRole('button', { name: 'Generate with AI' }))
+      await waitFor(() => expect(generateCalls).toHaveLength(1))
+      expect(generateCalls[0]).toMatchObject({ cvText: 'MY CV TEXT' })
+    } finally {
+      await clearResume()
+    }
   })
 })
 

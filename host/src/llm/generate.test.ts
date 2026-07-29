@@ -9,6 +9,8 @@ const input = {
   profileSummary: 'Name: Kevin Shibuya\nRole: Full-stack developer\nYears: 6',
   references: ['An earlier draft about a different company.'],
   description: null,
+  cvText: null,
+  projectNotes: null,
 }
 
 describe('buildProfileSummary', () => {
@@ -32,10 +34,11 @@ describe('buildGenerationPrompt', () => {
     expect(prompt).toMatch(/UNTRUSTED data/)
   })
 
-  it('states every honesty rule', () => {
-    expect(prompt).toMatch(/only state facts that appear in the CANDIDATE FACTS block/i)
+  it('states the factual-grounding and subjective-composition rules (D2)', () => {
+    expect(prompt).toMatch(/Factual claims .* may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks/i)
     expect(prompt).toMatch(/never invent/i)
-    expect(prompt).toMatch(/say so plainly/i)
+    expect(prompt).toMatch(/say what is missing plainly in one sentence/i)
+    expect(prompt).toMatch(/refusing a subjective question is forbidden/i)
   })
 
   it('forbids spaced em-dashes', () => {
@@ -55,6 +58,23 @@ describe('buildGenerationPrompt', () => {
     const withDesc = buildGenerationPrompt({ ...input, description: 'Answer for your current country.' })
     expect(withDesc).toContain('<field_description>Answer for your current country.</field_description>')
     expect(buildGenerationPrompt(input)).not.toContain('</field_description>')
+  })
+
+  it('includes the trusted CV block only when cvText is present, capped at 12000', () => {
+    const withCv = buildGenerationPrompt({ ...input, cvText: 'CV-'.repeat(8_000) })
+    expect(withCv).toContain("CANDIDATE CV (trusted, from the candidate's own resume):")
+    expect(withCv).not.toContain('CV-'.repeat(4_100)) // the 24000-char body was clipped
+    // The rules text names the "CANDIDATE CV" block by design (rule 2); only the
+    // BLOCK HEADER is conditional on cvText, so assert on the header, not the bare words.
+    expect(buildGenerationPrompt(input)).not.toContain("CANDIDATE CV (trusted, from the candidate's own resume):")
+  })
+
+  it('includes the project notes block only when present', () => {
+    const withNotes = buildGenerationPrompt({ ...input, projectNotes: 'NOTES BODY' })
+    expect(withNotes).toContain('PROJECT NOTES')
+    expect(withNotes).toContain('NOTES BODY')
+    // Same as above: rule 2 always names "PROJECT NOTES"; only the block header is conditional.
+    expect(buildGenerationPrompt(input)).not.toContain("PROJECT NOTES (trusted, the candidate's own project documentation):")
   })
 })
 
