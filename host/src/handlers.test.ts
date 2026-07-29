@@ -9,7 +9,7 @@ let deps: HandlerDeps
 // `complete` is generic on ClaudeRunner, so a plain vi.fn needs an explicit cast.
 // The mock is kept in its own binding: the cast erases the Mock type, so
 // `runner.complete.mockClear()` would not typecheck through `runner`.
-const complete = vi.fn(async () => [])
+const complete = vi.fn(async (_prompt: string, _schema?: unknown): Promise<unknown> => [])
 const runner = { complete } as unknown as HandlerDeps['runner']
 
 beforeEach(() => {
@@ -87,5 +87,21 @@ describe('handleRequest', () => {
     db.close()
     const r = await handleRequest(deps, { requestId: 'i', method: 'profile.get', params: {} })
     expect(r).toMatchObject({ ok: false, error: { kind: 'db' } })
+  })
+
+  it('passes the generate description through to the prompt, fenced', async () => {
+    complete.mockResolvedValueOnce({ draft: 'ok' })
+    const r = await handleRequest(deps, {
+      requestId: 'gen1', method: 'generate',
+      params: {
+        handle: { frameId: 0, fid: 3, epoch: 1 },
+        questionRaw: 'Describe the outcome',
+        description: 'Please include: timeline and impact',
+        jobText: '', company: null,
+      },
+    })
+    expect(r).toMatchObject({ ok: true, result: { draft: 'ok' } })
+    const prompt = complete.mock.calls[0]![0] as string
+    expect(prompt).toContain('<field_description>Please include: timeline and impact</field_description>')
   })
 })

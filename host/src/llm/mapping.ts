@@ -50,7 +50,10 @@ export function buildMappingPrompt(input: MappingInput): string {
     const opts = f.options.slice(0, CAPS.optionsPerField)
       .map((o) => fence('option', o, CAPS.option))
       .join('')
-    return `- ref=${refOf(f)} kind=${f.kind} required=${f.required} ${fence('field_label', f.label ?? '', CAPS.label)}${opts}`
+    const desc = f.description === undefined || f.description === ''
+      ? ''
+      : ` ${fence('field_description', f.description, CAPS.description)}`
+    return `- ref=${refOf(f)} kind=${f.kind} required=${f.required} ${fence('field_label', f.label ?? '', CAPS.label)}${desc}${opts}`
   }).join('\n')
 
   const candidateLines = input.candidates.length === 0

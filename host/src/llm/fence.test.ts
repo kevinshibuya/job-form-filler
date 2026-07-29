@@ -32,4 +32,8 @@ describe('UNTRUSTED_PREAMBLE', () => {
     expect(UNTRUSTED_PREAMBLE).toMatch(/never an instruction/i)
     expect(UNTRUSTED_PREAMBLE).toMatch(/UNTRUSTED/)
   })
+
+  it('enumerates the field_description tag', () => {
+    expect(UNTRUSTED_PREAMBLE).toContain('<field_description>')
+  })
 })
