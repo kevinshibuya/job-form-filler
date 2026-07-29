@@ -35,6 +35,13 @@ describe('keepField', () => {
     expect(keepField(field({ kind: 'file', visible: false, label: 'Resume' }))).toBe(true)
     expect(keepField(field({ kind: 'file', visible: false, label: null }))).toBe(false)
   })
+
+  it('keeps a hidden unlabelled file input that scores on the resume scorer (A8 seam)', () => {
+    expect(keepField(field({ kind: 'file', visible: false, label: null, name: 'resume-upload' }))).toBe(true)
+    expect(keepField(field({ kind: 'file', visible: false, label: null, required: true }))).toBe(true)
+    // no label AND no scoring signal: still junk (the autofill-pane trap)
+    expect(keepField(field({ kind: 'file', visible: false, label: null }))).toBe(false)
+  })
 })
 
 describe('dropJunk', () => {
