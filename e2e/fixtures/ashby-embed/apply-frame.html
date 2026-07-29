@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>Apply</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; }
+  ._label_1e3gg_42 { display: block; font-weight: 600; margin-top: 14px; }
+  ._required_f7cvd_91::after { content: ' *'; color: #c00; }
+  /* Ashby hides the real toggle behind styled buttons */
+  ._input_1svni_78 { display: none; }
+  /* the autofill-pane trap: visually hidden by clipping, not display:none */
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  [role="listbox"] { border: 1px solid #999; margin: 0; padding: 2px; list-style: none; }
+  [role="option"] { padding: 2px 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <!-- dangling label + name==for: the label's `for` matches no id, the input's NAME matches it -->
+  <div class="_fieldEntry_1e3gg_28">
+    <label class="_label_1e3gg_42 _required_f7cvd_91" for="first-uuid">First name</label>
+    <input name="first-uuid" type="text">
+  </div>
+  <div class="_fieldEntry_1e3gg_28">
+    <label class="_label_1e3gg_42 _required_f7cvd_91" for="last-uuid">Last name</label>
+    <input name="last-uuid" type="text">
+  </div>
+
+  <!-- yes/no choice: two untyped buttons + a display:none checkbox -->
+  <div class="_fieldEntry_1e3gg_28">
+    <label class="_label_1e3gg_42 _required_f7cvd_91" for="yn-uuid">Are you legally authorized to work in your current country of employment?</label>
+    <div class="_container_1svni_28">
+      <button class="_option_1svni_32">Yes</button>
+      <button class="_option_1svni_32">No</button>
+      <input type="checkbox" class="_input_1svni_78" tabindex="-1" name="yn-uuid">
+    </div>
+  </div>
+
+  <!-- dangling-label combobox whose listbox mounts on click and closes on Escape -->
+  <div class="_fieldEntry_1e3gg_28">
+    <label class="_label_1e3gg_42 _required_f7cvd_91" for="country-uuid">Select your country of employment</label>
+    <div class="_inputContainer_d7ago_28">
+      <input class="_input_d7ago_28" placeholder="Start typing..." aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" role="combobox" value="">
+    </div>
+  </div>
+
+  <!-- the REAL resume field: labelled, required, pdf accept -->
+  <div class="_fieldEntry_1e3gg_28">
+    <label class="_label_1e3gg_42 _required_f7cvd_91" for="resume-input">Resume</label>
+    <input id="resume-input" name="resume" type="file" accept=".pdf,.doc,.docx" required>
+  </div>
+  <!-- the autofill-pane trap: clipped, unlabelled, NO accept signal — it scores 0
+       on A8 and is therefore junk, exactly like the real pane. -->
+  <input type="file" class="visually-hidden">
+
+  <div class="_fieldEntry_1e3gg_28">
+    <label class="_label_1e3gg_42" for="essay-input">Describe the fastest measurable outcome you delivered.</label>
+    <div class="_description_1e3gg_48">Please include the total timeline from start to finish.</div>
+    <textarea id="essay-input" name="essay-input" rows="4" placeholder="Type here..."></textarea>
+  </div>
+
+  <script>
+    const combo = document.querySelector('[role="combobox"]')
+    const wrap = combo.parentElement
+    combo.addEventListener('click', () => {
+      if (wrap.querySelector('[role="listbox"]')) return
+      const lb = document.createElement('ul')
+      lb.setAttribute('role', 'listbox')
+      for (const t of ['Brazil', 'Portugal', 'United States']) {
+        const o = document.createElement('li')
+        o.setAttribute('role', 'option')
+        o.textContent = t
+        lb.appendChild(o)
+      }
+      wrap.appendChild(lb)
+    })
+    combo.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') wrap.querySelector('[role="listbox"]')?.remove()
+    })
+  </script>
+</body>
+</html>

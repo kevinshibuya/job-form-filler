@@ -87,7 +87,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // SCAN: the panel auto-scans on open. Do NOT also click Scan — a second
     // runScan would overlap the first, and the loser's fills land under a stale
     // epoch, leaving the form half-filled nondeterministically.
-    await expect(panel.locator('[data-jff-group="auto"]')).toBeVisible({ timeout: 60_000 })
+    await expect(panel.locator('li[data-jff-tier="auto"]').first()).toBeVisible({ timeout: 60_000 })
 
     // The deterministic recognizers filled the page for real.
     await expect(target.locator('#first_name')).toHaveValue('Kevin')
@@ -100,8 +100,8 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
 
     // Draft the LABELLED free-text question specifically (not .first(): the
     // needs-input group also holds recognized-but-unstored factual fields).
-    await expect(panel.locator('[data-jff-group="needs_input"]')).toBeVisible()
-    const bugRow = panel.locator('[data-jff-group="needs_input"] li', { hasText: 'Describe a hard bug you fixed' })
+    await expect(panel.locator('li[data-jff-tier="needs_input"]').first()).toBeVisible()
+    const bugRow = panel.locator('li[data-jff-tier="needs_input"]', { hasText: 'Describe a hard bug you fixed' })
     await bugRow.getByRole('button', { name: 'Generate with AI' }).click()
     // Assert the DRAFT ARRIVED, not that a button vanished: `toHaveCount(0)` on
     // 'Drafting…' passes in the window before the state lands, which would make
@@ -197,7 +197,7 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
     // The auto-scan on open is the scan; clicking Scan again would race it.
     await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 60_000 })
     // Deterministic fills still happened; only the LLM tier degraded.
-    await expect(panel.locator('[data-jff-group="needs_input"]')).toBeVisible()
+    await expect(panel.locator('li[data-jff-tier="needs_input"]').first()).toBeVisible()
     await expect(target.locator('#first_name')).toHaveValue('Kevin')
   } finally {
     await ext.close()
