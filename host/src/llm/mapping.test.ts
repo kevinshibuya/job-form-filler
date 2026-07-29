@@ -47,6 +47,19 @@ describe('buildMappingPrompt', () => {
     expect(prompt).not.toMatch(/return the value|provide the answer text/i)
     expect(prompt).toMatch(/You only classify/)
   })
+
+  it('fences a field description and omits the tag when absent', () => {
+    const withDesc = buildMappingPrompt({
+      fields: [{
+        frameId: 0, fid: 9, epoch: 1, label: 'Outcome', name: null, idAttr: null,
+        kind: 'textarea', options: [], required: true, visible: true,
+        currentValue: null, demographic: false, description: 'Please include a timeline.',
+      }],
+      jobText: '', company: null, candidates: [],
+    })
+    expect(withDesc).toContain('<field_description>Please include a timeline.</field_description>')
+    expect(prompt).not.toContain('</field_description>') // the original input has no descriptions
+  })
 })
 
 describe('MappingResponseSchema', () => {

@@ -82,6 +82,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         const references = listReferenceAnswers(db, normalizeQuestion(req.params.questionRaw), lang).map((r) => r.answer)
         const draft = await runGeneration(deps.runner, {
           question: req.params.questionRaw,
+          description: req.params.description ?? null,
           jobText: req.params.jobText,
           company: req.params.company,
           profileSummary: buildProfileSummary(getProfile(db), getAnswerBank(db)),

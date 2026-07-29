@@ -8,6 +8,7 @@ const input = {
   company: 'Acme',
   profileSummary: 'Name: Kevin Shibuya\nRole: Full-stack developer\nYears: 6',
   references: ['An earlier draft about a different company.'],
+  description: null,
 }
 
 describe('buildProfileSummary', () => {
@@ -48,6 +49,12 @@ describe('buildGenerationPrompt', () => {
   it('offers prior company-specific drafts as reference only, never to copy', () => {
     expect(prompt).toContain('An earlier draft about a different company.')
     expect(prompt).toMatch(/reference only/i)
+  })
+
+  it('fences the description when present and omits the block when null', () => {
+    const withDesc = buildGenerationPrompt({ ...input, description: 'Answer for your current country.' })
+    expect(withDesc).toContain('<field_description>Answer for your current country.</field_description>')
+    expect(buildGenerationPrompt(input)).not.toContain('</field_description>')
   })
 })
 

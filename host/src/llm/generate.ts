@@ -4,6 +4,8 @@ import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
 export interface GenerationInput {
   question: string
+  /** Page-provided helper text under the question (A4) — untrusted like the label. */
+  description: string | null
   jobText: string
   company: string | null
   /** Trusted, user-authored facts. This is the ONLY thing a claim may rest on. */
@@ -39,6 +41,9 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     '',
     'Question to answer:',
     fence('field_label', input.question, CAPS.label),
+    ...(input.description === null || input.description === ''
+      ? []
+      : ['Additional page-provided guidance for this question:', fence('field_description', input.description, CAPS.description)]),
     '',
     'Earlier drafts the candidate wrote for this same question at OTHER companies.',
     'These are reference only: reuse the reasoning, never the company-specific wording.',
