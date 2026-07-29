@@ -80,6 +80,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // B3: one entry per in-flight generate — concurrent row generates are
   // independent host requests, and completing one must not touch the others.
   const [generatingRefs, setGeneratingRefs] = useState<ReadonlySet<string>>(new Set())
+  const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
   const [jobText, setJobText] = useState('')
   const [company, setCompany] = useState('')
   const [unreachable, setUnreachable] = useState(0)
@@ -566,6 +567,39 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const onGenerate = async (ref: string): Promise<void> => { await generateOne(ref) }
 
+  /** B4 eligibility: needs-input, labelled, nothing drafted/edited yet, not
+   *  currently generating. Foreign rows are structurally absent from `main`. */
+  const generateEligible = main.filter((r) =>
+    r.resolution.tier === 'needs_input'
+    && (r.field.label ?? '').trim() !== ''
+    && (edits[r.ref] ?? '').trim() === ''
+    && !generatedRefs.includes(r.ref)
+    && !generatingRefs.has(r.ref))
+
+  const TERMINAL_GENERATE_KINDS: ReadonlySet<string> = new Set(['not_installed', 'not_authed', 'rate_limit'])
+
+  const onGenerateAll = async (): Promise<void> => {
+    if (generateAll !== null) return
+    const refs = generateEligible.map((r) => r.ref)
+    if (refs.length === 0) return
+    const gen = resetGenRef.current
+    try {
+      for (let i = 0; i < refs.length; i++) {
+        // A re-scan means these refs describe a dead page: abort silently.
+        if (resetGenRef.current !== gen) return
+        setGenerateAll({ done: i, total: refs.length })
+        const out = await generateOne(refs[i]!)
+        if (out === 'aborted') return
+        // Terminal host problems affect every remaining row identically; the
+        // banner is already up (generateOne set it). Transient per-row failures
+        // ('timeout', 'process', …) skip the row and continue.
+        if (TERMINAL_GENERATE_KINDS.has(out)) return
+      }
+    } finally {
+      setGenerateAll(null)
+    }
+  }
+
   const onPickJobText = async (): Promise<void> => {
     if (tabId === null || fields.length === 0 || picking) return
     // The picked text — and the selector learned from it — describe the page the
@@ -730,6 +764,19 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             <>
               {main.length > 0 && (
                 <section className="mt-4" data-jff-rows="1">
+                  {(generateEligible.length > 0 || generateAll !== null) && (
+                    <div className="mb-2" data-jff-generate-all="1">
+                      <button
+                        type="button" className={BTN}
+                        disabled={generateAll !== null || acting !== null}
+                        onClick={onGenerateAll}
+                      >
+                        {generateAll === null
+                          ? `Generate all remaining (${generateEligible.length})`
+                          : `Generating ${generateAll.done + 1}/${generateAll.total}…`}
+                      </button>
+                    </div>
+                  )}
                   <ul className="m-0 grid list-none gap-2 p-0">
                     {main.map((row) => (
                       <FieldRow
