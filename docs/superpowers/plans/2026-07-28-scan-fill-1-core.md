@@ -1448,10 +1448,15 @@ Imports at the top of `enumerate.ts` become:
 ```ts
 import type { EnumField, WidgetKind } from '@jff/shared'
 import {
-  countUnreachableWidgets, DEMOGRAPHIC_RE, descriptionFor, groupLabelFor, kindOf,
-  labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements, type LabelBinding,
+  countUnreachableWidgets, DEMOGRAPHIC_RE, descriptionFor, groupLabelFor, isSoleControl,
+  kindOf, labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements,
+  type LabelBinding,
 } from './dom'
 ```
+
+> **Plan-defect fix (found during execution, 2026-07-28):** an earlier revision of this block
+> omitted `isSoleControl`, which Task 6's `detectChoice` calls from this same file — taking it
+> literally is a `TS2304` compile break. It is included above.
 
 Add one helper above `enumerateFields`:
 
