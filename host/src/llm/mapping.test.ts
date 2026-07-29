@@ -60,6 +60,32 @@ describe('buildMappingPrompt', () => {
     expect(withDesc).toContain('<field_description>Please include a timeline.</field_description>')
     expect(prompt).not.toContain('</field_description>') // the original input has no descriptions
   })
+
+  it('marks combobox fields as a closed set whose option list may be partial', () => {
+    const p = buildMappingPrompt({
+      fields: [{
+        frameId: 0, fid: 4, epoch: 1, label: 'Country', name: null, idAttr: null,
+        kind: 'combobox', options: ['Brazil', 'Portugal'], required: true, visible: true,
+        currentValue: null, demographic: false,
+      }],
+      jobText: '', company: null, candidates: [],
+    })
+    expect(p).toContain('kind=combobox (closed set; options may be partial)')
+    // Prove the annotation appears ONLY for combobox fields: build a second
+    // prompt from a non-combobox field and assert the annotation is absent.
+    // (mapping.ts:70 already contains 'Closed set of known factual keys', so
+    // a bare `not.toContain('closed set')` would only pass on the luck of
+    // its capital C — assert the FULL annotation instead.)
+    const nonCombobox = buildMappingPrompt({
+      fields: [{
+        frameId: 0, fid: 5, epoch: 1, label: 'Full name', name: null, idAttr: null,
+        kind: 'text', options: [], required: true, visible: true,
+        currentValue: null, demographic: false,
+      }],
+      jobText: '', company: null, candidates: [],
+    })
+    expect(nonCombobox).not.toContain('kind=combobox (closed set')
+  })
 })
 
 describe('MappingResponseSchema', () => {
