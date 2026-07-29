@@ -205,7 +205,9 @@ Lifecycle:
 | Tab close / discard / mark applied | — | — | — | deleted |
 | Scan click | passed | overridable | yes | current session |
 
-Precedence: onboarding gate > applied badge > host gate (`gateOpen`) > scan.
+Precedence: onboarding gate > host gate (`gateOpen`) > applied badge > scan. (The
+applied check is itself a host call, so it structurally runs behind the host gate;
+plan review fix — behavior unchanged.)
 
 Navigation signals come from `chrome.webNavigation.onCommitted`/`onHistoryStateUpdated`
 (frameId + URL; permission already granted). A navigation of the top frame OR the
