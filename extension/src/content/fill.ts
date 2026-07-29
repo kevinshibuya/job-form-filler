@@ -1,11 +1,9 @@
-import type { FieldHandle, FillReport } from '@jff/shared'
+import { norm, type FieldHandle, type FillReport } from '@jff/shared'
 import { optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
 import { attributableListbox, mountedListboxes } from './harvest'
 
-type FillOutcome = { ok: true } | { ok: false; reason: string }
-
-const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase()
+type FillOutcome = { ok: true; committed?: string | null } | { ok: false; reason: string }
 
 /**
  * React installs its own `value` setter on the element INSTANCE, so `el.value = x`
@@ -290,13 +288,13 @@ export async function fillFields(
   root: Document,
   fills: { handle: FieldHandle; value: string }[],
 ): Promise<Omit<FillReport, 'epoch'>> {
-  const filled: FieldHandle[] = []
+  const filled: { handle: FieldHandle; committed: string | null }[] = []
   const failed: { handle: FieldHandle; reason: string }[] = []
   for (const f of fills) {
     const el = elementByFid(root, f.handle.fid)
     if (el === null) { failed.push({ handle: f.handle, reason: 'element-not-found' }); continue }
     const out = await fillOne(el, f.value)
-    if (out.ok) filled.push(f.handle)
+    if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null })
     else failed.push({ handle: f.handle, reason: out.reason })
   }
   return { filled, failed }

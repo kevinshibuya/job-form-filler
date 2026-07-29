@@ -166,7 +166,10 @@ export type ScanResult = z.infer<typeof ScanResultSchema>
 
 export const FillReportSchema = z.object({
   epoch: z.number().int(),
-  filled: z.array(FieldHandleSchema),
+  /** B1c: `committed` carries the page-accepted canonical text when it differs
+   *  from the requested value ('bra' legitimately commits 'Brazil'), else null.
+   *  The panel canonicalizes the row value from it. */
+  filled: z.array(z.object({ handle: FieldHandleSchema, committed: z.string().nullable() })),
   failed: z.array(z.object({ handle: FieldHandleSchema, reason: z.string() })),
 })
 export type FillReport = z.infer<typeof FillReportSchema>

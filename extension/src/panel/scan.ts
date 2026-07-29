@@ -66,7 +66,7 @@ export interface FillFailure { handle: FieldHandle; reason: string }
  *  JFF_FILL reports. `filled` is page-accepted only — the count the status
  *  line shows. Failures carry the frame's per-field reason so the panel can
  *  demote the row and render the hint. */
-export interface CollectedFill { filled: FieldHandle[]; failed: FillFailure[] }
+export interface CollectedFill { filled: { handle: FieldHandle; committed: string | null }[]; failed: FillFailure[] }
 
 const emptyFill = (): CollectedFill => ({ filled: [], failed: [] })
 

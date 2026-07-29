@@ -769,12 +769,12 @@ describe('runScan — B3 fill report collection', () => {
       ok: true,
       fill: {
         epoch,
-        filled: [fills[0]!.handle],
+        filled: [{ handle: fills[0]!.handle, committed: null }],
         failed: [{ handle: fills[1]!.handle, reason: 'choice-needs-user-click' }],
       },
     }))
     const out = await runScan(deps)
-    expect(out.fill.filled).toEqual([expect.objectContaining({ frameId: 0, fid: 0 })])
+    expect(out.fill.filled).toEqual([{ handle: expect.objectContaining({ frameId: 0, fid: 0 }), committed: null }])
     expect(out.fill.failed).toEqual([
       { handle: expect.objectContaining({ frameId: 0, fid: 1 }), reason: 'choice-needs-user-click' },
     ])
