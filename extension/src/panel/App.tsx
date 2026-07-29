@@ -297,12 +297,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setSnapshot({})
       if (out.jobText !== '') setJobText(out.jobText)
       if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
-      // DELIBERATE: these counts mirror the Filled/Proposed/Needs-input group
-      // headers exactly (all `auto` resolutions count as "filled", including
-      // page-sourced ones). Verifying the SCAN's batched auto-fills against their
-      // JFF_FILL reports is a future slice — spec's out-of-scope list. (Accept and
-      // Fill, which the user triggers one at a time, DO check theirs: see fillOne.)
-      const filled = out.resolutions.filter((r) => r.tier === 'auto').length
+      // A9 status semantics: `filled` and `already on page` are SEPARATE facts.
+      // `alreadyOnPage` (page-sourced values the engine never wrote) is exact.
+      // INTERIM — B3 (plan 3) replaces the `filled` COUNT SOURCE: it still
+      // counts attempted scan-time auto-fills here because the batched JFF_FILL
+      // reports are only collected and consumed in slice 3; B3 swaps in the
+      // page-accepted number from those reports without touching this shape.
+      const filled = out.resolutions.filter((r) => r.tier === 'auto' && r.source !== 'page').length
+      const alreadyOnPage = out.resolutions.filter((r) => r.tier === 'auto' && r.source === 'page').length
       const proposed = out.resolutions.filter((r) => r.tier === 'proposed').length
       const needsInput = out.resolutions.filter((r) => r.tier === 'needs_input').length
       // Precedence: captcha > empty > llm failure > done. A captcha'd page may
@@ -313,7 +315,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // contributes two reports but is still one frame on the page.
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
         : out.llmError !== null ? { kind: 'failed', reason: ERROR_COPY[out.llmError.kind] }
-        : { kind: 'done', filled, proposed, needsInput },
+        : { kind: 'done', filled, alreadyOnPage, proposed, needsInput },
       )
     } catch (e) {
       // Same rule as the success path: a dead generation's failure is not this

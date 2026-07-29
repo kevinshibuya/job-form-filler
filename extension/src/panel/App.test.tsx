@@ -125,7 +125,7 @@ describe('App scan status', () => {
       expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done')
     })
     // fake host resolve returns zero resolutions; the copy reflects that honestly
-    expect(screen.getByText('✓ 0 filled, 0 proposed, 0 need input')).toBeTruthy()
+    expect(screen.getByText('✓ 0 filled, 0 already on page, 0 proposed, 0 need input')).toBeTruthy()
   })
 
   it('reaches empty (after the one-shot retry) when no frame has fields', async () => {
