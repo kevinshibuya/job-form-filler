@@ -6,7 +6,7 @@
 
 **Architecture:** Three slices in one plan. Slice A (Tasks 1–6) is fill-side: the FillReport protocol change lands first because it is the cross-cutting compile gate, then fillCombobox typeahead+ladder, fillChoice step-0 idempotency, panel hints/highlight, and host recall (waterfall + save). Slice B (Tasks 7–10) is the generation pipeline: CV text extraction in the panel, prompt/protocol/config, the codex reviewer pass, facts-from-CV. Slice C (Tasks 11–13) is panel concurrency/batch UI plus the e2e batch. Tasks 14–15 are the verify gate and the user manual gate.
 
-**Tech Stack:** TypeScript workspaces (shared/host/extension), zod, vitest (554 tests / 38 files baseline), Playwright e2e (13/13 baseline), React 19 MV3 side panel (vite 7 + @crxjs), better-sqlite3 host, `claude` CLI + `codex` CLI (new), `pdfjs-dist` (new dependency).
+**Tech Stack:** TypeScript workspaces (shared/host/extension), zod, vitest (554 tests / 38 files baseline), Playwright e2e (13/13 baseline), React 18 MV3 side panel (vite 7 + @crxjs), better-sqlite3 host, `claude` CLI + `codex` CLI (new), `pdfjs-dist` (new dependency).
 
 ## Worker preamble (read before every task)
 
@@ -38,7 +38,7 @@
 | 4 | FieldRow hints + normalized segmented highlight | editor-sonnet-low | low | Pure transcription |
 | 5 | Waterfall tier-1 key harvest + exact-match key fallback | implementer-sonnet-medium | medium | Three branches over sqlite fixtures |
 | 6 | `buildSaveItems` page-keyed pass-through | editor-sonnet-low | low | Pure transcription |
-| 7 | `cvText.ts` + resume store text field (pdfjs-dist) | implementer-sonnet-medium | medium | New dependency; sanctioned adaptation freedom on pdfjs wiring |
+| 7 | `cvText.ts` + resume store text field (pdfjs-dist) | integrator-opus-high | high | New bundled dep + MV3 CSP + jsdom/node env semantics — the only task with sanctioned adaptation freedom; ambiguity goes UP the ladder (review re-route) |
 | 8 | Protocol `cvText` + prompt rewrite + projects/config | implementer-sonnet-medium | medium | Multi-file but fully specified |
 | 9 | `codexCli` + `reviewDraft` + generate pipeline degradation | implementer-sonnet-medium | medium | Exact code shipped; escalate to integrator-opus-high if the failure-matrix tests fight |
 | 10 | `facts.extract` + ProfileEditor "Generate from CV" | implementer-sonnet-medium | medium | Copy is plan-authored; wiring is specified |
@@ -253,7 +253,13 @@ Replace the `fillOne` helper (the block starting `const fillOne = async (row: Ro
     // marked "on the page" while the page never took the value.
     const failed = p.fill?.failed ?? []
     if (failed.length > 0) throw new Error(failed[0]!.reason)
-    return p.fill?.filled[0]?.committed ?? null
+    // Codex-review hardening: an ok envelope whose report mentions this fill
+    // in NEITHER list is not a success — confirming on it is the "marked on
+    // the page while the page never took the value" bug in a new coat.
+    const mine = p.fill?.filled.find((f) =>
+      f.handle.frameId === row.resolution.handle.frameId && f.handle.fid === row.resolution.handle.fid) ?? null
+    if (mine === null) throw new Error('fill unreported')
+    return mine.committed
   }
 ```
 
@@ -291,9 +297,9 @@ Note: `filled` is now `{handle, committed}[]`, so `out.fill.filled.length` (the 
 
 - [ ] **Step 9: Mechanical fixture sweep — every test that BUILDS a FillReport**
 
-Find them all (expected hits listed; if the sweep finds MORE, update those too and report):
+The enumerated site list below is AUTHORITATIVE; the grep is only a safety net (a fixture built via `.map(...)` or a `.filled` consumer does not literally contain `filled: [`). If the grep finds sites beyond the list, update those too and report:
 
-Run: `grep -rn "filled: \[" extension/src e2e --include='*.ts*' | grep -v 'src/content/fill.ts' | grep -v 'filled: \[\]'`
+Run: `grep -rnE '\.filled\b|filled: ' extension/src e2e --include='*.ts*' | grep -v 'filled: \[\]'`
 
 1. `extension/src/content/fill.test.ts` `fillFields` test — replace the assertion
    `expect(report.filled).toEqual([{ frameId: 0, fid: 0, epoch: 4 }])` with
@@ -304,6 +310,8 @@ Run: `grep -rn "filled: \[" extension/src e2e --include='*.ts*' | grep -v 'src/c
    `expect(out.fill.filled).toEqual([{ handle: expect.objectContaining({ frameId: 0, fid: 0 }), committed: null }])`
 4. `extension/src/panel/App.test.tsx` — four fixtures build `filled: [{ frameId: 0, fid: N, epoch: 1 }]` (the `fillAccepted` const ~line 474, and inline replies ~lines 727, 936, 953): each becomes `filled: [{ handle: { frameId: 0, fid: N, epoch: 1 }, committed: null }]` (keep each fixture's own fid).
 5. `extension/src/panel/App.test.tsx` (~line 1167, `installScanWithFillReport`): `.map((f) => f.handle)` → `.map((f) => ({ handle: f.handle, committed: null }))`.
+
+Step-8 strictness ripple: `fillOne` now requires the ACTED row's handle to appear in `filled`. Any existing fixture whose reply lists a DIFFERENT fid than the row the test acts on (e.g. an Accept on the fid-0 proposed row answered with a fid-1 reply) will now throw `fill unreported` — fix the FIXTURE's fid to match the acted row (the reply describes the fill that was sent) and report each such fix. Never loosen the handle check itself.
 
 - [ ] **Step 10: Write the failing panel canonicalization tests**
 
@@ -362,6 +370,26 @@ describe('App — committed canonical text (B1c)', () => {
     render(<App />)
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
     expect((screen.getByLabelText('Country') as HTMLInputElement).value).toBe('Brazil')
+  })
+
+  it('never confirms a fill the report does not mention (fill unreported)', async () => {
+    installComboScan(null, 'needs_input')
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    const base = send.getMockImplementation()!
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        // Schema-valid, but the fill appears in NEITHER list.
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [], failed: [] } } }], failures: [] }
+      }
+      return base(msg)
+    })
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(screen.getByLabelText('Country'), { target: { value: 'bra' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed'))
+    expect(screen.getAllByText(/fill unreported/).length).toBeGreaterThan(0)
+    expect(screen.queryByText('on the page')).toBeNull()
   })
 })
 ```
@@ -512,7 +540,11 @@ Replace the ENTIRE `fillCombobox` function (docblock included) with:
  * Success iff the page committed the CLICKED OPTION's text; the requested
  * value no longer has to equal it ('bra' legitimately commits 'Brazil'), and
  * `committed` reports the canonical text when it differs. Every failure path
- * restores the pre-fill snapshot (never a clear to '') and closes via Escape.
+ * restores the pre-fill snapshot (never a clear to ''), waits a frame, THEN
+ * closes via Escape+blur — the restore write is itself an input event, and
+ * fired after Escape it would re-open the dropdown just closed. A type-to-load
+ * page may still refetch options on that restore event; the residual is
+ * page-side and is eyeballed at the manual gate (review fix, majors item 5).
  */
 async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
@@ -552,13 +584,15 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
     }
   }
 
-  const failClosed = (reason: string): FillOutcome => {
-    // Close the way a user backs out (harvest's recipe), then put the control
-    // back EXACTLY as we found it — a page-sourced value must survive, and ''
-    // is only ever written when '' WAS the snapshot.
+  const failClosed = async (reason: string): Promise<FillOutcome> => {
+    // Restore FIRST: B1a always types, so the restore write is itself an input
+    // event — fired after Escape it would re-open the dropdown we just closed.
+    // Order: restore ('' only ever written when '' WAS the snapshot) → one
+    // frame for the page to react → Escape + blur (harvest's close recipe).
+    if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
+    await nextFrame()
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     if (el instanceof HTMLElement) el.blur()
-    if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
     return { ok: false, reason }
   }
   // B1d: "never opened/attributed" is a different user problem than "your value
@@ -582,7 +616,9 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   // `includes`: a widget that committed 'United States Minor Outlying Islands'
   // after a 'United States' click would still false-pass an includes check —
   // the misfill-reported-as-success class stays dead.
-  const committed = input !== null ? input.value : (el.textContent ?? '')
+  // Non-input widgets report their textContent TRIMMED (review fix, minors 17)
+  // — the normalized-equality verdict is unaffected either way.
+  const committed = input !== null ? input.value : (el.textContent ?? '').trim()
   if (norm(committed) !== optionText) return failClosed('no-matching-option')
   return { ok: true, committed: committed === value ? null : committed }
 }
@@ -600,8 +636,8 @@ Expected: clean. (`election.spec.ts`'s combobox expectations move in Task 13, no
 
 - [ ] **Step 6: Verify the BUTTON rail is byte-identical**
 
-Run: `git diff extension/src/content/fill.ts | grep -n "unsupported-widget"`
-Expected: no diff hunk touches the `fillOne` hard-rail lines.
+Run: `git diff -U0 extension/src/content/fill.ts | grep '^[+-].*unsupported-widget'`
+Expected: EMPTY output (only added/removed lines are matched; the previous form also matched untouched context lines).
 
 - [ ] **Step 7: Commit**
 
@@ -681,20 +717,15 @@ describe('fillChoice — step-0 idempotency (B5e)', () => {
     await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'No')).resolves.toEqual({ ok: true })
     expect(clicks).toEqual(['No'])
   })
-
-  it('a click that changes nothing STILL fails (nothing was weakened)', async () => {
-    document.body.innerHTML = ASHBY_YESNO_EN
-    controlCheckbox() // inert buttons: no state ever changes, and none is pre-active
-    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Yes'))
-      .resolves.toEqual({ ok: false, reason: 'no-state-change' })
-  })
 })
 ```
+
+(A "click that changes nothing still fails" test is deliberately NOT added here: fill.test.ts already proves it — `'reports no-state-change when the clicked button produces no observable delta'`, INCLUDING the `expect(clicks).toEqual(['Yes'])` attempted-click assertion. Step 4's full-file run keeps it green; a duplicate would be pure noise — review fix, minors item 12.)
 
 - [ ] **Step 2: Run to verify RED**
 
 Run: `npx vitest run extension/src/content/fill.test.ts -t 'step-0'`
-Expected: the first four tests FAIL (today they either click or return `no-state-change`); the last two already pass (they guard against over-reach).
+Expected: the first four tests FAIL (today they either click or return `no-state-change`); the fifth (unchecked box answering "No") already passes — it guards against over-reach and must stay green.
 
 - [ ] **Step 3: Implement step 0**
 
@@ -776,7 +807,7 @@ Append to `extension/src/panel/FieldRow.test.tsx` (inside the existing `describe
   it('renders the no-matching-option hint', () => {
     const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'no-matching-option' }))
     render(<ul><FieldRow row={r} {...props} /></ul>)
-    expect(screen.getByText('No dropdown option matches this value. Try different text.')).toBeTruthy()
+    expect(screen.getByText('No option matches this value. Try different text.')).toBeTruthy()
   })
 ```
 
@@ -817,7 +848,9 @@ export const REASON_HINT: Record<string, string> = {
   'choice-needs-user-click': 'Select this answer on the page yourself.',
   'other-frame': 'Outside the application frame. Fill puts your value there; nothing is generated or saved for it.',
   'combobox-no-listbox': 'Open this dropdown on the page yourself and pick the value.',
-  'no-matching-option': 'No dropdown option matches this value. Try different text.',
+  // Widget-agnostic on purpose: this reason is shared by combobox, select and
+  // radio-group no-match failures (review fix, minors item 16).
+  'no-matching-option': 'No option matches this value. Try different text.',
 }
 ```
 
@@ -868,13 +901,11 @@ git commit -m "feat(panel): combobox failure hints; segmented highlight compares
 
 - [ ] **Step 1: Write the failing tests**
 
-In `host/src/resolve/waterfall.test.ts`, add `normalizeQuestion` to the imports:
+In `host/src/resolve/waterfall.test.ts`, add the import (only `normalizeQuestion` — nothing below uses `detectLanguage`):
 
 ```ts
-import { detectLanguage, normalizeQuestion } from './normalize.js'
+import { normalizeQuestion } from './normalize.js'
 ```
-
-(`detectLanguage` only if not already imported — it is not today; import just `normalizeQuestion` if you prefer, nothing below uses `detectLanguage`.)
 
 Append:
 
@@ -916,7 +947,16 @@ describe('B5a/B5c — recall correctness', () => {
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'recognizer:github:no-stored-value' })
   })
 
-  it('an llm known_key with no stored value still lands on needs_input when no exact answer exists', async () => {
+  it('the llm-key fallback also refuses a company_specific exact match', async () => {
+    // The company_specific row gets the field PAST tier 3 (its reusability
+    // check fails there) into the LLM batch; the llm-key fallback then runs
+    // the same exact lookup and must refuse it too — this exercises the NEW
+    // fallback path, unlike a bare no-row duplicate of the existing
+    // 'routes an LLM known_key with no stored value to needs-input' test.
+    upsertAnswer(db, {
+      questionNormalized: normalizeQuestion('How soon could you join?'), questionRaw: 'How soon could you join?',
+      answer: 'two weeks, but only for Acme', language: 'en', reusability: 'company_specific',
+    })
     const r = await resolveFields(
       { db, runner: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }) },
       input([field(1, 'How soon could you join?')]),
@@ -929,7 +969,7 @@ describe('B5a/B5c — recall correctness', () => {
 - [ ] **Step 2: Run to verify RED**
 
 Run: `npx vitest run host/src/resolve/waterfall.test.ts`
-Expected: the first and third and fourth tests FAIL (tier-1 key is null today; recognizer short-circuits to needs_input). The second and fifth pass already (regression guards).
+Expected: the first and third FAIL (tier-1 key is null today; the recognizer short-circuits to needs_input). The second, fourth and fifth already pass — they are attachment/refusal guards that must STAY green through the change (the fifth proves the new llm-key fallback runs and refuses company_specific once implemented).
 
 - [ ] **Step 3: Implement the three edits in `host/src/resolve/waterfall.ts`**
 
@@ -1184,7 +1224,7 @@ git commit -m "feat(panel): page-sourced rows with a factual key become save ite
 
 **Interfaces:**
 - Produces: `extractPdfText(data: ArrayBuffer): Promise<string | null>`; `StoredResume.text: string | null`; `saveResume(file: File, extract?: (data: ArrayBuffer) => Promise<string | null>): Promise<void>`; `loadResumeText(extract?: …): Promise<string | null>` (lazy re-extract + persist for pre-B2a records). Tasks 8 and 10 consume `loadResumeText`.
-- Sanctioned freedom (implementer rung): the pdfjs *wiring* — if `pdfjs-dist@4.10.38` fails to install/typecheck/build, pick the nearest 4.x that does and record it in the commit body; if the `globalThis.pdfjsWorker` fake-worker hook is not honored by the pinned version, use that version's documented no-worker main-thread setup instead. The PUBLIC API above and the test behaviors are fixed. If `cvText.test.ts` cannot run under jsdom because of the pdfjs import, add a `// @vitest-environment node` docblock as its first line — that is the whole fix, do not mock pdfjs.
+- Sanctioned freedom (integrator rung — this task is routed to integrator-opus-high precisely because of it): the pdfjs *wiring* — if `pdfjs-dist@4.10.38` fails to install/typecheck/build, pick the nearest 4.x that does and record it in the commit body; if the `globalThis.pdfjsWorker` fake-worker hook is not honored by the pinned version, use that version's documented no-worker main-thread setup instead. The PUBLIC API above and the test behaviors are fixed. If `cvText.test.ts` cannot run under jsdom because of the pdfjs import, add a `// @vitest-environment node` docblock as its first line — that is the whole fix, do not mock pdfjs.
 
 **Boundaries:** No App.tsx changes yet (Task 8 wires the panel state). `loadResume`/`clearResume` keep their signatures; old stored records (no `text` property) must keep loading.
 
@@ -1258,6 +1298,11 @@ describe('resume CV text (B2a)', () => {
     expect(retry).not.toHaveBeenCalled() // a persisted null is an answer, not a gap
   })
 
+  it('an extractor that THROWS still stores the resume with text: null (spec D2)', async () => {
+    await saveResume(new File(['%PDF-1.4'], 'cv.pdf', { type: 'application/pdf' }), async () => { throw new Error('pdfjs exploded') })
+    expect(await loadResume()).toMatchObject({ name: 'cv.pdf', text: null })
+  })
+
   it('lazily extracts, persists and reuses text for a pre-B2a record', async () => {
     // A legacy record has NO `text` property at all. Write one directly.
     await new Promise<void>((resolve, reject) => {
@@ -1304,6 +1349,10 @@ Expected: FAIL — `cvText.ts` does not exist; `loadResumeText` is not exported.
  * than the one small PDF we parse warrants. Registering the worker module on
  * `globalThis.pdfjsWorker` makes pdf.js use its in-thread "fake worker"
  * without ever fetching GlobalWorkerOptions.workerSrc — CSP-safe.
+ *
+ * Output is capped at 12000 chars (mirrors the host's CAPS.jobText) AT
+ * EXTRACTION TIME: the cap bounds the IndexedDB record and the native
+ * message, not just the prompt (review fix, codex item 11).
  */
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs'
 import * as pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs'
@@ -1321,7 +1370,8 @@ export async function extractPdfText(data: ArrayBuffer): Promise<string | null> 
     }
     await doc.destroy()
     const text = parts.join('\n').replace(/[ \t]+/g, ' ').trim()
-    return text === '' ? null : text
+    // Cap at storage time — see the docblock.
+    return text === '' ? null : text.slice(0, 12_000)
   } catch {
     // Encrypted, corrupt, or not a PDF: generation proceeds without the CV
     // block (silent degradation per spec D2).
@@ -1377,11 +1427,19 @@ Replace `saveResume` (including its comment — the v1 "never crosses native mes
  */
 export async function saveResume(file: File, extract: ExtractFn = lazyExtract): Promise<void> {
   const buf = await file.arrayBuffer()
+  // Spec D2 silent degradation: extraction failure must NEVER break the
+  // upload — the resume stores with text: null and generation proceeds
+  // without the CV block. The guarded region includes the dynamic cvText
+  // import (lazyExtract), so even a failed pdfjs LOAD degrades.
+  let text: string | null = null
+  try {
+    text = isPdf(file.name, file.type) ? await extract(buf) : null
+  } catch { /* spec D2: silent degradation */ }
   const record: StoredResume = {
     name: file.name,
     mimeType: file.type === '' ? 'application/octet-stream' : file.type,
     dataBase64: toBase64(new Uint8Array(buf)),
-    text: isPdf(file.name, file.type) ? await extract(buf) : null,
+    text,
   }
   await tx('readwrite', (s) => s.put(record, KEY))
 }
@@ -1398,11 +1456,27 @@ export async function loadResumeText(extract: ExtractFn = lazyExtract): Promise<
   if (r === undefined) return null
   if ('text' in r) return r.text
   const legacy = r as Omit<StoredResume, 'text'>
-  const text = isPdf(legacy.name, legacy.mimeType) ? await extract(fromBase64(legacy.dataBase64)) : null
+  // Same spec-D2 guard as saveResume: a throwing extractor (or a failed
+  // dynamic pdfjs import) persists text: null instead of breaking the read.
+  let text: string | null = null
+  try {
+    text = isPdf(legacy.name, legacy.mimeType) ? await extract(fromBase64(legacy.dataBase64)) : null
+  } catch { /* spec D2: silent degradation */ }
   await tx('readwrite', (s) => s.put({ ...legacy, text }, KEY))
   return text
 }
 ```
+
+- [ ] **Step 5b: keep the five existing jsdom call sites off the real extractor**
+
+`saveResume`'s default extractor now dynamically imports pdfjs, which these five EXISTING green tests would pull into jsdom for their `.pdf` files. Pass an inert extractor (`async () => null`) as the second argument at each — their behavioral intent is storage, not extraction. This list is authoritative (review blocker 3):
+
+1. `extension/src/panel/resume.test.ts` — `'round-trips a file as base64 with its name and mime type'`: the `saveResume(new File([new Uint8Array([1, 2, 3, 4])], 'kevin-cv.pdf', …))` call (~line 35).
+2. `extension/src/panel/resume.test.ts` — `'replaces the previous resume rather than accumulating'`: BOTH calls (`old.pdf` ~line 42, `new.pdf` ~line 43).
+3. `extension/src/panel/resume.test.ts` — `'clears the stored resume'`: the `x.pdf` call (~line 48).
+4. `extension/src/panel/App.test.tsx` — `describe('App — resume row wiring (A8/A9)')`, the `saveResume(new File([new Uint8Array([1, 2, 3])], 'cv.pdf', …))` call (~line 1105).
+
+Safety net: `grep -rn "saveResume(" extension/src` — every test call site with a `.pdf` file must carry an explicit extractor argument after this step.
 
 - [ ] **Step 6: Run the tests**
 
@@ -1806,10 +1880,18 @@ In `extension/src/panel/App.tsx`:
   }, [])
 ```
 
-- In `onPickResume`, after `setResumeName(file.name)` add:
+- In `onPickResume`, replace the handler body so the CV text state is set BEFORE the name renders — the e2e (Task 13) uses the rendered resume name as its deterministic "extraction finished" signal:
 
 ```ts
+  const onPickResume = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0]
+    if (file === undefined) return
+    await saveResume(file)
+    // Text BEFORE name: the rendered name is the outside world's signal that
+    // extraction settled (Task 13's e2e depends on this ordering).
     setCvText(await loadResumeText())
+    setResumeName(file.name)
+  }
 ```
 
 - In `onGenerate`, extend the request params object with a final entry:
@@ -1888,6 +1970,7 @@ Non-interactive invocation VERIFIED on this machine (2026-07-29): `codex exec -m
 - Create: `host/src/llm/reviewDraft.ts`
 - Modify: `host/src/handlers.ts` (`HandlerDeps` gains `codex`; generate pipeline)
 - Modify: `host/src/index.ts` (construct the codex runner)
+- Modify: `e2e/hostBridge.ts` (pin `codexPath` at a nonexistent binary — e2e determinism, review blocker 1)
 - Test: `host/src/llm/codexCli.test.ts` (create), `host/src/llm/reviewDraft.test.ts` (create), `host/src/handlers.test.ts`
 
 **Interfaces:**
@@ -2224,12 +2307,32 @@ const codex = createCodexRunner({ codexPath: config.codexPath })
 
 and add `codex,` to the `deps` literal.
 
-- [ ] **Step 5: Run host tests, typecheck, lint**
+- [ ] **Step 5: e2e determinism — the fixture host must NEVER spawn a real codex**
+
+`e2e/hostBridge.ts` pins `claudePath` at the fake bin, but the new `codexPath` would default to `'codex'` — which IS on PATH on this machine, so every `npm run smoke`/`verify` generate would make a real paid gpt-5.6-sol call and blow the e2e per-step budgets (review blocker 1). Point it at a nonexistent binary: ENOENT classifies as `not_installed`, and the Step-4 pipeline degrades to the (fake) claude draft — deterministic and offline.
+
+In `e2e/hostBridge.ts`, extend the config.json write (currently `claudePath` + `dbPath` only):
+
+```ts
+  writeFileSync(join(home, 'config.json'), JSON.stringify({
+    claudePath: join(FAKE_BIN, 'claude'),
+    // Nonexistent ON PURPOSE: spawn → ENOENT → not_installed → the generate
+    // pipeline degrades to the claude draft. e2e must never spawn (or pay
+    // for) a real codex, and a real reviewer call would also blow the
+    // per-step budgets. Determinism beats fidelity here.
+    codexPath: join(home, 'no-codex'),
+    dbPath: join(home, 'db.sqlite'),
+  }))
+```
+
+Verify: `grep -n "codexPath" e2e/hostBridge.ts` shows the pin; `which codex` explains why it is needed.
+
+- [ ] **Step 6: Run host tests, typecheck, lint**
 
 Run: `npx vitest run host && npm run typecheck && npm run lint`
 Expected: clean.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -2814,7 +2917,7 @@ git commit -m "feat(panel): Generate all remaining — sequential batch with per
 
 **Files:**
 - Modify: `e2e/fixtures/ashby-embed/apply-frame.html` (combobox comment + script)
-- Modify: `e2e/election.spec.ts` (harvest expectation; new bra-fill block; paste-rescan block including the superseded `:165-170` comment)
+- Modify: `e2e/election.spec.ts` (harvest expectation; new bra-fill block; paste-rescan block including the superseded `:165-170` comment; in-browser cvText step)
 
 **Interfaces:**
 - Consumes: Tasks 1–6 and 11–12 behavior (the seam build exercises the real content script + panel).
@@ -2829,7 +2932,10 @@ In `e2e/fixtures/ashby-embed/apply-frame.html`, change the comment above the com
 ```html
   <!-- dangling-label TYPE-TO-LOAD combobox, the real Ashby shape: clicking
        mounts NOTHING; options mount only after an input event, async (150ms),
-       substring-filtered. Zero matches mounts an EMPTY listbox. -->
+       substring-filtered. Zero matches on a NON-EMPTY query mounts an EMPTY
+       listbox; an EMPTY query mounts nothing at all — which also keeps the
+       fixture deterministic when a failed fill restores '' (the restore is
+       itself an input event; review blocker 2). -->
 ```
 
 Replace the combobox portion of the `<script>` (everything from `const combo = document.querySelector('[role="combobox"]')` through the `combo.addEventListener('keydown', …)` block, keeping the `yn` controlled-choice section below untouched) with:
@@ -2840,6 +2946,11 @@ Replace the combobox portion of the `<script>` (everything from `const combo = d
     const COUNTRIES = ['Brazil', 'Portugal', 'United States']
     const renderOptions = (query) => {
       wrap.querySelector('[role="listbox"]')?.remove()
+      // Real "Start typing..." behavior: an empty query renders NOTHING. This
+      // also keeps the page residue-free when a failed fill restores '' —
+      // that restore write is an input event and would otherwise re-mount a
+      // full listbox after the extension already closed it.
+      if (query.trim() === '') return
       const lb = document.createElement('ul')
       lb.setAttribute('role', 'listbox')
       for (const t of COUNTRIES.filter((c) => c.toLowerCase().includes(query.trim().toLowerCase()))) {
@@ -2908,7 +3019,26 @@ Replace the block from `// Let the second scan's fill pass settle before the pag
     // that changes nothing still fails. The double-scan counts are therefore
     // asserted, and they are the OPEN FINDING's regression test: a correct
     // answer must never demote to needs-input on a re-scan.
+    //
+    // Second-scan counts, derived FIELD BY FIELD (cross-vendor review item 10):
+    // the SCRIPTED host maps by kind only and never emits source:'page', so
+    // tier-1 'already-on-page' is structurally impossible in this spec — the
+    // fake resolve IGNORES currentValue, which is why 'already on page' stays
+    // 0 even though first/last/combobox re-enumerate with non-null
+    // currentValue after scan 1 and the manual bra→Brazil commit.
+    //   first, last  (text → auto 'ELECTED-FILL'): re-fill writes the same
+    //                value; text fills always verify        → 2 filled
+    //   choice       (→ auto 'Yes'): checkbox already checked from scan 1 →
+    //                fillChoice STEP 0 verified-at-state    → 1 filled
+    //   combobox     (→ auto 'Atlantis'): typeahead mounts an empty filtered
+    //                listbox → no-matching-option → demoted → 1 needs input
+    //   resume file, essay (kinds without an AUTO_VALUE)    → 2 needs input
+    // = 3 filled, 0 already on page, 0 proposed, 3 need input.
     await expect(panel.locator('[data-jff-status]')).toContainText('✓ 3 filled, 0 already on page, 0 proposed, 3 need input')
+    // The OPEN-FINDING regression must not hide behind count arithmetic: the
+    // choice ROW itself keeps its auto tier after the double scan.
+    await expect(panel.locator('[data-jff-rows] li', { hasText: 'Are you legally authorized' }))
+      .toHaveAttribute('data-jff-tier', 'auto')
     await expect(yesBtn).toHaveAttribute('aria-pressed', 'true')
     // The failed 'Atlantis' re-fill failed CLOSED: it restored the user's
     // committed 'Brazil', never clearing the control.
@@ -2916,7 +3046,60 @@ Replace the block from `// Let the second scan's fill pass settle before the pag
     await expect(target.locator('#nl-email')).toHaveValue('')
 ```
 
-- [ ] **Step 5: Run the election spec (seam build), then the full e2e set**
+- [ ] **Step 5: exercise cvText.ts in a REAL browser — resume upload → Generate carries the extracted text**
+
+Nothing else loads `cvText.ts` in a browser before the manual gate (the dynamic import fires only on a PDF pick), so this is the pre-gate proof that the pdfjs wiring survives vite + MV3 CSP (review majors item 6). Append to `e2e/election.spec.ts`, AFTER the paste-rescan block of Step 4 and BEFORE the `expect(ext.consoleErrors).toEqual([])` line (the existing zero-console-errors assertion at the end is part of this step's proof):
+
+Add to the spec's imports:
+
+```ts
+import { rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+```
+
+Add next to `const resolveCalls: ResolveParams[] = []`:
+
+```ts
+    const generateCalls: { cvText?: string }[] = []
+```
+
+Add a branch to the fake host bridge, above its catch-all `return { requestId, ok: true, result: {} }`:
+
+```ts
+      if (method === 'generate') {
+        generateCalls.push(req.params as { cvText?: string })
+        return { requestId, ok: true, result: { draft: 'E2E DRAFT' } }
+      }
+```
+
+Add a module-scope const (same value as Task 7's `TINY_PDF_B64` in `cvText.test.ts` — copy it verbatim from there; it is a 606-byte valid PDF whose page draws 'Kevin Shibuya kevin@example.com'):
+
+```ts
+const TINY_PDF_B64 = '<verbatim value from extension/src/panel/cvText.test.ts>'
+```
+
+Then append the flow:
+
+```ts
+    // B2a in a real browser (the ONLY pre-manual-gate exercise of cvText.ts):
+    // storing a PDF through the panel's resume input runs the real pdfjs
+    // extraction inside the MV3 panel, and the next Generate carries the
+    // extracted text as trusted context.
+    const pdfPath = join(tmpdir(), `jff-tiny-cv-${Date.now()}.pdf`)
+    writeFileSync(pdfPath, Buffer.from(TINY_PDF_B64, 'base64'))
+    await panel.locator('[data-jff-resume] input[type="file"]').setInputFiles(pdfPath)
+    // App sets cvText state BEFORE the resume name renders (Task 8 orders it
+    // so), making the rendered name the deterministic extraction-done signal.
+    await expect(panel.locator('[data-jff-resume]')).toContainText('jff-tiny-cv')
+    const essayRow = panel.locator('[data-jff-rows] li', { hasText: 'Describe the fastest measurable outcome' })
+    await essayRow.getByRole('button', { name: 'Generate with AI' }).click()
+    await expect.poll(() => generateCalls.length, { timeout: 30_000 }).toBe(1)
+    expect(generateCalls[0]!.cvText).toContain('Kevin Shibuya')
+    rmSync(pdfPath, { force: true })
+```
+
+- [ ] **Step 6: Run the election spec (seam build), then the full e2e set**
 
 Run: `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/election.spec.ts`
 Expected: PASS.
@@ -2924,11 +3107,11 @@ Expected: PASS.
 Run: `npx playwright test`
 Expected: 13/13. If `foundation.spec.ts:128/:149` flakes, re-run on an idle machine before concluding anything (known load flake).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add e2e/fixtures/ashby-embed/apply-frame.html e2e/election.spec.ts
-git commit -m "test(e2e): type-to-load combobox fixture; bra→Brazil canonicalization; double-scan keeps counts (OPEN FINDING regression)"
+git commit -m "test(e2e): type-to-load combobox fixture; bra→Brazil canonicalization; double-scan keeps counts (OPEN FINDING regression); cvText exercised in-browser"
 ```
 
 ---
@@ -2991,7 +3174,7 @@ Requires the user at a real browser. Print every workflow step as it is performe
 6. **election.spec harvest expectation changes to `[]`:** a type-to-load combobox mounts nothing on a bare click, so click-based harvest legitimately finds nothing. This is the real Ashby behavior the fixture now models; the mapping prompt loses the option list for such widgets (as it does on the live page).
 7. **pdfjs-dist pinned to `4.10.38`** (legacy build, main-thread fake worker via `globalThis.pdfjsWorker`). The implementer has sanctioned freedom on the wiring ONLY (Task 7) if the pin fails to install/build.
 8. **The unit test `'rejects a prefix match…'` is deleted, not weakened:** B1b makes a unique substring a success path by design; its fail-closed concern is re-covered by the new ambiguous-substring test and the commit-verification test.
-9. **`REASON_HINT['no-matching-option']` also renders for select/radio no-match failures** (the reason string is shared). The copy ("No dropdown option matches this value. Try different text.") reads correctly for those option-list widgets too.
+9. **`REASON_HINT['no-matching-option']` also renders for select/radio no-match failures** (the reason string is shared), so the copy is widget-agnostic by review decision: "No option matches this value. Try different text." (the brief's original "dropdown" wording was dropped in the cross-vendor review wave).
 
 ## Execution handoff
 
