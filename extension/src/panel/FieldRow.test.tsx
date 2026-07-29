@@ -181,6 +181,17 @@ describe('FieldRow — kind-aware editors (A9)', () => {
     expect(pressed).toEqual(['false', 'true'])
   })
 
+  it('marks the picked segment pressed under NORMALIZED comparison (B5d)', () => {
+    // 'yes ' (trailing space, lower case) vs option 'Yes' — the fill engine
+    // matches these normalized, so the highlight must too, or the user sees
+    // "saved answer badge but nothing selected".
+    const r = row(field({ kind: 'radiogroup', options: ['Yes', 'No'] }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} edited="yes " /></ul>)
+    const pressed = Array.from(document.querySelectorAll('[data-jff-editor="segmented"] button'))
+      .map((b) => b.getAttribute('aria-pressed'))
+    expect(pressed).toEqual(['true', 'false'])
+  })
+
   it('renders a >5-option set as a typeahead picker backed by a datalist', () => {
     const opts = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
     const r = row(field({ kind: 'select', options: opts }), resolution({ tier: 'needs_input', value: null, source: null }))
@@ -255,5 +266,17 @@ describe('FieldRow — foreign rows and hints (A9/B1 seam)', () => {
     const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'choice-needs-user-click' }))
     render(<ul><FieldRow row={r} {...props} /></ul>)
     expect(screen.getByText('Select this answer on the page yourself.')).toBeTruthy()
+  })
+
+  it('renders the combobox-no-listbox hint', () => {
+    const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'combobox-no-listbox' }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText('Open this dropdown on the page yourself and pick the value.')).toBeTruthy()
+  })
+
+  it('renders the no-matching-option hint', () => {
+    const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'no-matching-option' }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText('No option matches this value. Try different text.')).toBeTruthy()
   })
 })
