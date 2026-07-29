@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { ContentMessage, EnumField, FillReport, Resolution, SelfCheck } from '@jff/shared'
+import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
@@ -77,7 +77,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [generatedRefs, setGeneratedRefs] = useState<readonly string[]>([])
   const [filledRefs, setFilledRefs] = useState<readonly string[]>([])
-  const [generatingRef, setGeneratingRef] = useState<string | null>(null)
+  // B3: one entry per in-flight generate — concurrent row generates are
+  // independent host requests, and completing one must not touch the others.
+  const [generatingRefs, setGeneratingRefs] = useState<ReadonlySet<string>>(new Set())
   const [jobText, setJobText] = useState('')
   const [company, setCompany] = useState('')
   const [unreachable, setUnreachable] = useState(0)
@@ -529,27 +531,40 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     }
   }
 
-  const onGenerate = async (ref: string): Promise<void> => {
-    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'needs_input')   // onGenerate (foreign rows never generate)
+  /** One generate round-trip for one row. Returns 'ok', 'skipped' (no such
+   *  row / no port / already running), 'aborted' (the page died mid-flight),
+   *  or the host error kind — Task 12's batch loop dispatches on it. */
+  const generateOne = async (ref: string): Promise<'ok' | 'skipped' | 'aborted' | HostErrorKind> => {
+    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'needs_input')  // foreign rows never generate
     const port = portRef.current
-    if (row === undefined || port === null) return
-    setGeneratingRef(ref)
-    const r = await port.request<{ draft: string }>('generate', {
-      handle: row.resolution.handle,
-      questionRaw: row.field.label ?? '',
-      description: row.field.description,
-      jobText,
-      company: companyOrNull,
-      ...(cvText === null ? {} : { cvText }),
-    })
-    setGeneratingRef(null)
-    if (r.ok) {
-      setEdits((e) => ({ ...e, [ref]: r.result.draft }))
-      setGeneratedRefs((g) => (g.includes(ref) ? g : [...g, ref]))
-    } else {
+    if (row === undefined || port === null || generatingRefs.has(ref)) return 'skipped'
+    // Same rule as Accept/Fill: a draft answering a DEAD page's question must
+    // never land in edits (this guard was missing here — spec D3).
+    const gen = resetGenRef.current
+    setGeneratingRefs((s) => new Set(s).add(ref))
+    try {
+      const r = await port.request<{ draft: string }>('generate', {
+        handle: row.resolution.handle,
+        questionRaw: row.field.label ?? '',
+        description: row.field.description,
+        jobText,
+        company: companyOrNull,
+        ...(cvText === null ? {} : { cvText }),
+      })
+      if (resetGenRef.current !== gen) return 'aborted'
+      if (r.ok) {
+        setEdits((e) => ({ ...e, [ref]: r.result.draft }))
+        setGeneratedRefs((g) => (g.includes(ref) ? g : [...g, ref]))
+        return 'ok'
+      }
       setHostError(ERROR_COPY[r.error.kind])
+      return r.error.kind
+    } finally {
+      setGeneratingRefs((s) => { const next = new Set(s); next.delete(ref); return next })
     }
   }
+
+  const onGenerate = async (ref: string): Promise<void> => { await generateOne(ref) }
 
   const onPickJobText = async (): Promise<void> => {
     if (tabId === null || fields.length === 0 || picking) return
@@ -720,7 +735,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       <FieldRow
                         key={row.ref} row={row} edited={edits[row.ref] ?? null}
                         onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
-                        generating={generatingRef === row.ref}
+                        generating={generatingRefs.has(row.ref)}
                         filled={filledRefs.includes(row.ref)}
                         acting={acting !== null && acting.ref === row.ref ? acting.action : null}
                         locked={acting !== null}
