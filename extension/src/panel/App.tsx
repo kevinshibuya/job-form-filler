@@ -108,6 +108,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const resumeTargetRef = resumeTargetField === null ? null : refOf(resumeTargetField)
   const companyOrNull = company.trim() === '' ? null : company.trim()
 
+  // B6: facts-from-CV. null (no stored resume text) renders the button disabled.
+  const onExtractFacts = cvText === null ? null : async (): Promise<Record<string, string> | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request<Record<string, string>>('facts.extract', { cvText })
+    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    return r.result
+  }
+
   /* ------------------------------------------------------------- lifecycle */
 
   useEffect(() => {
@@ -700,7 +709,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         ? (
             // `key` remounts the editor the instant the facts arrive, so an editor
             // opened during the load is never stuck on an empty snapshot.
-            <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} />
+            <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
           )
         : (
             <>

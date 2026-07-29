@@ -15,6 +15,7 @@ import { CodexError, type CodexRunner } from './llm/codexCli.js'
 import { buildProfileSummary, runGeneration, sanitizeDraft, type GenerationInput } from './llm/generate.js'
 import { readProjectNotes } from './llm/projects.js'
 import { reviewDraft } from './llm/reviewDraft.js'
+import { runFactsExtract } from './llm/factsExtract.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFields } from './resolve/waterfall.js'
 import { log } from './log.js'
@@ -157,7 +158,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         return ok(req.requestId, paginate(listAllAnswers(db), req.params.page))
 
       case 'facts.extract':
-        return fail(req.requestId, 'bad_request', 'facts.extract lands in Task 10')
+        return ok(req.requestId, await runFactsExtract(deps.runner, req.params.cvText))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req

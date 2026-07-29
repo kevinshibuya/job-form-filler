@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ANSWER_BANK_KEYS, PROFILE_KEYS } from '@jff/shared'
-import { BTN_PRIMARY, INPUT, MUTED } from './ui'
+import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
 
 const LABELS: Record<string, string> = {
   firstName: 'First name', lastName: 'Last name', fullName: 'Full name',
@@ -12,13 +12,16 @@ const LABELS: Record<string, string> = {
 }
 
 export function ProfileEditor({
-  values, loaded, onSave,
+  values, loaded, onSave, onExtract = null,
 }: {
   /** Facts fetched from the host. Arrives asynchronously; may be partial. */
   values: Record<string, string>
   /** False until profile.get AND answerBank.get have both answered. */
   loaded: boolean
   onSave: (profile: Record<string, string>, bank: Record<string, string>) => void
+  /** B6: null when no stored resume text exists — the button renders disabled.
+   *  Resolves null on a failed extraction (host error already surfaced by App). */
+  onExtract?: (() => Promise<Record<string, string> | null>) | null
 }) {
   // `values` is the mount-time seed. App remounts this component (via `key`) the
   // moment the facts arrive, so the draft can never be stuck on a pre-load snapshot.
@@ -42,6 +45,28 @@ export function ProfileEditor({
     onSave(collect(PROFILE_KEYS), collect(ANSWER_BANK_KEYS))
   }
 
+  const [extracting, setExtracting] = useState(false)
+  const runExtract = async (): Promise<void> => {
+    if (onExtract === null || extracting) return
+    setExtracting(true)
+    try {
+      const facts = await onExtract()
+      if (facts !== null) {
+        // Merge into EMPTY draft fields only — the user's typing always wins,
+        // and nothing persists until they press Save facts (spec D5).
+        setDraft((d) => {
+          const next = { ...d }
+          for (const [k, v] of Object.entries(facts)) {
+            if ((next[k] ?? '').trim() === '') next[k] = v
+          }
+          return next
+        })
+      }
+    } finally {
+      setExtracting(false)
+    }
+  }
+
   return (
     <section className="mt-3" data-jff-editor="1">
       <h2 className="mb-0.5 text-[13px] font-semibold">Your facts</h2>
@@ -52,7 +77,17 @@ export function ProfileEditor({
           <input id={`p-${k}`} className={INPUT} value={draft[k] ?? ''} onChange={(e) => set(k, e.target.value)} />
         </div>
       ))}
-      <button type="button" className={BTN_PRIMARY} disabled={!loaded} onClick={submit}>Save facts</button>
+      <div className="flex items-center gap-2">
+        <button type="button" className={BTN_PRIMARY} disabled={!loaded} onClick={submit}>Save facts</button>
+        <button
+          type="button" className={BTN}
+          disabled={onExtract === null || extracting}
+          title={onExtract === null ? 'Store a PDF resume first' : undefined}
+          onClick={runExtract}
+        >
+          {extracting ? 'Extracting…' : 'Generate from CV'}
+        </button>
+      </div>
       {!loaded && <p className={`mt-1.5 text-[12px] ${MUTED}`}>Loading your saved facts…</p>}
     </section>
   )
