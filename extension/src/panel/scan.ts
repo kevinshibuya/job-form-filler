@@ -1,4 +1,5 @@
 import type { ContentMessage, EnumField, HostErrorKind, Resolution, ResolveResult } from '@jff/shared'
+import { dropJunk } from './junk'
 import type { HostPort } from './port'
 import type { StoredResume } from './resume'
 
@@ -146,6 +147,10 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     }
   }
   let { fields, unreachableWidgets, activeCaptcha, reports } = enumd
+  // A5: the content script enumerated and stamped EVERYTHING (snapshot + fid
+  // numbering unchanged); the panel drops junk before anything costs money or
+  // touches the page. Raw counts above (retry/empty checks) stay raw on purpose.
+  let kept = dropJunk(fields)
 
   // Everything past the enumeration runs under ScanError: a jobtext/resolve/fill
   // relay death must reach the panel WITH the per-frame evidence already collected,
@@ -169,12 +174,12 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
     if (activeCaptcha) {
       // An active challenge means the extension does nothing at all on this page.
-      return { epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
     // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
     const resume = await deps.getResume()
-    const fileField = fields.find((f) => f.kind === 'file')
+    const fileField = kept.find((f) => f.kind === 'file')
     if (resume !== null && fileField !== undefined) {
       let resumeError: FrameReport | null = null
       try {
@@ -192,6 +197,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       deps.onProgress({ phase: 'enumerating', frames: frameCount })
       const again = await enumerateAllFrames(deps, epoch)
       fields = again.fields
+      kept = dropJunk(fields)
       unreachableWidgets = again.unreachableWidgets
       activeCaptcha = again.activeCaptcha
       reports = resumeError === null ? again.reports : [...again.reports, resumeError]
@@ -200,36 +206,47 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
         // Uploading a resume is a common trigger for an ATS challenge. Re-reading
         // activeCaptcha and then filling anyway would be worse than never re-reading
         // it: same blast radius, plus a paid resolve call.
-        return { epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
       if (fields.length === 0) {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
-        return { epoch, fields: [], resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
     }
 
+    if (kept.length === 0) {
+      // Only junk on the page: resolve is NEVER called with zero real fields.
+      return { epoch, fields: [], resolutions: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+    }
+
     // PHASE 2 — the host resolves everything that is still open.
-    deps.onProgress({ phase: 'resolving', fields: fields.length })
+    deps.onProgress({ phase: 'resolving', fields: kept.length })
     const resolved = await deps.port.request<ResolveResult>('resolve', {
       epoch,
       url: deps.url ?? '',
       hostname: deps.hostname ?? '',
       company: deps.company ?? null,
       jobText,
-      fields,
+      fields: kept,
     })
     if (!resolved.ok) {
       return {
-        epoch, fields, resolutions: [], unreachableWidgets, activeCaptcha, jobText,
+        epoch, fields: kept, resolutions: [], unreachableWidgets, activeCaptcha, jobText,
         llmError: resolved.error, frameReports: reports,
       }
     }
+
+    // INTERIM (plan 3 removes this): choice fills need B1's fillChoice —
+    // fillCheckbox("Yes") on the hidden input is exactly the silent-no-op /
+    // misfill class the spec kills. Until then, choice rows are review-only.
+    const choiceRefs = new Set(kept.filter((f) => f.kind === 'choice').map((f) => `${f.frameId}:${f.fid}`))
 
     // Auto-fill tier-1/tier-2 results only. `page` sourced values are already there.
     const byFrame = new Map<number, { handle: Resolution['handle']; value: string }[]>()
     for (const r of resolved.result.resolutions) {
       if (r.tier !== 'auto' || r.source === 'page' || r.value === null || r.value === '') continue
+      if (choiceRefs.has(`${r.handle.frameId}:${r.handle.fid}`)) continue
       const list = byFrame.get(r.handle.frameId) ?? []
       list.push({ handle: r.handle, value: r.value })
       byFrame.set(r.handle.frameId, list)
@@ -245,7 +262,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     }
 
     return {
-      epoch, fields,
+      epoch, fields: kept,
       resolutions: resolved.result.resolutions,
       unreachableWidgets, activeCaptcha, jobText,
       llmError: resolved.result.llmError,
