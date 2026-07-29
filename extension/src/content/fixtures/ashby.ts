@@ -173,3 +173,61 @@ export const SHARED_WRAPPER_FIRST_LAST = `
     <input type="text" name="last" placeholder="Last name">
   </div>
 </div>`
+
+/** Radio-backed choice whose radio VALUES are opaque tokens that match no
+ *  button text: nothing NAMES the option on the input side, so fillChoice must
+ *  answer through the (ungated) buttons — while fillRadioGroup would answer
+ *  no-matching-option. Proves the dispatch order (choice BEFORE radio) with a
+ *  distinguishable outcome. */
+export const CHOICE_RADIO_OPAQUE_VALUES = `
+<div class="_fieldEntry_1e3gg_28">
+  <label class="_label_1e3gg_42" for="ov-uuid-0001">Do you require visa sponsorship?</label>
+  <div class="_container_1svni_28 _yesno_1e3gg_148">
+    <button class="_option_1svni_32">Sim</button>
+    <button class="_option_1svni_32">Não</button>
+    <input type="radio" class="_input_1svni_78" tabindex="-1" name="ov-uuid-0001" value="opt_0">
+    <input type="radio" class="_input_1svni_78" tabindex="-1" name="ov-uuid-0001" value="opt_1">
+  </div>
+</div>`
+
+/** Choice whose untyped buttons sit INSIDE a <form>: gate (c) refuses them —
+ *  an untyped button in a form is a submit control in disguise. */
+export const CHOICE_FORM_WRAPPED = `
+<form action="/apply">
+  <div class="_fieldEntry_1e3gg_28">
+    <label class="_label_1e3gg_42" for="fw-uuid-0001">Are you willing to relocate?</label>
+    <div class="_container_1svni_28 _yesno_1e3gg_148">
+      <button class="_option_1svni_32">Yes</button>
+      <button class="_option_1svni_32">No</button>
+      <input type="checkbox" class="_input_1svni_78" tabindex="-1" name="fw-uuid-0001">
+    </div>
+  </div>
+</form>`
+
+/** Choice whose matching option text is submit-worded ("Enviar"): gate (b)
+ *  refuses it even though this page has NO <form> at all — exactly the
+ *  motivating Ashby page's shape, where "no form ancestor" is true for every
+ *  button on the page. */
+export const CHOICE_SUBMIT_WORDED = `
+<div class="_fieldEntry_1e3gg_28">
+  <label class="_label_1e3gg_42" for="sw-uuid-0001">Ready to send your application?</label>
+  <div class="_container_1svni_28 _yesno_1e3gg_148">
+    <button class="_option_1svni_32">Enviar</button>
+    <button class="_option_1svni_32">Não</button>
+    <input type="checkbox" class="_input_1svni_78" tabindex="-1" name="sw-uuid-0001">
+  </div>
+</div>`
+
+/** Two comboboxes, the second with its listbox already mounted and attributed
+ *  (aria-controls). Filling the FIRST must never touch the second's options —
+ *  the cross-combobox bug B2 kills. */
+export const TWO_OPEN_COMBOBOX = `
+<div class="field">
+  <label for="cb-a">Country</label>
+  <input id="cb-a" role="combobox" aria-haspopup="listbox">
+</div>
+<div class="field">
+  <label for="cb-b">Language</label>
+  <input id="cb-b" role="combobox" aria-haspopup="listbox" aria-controls="lb-b">
+  <ul role="listbox" id="lb-b"><li role="option">Portuguese</li><li role="option">English</li></ul>
+</div>`
