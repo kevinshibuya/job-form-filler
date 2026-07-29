@@ -7,7 +7,7 @@ export type ScanUiState =
   | { kind: 'enumerating'; frames: number }
   | { kind: 'retrying' }
   | { kind: 'resolving'; fields: number }
-  | { kind: 'done'; filled: number; proposed: number; needsInput: number }
+  | { kind: 'done'; filled: number; alreadyOnPage: number; proposed: number; needsInput: number }
   | { kind: 'empty'; frames: number }
   | { kind: 'captcha' }
   | { kind: 'failed'; reason: string }
@@ -23,7 +23,7 @@ function copyFor(s: ScanUiState): string {
     case 'enumerating': return `Scanning page (${s.frames} frames)…`
     case 'retrying': return 'No fields yet — looking again…'
     case 'resolving': return `Matching ${s.fields} fields… (a Claude call can take a minute)`
-    case 'done': return `✓ ${s.filled} filled, ${s.proposed} proposed, ${s.needsInput} need input`
+    case 'done': return `✓ ${s.filled} filled, ${s.alreadyOnPage} already on page, ${s.proposed} proposed, ${s.needsInput} need input`
     case 'empty': return `⚠ Scanned ${s.frames} frames, found no form fields. Open the application form, then Scan again.`
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'
     case 'failed': return `✕ Scan failed: ${s.reason}`
