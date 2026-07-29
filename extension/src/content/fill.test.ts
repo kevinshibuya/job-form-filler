@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setNativeValue, fillOne, fillFields, fillFile } from './fill'
 import { enumerateFields, type MeasureFn } from './enumerate'
+import {
+  ASHBY_CHOICE_RADIO, ASHBY_YESNO_EN, ASHBY_YESNO_PT, CHOICE_FORM_WRAPPED,
+  CHOICE_RADIO_OPAQUE_VALUES, CHOICE_SUBMIT_WORDED, STYLED_HIDDEN_CHECKBOX, TWO_OPEN_COMBOBOX,
+} from './fixtures/ashby'
 
 /**
  * jsdom has never implemented the DataTransfer API (jsdom/jsdom#1568, still open),
@@ -147,6 +151,159 @@ describe('fillOne', () => {
   it('never clicks a submit control', async () => {
     document.body.innerHTML = '<button id="b" type="submit">Submit</button>'
     await expect(fillOne(document.getElementById('b')!, 'x')).resolves.toMatchObject({ ok: false, reason: 'unsupported-widget' })
+  })
+})
+
+/** Wire click spies on every option button in the current DOM. */
+function spyButtons(): { clicks: string[]; buttons: HTMLButtonElement[] } {
+  const clicks: string[] = []
+  const buttons = Array.from(document.querySelectorAll('button'))
+  for (const b of buttons) b.addEventListener('click', () => clicks.push((b.textContent ?? '').trim()))
+  return { clicks, buttons }
+}
+
+/** Ashby-like controlled checkbox: the page ignores direct input clicks and
+ *  drives all state from the buttons. */
+function controlCheckbox(): HTMLInputElement {
+  const cb = document.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+  cb.addEventListener('click', (e) => e.preventDefault())
+  return cb
+}
+
+/** Page behavior for the buttons: clicking one marks it aria-pressed. */
+function pressableButtons(): void {
+  for (const b of Array.from(document.querySelectorAll('button'))) {
+    b.addEventListener('click', () => {
+      for (const s of Array.from(b.parentElement!.querySelectorAll('button'))) {
+        s.setAttribute('aria-pressed', String(s === b))
+      }
+    })
+  }
+}
+
+describe('fillOne — choice widgets (B1)', () => {
+  it('radio-backed: clicks the value-matching member radio, zero button clicks', async () => {
+    document.body.innerHTML = ASHBY_CHOICE_RADIO
+    const { clicks } = spyButtons()
+    const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
+    await expect(fillOne(first, 'No')).resolves.toEqual({ ok: true })
+    expect(document.querySelector<HTMLInputElement>('input[value="no"]')!.checked).toBe(true)
+    expect(clicks).toEqual([])
+  })
+
+  it('radio-backed with opaque values: answers through the ungated button (fillRadioGroup could not)', async () => {
+    document.body.innerHTML = CHOICE_RADIO_OPAQUE_VALUES
+    pressableButtons()
+    const { clicks } = spyButtons()
+    const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
+    await expect(fillOne(first, 'Não')).resolves.toEqual({ ok: true })
+    // Proof it routed through fillChoice BEFORE the radio branch: the radios'
+    // values (opt_0/opt_1) match neither 'Não' nor any option label, so
+    // fillRadioGroup would have answered no-matching-option. Nothing NAMES the
+    // option on the input side, so step 1 is skipped (index alignment is not a
+    // step-1 candidate) and the ungated button carries the answer.
+    expect(clicks).toEqual(['Não'])
+    expect(document.querySelectorAll('button')[1]!.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('falls back to index alignment ONLY after the button gate refuses', async () => {
+    // Untyped buttons inside a <form> fail gate (c); with no nameable member
+    // radio, index alignment is the last thing left before asking the user.
+    document.body.innerHTML = `
+      <form action="/apply">
+        <div class="_container_1svni_28 _yesno_1e3gg_148">
+          <button class="_option_1svni_32">Sim</button>
+          <button class="_option_1svni_32">Não</button>
+          <input type="radio" class="_input_1svni_78" name="ix-uuid" value="opt_0">
+          <input type="radio" class="_input_1svni_78" name="ix-uuid" value="opt_1">
+        </div>
+      </form>`
+    const { clicks } = spyButtons()
+    const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
+    await expect(fillOne(first, 'Não')).resolves.toEqual({ ok: true })
+    expect(document.querySelector<HTMLInputElement>('input[value="opt_1"]')!.checked).toBe(true)
+    expect(clicks).toEqual([]) // the in-form button was never clicked
+  })
+
+  it('checkbox-backed, click-accepting: fills affirmative with ZERO button clicks', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    const { clicks } = spyButtons()
+    const cb = document.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: true })
+    expect(cb.checked).toBe(true)
+    expect(clicks).toEqual([])
+  })
+
+  it('checkbox-backed, controlled input: falls through to the matching button', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    const cb = controlCheckbox()
+    pressableButtons()
+    const { clicks } = spyButtons()
+    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: true })
+    expect(cb.checked).toBe(false) // the input click was prevented; the button carried the answer
+    expect(clicks).toEqual(['Yes'])
+    expect(document.querySelectorAll('button')[0]!.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('filling "No" on an unchecked controlled box NEVER silently no-ops: the button is clicked', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    const cb = controlCheckbox()
+    pressableButtons()
+    const { clicks } = spyButtons()
+    await expect(fillOne(cb, 'No')).resolves.toEqual({ ok: true })
+    expect(clicks).toEqual(['No'])
+    expect(document.querySelectorAll('button')[1]!.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('matches i18n option texts verbatim (Não), never boolean-mapped', async () => {
+    document.body.innerHTML = ASHBY_YESNO_PT
+    controlCheckbox()
+    pressableButtons()
+    const { clicks } = spyButtons()
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Não')).resolves.toEqual({ ok: true })
+    expect(clicks).toEqual(['Não'])
+  })
+
+  it('never clicks an untyped button inside a <form>', async () => {
+    document.body.innerHTML = CHOICE_FORM_WRAPPED
+    const cb = controlCheckbox() // step 1 is prevented, so only the gate stands between us and the button
+    const { clicks } = spyButtons()
+    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: false, reason: 'choice-needs-user-click' })
+    expect(clicks).toEqual([])
+  })
+
+  it('refuses a submit-worded button even with NO <form> on the page', async () => {
+    document.body.innerHTML = CHOICE_SUBMIT_WORDED
+    const { clicks } = spyButtons()
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Enviar'))
+      .resolves.toEqual({ ok: false, reason: 'choice-needs-user-click' })
+    expect(clicks).toEqual([])
+  })
+
+  it('answers choice-needs-user-click when no button matches the value', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    controlCheckbox()
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Maybe'))
+      .resolves.toEqual({ ok: false, reason: 'choice-needs-user-click' })
+  })
+
+  it('reports no-state-change when the clicked button produces no observable delta', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    controlCheckbox() // inert buttons: no listeners, no attribute changes
+    const { clicks } = spyButtons()
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Yes'))
+      .resolves.toEqual({ ok: false, reason: 'no-state-change' })
+    expect(clicks).toEqual(['Yes']) // the click WAS attempted; success was not claimed without evidence
+  })
+
+  it('a styled hidden checkbox with no sibling buttons still takes the plain checkbox path', async () => {
+    document.body.innerHTML = STYLED_HIDDEN_CHECKBOX
+    const el = document.getElementById('tos-check') as HTMLInputElement
+    // Correct no-op: unchecking an already-unchecked box reports ok, zero clicks.
+    const clicks = vi.fn()
+    el.addEventListener('click', clicks)
+    await expect(fillOne(el, 'false')).resolves.toEqual({ ok: true })
+    expect(clicks).not.toHaveBeenCalled()
   })
 })
 
