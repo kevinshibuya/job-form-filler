@@ -255,6 +255,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       visible, currentValue: currentValueOf(el, kind),
       demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
       description: descriptionFor(el, binding) ?? undefined,
+      accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
     })
     fid++
   }
