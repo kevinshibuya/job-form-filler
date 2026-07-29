@@ -76,6 +76,20 @@
     combo.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') wrap.querySelector('[role="listbox"]')?.remove()
     })
+
+    // Ashby-like controlled choice: the hidden checkbox IGNORES direct clicks
+    // (preventDefault cancels the checkbox activation behavior); only the
+    // buttons drive state. This forces fillChoice through its gated step 2.
+    const yn = document.querySelector('input[name="yn-uuid"]')
+    yn.addEventListener('click', (e) => e.preventDefault())
+    for (const b of document.querySelectorAll('._container_1svni_28 button')) {
+      b.addEventListener('click', () => {
+        for (const s of b.parentElement.querySelectorAll('button')) {
+          s.setAttribute('aria-pressed', String(s === b))
+        }
+        yn.checked = b.textContent.trim() === 'Yes'
+      })
+    }
   </script>
 </body>
 </html>
