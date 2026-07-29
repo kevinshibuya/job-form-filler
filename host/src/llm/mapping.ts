@@ -53,7 +53,11 @@ export function buildMappingPrompt(input: MappingInput): string {
     const desc = f.description === undefined || f.description === ''
       ? ''
       : ` ${fence('field_description', f.description, CAPS.description)}`
-    return `- ref=${refOf(f)} kind=${f.kind} required=${f.required} ${fence('field_label', f.label ?? '', CAPS.label)}${desc}${opts}`
+    // A6: a combobox is a CLOSED widget whose harvest may have caught only the
+    // mounted subset — the model must pick from options when they fit but must
+    // not treat an absent option as proof the answer is free-text.
+    const kindNote = f.kind === 'combobox' ? ' (closed set; options may be partial)' : ''
+    return `- ref=${refOf(f)} kind=${f.kind}${kindNote} required=${f.required} ${fence('field_label', f.label ?? '', CAPS.label)}${desc}${opts}`
   }).join('\n')
 
   const candidateLines = input.candidates.length === 0
