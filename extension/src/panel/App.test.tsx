@@ -1102,7 +1102,7 @@ describe('App — election rendering (A7/A9)', () => {
 describe('App — resume row wiring (A8/A9)', () => {
   it('puts the stored resume on the page from the winning file row, targeting its own fid', async () => {
     const { saveResume } = await import('./resume')
-    await saveResume(new File([new Uint8Array([1, 2, 3])], 'cv.pdf', { type: 'application/pdf' }))
+    await saveResume(new File([new Uint8Array([1, 2, 3])], 'cv.pdf', { type: 'application/pdf' }), async () => null)
     const sentMessages: { type?: string; handle?: { fid: number } }[] = []
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string; handle?: { fid: number } } }) => {

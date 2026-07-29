@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
-import { saveResume, loadResume, clearResume } from './resume'
+import { saveResume, loadResume, loadResumeText, clearResume, type StoredResume } from './resume'
 
 /**
  * jsdom's Blob implements only `slice`/`size`/`type` — `arrayBuffer()`, `text()`
@@ -32,21 +32,81 @@ describe('resume store', () => {
   })
 
   it('round-trips a file as base64 with its name and mime type', async () => {
-    await saveResume(new File([new Uint8Array([1, 2, 3, 4])], 'kevin-cv.pdf', { type: 'application/pdf' }))
+    await saveResume(new File([new Uint8Array([1, 2, 3, 4])], 'kevin-cv.pdf', { type: 'application/pdf' }), async () => null)
     const stored = await loadResume()
     expect(stored).toMatchObject({ name: 'kevin-cv.pdf', mimeType: 'application/pdf' })
     expect(atob(stored!.dataBase64)).toHaveLength(4)
   })
 
   it('replaces the previous resume rather than accumulating', async () => {
-    await saveResume(new File(['a'], 'old.pdf', { type: 'application/pdf' }))
-    await saveResume(new File(['bb'], 'new.pdf', { type: 'application/pdf' }))
+    await saveResume(new File(['a'], 'old.pdf', { type: 'application/pdf' }), async () => null)
+    await saveResume(new File(['bb'], 'new.pdf', { type: 'application/pdf' }), async () => null)
     expect((await loadResume())!.name).toBe('new.pdf')
   })
 
   it('clears the stored resume', async () => {
-    await saveResume(new File(['a'], 'x.pdf', { type: 'application/pdf' }))
+    await saveResume(new File(['a'], 'x.pdf', { type: 'application/pdf' }), async () => null)
     await clearResume()
     await expect(loadResume()).resolves.toBeNull()
+  })
+})
+
+describe('resume CV text (B2a)', () => {
+  it('stores extracted text beside the blob for a PDF', async () => {
+    const extract = vi.fn(async () => 'CV TEXT')
+    await saveResume(new File(['%PDF-1.4'], 'cv.pdf', { type: 'application/pdf' }), extract)
+    expect(extract).toHaveBeenCalledTimes(1)
+    expect(await loadResume()).toMatchObject({ name: 'cv.pdf', text: 'CV TEXT' })
+    await expect(loadResumeText()).resolves.toBe('CV TEXT')
+  })
+
+  it('stores text: null for a non-PDF without calling the extractor', async () => {
+    const extract = vi.fn(async () => 'never')
+    await saveResume(new File(['plain'], 'cv.txt', { type: 'text/plain' }), extract)
+    expect(extract).not.toHaveBeenCalled()
+    expect((await loadResume())!.text).toBeNull()
+  })
+
+  it('stores text: null when extraction fails, and does NOT retry it lazily', async () => {
+    await saveResume(new File(['%PDF-1.4'], 'cv.pdf', { type: 'application/pdf' }), async () => null)
+    expect((await loadResume())!.text).toBeNull()
+    const retry = vi.fn(async () => 'late')
+    await expect(loadResumeText(retry)).resolves.toBeNull()
+    expect(retry).not.toHaveBeenCalled() // a persisted null is an answer, not a gap
+  })
+
+  it('an extractor that THROWS still stores the resume with text: null (spec D2)', async () => {
+    await saveResume(new File(['%PDF-1.4'], 'cv.pdf', { type: 'application/pdf' }), async () => { throw new Error('pdfjs exploded') })
+    expect(await loadResume()).toMatchObject({ name: 'cv.pdf', text: null })
+  })
+
+  it('lazily extracts, persists and reuses text for a pre-B2a record', async () => {
+    // A legacy record has NO `text` property at all. Write one directly.
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('jff', 1)
+      req.onupgradeneeded = () => { req.result.createObjectStore('resume') }
+      req.onsuccess = () => {
+        const db = req.result
+        const t = db.transaction('resume', 'readwrite')
+        t.objectStore('resume').put(
+          { name: 'old.pdf', mimeType: 'application/pdf', dataBase64: btoa('%PDF-1.4') } as unknown as StoredResume,
+          'current',
+        )
+        t.oncomplete = () => { db.close(); resolve() }
+        t.onerror = () => reject(t.error)
+      }
+      req.onerror = () => reject(req.error)
+    })
+    const extract = vi.fn(async () => 'LAZY TEXT')
+    await expect(loadResumeText(extract)).resolves.toBe('LAZY TEXT')
+    expect(extract).toHaveBeenCalledTimes(1)
+    // Persisted: the second call answers from the store.
+    const again = vi.fn(async () => 'should not run')
+    await expect(loadResumeText(again)).resolves.toBe('LAZY TEXT')
+    expect(again).not.toHaveBeenCalled()
+  })
+
+  it('returns null text when nothing is stored', async () => {
+    await expect(loadResumeText()).resolves.toBeNull()
   })
 })
