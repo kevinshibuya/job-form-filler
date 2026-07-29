@@ -586,12 +586,12 @@ describe('runScan — A5 junk filtering', () => {
     for (const m of fills) expect(m.fills.every((x) => x.handle.fid !== 1)).toBe(true)
   })
 
-  it('never auto-fills a choice field before fillChoice lands (interim guard, removed by plan 3)', async () => {
+  it('sends choice resolutions through the batch fill (interim guard deleted — fillChoice owns them now)', async () => {
     const { deps, sent } = depsWithFields(junkAnd2, 'auto')
     await runScan(deps)
     const fills = sent.filter((m) => m.type === 'JFF_FILL') as { fills: { handle: { fid: number } }[] }[]
-    expect(fills.length).toBeGreaterThan(0) // fid 0 IS filled
-    for (const m of fills) expect(m.fills.every((x) => x.handle.fid !== 2)).toBe(true)
+    expect(fills.length).toBeGreaterThan(0)
+    expect(fills.some((m) => m.fills.some((x) => x.handle.fid === 2))).toBe(true) // the choice fid IS filled
   })
 
   it('returns without calling resolve when only junk remains', async () => {
@@ -744,5 +744,65 @@ describe('runScan — A6 combobox harvest', () => {
     expect(types.indexOf('JFF_HARVEST')).toBeGreaterThan(types.lastIndexOf('JFF_SCAN'))
     expect(types.indexOf('JFF_HARVEST')).toBeGreaterThan(types.indexOf('JFF_FILL_RESUME'))
     expect(resolveCalls[0]!.fields.find((f) => f.fid === 1)!.options).toEqual(['Brazil'])
+  })
+})
+
+describe('runScan — B3 fill report collection', () => {
+  const twoAuto = [field(0, 0), field(0, 1, { kind: 'choice', visible: false, label: 'Authorized?', options: ['Yes', 'No'] })]
+
+  /** Wraps depsWithFields so JFF_FILL answers with a scripted per-frame report. */
+  function reportingDeps(reply: (fills: { handle: { frameId: number; fid: number; epoch: number } }[], epoch: number) => unknown) {
+    const made = depsWithFields(twoAuto, 'auto')
+    const inner = made.deps.sendToTab
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      if (message.type === 'JFF_FILL') {
+        made.sent.push(message)
+        return { replies: [{ frameId: frameId ?? 0, payload: reply(message.fills, message.epoch) }], failures: [] }
+      }
+      return inner(frameId, message)
+    })
+    return made
+  }
+
+  it('collects page-accepted and failed fills from the JFF_FILL reports', async () => {
+    const { deps } = reportingDeps((fills, epoch) => ({
+      ok: true,
+      fill: {
+        epoch,
+        filled: [fills[0]!.handle],
+        failed: [{ handle: fills[1]!.handle, reason: 'choice-needs-user-click' }],
+      },
+    }))
+    const out = await runScan(deps)
+    expect(out.fill.filled).toEqual([expect.objectContaining({ frameId: 0, fid: 0 })])
+    expect(out.fill.failed).toEqual([
+      { handle: expect.objectContaining({ frameId: 0, fid: 1 }), reason: 'choice-needs-user-click' },
+    ])
+  })
+
+  it('a refused envelope (stale epoch) fails every fill sent to that frame, with its reason', async () => {
+    const { deps } = reportingDeps(() => ({ ok: false, error: 'stale_epoch' }))
+    const out = await runScan(deps)
+    expect(out.fill.filled).toEqual([])
+    expect(out.fill.failed.map((f) => f.reason)).toEqual(['stale_epoch', 'stale_epoch'])
+  })
+
+  it('a frame that dies mid-fill fails its fills as frame-unreachable AND keeps the evidence report', async () => {
+    const made = depsWithFields(twoAuto, 'auto')
+    const inner = made.deps.sendToTab
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      if (message.type === 'JFF_FILL') throw new Error('frame vanished mid-fill')
+      return inner(frameId, message)
+    })
+    const out = await runScan(made.deps)
+    expect(out.fill.filled).toEqual([])
+    expect(out.fill.failed.map((f) => f.reason)).toEqual(['frame-unreachable', 'frame-unreachable'])
+    expect(out.frameReports.some((r) => r.error !== null && r.error.includes('fill failed'))).toBe(true)
+  })
+
+  it('a scan that never fills reports an EMPTY fill, not a lying one', async () => {
+    const { deps } = depsWithFields([field(0, 0)], 'needs_input')
+    const out = await runScan(deps)
+    expect(out.fill).toEqual({ filled: [], failed: [] })
   })
 })
