@@ -174,19 +174,33 @@ export async function fillChoice(
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
-/** How long the combobox may take to mount options after our click, and again
- *  after our typeahead keystroke (spec B2, mirrors HARVEST_LISTBOX_TIMEOUT_MS). */
+/** How long the combobox may take to mount options after our OPEN click (the
+ *  fast path for widgets that mount on click, mirrors HARVEST_LISTBOX_TIMEOUT_MS). */
 const COMBOBOX_WAIT_MS = 500
+/** …and after our typeahead keystrokes. Real Ashby options come from a
+ *  debounced network fetch; 500ms was never enough (spec D1). */
+const COMBOBOX_TYPE_WAIT_MS = 2000
 const COMBOBOX_POLL_MS = 50
 
 /**
- * B2: interact ONLY with a listbox attributable to this control — aria-owns/
+ * B1: interact ONLY with a listbox attributable to this control — aria-owns/
  * aria-controls, or one that appeared in response to OUR interaction (the same
  * attributableListbox rule the harvest defined; the document-wide fallback was
- * the cross-combobox bug). No exact normalized match mounted → drive the
- * typeahead with a native value write → EXACT match only (prefix guessing
- * removed) → verify the page committed the choice. Every failure path restores
- * the pre-fill snapshot (never a clear to '') and closes via Escape + blur.
+ * the cross-combobox bug). The open click stays, then the typeahead is ALWAYS
+ * driven when there is an input to type into: real Ashby comboboxes ("Start
+ * typing...") mount options only AFTER keystrokes, so bailing on "no listbox
+ * yet" was the silent no-op the user filmed (spec D1).
+ *
+ * Matching ladder: exact normalized match, else a UNIQUE normalized-substring
+ * match — zero or ambiguous fails closed (never guess between candidates).
+ * Success iff the page committed the CLICKED OPTION's text; the requested
+ * value no longer has to equal it ('bra' legitimately commits 'Brazil'), and
+ * `committed` reports the canonical text when it differs. Every failure path
+ * restores the pre-fill snapshot (never a clear to ''), waits a frame, THEN
+ * closes via Escape+blur — the restore write is itself an input event, and
+ * fired after Escape it would re-open the dropdown just closed. A type-to-load
+ * page may still refetch options on that restore event; the residual is
+ * page-side and is eyeballed at the manual gate (review fix, majors item 5).
  */
 async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
@@ -195,60 +209,74 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   ;(el as HTMLElement).click()
   const target = norm(value)
 
-  const lookup = (): { mounted: boolean; options: number; hit: HTMLElement | null } => {
+  const lookup = (): { mounted: boolean; options: HTMLElement[] } => {
     const listbox = attributableListbox(document, el, before)
-    if (listbox === null) return { mounted: false, options: 0, hit: null }
-    const options = Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'))
-    return {
-      mounted: true,
-      options: options.length,
-      hit: options.find((o) => norm(o.textContent ?? '') === target) ?? null,
-    }
+    if (listbox === null) return { mounted: false, options: [] }
+    return { mounted: true, options: Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]')) }
   }
 
-  const waitForHit = async (breakOnOptions: boolean): Promise<{ hit: HTMLElement | null; sawListbox: boolean }> => {
-    const deadline = Date.now() + COMBOBOX_WAIT_MS
-    let sawListbox = false
+  // B1b ladder. Ambiguity fails closed: clicking one of several substring
+  // candidates would be a guess, and a wrong option is worse than asking.
+  const pick = (options: HTMLElement[]): HTMLElement | null => {
+    const exact = options.find((o) => norm(o.textContent ?? '') === target)
+    if (exact !== undefined) return exact
+    const partial = options.filter((o) => norm(o.textContent ?? '').includes(target))
+    return partial.length === 1 ? partial[0]! : null
+  }
+
+  let sawListbox = false
+  const waitForHit = async (waitMs: number, breakOnOptions: boolean): Promise<HTMLElement | null> => {
+    const deadline = Date.now() + waitMs
     for (;;) {
       const m = lookup()
       sawListbox = sawListbox || m.mounted
-      if (m.hit !== null) return { hit: m.hit, sawListbox }
-      // Options are mounted and the choice is not among them: waiting longer
+      const hit = pick(m.options)
+      if (hit !== null) return hit
+      // Options are mounted and nothing (unambiguously) matches: waiting longer
       // adds nothing — the typeahead is the next move.
-      if (breakOnOptions && m.options > 0) return { hit: null, sawListbox }
-      if (Date.now() >= deadline) return { hit: null, sawListbox }
+      if (breakOnOptions && m.options.length > 0) return null
+      if (Date.now() >= deadline) return null
       await wait(COMBOBOX_POLL_MS)
     }
   }
 
-  const failClosed = (): FillOutcome => {
-    // Close the way a user backs out (harvest's recipe), then put the control
-    // back EXACTLY as we found it — a page-sourced value must survive, and ''
-    // is only ever written when '' WAS the snapshot.
+  const failClosed = async (reason: string): Promise<FillOutcome> => {
+    // Restore FIRST: B1a always types, so the restore write is itself an input
+    // event — fired after Escape it would re-open the dropdown we just closed.
+    // Order: restore ('' only ever written when '' WAS the snapshot) → one
+    // frame for the page to react → Escape + blur (harvest's close recipe).
+    if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
+    await nextFrame()
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     if (el instanceof HTMLElement) el.blur()
-    if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
-    return { ok: false, reason: 'no-matching-option' }
+    return { ok: false, reason }
   }
+  // B1d: "never opened/attributed" is a different user problem than "your value
+  // is not in the list" — the hint copy diverges (Plan-3 Decision 6 debt).
+  const noHitReason = (): string => (sawListbox ? 'no-matching-option' : 'combobox-no-listbox')
 
-  let { hit, sawListbox } = await waitForHit(true)
+  let hit = await waitForHit(COMBOBOX_WAIT_MS, true)
   if (hit === null) {
-    // No attributable listbox, or a listbox whose mounted options lack the
-    // choice on a control we cannot type into: nothing safe left to try.
-    if (!sawListbox || input === null) return failClosed()
+    if (input === null) return failClosed(noHitReason())
+    // B1a: ALWAYS drive the typeahead when typing is possible.
+    input.focus()
     setNativeValue(input, value)
-    ;({ hit } = await waitForHit(false))
-    if (hit === null) return failClosed()
+    hit = await waitForHit(COMBOBOX_TYPE_WAIT_MS, false)
+    if (hit === null) return failClosed(noHitReason())
   }
 
+  const optionText = norm(hit.textContent ?? '')
   hit.click()
   await nextFrame()
-  // EXACT normalized equality, never `includes`: a widget that committed
-  // 'United States Minor Outlying Islands' would false-pass a 'United States'
-  // fill, which is a misfill reported as success — the class this slice kills.
-  const committed = input !== null ? input.value : (el.textContent ?? '')
-  if (norm(committed) !== target) return failClosed()
-  return { ok: true }
+  // B1c: EXACT normalized equality against the CLICKED OPTION's text, never
+  // `includes`: a widget that committed 'United States Minor Outlying Islands'
+  // after a 'United States' click would still false-pass an includes check —
+  // the misfill-reported-as-success class stays dead.
+  // Non-input widgets report their textContent TRIMMED (review fix, minors 17)
+  // — the normalized-equality verdict is unaffected either way.
+  const committed = input !== null ? input.value : (el.textContent ?? '').trim()
+  if (norm(committed) !== optionText) return failClosed('no-matching-option')
+  return { ok: true, committed: committed === value ? null : committed }
 }
 
 /** DataTransfer is the only way to populate a file input programmatically. */
