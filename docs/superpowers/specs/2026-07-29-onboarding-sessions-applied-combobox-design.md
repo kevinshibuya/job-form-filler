@@ -109,9 +109,10 @@ Implementation status. Tick as each lands with its tests.
 
 ### C — Greenhouse combobox
 
-- [ ] C1 **Pre-plan spike**: reproduce + root-cause the failure live on the test URL
+- [x] C1 **Pre-plan spike**: reproduce + root-cause the failure live on the test URL
       (systematic-debugging). Output — root cause + the failing DOM shape — is an INPUT
-      to plan authoring; C2/C3 are only planned once it lands
+      to plan authoring; C2/C3 are only planned once it lands. **DONE 2026-07-29 —
+      results in Design §C below**
 - [ ] C2 Fix `fill.ts` for the Greenhouse widget class without regressing the Ashby arm
       (B1a–B1d invariants: typeahead always driven, unique-substring match,
       committed-text verification; session-7 combobox e2e stays green)
@@ -259,11 +260,38 @@ positives write wrong records; full status-tracker CRM — YAGNI.)
 
 ### C — Greenhouse combobox
 
-Bug, not a feature. C1 runs as a spike BEFORE plan authoring (the plan cannot specify
-C2 without the root cause; live DOM inspection of the Degree widget vs `fillCombobox`'s
-assumptions — role/aria attributes, listbox mount location, commit behavior). C2 keeps
-the Ashby arm's invariants (session-7 combobox e2e fixtures stay green); C3 adds a
-Greenhouse-shaped fixture.
+Bug, not a feature. C1 ran as a live-page spike on 2026-07-29 (Playwright emulation of
+`fillCombobox`'s exact steps against the real Degree widget). **Root cause: two
+independent defects, both proven empirically:**
+
+1. **Open gesture.** The widget is react-select (`select__input` classes,
+   `role="combobox"`, `aria-haspopup="true"` — note: NOT `"listbox"`; classification
+   matched only via `role`). It does NOT open its menu on `el.click()` (all `fill.ts`
+   dispatches today), on a lone synthetic `mousedown`, on synthetic ArrowDown, or on a
+   native-setter `input` event while closed — so both the open-click AND the B1a
+   typeahead are no-ops and the fill correctly fails `combobox-no-listbox`. It DOES
+   open on the full synthetic sequence `pointerdown → mousedown → pointerup → mouseup
+   → click` (proven). `aria-controls="react-select-…-listbox"` exists ONLY while open,
+   after which `attributableListbox` works as-is. Fix shape: `fillCombobox`'s open step
+   dispatches the full pointer+mouse sequence (bubbling from the input reaches the
+   control wrapper); Ashby's click-open behavior is a subset and must stay green.
+2. **Commit verification.** Once open, the native-setter typeahead filters correctly
+   ("oth" → exactly "Other") and a plain `.click()` on the option COMMITS — but
+   react-select then CLEARS the input: `input.value === ''` while the committed text
+   lives in the widget's value container (`.select__single-value` → "Other"). `fill.ts`
+   B1c reads `input.value` for input-backed widgets, so even a successful commit would
+   verify as failure and be rolled back/Escaped. Fix shape: when `input.value` is empty
+   post-commit, read the committed text from the combobox's visible value (structural
+   walk from the input, not react-select class names) before failing.
+
+Also observed: the page carries a permanently-mounted hidden `role="listbox"` (an
+intl-tel-input country list, 244 options) — the `before`-set attribution already
+excludes it, but the C3 fixture should include such a decoy to keep it excluded.
+
+C2 keeps the Ashby arm's invariants (session-7 combobox e2e fixtures stay green); C3
+adds a Greenhouse-shaped fixture: menu opens only on the pointer+mouse sequence,
+options filter on input, input clears on commit with the value rendered in a sibling
+container, plus the decoy listbox.
 
 ## Error handling
 
