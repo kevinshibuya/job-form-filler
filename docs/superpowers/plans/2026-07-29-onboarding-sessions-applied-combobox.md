@@ -2245,43 +2245,51 @@ export interface Session {
 
 ```ts
 export interface SessionStore {
-  /** Pending-first read-your-writes — and it runs ON the tab's lock (below),
+  /** Pending-first read-your-writes — and it runs on the STORE LOCK (below),
    *  so a load issued during an in-flight mutate observes the mutated row. */
   load(tabId: number): Promise<Session | null>
   /** Only rows whose key matches SESSION_KEY_RE — the storage area is shared
    *  with jff:snap:* rows, which are not ours to read (or prune). */
   loadAll(): Promise<Session[]>
   /** Debounced latest-wins per tab. Rows pass capForStorage at ENTRY, so the
-   *  pending map and storage always agree on shape. */
+   *  pending map and storage always agree on shape. A save against a
+   *  TOMBSTONED tab is silently dropped (see below). */
   save(session: Session): void
   /**
    * THE way concurrent/settling writers touch a session they do not display
-   * (Task 16). ONE chain link on the tab's lock: read pending-first, apply fn,
-   * drop the tab's pending entry, write through capForStorage — with NO await
+   * (Task 16). ONE link on the store lock: read pending-first, apply fn, drop
+   * the tab's pending entry, write through capForStorage — with NO await
    * between the read and the pending-drop. Returns the row actually WRITTEN
    * (a caller that turns out to be displaying this tab re-projects the display
-   * from it — the swap-race repair), or null when fn dropped. Quota failure
-   * inside mutate follows the same policy as save: evict-and-retry once, else
-   * the merged row parks in pending + onWarn.
+   * from it — the swap-race repair), or null when fn dropped. A mutate against
+   * a TOMBSTONED tab resolves null without running fn. Quota failure inside
+   * mutate follows the same policy as save: evict-and-retry once, else the
+   * merged row parks in pending + onWarn.
    */
   mutate(tabId: number, fn: (s: Session | null) => Session | null): Promise<Session | null>
   /** Fires after EVERY successful storage write (save-flush or mutate), with
-   *  the written row. Task 16 subscribes: a write for the currently-displayed
-   *  tabId re-projects the display. Returns an unsubscribe. */
+   *  the written row. Subscribers are notified AFTER the lock link releases,
+   *  are NEVER awaited, and each runs in its own try/catch — a throwing
+   *  subscriber cannot reject the chain, and a subscriber that calls back
+   *  into the store enqueues a FRESH link (no deadlock; reentrancy test).
+   *  Task 16 subscribes: a write for the currently-displayed tabId re-projects
+   *  the display. Returns an unsubscribe. */
   onWrite(cb: (tabId: number, s: Session) => void): () => void
-  /** Resolves only when every pending row is written AND every queued per-tab
-   *  chain link has settled — a flush cannot outrun an in-flight mutate. */
+  /** Resolves only when every pending row is written AND every already-queued
+   *  lock link has settled — a flush cannot outrun an in-flight mutate. */
   flush(): Promise<void>
-  /** Drops the tab's PENDING row and deletes the stored row — on the tab's
-   *  lock, so a remove issued during an in-flight mutate wins (no resurrection). */
+  /** Drops the tab's PENDING row, deletes the stored row, and TOMBSTONES the
+   *  tabId — all on the store lock, so a remove issued during an in-flight
+   *  mutate or flush wins (no resurrection). */
   remove(tabId: number): Promise<void>
-  /** Per-key delete on each tab's lock. Pending rows for dead tabs drop too;
-   *  keys not matching SESSION_KEY_RE are untouched. */
+  /** Per-key delete on the store lock; deleted tabs are tombstoned and their
+   *  pending rows dropped; keys not matching SESSION_KEY_RE are untouched. */
   prune(liveTabIds: ReadonlySet<number>): Promise<void>
 }
 ```
 
-    **The per-tab `Map<number, Promise<void>>` is a LOCK, not a mutate-only convenience:** `load`, the save-flush write, `mutate`, `remove`, and `prune`'s per-key delete ALL enqueue on the owning tab's chain. That is what makes "remove during an in-flight mutate wins", "flush never clobbers a superseding mutate", and "load observes the in-flight mutate's result" true — the Step-5 tests pin all three.
+    **ONE global FIFO storage-operation lock** (adjudicated simplification — this REPLACES the earlier per-tab lock): every storage-touching operation — `load`, `loadAll`, the save-flush write, `mutate`, `remove`, `prune`'s deletes, and the quota-eviction sequence (candidate selection + delete + retry, as ONE link) — enqueues on a single internal promise chain. The per-tab pending map stays, but only for debouncing. Rationale (recorded per adjudication): strictly more conservative than per-tab locking — no concurrency that matters is lost (every operation is a sub-millisecond storage call plus pure functions, and there is one human user), it is trivially deadlock-free, and the cross-tab eviction and two-tab interleaving problems vanish as a CLASS instead of needing per-case lock ordering. This is what makes "remove during an in-flight mutate/flush wins", "flush never clobbers a superseding mutate", "a mutate during a flush reads the flushed row", and "load observes the in-flight mutate's result" true — the Step-5 tests pin all of them.
+    **Tombstones:** `remove()` and `prune`'s deletes add the tabId to a permanent in-store `Set<number>`; a later `save()` for that tab is DROPPED (no pending re-creation) and a later `mutate()` resolves null without running `fn` — a stale displayed-state save landing after the tab closed must never resurrect the dead row. The set is never cleared, deliberately: Chrome does not reuse tab ids within a browser session, and the store dies with the panel.
     Quota/`set` failure policy (S6): evict the oldest PARKED stored session (by `createdAt`) — EXCLUDING the session being written AND the currently-displayed session per `opts.getDisplayedTabId` — and retry ONCE; an eviction also calls `onWarn` (it is the one data-loss path, and the user must see it). With NO eviction candidate, KEEP the row in the in-memory pending map (the next flush retries it) and call `onWarn` — the write is deferred, never silently discarded. Storage growth is per-tab-visited (the mount auto-scan creates sessions lazily); that is accepted, and this quota policy is what absorbs it.
 
 **Model:** implementer-sonnet-medium.
@@ -2637,10 +2645,25 @@ describe('sessions module (S1/S6)', () => {
     holdNextGet.on = true
     const m = store.mutate(7, (s) => (s === null ? null : { ...s, jobText: 'late' }))
     await drain()
-    const r = store.remove(7)   // enqueues BEHIND the in-flight mutate on the tab's lock
+    const r = store.remove(7)   // enqueues BEHIND the in-flight mutate on the store lock
     holdNextGet.release()
     await Promise.all([m, r])
     expect(rows[sessionKey(7)]).toBeUndefined()  // the remove ran last: no resurrection
+    // …and the tab is TOMBSTONED: even a later mutate that tries to rebuild the
+    // session from scratch is refused.
+    await expect(store.mutate(7, (s) => s ?? newSession(7))).resolves.toBeNull()
+    expect(rows[sessionKey(7)]).toBeUndefined()
+  })
+
+  it('save after remove is dropped — a dead tab is never resurrected (tombstone)', async () => {
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 0)
+    store.save(newSession(7, 'https://a.com'))
+    await store.flush()
+    await store.remove(7)
+    store.save(newSession(7, 'https://a.com'))   // a stale displayed-state save after the tab closed
+    await store.flush()
+    expect(rows[sessionKey(7)]).toBeUndefined()
   })
 
   it('flush during an in-flight mutate does not clobber it', async () => {
@@ -2672,6 +2695,67 @@ describe('sessions module (S1/S6)', () => {
     expect(row!.jobText).toBe('mutated')
   })
 
+  it('the INVERSE interleaving: a mutate arriving during an in-flight flush reads the flushed row and wins', async () => {
+    // The mutate-first case above is not enough — a naive implementation that
+    // only serializes mutates passes it. Here the stale-looking write is the
+    // FLUSH, already in flight when the mutate arrives.
+    const { rows, area, holdNextSet } = fakeArea()
+    const store = createSessionStore(area, 500)
+    store.save({ ...newSession(7, 'https://a.com'), company: 'from-display' })  // pending
+    holdNextSet.on = true
+    const f = store.flush()     // the save-flush write is now in flight (held)
+    await drain()
+    const m = store.mutate(7, (s) => (s === null ? null : { ...s, jobText: 'from-settle' }))
+    holdNextSet.release()
+    await Promise.all([f, m])
+    const row = rows[sessionKey(7)] as Session
+    expect(row.company).toBe('from-display')  // the mutate read the FLUSHED row…
+    expect(row.jobText).toBe('from-settle')   // …and the mutate's result is what stands
+  })
+
+  it('remove during an in-flight flush wins — the row is deleted, not resurrected', async () => {
+    const { rows, area, holdNextSet } = fakeArea()
+    const store = createSessionStore(area, 500)
+    store.save(newSession(7, 'https://a.com'))
+    holdNextSet.on = true
+    const f = store.flush()
+    await drain()
+    const r = store.remove(7)   // queues behind the held write on the store lock
+    holdNextSet.release()
+    await Promise.all([f, r])
+    expect(rows[sessionKey(7)]).toBeUndefined()
+  })
+
+  it('one flush lands every pending tab independently', async () => {
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 500)
+    store.save({ ...newSession(1, 'https://a.com'), company: 'one' })
+    store.save({ ...newSession(2, 'https://b.com'), company: 'two' })
+    await store.flush()
+    expect((rows[sessionKey(1)] as Session).company).toBe('one')
+    expect((rows[sessionKey(2)] as Session).company).toBe('two')
+  })
+
+  it('an onWrite subscriber may call back into the store without deadlock (fresh link)', async () => {
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 0)
+    store.save(newSession(7, 'https://a.com'))
+    await store.flush()
+    let reentered: Promise<Session | null> | null = null
+    const off = store.onWrite((tabId, s) => {
+      if (tabId === 7 && s.jobText === 'first' && reentered === null) {
+        // Same-tab reentrancy: this enqueues a FRESH lock link — notification
+        // happens after the first link released, so this must not deadlock.
+        reentered = store.mutate(7, (x) => (x === null ? null : { ...x, company: 'second' }))
+      }
+    })
+    await store.mutate(7, (s) => (s === null ? null : { ...s, jobText: 'first' }))
+    await drain()
+    await reentered
+    expect((rows[sessionKey(7)] as Session).company).toBe('second')
+    off()
+  })
+
   it('loadAll and prune ignore foreign jff:snap rows sharing the storage area', async () => {
     const { rows, area } = fakeArea()
     const store = createSessionStore(area, 0)
@@ -2693,7 +2777,7 @@ describe('sessions module (S1/S6)', () => {
 
 Run — FAIL (no module).
 
-- [ ] **Step 6: Create `extension/src/panel/sessions.ts`** implementing the Interfaces contract above verbatim (types and the `SessionStore` interface as quoted, `newSession`'s `startUrl` defaulting to `''`; `answerKey` delegates to `normalizeQuestion` from `@jff/shared`; store internals — pending `Map<number, Session>`, one shared debounce timer, the per-tab `Map<number, Promise<void>>` LOCK that `load`/save-flush/`mutate`/`remove`/`prune` all enqueue on, the `onWrite` subscriber list, the quota-eviction/deferral path — are the implementer's local choices as long as every Step-5 test passes; `newSession` seeds `epoch: Date.now()` and `createdAt: Date.now()`, both for the reason App's old `epochRef` was clock-seeded).
+- [ ] **Step 6: Create `extension/src/panel/sessions.ts`** implementing the Interfaces contract above verbatim (types and the `SessionStore` interface as quoted, `newSession`'s `startUrl` defaulting to `''`; `answerKey` delegates to `normalizeQuestion` from `@jff/shared`; store internals — pending `Map<number, Session>`, one shared debounce timer, the single global FIFO storage-operation lock that `load`/`loadAll`/save-flush/`mutate`/`remove`/`prune`/eviction all enqueue on, the tombstone `Set<number>`, the `onWrite` subscriber list, the quota-eviction/deferral path — are the implementer's local choices as long as every Step-5 test passes; `newSession` seeds `epoch: Date.now()` and `createdAt: Date.now()`, both for the reason App's old `epochRef` was clock-seeded).
 
 - [ ] **Step 7: Run everything** — `npm run build -w @jff/shared && npx vitest run extension/src shared host && npm run typecheck && npm run lint` — PASS / clean.
 
@@ -2914,7 +2998,7 @@ git commit -m "feat(sessions): webNavigation-first navigation signals with windo
 5. **Parked display:** when the displayed session is parked, render (in place of the rows):
    `Session parked — return to {session.site} to continue. Scanning is paused on this page.` (`data-jff-parked="1"`), with the Scan button DISABLED and a `Discard session` button (`data-jff-discard="1"`) that deletes the session and shows the empty state. The Discard button also renders in the normal session view (small, beside Save answers) — spec S5 names explicit discard as a deletion path.
 6. **Empty state copy:** `No application session on this tab yet. Click Scan to start.` (`data-jff-empty-session="1"`).
-7. **Durability:** every displayed-session mutation goes through the store's debounced `save`; `flush()` on: tab switch (before swap), `pagehide`, `visibilitychange` → hidden (add both listeners in a mount effect), Mark applied, Discard, tab close. Un-debounced (direct `save`+`flush`) on session-ending events. **Swap ordering (binding):** the switch handler calls `store.save(current)` with the SAME session object it last handed to `setSession` (kept on a ref — never derived from a `useEffect` keyed on `session`, which lags a render), then `await flush()`, THEN swaps the display. The store is created with `{ onWarn, getDisplayedTabId }`: `getDisplayedTabId` returns the displayed session's tabId (eviction protection, Task 12/S14); `onWarn` sets a SEPARATE panel-global `storageWarning` rendered as its OWN banner with `data-jff-storage-warn="1"` — copy: `Session storage is full — recent changes may not survive closing the panel.` It must NOT flow through `hostError`: that state feeds `SelfCheckBanner` AND the `hostAnswered`→`gateOpen` latch, and a storage warning is not a host answer (category error). Known, accepted residue: a background settle still inside its mutate READ phase when the panel closes is lost — which is exactly why `mutate` writes through immediately instead of debouncing; only the read window is exposed, not the write.
+7. **Durability:** every displayed-session mutation goes through the store's debounced `save`; `flush()` on: tab switch (before swap), `visibilitychange` → hidden, `pagehide` (add both listeners in a mount effect), Mark applied, Discard, tab close. Un-debounced (direct `save`+`flush`) on session-ending events. Be honest about what each layer buys: the `pagehide` flush is BEST-EFFORT ONLY — MV3 cannot keep a closing document alive for async completion, so that write may not finish. Real durability comes from the continuous debounced persistence (at most `SESSION_SAVE_DEBOUNCE_MS` behind) plus the `visibilitychange:'hidden'` flush, which fires EARLIER in every close/switch sequence; `pagehide` is a last-chance attempt, never a guarantee. **Swap ordering (binding):** the switch handler calls `store.save(current)` with the SAME session object it last handed to `setSession` (kept on a ref — never derived from a `useEffect` keyed on `session`, which lags a render), then `await flush()`, THEN swaps the display. The store is created with `{ onWarn, getDisplayedTabId }`: `getDisplayedTabId` returns the displayed session's tabId (eviction protection, Task 12/S14); `onWarn` sets a SEPARATE panel-global `storageWarning` rendered as its OWN banner with `data-jff-storage-warn="1"` — copy: `Session storage is full — recent changes may not survive closing the panel.` It must NOT flow through `hostError`: that state feeds `SelfCheckBanner` AND the `hostAnswered`→`gateOpen` latch, and a storage warning is not a host answer (category error). Known, accepted residue: a background settle still inside its mutate READ phase when the panel closes is lost — which is exactly why `mutate` writes through immediately instead of debouncing; only the read window is exposed, not the write.
 8. **Mid-flight invalidation survives:** the resetGen/generation-guard INVARIANTS from the old code still hold — a scan/generate/fill settling after its page died must not write into the wrong display. In this task the guard may remain display-scoped (settles for non-displayed sessions may be DROPPED); Task 16 upgrades drops to routed writes. The kept invariant tests (`'drops the results of a scan whose page navigated away mid-flight'`, the dead-draft/dead-fill/dead-company tests, `'replays a navigation trigger the scan guard swallowed'`, `'keeps a company the user typed across a navigation'`, `'never lets a dead scan company guess name the live page employer'`) MUST pass — adapt their harnesses to the new chrome fakes (FIX-AND-REPORT each adaptation), never their assertions.
 9. **Harness upgrade (global `beforeEach` in App.test.tsx):** the unit harness already binds WITHOUT any `?tabId=` override — `?jffFakeHost=1` plus the mocked `chrome.tabs.query` answering tab 7 (App.test.tsx:47-52) — so `activated` events work in unit tests as-is; the `?tabId=` override is e2e-only (constraint 3 applies there). Add to the existing chrome fake: `chrome.windows = { getCurrent: vi.fn(async () => ({ id: 1 })) }`; `chrome.webNavigation = { onCommitted: {addListener: vi.fn(), removeListener: vi.fn()}, onHistoryStateUpdated: {addListener: vi.fn(), removeListener: vi.fn()} }`; and make `chrome.storage.session` STATEFUL — get/set/remove over a per-test `rows` object (the current fake at App.test.tsx:78 answers `get` with `{}` and has NO `set` at all).
 10. **The two `SNAPSHOT_KEY_RE` call sites** (`onScan` stale-key sweep, `onSaveAnswers` stored merge) keep filtering by `SNAPSHOT_KEY_RE` — session rows now share the storage area, and the disjointness invariant (Task 12's test) is what keeps them correct. Do not "generalize" them. One honesty fix at the `onSaveAnswers` site: widen the `App.tsx:660` cast from `Record<string, StoredSnapshot>` to `Record<string, unknown>` — the area now demonstrably holds non-snapshot rows, and the stale assertion would mislead the next reader (the RE filter inside `mergeStoredSnapshots` is what actually guarantees the shape).
@@ -3106,7 +3190,7 @@ git commit -m "feat(sessions): label-keyed answer carry re-projects drafts acros
 
 1. **Scan latch stays GLOBAL single-flight** (`scanningRef` semantics): tab switching must never multiply paid `claude -p` resolves. A due re-scan for a session that cannot run now (latch busy, or its tab is backgrounded) queues in a per-session pending-rescan; when the latch frees, pending re-scans drain FIFO. A pending re-scan whose session died **or got PARKED** is dropped, not run — a paid resolve against an SSO detour page, settling into a disabled session, is money spent on garbage.
 2. **Epochs are per-session:** `epochRef` dies; `runScan`'s `nextEpoch` bumps THE OWNING SESSION's `epoch`. Generation counters (the resetGen concept) are per-session too — a session swap does NOT invalidate the outgoing session's in-flight work; only that session's OWN navigation/death does. **Parking BUMPS the session's generation** — a scan started before the cross-site detour must not settle its dead page's results into the parked row.
-3. **Routed settling writes — ONE choke point, no enumeration:** no async continuation may touch session state directly. Every write that lands after an `await` goes through ONE helper — `applyToSession(tabId: number, epochOrGen: number, fn: (s: Session) => Session): Promise<void>` — which routes: target is the DISPLAYED session → a FUNCTIONAL setState whose updater re-checks `prev !== null && prev.tabId === tabId` and the epoch/generation against `prev` itself; **a mismatch does NOT silently no-op — it falls through to `store.mutate(tabId, …)`** (the display swapped between the route decision and the updater running; the write still belongs to its session). Target is a BACKGROUND session → `store.mutate(tabId, fn-with-null-drop)` — NEVER load+save (B6: read-your-writes over the pending debounce, per-tab serialization). Session null or epoch/generation mismatch inside the mutate fn → return null (the drop arm). This choke point exists precisely because an enumeration keeps missing writers — the previously-missed MID-SCAN writes are the proof: the company guess (App.tsx:287-290 — which after Task 7 sits behind `getTab` + the `applied.check` round-trip, a hundreds-of-ms race window), `setFrameReports([])` at :291 (`frameReports` IS in the persisted Session shape), and `lastOutcome`. A tab switch inside that window must land tab 7's company guess in tab 7's storage — never on tab 8's screen. Background scan settles re-project via the SAME exported `projectAnswers` (Task 15) inside the mutate fn — never a re-implementation. **The repair path back to the screen (B1):** App subscribes `store.onWrite` once at mount; a write for the currently-displayed tabId re-projects the display from the written row — without this, a background→foreground swap racing a mutate leaves screen and storage silently divergent.
+3. **Routed settling writes — ONE choke point, no enumeration:** no async continuation may touch session state directly. Every write that lands after an `await` goes through ONE helper — `applyToSession(tabId: number, epochOrGen: number, fn: (s: Session) => Session): Promise<void>` — which routes: target is the DISPLAYED session → a FUNCTIONAL setState whose updater re-checks `prev !== null && prev.tabId === tabId` and the epoch/generation against `prev` itself; **a mismatch does NOT silently no-op — it falls through to `store.mutate(tabId, …)`** (the display swapped between the route decision and the updater running; the write still belongs to its session). Target is a BACKGROUND session → `store.mutate(tabId, fn-with-null-drop)` — NEVER load+save (B6: read-your-writes over the pending debounce, serialized on the store's global FIFO lock). Session null or epoch/generation mismatch inside the mutate fn → return null (the drop arm). This choke point exists precisely because an enumeration keeps missing writers — the previously-missed MID-SCAN writes are the proof: the company guess (App.tsx:287-290 — which after Task 7 sits behind `getTab` + the `applied.check` round-trip, a hundreds-of-ms race window), `setFrameReports([])` at :291 (`frameReports` IS in the persisted Session shape), and `lastOutcome`. A tab switch inside that window must land tab 7's company guess in tab 7's storage — never on tab 8's screen. Background scan settles re-project via the SAME exported `projectAnswers` (Task 15) inside the mutate fn — never a re-implementation. **The repair path back to the screen (B1):** App subscribes `store.onWrite` once at mount; a write for the currently-displayed tabId re-projects the display from the written row — without this, a background→foreground swap racing a mutate leaves screen and storage silently divergent.
 4. **`snapshotPush` routing:** the runtime-message listener compares `m.tabId` against sessions, not against the active tab: active-session push → epoch-check against THAT session's epoch → merge to state; background push → `store.mutate(m.tabId, fn)` with the epoch-check against the row `fn` receives (stored-or-pending) → merge, or null-drop on mismatch/missing. The service worker's storage fallback (`jff:snap:*`) is UNTOUCHED.
 5. **`onSaveAnswers`** merges stored snapshots with the SESSION's `tabId` + `epoch` (not panel-globals).
 6. **Background same-site nav:** marks the session's pending-rescan (per constraint 1). Its eventual scan targets the background tab via the existing relay (`tabId` parameter), and its outcome routes per constraint 3 — the visible panel never flickers.
@@ -3136,8 +3220,9 @@ describe('App — session concurrency (S7)', () => {
     // tick (removal racing the settling mutate — firing onRemoved comfortably
     // BEFORE the release would pass even with the resurrection race live) →
     //   after both settle: no jff:session:7 row exists, no state write, no
-    //   throw. The per-tab lock (Task 12/B2) is what makes the interleaving
-    //   safe: the remove queues behind the in-flight mutate and still wins.
+    //   throw. The store's global FIFO lock + the tombstone (Task 12) make the
+    //   interleaving safe: the remove queues behind the in-flight mutate,
+    //   still wins, and the tombstone refuses any later write for the tab.
   })
 
   it('the scan latch is global: a background session due re-scan queues and drains FIFO', async () => {
@@ -3275,7 +3360,8 @@ git commit -m "docs: manual gate on the real Greenhouse page — session/applied
 ## Post-execution reviews (NOT plan tasks — standing rules)
 
 - **Dual plan review BEFORE Task 1:** fresh-context Opus 5 pass over this plan's mandated code (runtime/boot assumptions, forward-compat traps, dead flags) + one codex-review cross-vendor pass. Findings fix the PLAN before execution. **Status: DONE (2026-07-29) — 8 blockers + 14 should-fixes + 9 notes folded into this revision.**
-- **Scoped re-review of Tasks 12/14/15/16 (round 2): DONE (2026-07-29)** — 5 blockers + 14 should-fixes + 8 notes folded into this revision (lock-not-chain store semantics, `mutate` return + `onWrite`, the `applyToSession` choke point, target-bound relay, partition completion). Per the reviewer's recommendation there is NO third full pass: the remaining pre-execution check is **one codex cross-vendor pass scoped to the REVISED Task 12 Interfaces block alone** (the `SessionStore` contract), then execution; the already-planned consolidated xhigh branch review after Task 18 covers everything else. Task 16's escalation to debugger-opus-xhigh is taken on the FIRST honest failure, not after a rework loop.
+- **Scoped re-review of Tasks 12/14/15/16 (round 2): DONE (2026-07-29)** — 5 blockers + 14 should-fixes + 8 notes folded into this revision (lock-not-chain store semantics, `mutate` return + `onWrite`, the `applyToSession` choke point, target-bound relay, partition completion). Per the reviewer's recommendation there was NO third full pass — only the codex cross-vendor check on the store contract.
+- **Scoped codex pass on the Task 12 store contract: DONE (2026-07-29)** — 2 blockers + 2 should-fixes + 1 note folded: the per-tab lock is REPLACED by one global FIFO storage-operation lock (codex's own protocol, adjudicated — cross-tab eviction/interleaving races vanish as a class), permanent tombstones kill the save-after-remove resurrection, `onWrite` timing/error policy pinned (post-link, never awaited, per-subscriber try/catch, reentrancy-safe), the inverse flush-vs-mutate + remove-during-flush + two-tab-flush interleavings are test-pinned, and the pagehide durability claim is downgraded to best-effort. **The store contract is now FINAL.** The ONLY remaining review is the consolidated xhigh branch review after Task 18. Task 16's escalation to debugger-opus-xhigh is taken on the FIRST honest failure, not after a rework loop.
 - **Consolidated branch review after Task 18, at effort xhigh** (spec §Execution, binding): the S slices rewrite the panel's core state machine — concurrency + data integrity over 850+ lines. The reviewer pays specific attention to the three silent-wrong-data surfaces: S4 merge keying (label-keyed, never ref-keyed), S7 single-flight + push routing, per-session company provenance. Code review is ALWAYS Opus in a fresh context.
 
 ## Plan-time decisions the reviews should scrutinize
@@ -3296,7 +3382,7 @@ Decisions this plan made where the spec was silent or approximate (flagged for t
 12. **S6 quota eviction with no parked candidate degrades to in-memory WITH the pending row retained** (the next flush retries it) **and a visible warning** via the store's `onWarn` → host-banner path — never evicts the active session, never throws, never silently discards (review-adjudicated; the original "drop silently" was a blocker-adjacent should-fix).
 13. **`data-jff-resets` dies with `resetCount`;** `data-jff-session` is the session-aware debug hook; `data-jff-scans` survives (the replay counter still exists).
 14. **Post-mark confirmation is a PANEL-GLOBAL transient (`markedMsg`)** rendered as the same `data-jff-applied` badge markup — Mark applied deletes the session, so nothing session-borne can carry the badge; the durable badge on revisit comes from `applied.check` (review B8 adjudication).
-15. **`SessionStore.mutate` is the ONLY write path for settling work targeting a non-displayed session** — read-your-writes over the pending debounce, per-tab LOCK serialization (load/flush/remove/prune enqueue on it too), write-through, null-drop arm, `Session | null` return + `onWrite` for the display-repair path (reviews B6 + round-2 B1/B2). Round-2 reviewed; the remaining check is the codex cross-vendor pass scoped to the Task 12 Interfaces block.
+15. **`SessionStore.mutate` is the ONLY write path for settling work targeting a non-displayed session** — read-your-writes over the pending debounce, ONE global FIFO storage-operation lock (load/loadAll/flush/remove/prune/eviction all enqueue on it; the codex-adjudicated simplification that replaced per-tab locking), permanent tombstones refusing save/mutate for closed tabs (Chrome never reuses tab ids within a browser session), write-through, null-drop arm, `Session | null` return + `onWrite` (post-link, never awaited, per-subscriber try/catch) for the display-repair path. The store contract is FINAL — reviewed by Opus round-2 and the scoped codex pass.
 
 ## Manual handshake log
 
