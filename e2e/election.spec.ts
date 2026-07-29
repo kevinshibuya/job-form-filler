@@ -31,6 +31,14 @@ async function tabIdForUrl(ext: LaunchedExtension, needle: string): Promise<numb
   return id
 }
 
+/** The scripted host's kind → auto-value mapping; a kind absent here resolves
+ *  as needs_input with a null value. */
+const AUTO_VALUE: Record<string, string | undefined> = {
+  text: 'ELECTED-FILL',
+  choice: 'Yes',
+  combobox: 'Atlantis',
+}
+
 /** Same budget rationale as full-loop.spec.ts: extension launch + SW relay cost
  *  tracks machine load; per-assertion budgets stay the behavioural gate. */
 test.describe.configure({ timeout: 240_000 })
@@ -48,8 +56,10 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
     // chrome.tabs is extension-only: find the tab id from an extension page.
     const tabId = await tabIdForUrl(ext, 'newsletter-page.html')
 
-    // Scripted host: auto-values for text and choice kinds — the choice value is
-    // BAIT for the interim guard (it must never reach the hidden checkbox).
+    // Scripted host: text → 'ELECTED-FILL'; choice → 'Yes', which must LAND
+    // through fillChoice's gated button path; combobox → 'Atlantis', the bait —
+    // no such option exists, so that fill must FAIL, restore the control and
+    // surface on its row. Every other kind stays needs_input.
     const resolveCalls: ResolveParams[] = []
     const panel = await ext.context.newPage()
     await panel.exposeFunction('__jffHostBridge', (req: BridgeReq) => {
@@ -62,13 +72,16 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
           requestId, ok: true,
           result: {
             epoch: p.epoch,
-            resolutions: p.fields.map((f) => ({
-              handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
-              tier: f.kind === 'text' || f.kind === 'choice' ? 'auto' : 'needs_input',
-              value: f.kind === 'text' ? 'ELECTED-FILL' : f.kind === 'choice' ? 'Yes' : null,
-              source: f.kind === 'text' || f.kind === 'choice' ? 'profile' : null,
-              key: null, answerId: null, reason: 'e2e',
-            })),
+            resolutions: p.fields.map((f) => {
+              const auto = AUTO_VALUE[f.kind]
+              return {
+                handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
+                tier: auto === undefined ? 'needs_input' : 'auto',
+                value: auto ?? null,
+                source: auto === undefined ? null : 'profile',
+                key: null, answerId: null, reason: 'e2e',
+              }
+            }),
             llmError: null,
           },
         }
@@ -104,9 +117,23 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
     await expect(target.locator('#nl-email')).toHaveValue('')
     // The elected frame's text fields WERE auto-filled through the relay.
     await expect(appFrame.locator('input[name="first-uuid"]')).toHaveValue('ELECTED-FILL')
-    // Interim guard bypass: the auto 'Yes' for the choice row never clicked the
-    // hidden checkbox (fillChoice is plan 3).
-    expect(await appFrame.locator('input[name="yn-uuid"]').isChecked()).toBe(false)
+    // B1 end-to-end: the controlled choice was filled through the GATED BUTTON
+    // path — the page's own state machine reacted (aria-pressed + checkbox),
+    // which is the observable delta fillChoice verified before reporting ok.
+    const yesBtn = appFrame.locator('._container_1svni_28 button', { hasText: 'Yes' })
+    await expect(yesBtn).toHaveAttribute('aria-pressed', 'true')
+    expect(await appFrame.locator('input[name="yn-uuid"]').isChecked()).toBe(true)
+
+    // B2/B3 end-to-end: the 'Atlantis' combobox fill found no exact match,
+    // RESTORED the control (still '', per the existing assertion above), and
+    // surfaced on its row: demoted to needs-input styling with its reason.
+    const demoted = panel.locator('li[data-jff-tier="needs_input"]', { hasText: 'Select your country of employment' })
+    await expect(demoted).toHaveCount(1)
+    await expect(demoted).toContainText('no-matching-option')
+
+    // TODO 18, "neither count lies": filled = page-accepted only (first, last,
+    // choice) — the failed combobox is counted as needing input, never as filled.
+    await expect(panel.locator('[data-jff-status]')).toContainText('✓ 3 filled, 0 already on page, 0 proposed, 3 need input')
 
     // A9: elected rows render in DOCUMENT order with kind-aware editors…
     const firstLabel = panel.locator('[data-jff-rows] li label.font-semibold').first()
@@ -135,6 +162,12 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
       .toBe(2)
     expect(resolveCalls[1]!.jobText).toBe('PASTED-JD')
     expect(resolveCalls[1]!.fields.every((f) => f.frameId !== 0)).toBe(true)
+    // Let the second scan's fill pass settle before the page-side and console
+    // checks below. Its COUNTS are deliberately not asserted: the choice widget
+    // already answers 'Yes', so the re-fill produces no observable delta and
+    // fillChoice honestly reports `no-state-change` — a second-scan fact, not a
+    // regression of the first-scan proof above.
+    await expect(panel.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'done', { timeout: 60_000 })
     await expect(target.locator('#nl-email')).toHaveValue('')
 
     expect(ext.consoleErrors).toEqual([])
