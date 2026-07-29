@@ -1,6 +1,7 @@
 import type { FieldHandle, FillReport } from '@jff/shared'
 import { optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
+import { attributableListbox, mountedListboxes } from './harvest'
 
 type FillOutcome = { ok: true } | { ok: false; reason: string }
 
@@ -173,35 +174,83 @@ export async function fillChoice(
   return { ok: false, reason: 'no-state-change' }
 }
 
-function listboxOf(el: Element): Element | null {
-  const scope = scopeOf(el)
-  const owns = el.getAttribute('aria-owns') ?? el.getAttribute('aria-controls')
-  if (owns !== null) {
-    const first = owns.split(/\s+/)[0]
-    if (first !== undefined) {
-      const found = scope.querySelector(`[id="${first.replace(/"/g, '\\"')}"]`)
-      if (found !== null) return found
-    }
-  }
-  return el.parentElement?.querySelector('[role="listbox"]') ?? scope.querySelector('[role="listbox"]')
-}
-
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+/** How long the combobox may take to mount options after our click, and again
+ *  after our typeahead keystroke (spec B2, mirrors HARVEST_LISTBOX_TIMEOUT_MS). */
+const COMBOBOX_WAIT_MS = 500
+const COMBOBOX_POLL_MS = 50
+
+/**
+ * B2: interact ONLY with a listbox attributable to this control — aria-owns/
+ * aria-controls, or one that appeared in response to OUR interaction (the same
+ * attributableListbox rule the harvest defined; the document-wide fallback was
+ * the cross-combobox bug). No exact normalized match mounted → drive the
+ * typeahead with a native value write → EXACT match only (prefix guessing
+ * removed) → verify the page committed the choice. Every failure path restores
+ * the pre-fill snapshot (never a clear to '') and closes via Escape + blur.
+ */
 async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
-  // Open it the way a user would: a real click. Options are usually rendered lazily.
+  const input = el instanceof HTMLInputElement ? el : null
+  const snapshot = input === null ? null : input.value
+  const before = mountedListboxes(document, el)
   ;(el as HTMLElement).click()
   const target = norm(value)
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const listbox = listboxOf(el)
-    const options = listbox === null ? [] : Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'))
-    const hit = options.find((o) => norm(o.textContent ?? '') === target)
-      ?? options.find((o) => norm(o.textContent ?? '').startsWith(target))
-    if (hit !== undefined) { hit.click(); return { ok: true } }
-    if (options.length > 0) return { ok: false, reason: 'no-matching-option' }
-    await wait(50)
+
+  const lookup = (): { mounted: boolean; options: number; hit: HTMLElement | null } => {
+    const listbox = attributableListbox(document, el, before)
+    if (listbox === null) return { mounted: false, options: 0, hit: null }
+    const options = Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'))
+    return {
+      mounted: true,
+      options: options.length,
+      hit: options.find((o) => norm(o.textContent ?? '') === target) ?? null,
+    }
   }
-  return { ok: false, reason: 'no-matching-option' }
+
+  const waitForHit = async (breakOnOptions: boolean): Promise<{ hit: HTMLElement | null; sawListbox: boolean }> => {
+    const deadline = Date.now() + COMBOBOX_WAIT_MS
+    let sawListbox = false
+    for (;;) {
+      const m = lookup()
+      sawListbox = sawListbox || m.mounted
+      if (m.hit !== null) return { hit: m.hit, sawListbox }
+      // Options are mounted and the choice is not among them: waiting longer
+      // adds nothing — the typeahead is the next move.
+      if (breakOnOptions && m.options > 0) return { hit: null, sawListbox }
+      if (Date.now() >= deadline) return { hit: null, sawListbox }
+      await wait(COMBOBOX_POLL_MS)
+    }
+  }
+
+  const failClosed = (): FillOutcome => {
+    // Close the way a user backs out (harvest's recipe), then put the control
+    // back EXACTLY as we found it — a page-sourced value must survive, and ''
+    // is only ever written when '' WAS the snapshot.
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    if (el instanceof HTMLElement) el.blur()
+    if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
+    return { ok: false, reason: 'no-matching-option' }
+  }
+
+  let { hit, sawListbox } = await waitForHit(true)
+  if (hit === null) {
+    // No attributable listbox, or a listbox whose mounted options lack the
+    // choice on a control we cannot type into: nothing safe left to try.
+    if (!sawListbox || input === null) return failClosed()
+    setNativeValue(input, value)
+    ;({ hit } = await waitForHit(false))
+    if (hit === null) return failClosed()
+  }
+
+  hit.click()
+  await nextFrame()
+  // EXACT normalized equality, never `includes`: a widget that committed
+  // 'United States Minor Outlying Islands' would false-pass a 'United States'
+  // fill, which is a misfill reported as success — the class this slice kills.
+  const committed = input !== null ? input.value : (el.textContent ?? '')
+  if (norm(committed) !== target) return failClosed()
+  return { ok: true }
 }
 
 /** DataTransfer is the only way to populate a file input programmatically. */
