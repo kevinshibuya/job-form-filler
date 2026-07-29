@@ -42,7 +42,8 @@ Implementation status. Tick as each lands with its tests.
       fact keys; panel merges into EMPTY draft fields only
 - [x] E2E: fixture combobox loads options only after typed input (async, filtered);
       choice re-scan stays green; combobox canonicalization covered
-- [ ] Manual browser gate on the real TRM/Ashby page, every workflow step printed
+- [x] Manual browser gate on the real TRM/Ashby page, every workflow step printed
+      (2026-07-29 agent-driven; full results in the v1 plan's Manual handshake log)
 
 ## Context (root causes, confirmed by code recon)
 
