@@ -58,6 +58,56 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
   return { deps, sent, phases }
 }
 
+/** File-scope on purpose: plan 3 Task 4's B3 describe reuses it. */
+function depsWithFields(fields: ReturnType<typeof field>[], resolveTier: 'auto' | 'needs_input' = 'needs_input') {
+  const made = makeDeps()
+  let epoch = 0
+  made.deps.nextEpoch = () => ++epoch
+  // `made.deps.sendToTab` IS makeDeps' recording wrapper (it pushes to `sent`
+  // itself). So delegate to it for everything we do not answer here, and push
+  // ONLY the one message we answer without delegating (JFF_SCAN) — pushing
+  // unconditionally here would leave `sent` holding every fill TWICE and quietly
+  // break any length-based assertion.
+  const inner = made.deps.sendToTab
+  made.deps.sendToTab = vi.fn(async (frameId, message) => {
+    if (message.type === 'JFF_SCAN') {
+      made.sent.push(message)
+      return {
+        replies: [{ frameId: 0, url: 'https://ats.example/apply', payload: { ok: true, scan: { epoch, fields, unreachableWidgets: 0, activeCaptcha: false } } }],
+        failures: [],
+      }
+    }
+    return inner(frameId, message)
+  })
+  made.deps.getResume = async () => null
+  const resolveCalls: unknown[] = []
+  made.deps.port = {
+    request: vi.fn(async (method: string, params: unknown) => {
+      if (method === 'selector.get') return { ok: true, result: { selector: null } }
+      if (method === 'resolve') {
+        resolveCalls.push(params)
+        const p = params as { fields: { frameId: number; fid: number }[] }
+        return {
+          ok: true,
+          result: {
+            epoch,
+            resolutions: p.fields.map((f) => ({
+              handle: { frameId: f.frameId, fid: f.fid, epoch }, tier: resolveTier,
+              value: resolveTier === 'auto' ? 'V' : null,
+              source: null, key: null, answerId: null, reason: 'test',
+            })),
+            llmError: null,
+          },
+        }
+      }
+      return { ok: true, result: {} }
+    }),
+    onDisconnect: () => undefined,
+    disconnect: () => undefined,
+  } as unknown as HostPort
+  return { ...made, resolveCalls }
+}
+
 describe('runScan', () => {
   it('injects the content script before doing anything else', async () => {
     const { deps } = makeDeps()
@@ -441,5 +491,48 @@ describe('runScan', () => {
       { frameId: 7, url: 'https://ats.example/embed', fields: null, error: 'no receiver' },
       { frameId: 0, url: 'https://top.example/', fields: 1, error: null },
     ])
+  })
+})
+
+describe('runScan — A5 junk filtering', () => {
+  const junkAnd2 = [
+    field(0, 0),
+    field(0, 1, { kind: 'textarea', visible: false, label: null, name: 'g-recaptcha-response' }),
+    field(0, 2, { kind: 'choice', visible: false, label: 'Authorized?', options: ['Yes', 'No'] }),
+  ]
+
+  it('excludes visible:false junk from the resolve payload, the fill loop and the returned fields', async () => {
+    const { deps, sent, resolveCalls } = depsWithFields(junkAnd2, 'auto')
+    const out = await runScan(deps)
+    const resolved = resolveCalls[0] as { fields: { fid: number }[] }
+    expect(resolved.fields.map((f) => f.fid)).toEqual([0, 2]) // recaptcha fid 1 never leaves the panel
+    expect(out.fields.map((f) => f.fid)).toEqual([0, 2])
+    const fills = sent.filter((m) => m.type === 'JFF_FILL') as { fills: { handle: { fid: number } }[] }[]
+    for (const m of fills) expect(m.fills.every((x) => x.handle.fid !== 1)).toBe(true)
+  })
+
+  it('never auto-fills a choice field before fillChoice lands (interim guard, removed by plan 3)', async () => {
+    const { deps, sent } = depsWithFields(junkAnd2, 'auto')
+    await runScan(deps)
+    const fills = sent.filter((m) => m.type === 'JFF_FILL') as { fills: { handle: { fid: number } }[] }[]
+    expect(fills.length).toBeGreaterThan(0) // fid 0 IS filled
+    for (const m of fills) expect(m.fills.every((x) => x.handle.fid !== 2)).toBe(true)
+  })
+
+  it('returns without calling resolve when only junk remains', async () => {
+    const onlyJunk = [field(0, 0, { kind: 'textarea', visible: false, label: null })]
+    const { deps, resolveCalls } = depsWithFields(onlyJunk)
+    const out = await runScan(deps)
+    expect(resolveCalls).toHaveLength(0)
+    expect(out.fields).toEqual([])
+    expect(out.resolutions).toEqual([])
+  })
+
+  it('keeps a hidden labelled file input as a resume target', async () => {
+    const withHiddenFile = [field(0, 0), field(0, 1, { kind: 'file', visible: false, label: 'Resume' })]
+    const { deps, sent } = depsWithFields(withHiddenFile)
+    deps.getResume = async () => ({ name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' })
+    await runScan(deps)
+    expect(sent.some((m) => m.type === 'JFF_FILL_RESUME')).toBe(true)
   })
 })
