@@ -21,7 +21,10 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
     nextEpoch: () => ++epoch,
     inject: vi.fn(async () => [0]),
     sendToTab: vi.fn(async (_frameId, message) => {
-      if (message.type === 'JFF_SCAN') return { replies: [scanReply(0, [field(0, 0), field(0, 1, { kind: 'file' })])], failures: [] }
+      // The file field carries a SCORING label on purpose: under A8 the resume
+      // target is picked by score, so an unlabelled file input would silently
+      // remove the resume phase from every test that leans on this default.
+      if (message.type === 'JFF_SCAN') return { replies: [scanReply(0, [field(0, 0), field(0, 1, { kind: 'file', label: 'Resume' })])], failures: [] }
       if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText: { text: 'JD TEXT', selector: '#jd', source: 'heuristic' } } }], failures: [] }
       if (message.type === 'JFF_FILL_RESUME') return { replies: [{ frameId: 0, payload: { ok: true } }], failures: [] }
       if (message.type === 'JFF_FILL') return { replies: [{ frameId: 0, payload: { ok: true, fill: { epoch, filled: [], failed: [] } } }], failures: [] }
@@ -95,6 +98,74 @@ function depsWithFields(fields: ReturnType<typeof field>[], resolveTier: 'auto' 
               handle: { frameId: f.frameId, fid: f.fid, epoch }, tier: resolveTier,
               value: resolveTier === 'auto' ? 'V' : null,
               source: null, key: null, answerId: null, reason: 'test',
+            })),
+            llmError: null,
+          },
+        }
+      }
+      return { ok: true, result: {} }
+    }),
+    onDisconnect: () => undefined,
+    disconnect: () => undefined,
+  } as unknown as HostPort
+  return { ...made, resolveCalls }
+}
+
+/** File scope on purpose: BOTH the A7 election describe and the A6 harvest
+ *  describe use `twoFrameDeps`, and it closes over `topFields`/`appFields`. */
+const topFields = [field(0, 0, { label: 'Newsletter email', name: 'email' })]
+const appFields = (extra: EnumField[] = []) => [
+  field(1, 0, { label: 'First name' }),
+  field(1, 1, { label: 'Why us?', required: true }),
+  field(1, 2, { label: 'Resume', kind: 'file' }),
+  ...extra,
+]
+
+function twoFrameDeps(over: {
+  app?: EnumField[]
+  resume?: boolean
+  pasted?: string
+  harvestReply?: unknown
+} = {}) {
+  const made = makeDeps()
+  let epoch = 0
+  made.deps.nextEpoch = () => ++epoch
+  made.deps.pastedJobText = over.pasted ?? ''
+  made.deps.getResume = async () =>
+    over.resume === true ? { name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' } : null
+  made.deps.inject = vi.fn(async () => [0, 1])
+  const app = over.app ?? appFields()
+  made.deps.sendToTab = vi.fn(async (frameId, message) => {
+    made.sent.push(message)
+    if (message.type === 'JFF_SCAN') {
+      return {
+        replies: [
+          { frameId: 0, url: 'https://careers.example/', payload: { ok: true, scan: { epoch, fields: topFields, unreachableWidgets: 0, activeCaptcha: false } } },
+          { frameId: 1, url: 'https://ats.example/embed', payload: { ok: true, scan: { epoch, fields: app, unreachableWidgets: 0, activeCaptcha: false } } },
+        ],
+        failures: [],
+      }
+    }
+    if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+    if (message.type === 'JFF_HARVEST') {
+      return { replies: [{ frameId: 1, payload: over.harvestReply ?? { ok: true, options: {} } }], failures: [] }
+    }
+    return { replies: [{ frameId: frameId ?? 0, payload: { ok: true, fill: { epoch, filled: [], failed: [] } } }], failures: [] }
+  })
+  const resolveCalls: { fields: EnumField[] }[] = []
+  made.deps.port = {
+    request: vi.fn(async (method: string, params: unknown) => {
+      if (method === 'selector.get') return { ok: true, result: { selector: null } }
+      if (method === 'resolve') {
+        const p = params as { fields: EnumField[] }
+        resolveCalls.push(p)
+        return {
+          ok: true,
+          result: {
+            epoch,
+            resolutions: p.fields.map((f) => ({
+              handle: { frameId: f.frameId, fid: f.fid, epoch }, tier: 'auto',
+              value: 'V', source: 'profile', key: null, answerId: null, reason: 'test',
             })),
             llmError: null,
           },
@@ -235,7 +306,9 @@ describe('runScan', () => {
         if (message.type === 'JFF_SCAN') {
           scans++
           return { replies: [{ frameId: 0, payload: { ok: true, scan: {
-            epoch: scans, fields: [field(0, 0), field(0, 1, { kind: 'file' })],
+            // Scoring label: this test's subject is the post-upload captcha
+            // abort, so the A8 scorer must actually pick the file field.
+            epoch: scans, fields: [field(0, 0), field(0, 1, { kind: 'file', label: 'Resume' })],
             unreachableWidgets: 0, activeCaptcha: scans > 1,
           } } }], failures: [] }
         }
@@ -454,7 +527,9 @@ describe('runScan', () => {
         if (message.type === 'JFF_SCAN') {
           scans++
           return { replies: [{ frameId: 0, url: 'https://ats.example/apply', payload: { ok: true, scan: {
-            epoch: scans, fields: scans === 1 ? [field(0, 0, { kind: 'file' })] : [],
+            // Scoring label for the same reason as above: the subject is the
+            // empty post-resume re-enumeration, not resume targeting.
+            epoch: scans, fields: scans === 1 ? [field(0, 0, { kind: 'file', label: 'Resume' })] : [],
             unreachableWidgets: 0, activeCaptcha: false,
           } } }], failures: [] }
         }
@@ -534,5 +609,140 @@ describe('runScan — A5 junk filtering', () => {
     deps.getResume = async () => ({ name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' })
     await runScan(deps)
     expect(sent.some((m) => m.type === 'JFF_FILL_RESUME')).toBe(true)
+  })
+})
+
+describe('runScan — A7 frame election', () => {
+  it('elects the frame with the most signal and scopes resolve to it', async () => {
+    const { deps, resolveCalls } = twoFrameDeps()
+    const out = await runScan(deps)
+    expect(out.election).toEqual({ frameId: 1, score: 11, url: 'https://ats.example/embed' }) // 3 + 3×1 + 5
+    expect(resolveCalls[0]!.fields.every((f) => f.frameId === 1)).toBe(true)
+    // Foreign fields are KEPT in the outcome; the panel demotes them.
+    expect(out.fields.map((f) => `${f.frameId}:${f.fid}`)).toEqual(['0:0', '1:0', '1:1', '1:2'])
+  })
+
+  it('never auto-fills the recognizer-resolvable newsletter field in the non-elected frame', async () => {
+    const { deps, sent } = twoFrameDeps()
+    await runScan(deps)
+    const fills = sent.filter((m) => m.type === 'JFF_FILL') as { fills: { handle: { frameId: number } }[] }[]
+    expect(fills.length).toBeGreaterThan(0)
+    for (const m of fills) expect(m.fills.every((x) => x.handle.frameId === 1)).toBe(true)
+  })
+
+  it('election still picks the form frame when the user pasted job text', async () => {
+    const { deps, sent, resolveCalls } = twoFrameDeps({ pasted: 'PASTED JD' })
+    const out = await runScan(deps)
+    expect(out.election!.frameId).toBe(1)
+    expect(out.jobText).toBe('PASTED JD')
+    expect(sent.map((m) => m.type)).not.toContain('JFF_JOBTEXT')
+    expect(resolveCalls[0]!.fields.every((f) => f.frameId === 1)).toBe(true)
+  })
+
+  it('uploads the resume to the A8 scorer pick in the elected frame, by its own fid', async () => {
+    const { deps, sent } = twoFrameDeps({ resume: true })
+    await runScan(deps)
+    const up = sent.find((m) => m.type === 'JFF_FILL_RESUME') as { handle: { frameId: number; fid: number } }
+    expect(up.handle).toMatchObject({ frameId: 1, fid: 2 })
+  })
+
+  it('does NOT upload when no elected file field scores positive', async () => {
+    const app = [field(1, 0, { label: 'First name' }), field(1, 1, { kind: 'file', label: null })]
+    const { deps, sent } = twoFrameDeps({ app, resume: true })
+    await runScan(deps)
+    expect(sent.map((m) => m.type)).not.toContain('JFF_FILL_RESUME')
+  })
+
+  it('does NOT upload to a resume-looking file field in a NON-elected frame', async () => {
+    // The scoring file input lives in frame 0; frame 1 still wins the election.
+    const topWithFile = [field(0, 0, { label: 'Resume', kind: 'file' })]
+    const app = [field(1, 0, { required: true }), field(1, 1, { required: true }), field(1, 2)]
+    const made = twoFrameDeps({ resume: true, app })
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      made.sent.push(message)
+      if (message.type === 'JFF_SCAN') {
+        return { replies: [
+          { frameId: 0, url: 'https://careers.example/', payload: { ok: true, scan: { epoch: 1, fields: topWithFile, unreachableWidgets: 0, activeCaptcha: false } } },
+          { frameId: 1, url: 'https://ats.example/embed', payload: { ok: true, scan: { epoch: 1, fields: app, unreachableWidgets: 0, activeCaptcha: false } } },
+        ], failures: [] }
+      }
+      if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      return { replies: [{ frameId: frameId ?? 0, payload: { ok: true, fill: { epoch: 1, filled: [], failed: [] } } }], failures: [] }
+    })
+    const out = await runScan(made.deps)
+    expect(out.election!.frameId).toBe(1) // 1+3 + 1+3 + 1 = 9 beats 1 + 5 = 6
+    expect(made.sent.map((m) => m.type)).not.toContain('JFF_FILL_RESUME')
+  })
+})
+
+describe('runScan — A6 combobox harvest', () => {
+  const comboApp = [
+    field(1, 0, { label: 'First name' }),
+    field(1, 1, { label: 'Country', kind: 'combobox', options: [] }),
+    field(1, 2, { label: 'Gender', kind: 'combobox', options: [], demographic: true }),
+    field(1, 3, { label: 'Level', kind: 'combobox', options: ['Junior', 'Senior'] }),
+    field(1, 4, { label: 'Resume', kind: 'file', required: true }),
+  ]
+
+  it('harvests only elected, non-demographic, empty-options comboboxes and merges BEFORE resolve', async () => {
+    const { deps, sent, resolveCalls } = twoFrameDeps({
+      app: comboApp,
+      harvestReply: { ok: true, options: { 1: ['Brazil', 'Portugal'] } },
+    })
+    const out = await runScan(deps)
+    const harvests = sent.filter((m) => m.type === 'JFF_HARVEST') as { fids: number[] }[]
+    expect(harvests).toHaveLength(1)
+    expect(harvests[0]!.fids).toEqual([1]) // never the demographic one, never the pre-optioned one
+    // merged into the resolve payload (the prompt sees the closed set)…
+    const resolvedCombo = resolveCalls[0]!.fields.find((f) => f.fid === 1)!
+    expect(resolvedCombo.options).toEqual(['Brazil', 'Portugal'])
+    // …and into the returned fields for rendering.
+    expect(out.fields.find((f) => f.frameId === 1 && f.fid === 1)!.options).toEqual(['Brazil', 'Portugal'])
+  })
+
+  it('sends the harvest to the ELECTED frame only', async () => {
+    const { deps } = twoFrameDeps({ app: comboApp, harvestReply: { ok: true, options: {} } })
+    await runScan(deps)
+    const call = vi.mocked(deps.sendToTab).mock.calls
+      .find((c) => (c[1] as ContentMessage).type === 'JFF_HARVEST')!
+    expect(call[0]).toBe(1)
+  })
+
+  it('skips the harvest message entirely when nothing qualifies', async () => {
+    const { deps, sent } = twoFrameDeps() // default appFields: no comboboxes
+    await runScan(deps)
+    expect(sent.map((m) => m.type)).not.toContain('JFF_HARVEST')
+  })
+
+  it('a dead harvest relay degrades to empty options and the scan survives with evidence', async () => {
+    const made = twoFrameDeps({ app: comboApp })
+    const inner = made.deps.sendToTab
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      if (message.type === 'JFF_HARVEST') throw new Error('frame vanished mid-harvest')
+      return inner(frameId, message)
+    })
+    const out = await runScan(made.deps)
+    expect(out.resolutions.length).toBeGreaterThan(0) // the paid resolve still happened
+    expect(out.fields.find((f) => f.frameId === 1 && f.fid === 1)!.options).toEqual([])
+    expect(out.frameReports.some((r) => r.error !== null && r.error.includes('harvest failed'))).toBe(true)
+  })
+
+  it('a refused harvest reply (stale epoch) merges nothing and fails nothing', async () => {
+    const { deps, resolveCalls } = twoFrameDeps({ app: comboApp, harvestReply: { ok: false, error: 'stale_epoch' } })
+    const out = await runScan(deps)
+    expect(resolveCalls).toHaveLength(1)
+    expect(out.fields.find((f) => f.frameId === 1 && f.fid === 1)!.options).toEqual([])
+  })
+
+  it('runs harvest AFTER the resume re-enumeration and before resolve', async () => {
+    const { deps, sent, resolveCalls } = twoFrameDeps({
+      app: comboApp, resume: true,
+      harvestReply: { ok: true, options: { 1: ['Brazil'] } },
+    })
+    await runScan(deps)
+    const types = sent.map((m) => m.type)
+    expect(types.indexOf('JFF_HARVEST')).toBeGreaterThan(types.lastIndexOf('JFF_SCAN'))
+    expect(types.indexOf('JFF_HARVEST')).toBeGreaterThan(types.indexOf('JFF_FILL_RESUME'))
+    expect(resolveCalls[0]!.fields.find((f) => f.fid === 1)!.options).toEqual(['Brazil'])
   })
 })
