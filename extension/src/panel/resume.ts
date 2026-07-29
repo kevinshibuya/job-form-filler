@@ -57,6 +57,11 @@ const lazyExtract: ExtractFn = async (data) => (await import('./cvText')).extrac
  */
 export async function saveResume(file: File, extract: ExtractFn = lazyExtract): Promise<void> {
   const buf = await file.arrayBuffer()
+  // Encode BEFORE extracting: pdf.js takes OWNERSHIP of the ArrayBuffer it is
+  // given (it transfers it to its worker — fake or real), leaving `buf`
+  // DETACHED, and every later read of it throws. Task 13's in-browser e2e
+  // caught this; jsdom fakes never transfer, so unit tests could not.
+  const dataBase64 = toBase64(new Uint8Array(buf))
   // Spec D2 silent degradation: extraction failure must NEVER break the
   // upload — the resume stores with text: null and generation proceeds
   // without the CV block. The guarded region includes the dynamic cvText
@@ -68,7 +73,7 @@ export async function saveResume(file: File, extract: ExtractFn = lazyExtract): 
   const record: StoredResume = {
     name: file.name,
     mimeType: file.type === '' ? 'application/octet-stream' : file.type,
-    dataBase64: toBase64(new Uint8Array(buf)),
+    dataBase64,
     text,
   }
   await tx('readwrite', (s) => s.put(record, KEY))

@@ -60,6 +60,21 @@ describe('resume CV text (B2a)', () => {
     await expect(loadResumeText()).resolves.toBe('CV TEXT')
   })
 
+  it('stores the bytes even when the extractor DETACHES the buffer (pdf.js transfers it)', async () => {
+    // pdf.js takes OWNERSHIP of the ArrayBuffer handed to getDocument — after
+    // extraction the caller's buffer is detached and every later read of it
+    // throws "Cannot perform Construct on a detached ArrayBuffer". Task 13's
+    // in-browser e2e caught this (the fake extractors above never transfer).
+    const detaching = async (data: ArrayBuffer): Promise<string | null> => {
+      structuredClone(data, { transfer: [data] })
+      return 'CV TEXT'
+    }
+    await saveResume(new File([new Uint8Array([1, 2, 3, 4])], 'cv.pdf', { type: 'application/pdf' }), detaching)
+    const stored = await loadResume()
+    expect(stored).toMatchObject({ name: 'cv.pdf', text: 'CV TEXT' })
+    expect(atob(stored!.dataBase64)).toHaveLength(4)
+  })
+
   it('stores text: null for a non-PDF without calling the extractor', async () => {
     const extract = vi.fn(async () => 'never')
     await saveResume(new File(['plain'], 'cv.txt', { type: 'text/plain' }), extract)
