@@ -136,6 +136,7 @@ describe('fillOne', () => {
     const picked: string[] = []
     for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
       o.addEventListener('click', () => picked.push(o.textContent ?? ''))
+      o.addEventListener('click', () => { combo.textContent = o.textContent })
     }
     await expect(fillOne(combo, 'Portugal')).resolves.toEqual({ ok: true })
     expect(picked).toEqual(['Portugal'])
@@ -305,6 +306,112 @@ describe('fillOne — choice widgets (B1)', () => {
     await expect(fillOne(el, 'false')).resolves.toEqual({ ok: true })
     expect(clicks).not.toHaveBeenCalled()
   })
+})
+
+describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
+  it("never selects an option from another combobox's listbox", async () => {
+    document.body.innerHTML = TWO_OPEN_COMBOBOX
+    const otherOptions: string[] = []
+    for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
+      o.addEventListener('click', () => otherOptions.push(o.textContent ?? ''))
+    }
+    const a = document.getElementById('cb-a') as HTMLInputElement
+    // cb-a owns no listbox and none appears for it: attribution fails, the fill
+    // fails — and cb-b's mounted listbox is NEVER consulted (the old
+    // document-wide fallback would have clicked 'Portuguese').
+    await expect(fillOne(a, 'Portuguese')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    expect(otherOptions).toEqual([])
+    expect((document.getElementById('cb-b') as HTMLInputElement).value).toBe('')
+  }, 10_000) // runs the real 500ms attribution window
+
+  it('uses a listbox that appears in response to OUR click', async () => {
+    document.body.innerHTML = '<div><input id="c" role="combobox"></div>'
+    const el = document.getElementById('c') as HTMLInputElement
+    el.addEventListener('click', () => {
+      const lb = document.createElement('ul')
+      lb.setAttribute('role', 'listbox')
+      for (const t of ['Brazil', 'Portugal']) {
+        const o = document.createElement('li')
+        o.setAttribute('role', 'option')
+        o.textContent = t
+        o.addEventListener('click', () => setNativeValue(el, t))
+        lb.appendChild(o)
+      }
+      el.parentElement!.appendChild(lb)
+    })
+    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true })
+    expect(el.value).toBe('Portugal')
+  })
+
+  it('types natively to filter when the target option is not mounted, then selects the EXACT match', async () => {
+    document.body.innerHTML = `
+      <div>
+        <input id="c" role="combobox" aria-controls="lb">
+        <ul role="listbox" id="lb"><li role="option">Brazil</li></ul>
+      </div>`
+    const el = document.getElementById('c') as HTMLInputElement
+    const lb = document.getElementById('lb')!
+    // The page's typeahead: re-render the options from the typed value.
+    el.addEventListener('input', () => {
+      lb.innerHTML = ''
+      const o = document.createElement('li')
+      o.setAttribute('role', 'option')
+      o.textContent = 'Portugal'
+      o.addEventListener('click', () => setNativeValue(el, 'Portugal'))
+      lb.appendChild(o)
+    })
+    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true })
+    expect(el.value).toBe('Portugal')
+  })
+
+  it('rejects a prefix match and RESTORES the pre-fill value (prefix guessing removed)', async () => {
+    document.body.innerHTML = `
+      <div>
+        <input id="c" role="combobox" aria-controls="lb" value="Lisbon">
+        <ul role="listbox" id="lb"><li role="option">Portugal</li></ul>
+      </div>`
+    const el = document.getElementById('c') as HTMLInputElement
+    const picked = vi.fn()
+    document.querySelector('[role="option"]')!.addEventListener('click', picked)
+    // Old behavior: 'Port' prefix-matched 'Portugal'. Now: no exact match, the
+    // typeahead types 'Port', the page never mounts an exact option, and the
+    // control comes back EXACTLY as it was — never cleared to ''.
+    await expect(fillOne(el, 'Port')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    expect(picked).not.toHaveBeenCalled()
+    expect(el.value).toBe('Lisbon')
+  }, 10_000) // runs the real post-typeahead 500ms window
+
+  it('fails and restores when the page rejects the committed value', async () => {
+    document.body.innerHTML = `
+      <div>
+        <input id="c" role="combobox" aria-controls="lb" value="Kept">
+        <ul role="listbox" id="lb"><li role="option">Portugal</li></ul>
+      </div>`
+    const el = document.getElementById('c') as HTMLInputElement
+    // The option click commits NOTHING (a controlled widget that ignored us).
+    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    expect(el.value).toBe('Kept')
+  })
+
+  it('closes the listbox via Escape on failure so no dropdown is left open', async () => {
+    document.body.innerHTML = '<div><input id="c" role="combobox"></div>'
+    const el = document.getElementById('c') as HTMLInputElement
+    el.addEventListener('click', () => {
+      if (el.parentElement!.querySelector('[role="listbox"]') !== null) return
+      const lb = document.createElement('ul')
+      lb.setAttribute('role', 'listbox')
+      const o = document.createElement('li')
+      o.setAttribute('role', 'option')
+      o.textContent = 'Brazil'
+      lb.appendChild(o)
+      el.parentElement!.appendChild(lb)
+    })
+    el.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Escape') el.parentElement!.querySelector('[role="listbox"]')?.remove()
+    })
+    await expect(fillOne(el, 'Nowhere')).resolves.toMatchObject({ ok: false })
+    expect(document.querySelector('[role="listbox"]')).toBeNull()
+  }, 10_000)
 })
 
 describe('fillFile', () => {
