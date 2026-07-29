@@ -448,6 +448,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const r = await port.request<{ draft: string }>('generate', {
       handle: row.resolution.handle,
       questionRaw: row.field.label ?? '',
+      description: row.field.description,
       jobText,
       company: companyOrNull,
     })
