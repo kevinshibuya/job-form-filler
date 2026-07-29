@@ -37,6 +37,13 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
   const byRef = new Map<string, Resolution>()
   const unresolved: EnumField[] = []
 
+  // B5c: the exact reusable-answer lookup, shared by tier 3 and both
+  // no-stored-value fallbacks. company_specific rows stay unusable here.
+  const exactAnswer = (label: string) => {
+    const hit = findExactAnswer(db, normalizeQuestion(label), detectLanguage(label))
+    return hit !== null && hit.reusability === 'reusable' ? hit : null
+  }
+
   for (const f of input.fields) {
     const ref = refOf(f)
     const label = (f.label ?? '').trim()
@@ -47,7 +54,11 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
     // 1 — already on the page (typically the ATS resume auto-parse). Treated as
     //     filled, not blank; the panel does not re-fill a page-sourced value.
     if (f.currentValue !== null && f.currentValue.trim() !== '') {
-      byRef.set(ref, res(f, { tier: 'auto', source: 'page', value: f.currentValue, reason: 'already-on-page' }))
+      // B5a: harvest the key too — a page value under a recognized label is a
+      // learnable fact (Ashby's resume auto-parse fills these), and save-side
+      // learning needs the key to route it to profile/answer_bank.
+      const pageKey = label === '' ? null : recognize(label, db)
+      byRef.set(ref, res(f, { tier: 'auto', source: 'page', key: pageKey, value: f.currentValue, reason: 'already-on-page' }))
       continue
     }
 
@@ -61,7 +72,18 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
           key, value, reason: `recognizer:${key}`,
         }))
       } else {
-        byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `recognizer:${key}:no-stored-value` }))
+        // B5c: the recognizer intercepts BEFORE tier 3, so a saved answer under
+        // this exact question used to be invisible. Try it before needs_input.
+        const hit = exactAnswer(label)
+        if (hit !== null) {
+          touchAnswer(db, hit.id)
+          byRef.set(ref, res(f, {
+            tier: 'auto', source: 'saved_answer', key, value: hit.answer,
+            answerId: hit.id, reason: 'exact-match:key-fallback',
+          }))
+        } else {
+          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `recognizer:${key}:no-stored-value` }))
+        }
       }
       continue
     }
@@ -69,8 +91,8 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
     // 3 — exact saved-answer match, language aware. company_specific rows are
     //     deliberately NOT usable here (company-specificity guard).
     if (label !== '') {
-      const hit = findExactAnswer(db, normalizeQuestion(label), detectLanguage(label))
-      if (hit !== null && hit.reusability === 'reusable') {
+      const hit = exactAnswer(label)
+      if (hit !== null) {
         touchAnswer(db, hit.id)
         byRef.set(ref, res(f, { tier: 'auto', source: 'saved_answer', value: hit.answer, answerId: hit.id, reason: 'exact-match' }))
         continue
@@ -120,9 +142,25 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
       if (d.decision === 'known_key' && d.knownKey !== null) {
         const key: FieldKey = d.knownKey
         const value = getStoredValue(db, key)
-        byRef.set(ref, value !== null
-          ? res(f, { tier: 'proposed', source: 'llm_key', key, value, reason: `llm-key:${key}` })
-          : res(f, { tier: 'needs_input', key, reason: `llm-key:${key}:no-stored-value` }))
+        if (value !== null) {
+          byRef.set(ref, res(f, { tier: 'proposed', source: 'llm_key', key, value, reason: `llm-key:${key}` }))
+          continue
+        }
+        // B5c, defense in depth: every LABELLED field already tried tier 3
+        // before reaching the LLM, so this only fires if the ordering above
+        // ever changes — cheap insurance on a recall-critical path. Tier stays
+        // `proposed`: the key is LLM-derived ("LLM results are PROPOSED").
+        const fallbackLabel = (f.label ?? '').trim()
+        const hit = fallbackLabel === '' ? null : exactAnswer(fallbackLabel)
+        if (hit !== null) {
+          touchAnswer(db, hit.id)
+          byRef.set(ref, res(f, {
+            tier: 'proposed', source: 'saved_answer', key, value: hit.answer,
+            answerId: hit.id, reason: 'exact-match:key-fallback',
+          }))
+        } else {
+          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `llm-key:${key}:no-stored-value` }))
+        }
         continue
       }
 
