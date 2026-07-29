@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Acme Careers</title></head>
+<body>
+  <h1>Careers at Acme</h1>
+  <p>Get job alerts in your inbox.</p>
+  <label for="nl-email">Newsletter email</label>
+  <input id="nl-email" name="email" type="email" placeholder="you@example.com">
+  <button type="button">Subscribe</button>
+  <iframe id="app-frame" title="Application" width="100%" height="900"></iframe>
+  <script>
+    const src = new URLSearchParams(location.search).get('frame')
+    if (src) document.getElementById('app-frame').src = src
+  </script>
+</body>
+</html>

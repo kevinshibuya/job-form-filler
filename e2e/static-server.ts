@@ -5,9 +5,15 @@ import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const ROOT = resolve(here, 'fixtures/greenhouse-apply')
 
-export async function startFixtureServer(): Promise<{ origin: string; stop: () => Promise<void>; server: Server }> {
+/**
+ * One server per fixture ROOT. Called twice it binds two random ports, which is
+ * the only way to get a genuinely CROSS-ORIGIN iframe out of a static harness
+ * (127.0.0.1:a embedding 127.0.0.1:b). The default keeps every existing caller
+ * unchanged.
+ */
+export async function startFixtureServer(root = 'fixtures/greenhouse-apply'): Promise<{ origin: string; stop: () => Promise<void>; server: Server }> {
+  const ROOT = resolve(here, root)
   const server = createServer((req, res) => {
     const name = (req.url ?? '/').split('?')[0]!.replace(/^\/+/, '') || 'fixture-form.html'
     if (name.includes('..')) { res.writeHead(400).end('bad path'); return }
