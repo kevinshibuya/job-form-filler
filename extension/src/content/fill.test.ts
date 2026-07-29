@@ -138,7 +138,7 @@ describe('fillOne', () => {
       o.addEventListener('click', () => picked.push(o.textContent ?? ''))
       o.addEventListener('click', () => { combo.textContent = o.textContent })
     }
-    await expect(fillOne(combo, 'Portugal')).resolves.toEqual({ ok: true })
+    await expect(fillOne(combo, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
     expect(picked).toEqual(['Portugal'])
   })
 
@@ -319,10 +319,10 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
     // cb-a owns no listbox and none appears for it: attribution fails, the fill
     // fails — and cb-b's mounted listbox is NEVER consulted (the old
     // document-wide fallback would have clicked 'Portuguese').
-    await expect(fillOne(a, 'Portuguese')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(a, 'Portuguese')).resolves.toEqual({ ok: false, reason: 'combobox-no-listbox' })
     expect(otherOptions).toEqual([])
     expect((document.getElementById('cb-b') as HTMLInputElement).value).toBe('')
-  }, 10_000) // runs the real 500ms attribution window
+  }, 10_000) // runs the real 500ms + 2000ms attribution/typeahead windows
 
   it('uses a listbox that appears in response to OUR click', async () => {
     document.body.innerHTML = '<div><input id="c" role="combobox"></div>'
@@ -339,7 +339,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       }
       el.parentElement!.appendChild(lb)
     })
-    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true })
+    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
     expect(el.value).toBe('Portugal')
   })
 
@@ -360,26 +360,62 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       o.addEventListener('click', () => setNativeValue(el, 'Portugal'))
       lb.appendChild(o)
     })
-    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true })
+    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
     expect(el.value).toBe('Portugal')
   })
 
-  it('rejects a prefix match and RESTORES the pre-fill value (prefix guessing removed)', async () => {
+  it('selects a UNIQUE substring match and reports the committed canonical text', async () => {
+    document.body.innerHTML = `
+      <div>
+        <input id="c" role="combobox" aria-controls="lb">
+        <ul role="listbox" id="lb"><li role="option">Brazil</li><li role="option">Portugal</li></ul>
+      </div>`
+    const el = document.getElementById('c') as HTMLInputElement
+    for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
+      o.addEventListener('click', () => setNativeValue(el, o.textContent ?? ''))
+    }
+    await expect(fillOne(el, 'bra')).resolves.toEqual({ ok: true, committed: 'Brazil' })
+    expect(el.value).toBe('Brazil')
+  })
+
+  it('refuses an AMBIGUOUS substring match and restores the pre-fill value', async () => {
     document.body.innerHTML = `
       <div>
         <input id="c" role="combobox" aria-controls="lb" value="Lisbon">
-        <ul role="listbox" id="lb"><li role="option">Portugal</li></ul>
+        <ul role="listbox" id="lb"><li role="option">Portugal</li><li role="option">Port Louis</li></ul>
       </div>`
     const el = document.getElementById('c') as HTMLInputElement
     const picked = vi.fn()
-    document.querySelector('[role="option"]')!.addEventListener('click', picked)
-    // Old behavior: 'Port' prefix-matched 'Portugal'. Now: no exact match, the
-    // typeahead types 'Port', the page never mounts an exact option, and the
-    // control comes back EXACTLY as it was — never cleared to ''.
-    await expect(fillOne(el, 'Port')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    for (const o of Array.from(document.querySelectorAll('[role="option"]'))) o.addEventListener('click', picked)
+    await expect(fillOne(el, 'port')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
     expect(picked).not.toHaveBeenCalled()
     expect(el.value).toBe('Lisbon')
-  }, 10_000) // runs the real post-typeahead 500ms window
+  }, 10_000) // runs the real 500ms fast-path + 2000ms post-type windows
+
+  it('drives the typeahead when NO listbox mounts on the open click (type-to-load widget)', async () => {
+    document.body.innerHTML = '<div><input id="c" role="combobox" placeholder="Start typing..."></div>'
+    const el = document.getElementById('c') as HTMLInputElement
+    const all = ['Brazil', 'Portugal', 'United States']
+    // The real Ashby shape: options mount only AFTER keystrokes, async,
+    // substring-filtered — the widget the old bail-out no-opped on.
+    el.addEventListener('input', () => {
+      setTimeout(() => {
+        el.parentElement!.querySelector('[role="listbox"]')?.remove()
+        const lb = document.createElement('ul')
+        lb.setAttribute('role', 'listbox')
+        for (const t of all.filter((c) => c.toLowerCase().includes(el.value.trim().toLowerCase()))) {
+          const o = document.createElement('li')
+          o.setAttribute('role', 'option')
+          o.textContent = t
+          o.addEventListener('click', () => setNativeValue(el, t))
+          lb.appendChild(o)
+        }
+        el.parentElement!.appendChild(lb)
+      }, 150)
+    })
+    await expect(fillOne(el, 'bra')).resolves.toEqual({ ok: true, committed: 'Brazil' })
+    expect(el.value).toBe('Brazil')
+  }, 10_000) // rides the real 500ms fast-path window before typing
 
   it('fails and restores when the page rejects the committed value', async () => {
     document.body.innerHTML = `
