@@ -2,6 +2,7 @@ import { ContentMessageSchema, FillReportSchema, ScanResultSchema, STALE_EPOCH }
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { elementByFid, enumerateFields, getEpoch } from './enumerate'
 import { fillFields, fillFile } from './fill'
+import { harvestOptions } from './harvest'
 import { captureJobText, PICK_TIMEOUT_MS, startPicker } from './jobpost'
 import { installSnapshotListeners, snapshotValues } from './snapshot'
 import { waitForSettle } from './settle'
@@ -102,6 +103,13 @@ async function handle(raw: unknown): Promise<unknown> {
     // frame that produced it, not three hops later in the panel.
     if (!report.success) return { ok: false, error: 'bad_fill_report' }
     return { ok: true, fill: report.data }
+  }
+
+  if (msg.type === 'JFF_HARVEST') {
+    // A6: elected-frame-only is enforced by the PANEL (it addresses this frame
+    // directly). This frame enforces the epoch gate above and degrades every
+    // per-combobox failure to options: [].
+    return { ok: true, options: await harvestOptions(document, msg.fids) }
   }
 
   return { ok: false, error: 'not_implemented' }
