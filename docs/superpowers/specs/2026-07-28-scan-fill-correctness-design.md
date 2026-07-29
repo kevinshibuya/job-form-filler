@@ -52,29 +52,29 @@ Slice A — scan correctness:
 - [ ] A select whose selected option has an empty `value` or is disabled (a "Select…"
       placeholder) yields `currentValue: null` and resolves through the normal waterfall
       instead of being treated as already-on-page.
-- [ ] Scan-time combobox harvest records the mounted options for openable comboboxes in
+- [x] Scan-time combobox harvest records the mounted options for openable comboboxes in
       the ELECTED frame only, and leaves `options: []` on failure; a combobox in a
       non-elected frame or a demographic combobox is never opened; a combobox with a
       pre-existing value has the identical value after harvest; the prompt marks
       combobox fields as a closed set whose option list may be partial.
-- [ ] Exactly one frame is elected as the application frame (scored by field count,
+- [x] Exactly one frame is elected as the application frame (scored by field count,
       required controls, file input) and only its fields are sent to resolve, scan-time
       auto-fill, resume upload, and harvest. Bypass criteria: a recognizer-resolvable
       field in a non-elected frame (the newsletter email input) is never auto-filled and
       never appears in the resolve payload; election picks the form frame even when the
       user pasted job text.
-- [ ] Non-elected-frame fields render collapsed under an "Other page fields" group that
+- [x] Non-elected-frame fields render collapsed under an "Other page fields" group that
       names the elected frame, with a frame badge per row; they support manual fill
       only (no Generate, no auto-fill, not saved as answers).
-- [ ] The resume upload targets the file field that scores on /resume|cv|currícul/i
+- [x] The resume upload targets the file field that scores on /resume|cv|currícul/i
       (label, name, accept; bonus for `required`); with zero positively-scoring
       candidates no upload happens. Bypass criterion: on the two-file-input fixture the
       autofill-pane input is never the upload target.
-- [ ] Panel rows render kind-aware: choice/radiogroup with ≤5 options as segmented
+- [x] Panel rows render kind-aware: choice/radiogroup with ≤5 options as segmented
       buttons, larger option sets as a picker, the A8-winning file row wired to the
       stored resume targeting its own fid (any other file row manual-only), textarea
       only for text kinds; descriptions render as subtitles.
-- [ ] Panel rows follow the elected frame's document order, deterministic across
+- [x] Panel rows follow the elected frame's document order, deterministic across
       rescans, with tier shown as accent + badge; "Other page fields" sits collapsed at
       the bottom.
 - [ ] The status line separates `filled` (page-accepted fills, per B3 reports) from
