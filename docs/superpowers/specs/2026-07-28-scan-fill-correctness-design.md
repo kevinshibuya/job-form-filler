@@ -77,15 +77,15 @@ Slice A — scan correctness:
 - [x] Panel rows follow the elected frame's document order, deterministic across
       rescans, with tier shown as accent + badge; "Other page fields" sits collapsed at
       the bottom.
-- [ ] The status line separates `filled` (page-accepted fills, per B3 reports) from
+- [x] The status line separates `filled` (page-accepted fills, per B3 reports) from
       `already on page` (page-sourced values); neither count lies when a batch fill
       fails.
 
 Slice B — fill correctness:
 
-- [ ] A choice field whose hidden input accepts a real click (observable state change)
+- [x] A choice field whose hidden input accepts a real click (observable state change)
       is filled WITHOUT any button being clicked.
-- [ ] When the hidden-input click produces no observable change, `fillChoice` clicks the
+- [x] When the hidden-input click produces no observable change, `fillChoice` clicks the
       matching option button only when that button (a) is a descendant of the detected
       choice container holding the fid-stamped hidden input, (b) does not match the
       submit vocabulary /^(submit|apply|send|continue|next|enviar|candidatar)/i in its
@@ -95,22 +95,22 @@ Slice B — fill correctness:
       `choice-needs-user-click` and the row shows a "select on the page" hint;
       `fillOne`'s general button rail behaves exactly as before outside the choice
       branch.
-- [ ] A choice fill reports success only after an observable state change (hidden-input
+- [x] A choice fill reports success only after an observable state change (hidden-input
       flip, aria state, or class/attribute delta on the clicked button); with no
       observable change it reports `fill.failed` with a reason.
-- [ ] Filling "No" can never silently no-op: choice-kind fields route to `fillChoice`
+- [x] Filling "No" can never silently no-op: choice-kind fields route to `fillChoice`
       before BOTH the radio and checkbox branches (radio-backed choice fixture proves
       it); plain-checkbox uncheck of an already-unchecked box still reports ok (correct
       no-op).
-- [ ] `fillCombobox` interacts only with a listbox attributable to the target control
+- [x] `fillCombobox` interacts only with a listbox attributable to the target control
       (aria-owns/aria-controls, or one that appeared in response to our interaction).
       Bypass criterion: on a two-open-combobox fixture it never selects an option
       belonging to the other combobox.
-- [ ] When the target option is not mounted, `fillCombobox` types the value natively to
+- [x] When the target option is not mounted, `fillCombobox` types the value natively to
       filter, selects only an exact normalized match, and verifies the committed value;
       no exact match → `fill.failed: no-matching-option` and the control is restored to
       its pre-fill value (prefix guessing removed).
-- [ ] Scan-time batch fill consumes the JFF_FILL reports: the "filled" count reflects
+- [x] Scan-time batch fill consumes the JFF_FILL reports: the "filled" count reflects
       page-accepted fills only, and per-row failures render in the panel with their
       reason.
 
