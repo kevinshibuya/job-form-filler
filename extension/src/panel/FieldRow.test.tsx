@@ -107,10 +107,13 @@ describe('FieldRow', () => {
     expect(screen.queryByLabelText('Gender')).toBeNull()
   })
 
+  // A9: a ≤5-option select is no longer a textarea plus a comma-joined caption —
+  // the same options are what the picker's datalist offers as typeahead.
   it('lists the available options for a select so the user can see what is valid', () => {
     render(<FieldRow {...props}
       row={row(field({ label: 'Work model', kind: 'select', options: ['Remote', 'Hybrid'] }), resolution({ tier: 'needs_input', value: null, source: null }))} />)
-    expect(screen.getByText('Remote, Hybrid')).toBeTruthy()
+    const offered = Array.from(document.querySelectorAll<HTMLOptionElement>('datalist option')).map((o) => o.value)
+    expect(offered).toEqual(['Remote', 'Hybrid'])
   })
 })
 
@@ -155,5 +158,102 @@ describe('FieldRow acting states', () => {
     rerender(<FieldRow {...props} row={needsInputRow} edited="my answer" acting={null} locked={true} />)
     expect((screen.getByRole('button', { name: 'Fill' }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Generate with AI' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('FieldRow — kind-aware editors (A9)', () => {
+  it('renders ≤5-option choice as segmented buttons and emits the pick as an edit', () => {
+    const onEdit = vi.fn()
+    const r = row(field({ kind: 'choice', options: ['Sim', 'Não'] }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} onEdit={onEdit} /></ul>)
+    const seg = document.querySelector('[data-jff-editor="segmented"]')!
+    const buttons = Array.from(seg.querySelectorAll('button')).map((b) => b.textContent)
+    expect(buttons).toEqual(['Sim', 'Não'])
+    fireEvent.click(seg.querySelectorAll('button')[1]!)
+    expect(onEdit).toHaveBeenCalledWith('0:1', 'Não')
+  })
+
+  it('marks the picked segment pressed', () => {
+    const r = row(field({ kind: 'radiogroup', options: ['Yes', 'No'] }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} edited="No" /></ul>)
+    const pressed = Array.from(document.querySelectorAll('[data-jff-editor="segmented"] button'))
+      .map((b) => b.getAttribute('aria-pressed'))
+    expect(pressed).toEqual(['false', 'true'])
+  })
+
+  it('renders a >5-option set as a typeahead picker backed by a datalist', () => {
+    const opts = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+    const r = row(field({ kind: 'select', options: opts }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    const input = document.querySelector<HTMLInputElement>('[data-jff-editor="picker"]')!
+    expect(input.getAttribute('list')).toBe('opts-0:1')
+    expect(document.querySelectorAll('datalist option')).toHaveLength(7)
+  })
+
+  it('renders harvested combobox options as a picker too', () => {
+    const r = row(field({ kind: 'combobox', options: ['Brazil', 'Portugal'] }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-editor="picker"]')).not.toBeNull()
+  })
+
+  it('annotates an empty-options combobox as a dropdown whose options load on fill', () => {
+    const r = row(field({ kind: 'combobox', options: [] }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-editor="combobox-empty"]')).not.toBeNull()
+    expect(screen.getByText(/dropdown — options load on fill/)).toBeTruthy()
+  })
+
+  it('wires the resume-target file row to Put on page and never shows a textarea', () => {
+    const onFillResume = vi.fn()
+    const r = row(field({ kind: 'file', label: 'Resume', required: true }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} resumeTarget resumeName="cv.pdf" onFillResume={onFillResume} /></ul>)
+    expect(screen.getByText(/cv\.pdf/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Put on page' }))
+    expect(onFillResume).toHaveBeenCalledWith('0:1')
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Generate with AI' })).toBeNull()
+  })
+
+  // The unlabelled, optional file input the ATS autofill pane ships: score 0,
+  // so it can never be targeted and must not grow a second resume button.
+  it('renders any other file row manual-only with its score reason', () => {
+    const r = row(field({ kind: 'file', label: null, required: false }), resolution({ tier: 'needs_input', value: null, source: null }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText(/resume score 0/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Fill' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Put on page' })).toBeNull()
+  })
+
+  it('shows the description as a subtitle under the label', () => {
+    const r = row(field({ description: 'Answer for your current country.' }), resolution())
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-description]')!.textContent).toBe('Answer for your current country.')
+  })
+
+  it('shows the tier as a badge and stamps data-jff-tier on the row', () => {
+    render(<ul><FieldRow row={needsInput()} {...props} /></ul>)
+    const li = document.querySelector('li')!
+    expect(li.getAttribute('data-jff-tier')).toBe('needs_input')
+    expect(li.querySelector('[data-jff-tier-badge]')!.textContent).toBe('needs input')
+  })
+})
+
+describe('FieldRow — foreign rows and hints (A9/B1 seam)', () => {
+  const foreignRow = () => row(
+    field({ frameId: 3, label: 'Newsletter email' }),
+    resolution({ handle: { frameId: 3, fid: 1, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, reason: 'other-frame' }),
+  )
+
+  it('foreign: frame badge, manual Fill only, no Generate', () => {
+    render(<ul><FieldRow row={foreignRow()} {...props} edited="x" foreign /></ul>)
+    expect(screen.getByText('frame 3')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Generate with AI' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Fill' })).toBeTruthy()
+  })
+
+  it('renders the human hint for a hinted reason', () => {
+    const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'choice-needs-user-click' }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText('Select this answer on the page yourself.')).toBeTruthy()
   })
 })
