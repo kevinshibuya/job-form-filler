@@ -1,4 +1,5 @@
 import type { ResolutionTier } from '@jff/shared'
+import { norm } from '@jff/shared'
 import { SOURCE_BADGE, type Row } from './group'
 import { scoreResumeField } from './resumeTarget'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from './ui'
@@ -15,6 +16,10 @@ export const TIER_BADGE: Record<ResolutionTier, string> = {
 export const REASON_HINT: Record<string, string> = {
   'choice-needs-user-click': 'Select this answer on the page yourself.',
   'other-frame': 'Outside the application frame. Fill puts your value there; nothing is generated or saved for it.',
+  'combobox-no-listbox': 'Open this dropdown on the page yourself and pick the value.',
+  // Widget-agnostic on purpose: this reason is shared by combobox, select and
+  // radio-group no-match failures (review fix, minors item 16).
+  'no-matching-option': 'No option matches this value. Try different text.',
 }
 
 const SEGMENTED_MAX_OPTIONS = 5
@@ -103,15 +108,20 @@ export function FieldRow(p: FieldRowProps) {
 
       {editor === 'segmented' && (
         <div className="mt-1.5 flex flex-wrap gap-1" role="group" data-jff-editor="segmented">
-          {field.options.map((opt) => (
-            <button
-              key={opt} type="button" aria-pressed={value === opt}
-              className={`${BTN} ${value === opt ? 'border-blue-600 font-semibold text-blue-700 dark:border-blue-400 dark:text-blue-300' : ''}`}
-              onClick={() => onEdit(ref, opt)}
-            >
-              {opt}
-            </button>
-          ))}
+          {field.options.map((opt) => {
+            // B5d: the same normalization the fill engine uses — a value that
+            // FILLS as 'Yes' must HIGHLIGHT as 'Yes'.
+            const selected = norm(value) === norm(opt)
+            return (
+              <button
+                key={opt} type="button" aria-pressed={selected}
+                className={`${BTN} ${selected ? 'border-blue-600 font-semibold text-blue-700 dark:border-blue-400 dark:text-blue-300' : ''}`}
+                onClick={() => onEdit(ref, opt)}
+              >
+                {opt}
+              </button>
+            )
+          })}
         </div>
       )}
 
