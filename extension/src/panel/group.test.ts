@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { EnumField, Resolution } from '@jff/shared'
-import { buildRows, FOREIGN_REASON, groupRows, refOf, SOURCE_BADGE } from './group'
+import { buildRows, FOREIGN_REASON, refOf, SOURCE_BADGE } from './group'
 
 const field = (fid: number, label: string, frameId = 0): EnumField => ({
   frameId, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
@@ -9,36 +9,6 @@ const field = (fid: number, label: string, frameId = 0): EnumField => ({
 const resolution = (fid: number, patch: Partial<Resolution>): Resolution => ({
   handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
   source: null, key: null, answerId: null, reason: 'custom', ...patch,
-})
-
-describe('groupRows', () => {
-  const fields = [field(0, 'Email'), field(1, 'Salary'), field(2, 'Why us?'), field(3, 'Gender')]
-  const resolutions = [
-    resolution(0, { tier: 'auto', value: 'k@x.com', source: 'profile' }),
-    resolution(1, { tier: 'proposed', value: 'R$ 18k', source: 'llm_key' }),
-    resolution(2, { tier: 'needs_input' }),
-    resolution(3, { tier: 'skipped', reason: 'eeo' }),
-  ]
-
-  it('puts every field in exactly one bucket', () => {
-    const g = groupRows(fields, resolutions)
-    expect(g.auto.map((r) => r.field.label)).toEqual(['Email'])
-    expect(g.proposed.map((r) => r.field.label)).toEqual(['Salary'])
-    expect(g.needs_input.map((r) => r.field.label)).toEqual(['Why us?'])
-    expect(g.skipped.map((r) => r.field.label)).toEqual(['Gender'])
-  })
-
-  it('drops a field with no matching resolution rather than guessing', () => {
-    const g = groupRows([...fields, field(9, 'Orphan')], resolutions)
-    const all = [...g.auto, ...g.proposed, ...g.needs_input, ...g.skipped]
-    expect(all.map((r) => r.field.label)).not.toContain('Orphan')
-  })
-
-  it('matches resolutions by the full handle, not by array position', () => {
-    const g = groupRows([field(1, 'Salary'), field(0, 'Email')], resolutions)
-    expect(g.auto[0]!.field.label).toBe('Email')
-    expect(g.proposed[0]!.field.label).toBe('Salary')
-  })
 })
 
 describe('buildRows', () => {

@@ -1,4 +1,4 @@
-import type { EnumField, FieldHandle, Resolution, ResolutionTier } from '@jff/shared'
+import type { EnumField, FieldHandle, Resolution } from '@jff/shared'
 
 export interface Row {
   ref: string
@@ -17,19 +17,6 @@ export const SOURCE_BADGE: Record<NonNullable<Resolution['source']>, string> = {
   llm_key: 'AI match',
   llm_reuse: 'AI reuse',
   page: 'already on page',
-}
-
-/** Bucket every field by tier. A field with no resolution is dropped, never guessed. */
-export function groupRows(fields: EnumField[], resolutions: Resolution[]): Record<ResolutionTier, Row[]> {
-  const byRef = new Map(resolutions.map((r) => [refOf(r.handle), r]))
-  const out: Record<ResolutionTier, Row[]> = { auto: [], proposed: [], needs_input: [], skipped: [] }
-  for (const field of fields) {
-    const ref = refOf(field)
-    const resolution = byRef.get(ref)
-    if (resolution === undefined) continue
-    out[resolution.tier].push({ ref, field, resolution })
-  }
-  return out
 }
 
 /** The synthetic reason foreign rows carry. FieldRow maps it to a hint; save.ts

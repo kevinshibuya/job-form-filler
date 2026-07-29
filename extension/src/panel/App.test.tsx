@@ -19,6 +19,26 @@ const SELF_CHECK = {
   db: { ok: true, path: '(fake)' },
 }
 
+/**
+ * jsdom's Blob has no `arrayBuffer()`, so `saveResume(new File(...))` throws here
+ * (same shim, same reasoning as resume.test.ts — Chrome has had it since 76, so
+ * production is untouched and the `typeof` guard makes this inert in a real browser).
+ */
+if (typeof Blob.prototype.arrayBuffer !== 'function') {
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+    configurable: true,
+    writable: true,
+    value(this: Blob): Promise<ArrayBuffer> {
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as ArrayBuffer)
+        reader.onerror = () => reject(reader.error)
+        reader.readAsArrayBuffer(this)
+      })
+    },
+  })
+}
+
 afterEach(() => { delete window.__jffHostBridge })
 
 beforeEach(() => {
@@ -387,7 +407,7 @@ describe('App mid-scan navigation', () => {
     await waitFor(() => { expect(statusNow()).toBe('enumerating') })
     // Nothing the dead scan produced reached the screen: no row, no ✓ N filled.
     expect(screen.queryByText('Dead page field')).toBeNull()
-    expect(document.querySelector('[data-jff-group]')).toBeNull()
+    expect(document.querySelector('[data-jff-rows]')).toBeNull()
     expect(statusNow()).not.toBe('done')
   })
 
@@ -719,8 +739,8 @@ describe('App generation discipline', () => {
     await waitFor(() => { expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(false) })
     // Still Proposed: the fill the promotion claims happened was answered by a page
     // that no longer exists.
-    expect(document.querySelector('[data-jff-group="proposed"]')).not.toBeNull()
-    expect(document.querySelector('[data-jff-group="auto"]')).toBeNull()
+    expect(document.querySelector('li[data-jff-tier="proposed"]')).not.toBeNull()
+    expect(document.querySelector('li[data-jff-tier="auto"]')).toBeNull()
   })
 
   it('does not paste a dead page job description into the new page', async () => {
@@ -892,8 +912,8 @@ describe('App per-field fill failures', () => {
       expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed')
     })
     // Still Proposed: promoting to Filled would tell the user a lie about the page.
-    expect(document.querySelector('[data-jff-group="proposed"]')).not.toBeNull()
-    expect(document.querySelector('[data-jff-group="auto"]')).toBeNull()
+    expect(document.querySelector('li[data-jff-tier="proposed"]')).not.toBeNull()
+    expect(document.querySelector('li[data-jff-tier="auto"]')).toBeNull()
     expect(screen.getByText(/Accept failed: no-matching-option/)).toBeTruthy()
   })
 
@@ -1014,6 +1034,110 @@ describe('App generate request', () => {
     expect(generateCalls[0]).toMatchObject({
       questionRaw: 'Authorized to work?',
       description: 'Answer for your current country.',
+    })
+  })
+})
+
+describe('App — election rendering (A7/A9)', () => {
+  const twoFrameScanReply = {
+    ok: true,
+    replies: [
+      { frameId: 0, url: 'https://careers.acme.com/', payload: { ok: true, scan: { epoch: 1, fields: [
+        { frameId: -1, fid: 0, epoch: 1, label: 'Newsletter email', name: 'email', idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false },
+      ], unreachableWidgets: 0, activeCaptcha: false } } },
+      { frameId: 1, url: 'https://ats.acme.com/embed', payload: { ok: true, scan: { epoch: 1, fields: [
+        { frameId: -1, fid: 0, epoch: 1, label: 'First name', name: 'first', idAttr: null, kind: 'text', options: [], required: true, visible: true, currentValue: null, demographic: false },
+        { frameId: -1, fid: 1, epoch: 1, label: 'Why us?', name: 'why', idAttr: null, kind: 'textarea', options: [], required: false, visible: true, currentValue: null, demographic: false },
+      ], unreachableWidgets: 0, activeCaptcha: false } } },
+    ],
+    failures: [],
+  }
+
+  function installTwoFrameScan(): void {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0, 1] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return twoFrameScanReply
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 1, payload: { ok: true, fill: { epoch: 1, filled: [], failed: [] } } }], failures: [] }
+      return { ok: true }
+    })
+    // Resolutions come back for the ELECTED frame's fields only, like the real host.
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        const p = params as { fields: { frameId: number; fid: number }[] }
+        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
+          handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'needs_input' as const,
+          value: null, source: null, key: null, answerId: null, reason: 'custom',
+        })), llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it('renders elected rows in document order and demotes the newsletter field', async () => {
+    installTwoFrameScan()
+    render(<App />)
+    await waitFor(() => expect(document.querySelectorAll('[data-jff-rows] li')).toHaveLength(2))
+    const labels = Array.from(document.querySelectorAll('[data-jff-rows] li label.font-semibold')).map((n) => n.textContent)
+    expect(labels).toEqual(['First name', 'Why us?'])
+    const foreignEl = document.querySelector('[data-jff-foreign]')!
+    expect(foreignEl.textContent).toContain('Other page fields (1)')
+    expect(foreignEl.textContent).toContain('ats.acme.com') // the ELECTED frame is named
+    expect(foreignEl.textContent).toContain('Newsletter email')
+  })
+
+  it('offers no Generate on a foreign row but keeps manual Fill', async () => {
+    installTwoFrameScan()
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-foreign]')).not.toBeNull())
+    const rowEl = document.querySelector('[data-jff-foreign] li')!
+    const names = Array.from(rowEl.querySelectorAll('button')).map((b) => b.textContent ?? '')
+    expect(names.some((n) => n.includes('Generate'))).toBe(false)
+    expect(names.some((n) => n.includes('Fill'))).toBe(true)
+  })
+})
+
+describe('App — resume row wiring (A8/A9)', () => {
+  it('puts the stored resume on the page from the winning file row, targeting its own fid', async () => {
+    const { saveResume } = await import('./resume')
+    await saveResume(new File([new Uint8Array([1, 2, 3])], 'cv.pdf', { type: 'application/pdf' }))
+    const sentMessages: { type?: string; handle?: { fid: number } }[] = []
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string; handle?: { fid: number } } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message !== undefined) sentMessages.push(msg.message)
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return { ok: true, replies: [{ frameId: 0, url: 'https://ats.example/', payload: { ok: true, scan: { epoch: 1, fields: [
+          { frameId: -1, fid: 0, epoch: 1, label: null, name: null, idAttr: null, kind: 'file', options: [], required: false, visible: true, currentValue: null, demographic: false },
+          { frameId: -1, fid: 1, epoch: 1, label: 'Resume', name: 'resume', idAttr: null, kind: 'file', options: [], required: true, visible: true, currentValue: null, demographic: false, accept: '.pdf' },
+        ], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true } }], failures: [] }
+      return { ok: true }
+    })
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        const p = params as { fields: { frameId: number; fid: number }[] }
+        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
+          handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'needs_input' as const,
+          value: null, source: null, key: null, answerId: null, reason: 'custom',
+        })), llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    const putButton = await screen.findByRole('button', { name: 'Put on page' })
+    // The scan already uploaded once (auto path); the ROW re-upload is the user's.
+    fireEvent.click(putButton)
+    await waitFor(() => {
+      const uploads = sentMessages.filter((m) => m.type === 'JFF_FILL_RESUME')
+      expect(uploads.length).toBeGreaterThanOrEqual(1)
+      // every upload targeted the WINNING fid, never the fid-0 autofill pane
+      expect(uploads.every((u) => u.handle!.fid === 1)).toBe(true)
     })
   })
 })

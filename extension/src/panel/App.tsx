@@ -3,11 +3,12 @@ import type { ContentMessage, EnumField, FillReport, Resolution, SelfCheck } fro
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
-import { groupRows, refOf, type Row } from './group'
+import { buildRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, type HostPort } from './port'
 import { ProfileEditor } from './ProfileEditor'
 import { loadResume, saveResume } from './resume'
-import { runScan, ScanError, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { pickResumeTarget } from './resumeTarget'
+import { runScan, ScanError, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createTabScope } from './tabScope'
@@ -29,6 +30,14 @@ export const hostnameOf = (url: string | undefined): string => {
  *  anyway. A host that connects but never answers must not pin the panel on
  *  'connecting' forever; the resolve step surfaces the host problem loudly. */
 export const HOST_WAIT_MS = 10_000
+
+/** "host:port (score N)" — the port matters: two fixture origins share a host. */
+export const electedFrameName = (e: ElectionOutcome | null): string => {
+  if (e === null) return '(none)'
+  let host = `frame ${e.frameId}`
+  if (e.url !== null) { try { host = new URL(e.url).host } catch { /* keep frame id */ } }
+  return `${host} (score ${e.score})`
+}
 
 export interface AppProps {
   /** Injected only by tests, so the gate's timeout is provable without fake timers. */
@@ -64,6 +73,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [scanNonce, setScanNonce] = useState(0)
   const [fields, setFields] = useState<EnumField[]>([])
   const [resolutions, setResolutions] = useState<Resolution[]>([])
+  const [election, setElection] = useState<ElectionOutcome | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [generatedRefs, setGeneratedRefs] = useState<readonly string[]>([])
   const [filledRefs, setFilledRefs] = useState<readonly string[]>([])
@@ -87,7 +97,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' } | null>(null)
   const [gateOpen, setGateOpen] = useState(false)
 
-  const groups = groupRows(fields, resolutions)
+  const { main, foreign } = buildRows(fields, resolutions, election?.frameId ?? null)
+  // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
+  // the stored resume — recomputed over the CURRENT fields so a post-resume
+  // re-enumeration can never leave the button on a stale fid.
+  const resumeTargetField = pickResumeTarget(main.map((r) => r.field))
+  const resumeTargetRef = resumeTargetField === null ? null : refOf(resumeTargetField)
   const companyOrNull = company.trim() === '' ? null : company.trim()
 
   /* ------------------------------------------------------------- lifecycle */
@@ -115,7 +130,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // invariant ("a rollback target never outlives its page") must not depend on
     // that reasoning staying true.
     lastOutcomeRef.current = null
-    setFields([]); setResolutions([]); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
+    setFields([]); setResolutions([]); setElection(null); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
     setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
     setReuseOverrides({})
     // A guessed company belongs to the employer whose page just went away; keeping
@@ -288,6 +303,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (resetGenRef.current !== gen) return
       setFields(out.fields)
       setResolutions(out.resolutions)
+      setElection(out.election)
       setUnreachable(out.unreachableWidgets)
       setActiveCaptcha(out.activeCaptcha)
       setFrameReports(out.frameReports)
@@ -387,7 +403,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }
 
   const onAccept = async (ref: string): Promise<void> => {
-    const row = groups.proposed.find((r) => r.ref === ref)
+    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'proposed')      // onAccept
     if (row === undefined || acting !== null) return
     const value = edits[ref] ?? row.resolution.value ?? ''
     if (value === '') return
@@ -421,7 +437,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  Unlike Accept this confirms no mapping and promotes no tier — a needs-input
    *  row has no LLM-proposed key, only an answer the user wrote. */
   const onFill = async (ref: string): Promise<void> => {
-    const row = groups.needs_input.find((r) => r.ref === ref)
+    const row = [...main, ...foreign].find((r) => r.ref === ref && r.resolution.tier === 'needs_input') // onFill
     if (row === undefined || acting !== null) return
     const value = edits[ref] ?? row.resolution.value ?? ''
     if (value.trim() === '') return
@@ -442,8 +458,36 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     }
   }
 
+  /** A9: put the stored resume on the A8-winning file row, targeting ITS fid
+   *  through the existing base64 JFF_FILL_RESUME plumbing. */
+  const onFillResume = async (ref: string): Promise<void> => {
+    const row = main.find((r) => r.ref === ref)
+    if (row === undefined || tabId === null || acting !== null) return
+    const resume = await loadResume()
+    if (resume === null) return
+    const gen = resetGenRef.current
+    setActing({ ref, action: 'fill' })
+    try {
+      const { replies } = await sendToTab(row.field.frameId, {
+        type: 'JFF_FILL_RESUME', epoch: row.field.epoch,
+        handle: { frameId: row.field.frameId, fid: row.field.fid, epoch: row.field.epoch },
+        fileName: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64,
+      })
+      if (resetGenRef.current !== gen) return
+      const p = replies[0]?.payload as { ok?: boolean; error?: string } | undefined
+      if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the file')
+      setFilledRefs((f) => (f.includes(ref) ? f : [...f, ref]))
+      clearActionFailure()
+    } catch (e) {
+      if (resetGenRef.current !== gen) return
+      setScanStatus({ kind: 'action_failed', reason: `Resume fill failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setActing(null)
+    }
+  }
+
   const onGenerate = async (ref: string): Promise<void> => {
-    const row = groups.needs_input.find((r) => r.ref === ref)
+    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'needs_input')   // onGenerate (foreign rows never generate)
     const port = portRef.current
     if (row === undefined || port === null) return
     setGeneratingRef(ref)
@@ -584,6 +628,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
       <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
         Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}
+        {resumeName !== null && main.some((r) => r.field.kind === 'file') && resumeTargetRef === null && (
+          <span className="text-amber-600 dark:text-amber-400" data-jff-resume-note="1"> — resume field not identified; nothing was uploaded</span>
+        )}
         <input
           type="file"
           accept=".pdf,.doc,.docx,.txt,.rtf"
@@ -617,28 +664,52 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             // opened during the load is never stuck on an empty snapshot.
             <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} />
           )
-        : (['needs_input', 'proposed', 'auto', 'skipped'] as const).map((tier) => (
-            groups[tier].length === 0 ? null : (
-              <section className="mt-4" key={tier} data-jff-group={tier}>
-                <h2 className={`m-0 mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest ${MUTED}`}>
-                  {tier === 'needs_input' ? 'Needs input' : tier === 'proposed' ? 'Proposed' : tier === 'auto' ? 'Filled' : 'Skipped'}
-                  <span className="rounded-full bg-neutral-200 px-1.5 text-[11px] dark:bg-neutral-700">{groups[tier].length}</span>
-                </h2>
-                <ul className="m-0 grid list-none gap-2 p-0">
-                  {groups[tier].map((row) => (
-                    <FieldRow
-                      key={row.ref} row={row} edited={edits[row.ref] ?? null}
-                      onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
-                      generating={generatingRef === row.ref}
-                      filled={filledRefs.includes(row.ref)}
-                      acting={acting !== null && acting.ref === row.ref ? acting.action : null}
-                      locked={acting !== null}
-                    />
-                  ))}
-                </ul>
-              </section>
-            )
-          ))}
+        : (
+            <>
+              {main.length > 0 && (
+                <section className="mt-4" data-jff-rows="1">
+                  <ul className="m-0 grid list-none gap-2 p-0">
+                    {main.map((row) => (
+                      <FieldRow
+                        key={row.ref} row={row} edited={edits[row.ref] ?? null}
+                        onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
+                        generating={generatingRef === row.ref}
+                        filled={filledRefs.includes(row.ref)}
+                        acting={acting !== null && acting.ref === row.ref ? acting.action : null}
+                        locked={acting !== null}
+                        resumeTarget={row.ref === resumeTargetRef}
+                        resumeName={resumeName}
+                        onFillResume={onFillResume}
+                      />
+                    ))}
+                  </ul>
+                </section>
+              )}
+              {foreign.length > 0 && (
+                // Collapsed at the bottom, NAMING the elected frame so a
+                // mis-election is visible and explainable (the override UI is
+                // spec-deferred; this header is the mitigation).
+                <details className="mt-4" data-jff-foreign="1">
+                  <summary className={`cursor-pointer text-[11px] font-semibold uppercase tracking-widest ${MUTED}`}>
+                    Other page fields ({foreign.length}) — application frame: {electedFrameName(election)}
+                  </summary>
+                  <ul className="m-0 mt-2 grid list-none gap-2 p-0">
+                    {foreign.map((row) => (
+                      <FieldRow
+                        key={row.ref} row={row} edited={edits[row.ref] ?? null}
+                        onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
+                        generating={false}
+                        filled={filledRefs.includes(row.ref)}
+                        acting={acting !== null && acting.ref === row.ref ? acting.action : null}
+                        locked={acting !== null}
+                        foreign
+                      />
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </>
+          )}
 
       {saveItems.length > 0 && (
         <details className="mt-3" data-jff-savepreview="1">
