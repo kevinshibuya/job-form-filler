@@ -1141,3 +1141,66 @@ describe('App — resume row wiring (A8/A9)', () => {
     })
   })
 })
+
+describe('App — B3 page-accepted fills and failure surfacing', () => {
+  function installScanWithFillReport(): void {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    const fields = [
+      { frameId: -1, fid: 0, epoch: 1, label: 'First name', name: 'first', idAttr: null, kind: 'text', options: [], required: true, visible: true, currentValue: null, demographic: false },
+      { frameId: -1, fid: 1, epoch: 1, label: 'Authorized to work?', name: 'auth', idAttr: null, kind: 'choice', options: ['Yes', 'No'], required: true, visible: false, currentValue: null, demographic: false },
+    ]
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string; fills?: { handle: { frameId: number; fid: number; epoch: number } }[] } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return { ok: true, replies: [{ frameId: 0, url: 'https://ats.example/', payload: { ok: true, scan: { epoch: 1, fields, unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        const fills = msg.message.fills!
+        // The page accepted the text fill and REFUSED the choice fill.
+        return {
+          ok: true,
+          replies: [{ frameId: 0, payload: { ok: true, fill: {
+            epoch: 1,
+            filled: fills.filter((f) => f.handle.fid === 0).map((f) => f.handle),
+            failed: fills.filter((f) => f.handle.fid === 1).map((f) => ({ handle: f.handle, reason: 'choice-needs-user-click' })),
+          } } }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true } }], failures: [] }
+      return { ok: true }
+    })
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        const p = params as { fields: { frameId: number; fid: number; kind: string }[] }
+        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
+          handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'auto' as const,
+          value: f.kind === 'choice' ? 'Yes' : 'Kevin', source: 'profile' as const,
+          key: null, answerId: null, reason: 'test',
+        })), llmError: null } }
+      }
+      if (method === 'selector.get') return { requestId, ok: true, result: { selector: null } }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it('counts only page-accepted fills and demotes the failed row with its reason and hint', async () => {
+    installScanWithFillReport()
+    render(<App />)
+    // 1 page-accepted (text) — NOT 2, even though both resolutions are tier auto.
+    await screen.findByText('✓ 1 filled, 0 already on page, 0 proposed, 1 need input')
+    // The failed choice row dropped to needs-input styling with the refusal hint.
+    const demoted = Array.from(document.querySelectorAll('li[data-jff-tier="needs_input"]'))
+      .find((li) => li.textContent?.includes('Authorized to work?'))
+    expect(demoted).toBeDefined()
+    expect(demoted!.textContent).toContain('Select this answer on the page yourself.')
+    // The accepted row keeps its auto tier.
+    const kept = Array.from(document.querySelectorAll('li[data-jff-tier="auto"]'))
+      .find((li) => li.textContent?.includes('First name'))
+    expect(kept).toBeDefined()
+  })
+})

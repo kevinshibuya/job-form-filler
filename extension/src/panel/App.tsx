@@ -302,7 +302,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // every JFF_FILL they claim was answered stale_epoch. Drop the whole write.
       if (resetGenRef.current !== gen) return
       setFields(out.fields)
-      setResolutions(out.resolutions)
+      // B3: a resolution whose batched auto-fill the page REJECTED is not
+      // "filled" — demote it to needs_input carrying the fill reason, so the
+      // row drops to needs-input styling, REASON_HINT renders the hint
+      // (choice-needs-user-click → "Select this answer on the page yourself."),
+      // and the user gets Generate/Fill to recover. Page-sourced rows are never
+      // in `failed` (the loop skips them), so `already on page` is untouched.
+      const failedFillReason = new Map(out.fill.failed.map((f) => [refOf(f.handle), f.reason]))
+      const resolutions = out.resolutions.map((r) =>
+        failedFillReason.has(refOf(r.handle))
+          ? { ...r, tier: 'needs_input' as const, reason: failedFillReason.get(refOf(r.handle))! }
+          : r)
+      setResolutions(resolutions)
       setElection(out.election)
       setUnreachable(out.unreachableWidgets)
       setActiveCaptcha(out.activeCaptcha)
@@ -313,16 +324,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setSnapshot({})
       if (out.jobText !== '') setJobText(out.jobText)
       if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
-      // A9 status semantics: `filled` and `already on page` are SEPARATE facts.
-      // `alreadyOnPage` (page-sourced values the engine never wrote) is exact.
-      // INTERIM — B3 (plan 3) replaces the `filled` COUNT SOURCE: it still
-      // counts attempted scan-time auto-fills here because the batched JFF_FILL
-      // reports are only collected and consumed in slice 3; B3 swaps in the
-      // page-accepted number from those reports without touching this shape.
-      const filled = out.resolutions.filter((r) => r.tier === 'auto' && r.source !== 'page').length
-      const alreadyOnPage = out.resolutions.filter((r) => r.tier === 'auto' && r.source === 'page').length
-      const proposed = out.resolutions.filter((r) => r.tier === 'proposed').length
-      const needsInput = out.resolutions.filter((r) => r.tier === 'needs_input').length
+      // A9/B3 status semantics: `filled` = PAGE-ACCEPTED batched fills, straight
+      // from the frames' JFF_FILL reports — never inferred from tiers, so a
+      // failed batch can never inflate it. `already on page` = page-sourced
+      // values the engine never wrote. The remaining counts run over the
+      // DEMOTED array so the four numbers always describe the rows on screen.
+      const filled = out.fill.filled.length
+      const alreadyOnPage = resolutions.filter((r) => r.tier === 'auto' && r.source === 'page').length
+      const proposed = resolutions.filter((r) => r.tier === 'proposed').length
+      const needsInput = resolutions.filter((r) => r.tier === 'needs_input').length
       // Precedence: captcha > empty > llm failure > done. A captcha'd page may
       // also be field-less; the captcha is the actionable fact.
       setOutcome(
