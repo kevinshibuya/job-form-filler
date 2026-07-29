@@ -151,3 +151,26 @@ describe('FillReportSchema — committed canonical text (B1c)', () => {
     expect(r.success).toBe(false)
   })
 })
+
+describe('generate cvText + facts.extract (B2b/B6)', () => {
+  it('accepts a generate request with optional cvText', () => {
+    const r = HostRequestSchema.safeParse({
+      requestId: 'g1', method: 'generate',
+      params: { handle: { frameId: 0, fid: 1, epoch: 1 }, questionRaw: 'Why us?', jobText: '', company: null, cvText: 'CV BODY' },
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('still accepts a generate request without cvText', () => {
+    const r = HostRequestSchema.safeParse({
+      requestId: 'g2', method: 'generate',
+      params: { handle: { frameId: 0, fid: 1, epoch: 1 }, questionRaw: 'Why us?', jobText: '', company: null },
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('accepts facts.extract with non-empty cvText and rejects empty', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'f1', method: 'facts.extract', params: { cvText: 'CV' } }).success).toBe(true)
+    expect(HostRequestSchema.safeParse({ requestId: 'f2', method: 'facts.extract', params: { cvText: '' } }).success).toBe(false)
+  })
+})

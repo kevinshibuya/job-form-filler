@@ -6,7 +6,7 @@ import { FieldRow } from './FieldRow'
 import { buildRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, type HostPort } from './port'
 import { ProfileEditor } from './ProfileEditor'
-import { loadResume, saveResume } from './resume'
+import { loadResume, loadResumeText, saveResume } from './resume'
 import { pickResumeTarget } from './resumeTarget'
 import { runScan, ScanError, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanUiState } from './ScanStatus'
@@ -86,6 +86,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [facts, setFacts] = useState<Record<string, string>>({})
   const [factsLoaded, setFactsLoaded] = useState(false)
   const [resumeName, setResumeName] = useState<string | null>(null)
+  // B2b: extracted CV text, loaded once (lazily re-extracted for a pre-B2a
+  // stored resume) and sent as trusted context with every generate.
+  const [cvText, setCvText] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<Record<string, string>>({})
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [reuseOverrides, setReuseOverrides] = useState<Record<string, 'reusable' | 'company_specific'>>({})
@@ -179,7 +182,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     return () => { cancelled = true; if (stop !== null) stop() }
   }, [])
 
-  useEffect(() => { void loadResume().then((r) => setResumeName(r?.name ?? null)) }, [])
+  useEffect(() => {
+    void loadResume().then((r) => setResumeName(r?.name ?? null))
+    void loadResumeText().then(setCvText)
+  }, [])
 
   // Pre-fill the facts editor from the host once the self-check answered.
   useEffect(() => {
@@ -525,6 +531,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       description: row.field.description,
       jobText,
       company: companyOrNull,
+      ...(cvText === null ? {} : { cvText }),
     })
     setGeneratingRef(null)
     if (r.ok) {
@@ -568,6 +575,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const file = e.target.files?.[0]
     if (file === undefined) return
     await saveResume(file)
+    // Text BEFORE name: the rendered name is the outside world's signal that
+    // extraction settled (Task 13's e2e depends on this ordering).
+    setCvText(await loadResumeText())
     setResumeName(file.name)
   }
 

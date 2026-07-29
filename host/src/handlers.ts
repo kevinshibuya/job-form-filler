@@ -11,7 +11,8 @@ import {
   saveSelector, setAnswerBank, setProfile, upsertAnswer,
 } from './db/repos.js'
 import { ClaudeError, type ClaudeRunner } from './llm/claudeCli.js'
-import { buildProfileSummary, runGeneration } from './llm/generate.js'
+import { buildProfileSummary, runGeneration, type GenerationInput } from './llm/generate.js'
+import { readProjectNotes } from './llm/projects.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFields } from './resolve/waterfall.js'
 import { log } from './log.js'
@@ -80,14 +81,17 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'generate': {
         const lang = detectLanguage(req.params.questionRaw)
         const references = listReferenceAnswers(db, normalizeQuestion(req.params.questionRaw), lang).map((r) => r.answer)
-        const draft = await runGeneration(deps.runner, {
+        const input: GenerationInput = {
           question: req.params.questionRaw,
           description: req.params.description ?? null,
           jobText: req.params.jobText,
           company: req.params.company,
           profileSummary: buildProfileSummary(getProfile(db), getAnswerBank(db)),
+          cvText: req.params.cvText ?? null,
+          projectNotes: readProjectNotes(deps.config.projectsPaths),
           references,
-        })
+        }
+        const draft = await runGeneration(deps.runner, input)
         return ok(req.requestId, { draft })
       }
 
@@ -136,6 +140,9 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         // No panel consumer in v1 (deliberate): this method is the executable
         // proof of the {page, done} chunking protocol. See Task 11 preamble.
         return ok(req.requestId, paginate(listAllAnswers(db), req.params.page))
+
+      case 'facts.extract':
+        return fail(req.requestId, 'bad_request', 'facts.extract lands in Task 10')
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req

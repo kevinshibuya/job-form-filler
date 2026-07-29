@@ -58,7 +58,15 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
       description: z.string().optional(),
       jobText: z.string(),
       company: z.string().nullable(),
+      // B2b: extracted resume TEXT, trusted candidate-authored context. The raw
+      // file still never crosses native messaging (user decision 2026-07-29).
+      cvText: z.string().optional(),
     }),
+  }),
+  z.object({
+    requestId: z.string().min(1), method: z.literal('facts.extract'),
+    // B6: map CV text onto the closed FIELD_KEYS set (host-side prompt).
+    params: z.object({ cvText: z.string().min(1) }),
   }),
   z.object({
     requestId: z.string().min(1), method: z.literal('save'),
