@@ -62,6 +62,11 @@ function fillCheckbox(el: HTMLInputElement, value: string): FillOutcome {
  *  is NEVER clicked, whatever the other gates say. */
 const SUBMIT_WORD_RE = /^(submit|apply|send|continue|next|enviar|candidatar)/i
 
+/** data-state values that mean "this option is currently selected" (Radix and
+ *  friends stamp these). Anything else ('unchecked', 'closed', …) is not
+ *  evidence of an answered widget. */
+const ACTIVE_DATA_STATE: ReadonlySet<string> = new Set(['checked', 'active', 'on', 'true'])
+
 const AFFIRMATIVE_RE = /^(true|yes|sim|on|1|checked)$/i
 const NEGATIVE_RE = /^(false|no|não|nao|off|0)$/i
 
@@ -133,6 +138,31 @@ export async function fillChoice(
     await nextFrame()
     return choiceFingerprint(members, buttons) !== before
   }
+
+  // STEP 0 — the page ALREADY verifiably shows the requested state: report ok
+  // without touching anything (spec B5e / D4). This kills the re-scan demotion
+  // of correct answers (the session-6 OPEN FINDING) while staying inside
+  // "success ONLY on verified page state" — the state IS verified, it just
+  // needed no click. Deliberately narrow:
+  //  - radio: the CHECKED member names the requested option;
+  //  - checkbox: AFFIRMATIVE direction only. An unchecked box is
+  //    indistinguishable from "never answered" on the button-driven widgets
+  //    this function exists for, so a requested "No" must still click below;
+  //  - buttons: the value-matching button already wears an active state.
+  if (el.type === 'radio') {
+    const active = members.find((m) => m.checked)
+    if (active !== undefined && (norm(active.value) === target || norm(optionLabelOf(active)) === target)) {
+      return { ok: true }
+    }
+  } else if (AFFIRMATIVE_RE.test(target) && el.checked) {
+    return { ok: true }
+  }
+  const wornBtn = buttons.find((b) => norm(b.textContent ?? '') === target)
+  if (wornBtn !== undefined && (
+    wornBtn.getAttribute('aria-pressed') === 'true'
+    || wornBtn.getAttribute('aria-checked') === 'true'
+    || ACTIVE_DATA_STATE.has(wornBtn.getAttribute('data-state') ?? '')
+  )) return { ok: true }
 
   // STEP 1 — only an input that NAMES the option: the member whose value attr
   // or option label matches. Index alignment is deliberately NOT a step-1

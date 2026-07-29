@@ -479,3 +479,55 @@ describe('fillFields', () => {
     expect(report.failed.map((f) => f.reason)).toEqual(['no-matching-option', 'element-not-found'])
   })
 })
+
+describe('fillChoice — step-0 idempotency (B5e)', () => {
+  it('already-checked matching radio: ok with ZERO clicks', async () => {
+    document.body.innerHTML = ASHBY_CHOICE_RADIO
+    const no = document.querySelector<HTMLInputElement>('input[value="no"]')!
+    no.checked = true
+    const { clicks } = spyButtons()
+    const inputClicks = vi.fn()
+    for (const r of Array.from(document.querySelectorAll('input'))) r.addEventListener('click', inputClicks)
+    await expect(fillOne(document.querySelector<HTMLInputElement>('input[type="radio"]')!, 'No')).resolves.toEqual({ ok: true })
+    expect(clicks).toEqual([])
+    expect(inputClicks).not.toHaveBeenCalled()
+  })
+
+  it('already-active button (aria-pressed): a re-fill of "No" is ok with ZERO clicks', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    controlCheckbox()
+    document.querySelectorAll('button')[1]!.setAttribute('aria-pressed', 'true')
+    const { clicks } = spyButtons()
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'No')).resolves.toEqual({ ok: true })
+    expect(clicks).toEqual([])
+  })
+
+  it('already-checked checkbox + affirmative value: ok with ZERO clicks', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    const cb = controlCheckbox()
+    cb.checked = true
+    const { clicks } = spyButtons()
+    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: true })
+    expect(clicks).toEqual([])
+  })
+
+  it('data-state="checked" counts as an active button state', async () => {
+    document.body.innerHTML = ASHBY_YESNO_EN
+    controlCheckbox()
+    document.querySelectorAll('button')[0]!.setAttribute('data-state', 'checked')
+    const { clicks } = spyButtons()
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Yes')).resolves.toEqual({ ok: true })
+    expect(clicks).toEqual([])
+  })
+
+  it('an unchecked box with NO active button still answers "No" through the buttons — never a silent ok', async () => {
+    // The old "filling No silently no-ops" lie must stay dead: unchecked is
+    // indistinguishable from unanswered, so a requested negative still clicks.
+    document.body.innerHTML = ASHBY_YESNO_EN
+    controlCheckbox()
+    pressableButtons()
+    const { clicks } = spyButtons()
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'No')).resolves.toEqual({ ok: true })
+    expect(clicks).toEqual(['No'])
+  })
+})
