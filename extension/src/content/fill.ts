@@ -110,9 +110,14 @@ function choiceFingerprint(members: HTMLInputElement[], buttons: HTMLButtonEleme
  * Step 1 — the hidden input itself, but only when a click can NAME the
  * requested option: the value-matching member radio, or the checkbox when the
  * value maps through the yes/no vocabulary AND the click moves TOWARD the
- * desired state. A checkbox already at the desired state gets no click and no
- * silent ok — the buttons are the page's real state machine, and "filling No
- * silently no-ops" is the exact lie this function exists to kill (spec B1).
+ * desired state. Step 0 below already reports ok with zero clicks when the
+ * page verifiably shows the requested state — an AFFIRMATIVE-checked box
+ * matching an affirmative fill, a checked matching radio, or an already-active
+ * button. A checkbox in the NEGATIVE direction is different: unchecked is
+ * indistinguishable from "never answered" on these button-driven widgets, so
+ * it still gets no silent ok here — the buttons are the page's real state
+ * machine, and "filling No silently no-ops" is the exact lie this function
+ * exists to kill (spec B1).
  *
  * Step 2 — the gated button click: text match, never submit-worded, and
  * type="button" or no <form> ancestor. The motivating Ashby page has NO <form>
@@ -223,6 +228,16 @@ const COMBOBOX_POLL_MS = 50
  *
  * Matching ladder: exact normalized match, else a UNIQUE normalized-substring
  * match — zero or ambiguous fails closed (never guess between candidates).
+ * The substring tier is gated further (review fix): it is only even
+ * considered when the typed value is at least 3 characters (a 2-letter value
+ * like 'UK' can be a contiguous substring of some unrelated option — 'uk' is
+ * a prefix of 'ukraine' — while the option the user actually meant, 'United
+ * Kingdom', never contains it contiguously at all), and a unique substring
+ * hit is only ACCEPTED once the attributable listbox's option-text set is
+ * identical across two consecutive polls — a transiently single-option list
+ * (more options still mounting) must never be mistaken for a settled,
+ * unambiguous one. Exact matches stay eager: first poll wins, no settling
+ * wait.
  * Success iff the page committed the CLICKED OPTION's text; the requested
  * value no longer has to equal it ('bra' legitimately commits 'Brazil'), and
  * `committed` reports the canonical text when it differs. Every failure path
@@ -245,14 +260,15 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
     return { mounted: true, options: Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]')) }
   }
 
-  // B1b ladder. Ambiguity fails closed: clicking one of several substring
-  // candidates would be a guess, and a wrong option is worse than asking.
-  const pick = (options: HTMLElement[]): HTMLElement | null => {
-    const exact = options.find((o) => norm(o.textContent ?? '') === target)
-    if (exact !== undefined) return exact
-    const partial = options.filter((o) => norm(o.textContent ?? '').includes(target))
-    return partial.length === 1 ? partial[0]! : null
-  }
+  // Substring tier: a stability snapshot of the listbox's full option-text set
+  // from the PREVIOUS poll. A unique substring hit is only trusted once this
+  // matches the CURRENT poll's set too — two consecutive identical reads.
+  // Shared across both waitForHit calls below (open-click, then typeahead);
+  // each poll cycle either confirms stability or resets it.
+  let prevOptionsKey: string | null = null
+  const optionsKey = (options: HTMLElement[]): string =>
+    options.map((o) => norm(o.textContent ?? '')).join(' ')
+  const MIN_SUBSTRING_LEN = 3
 
   let sawListbox = false
   const waitForHit = async (waitMs: number, breakOnOptions: boolean): Promise<HTMLElement | null> => {
@@ -260,11 +276,28 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
     for (;;) {
       const m = lookup()
       sawListbox = sawListbox || m.mounted
-      const hit = pick(m.options)
-      if (hit !== null) return hit
-      // Options are mounted and nothing (unambiguously) matches: waiting longer
-      // adds nothing — the typeahead is the next move.
-      if (breakOnOptions && m.options.length > 0) return null
+      const exact = m.options.find((o) => norm(o.textContent ?? '') === target)
+      if (exact !== undefined) return exact
+
+      // B1b ladder. Ambiguity (or a too-short target) fails closed: clicking
+      // one of several substring candidates would be a guess, and a wrong
+      // option is worse than asking. A unique candidate is only RETURNED once
+      // it survives two consecutive polls unchanged — `settled` below.
+      let uniquePartial: HTMLElement | null = null
+      if (target.length >= MIN_SUBSTRING_LEN) {
+        const partial = m.options.filter((o) => norm(o.textContent ?? '').includes(target))
+        uniquePartial = partial.length === 1 ? partial[0]! : null
+      }
+      const key = optionsKey(m.options)
+      const settled = key === prevOptionsKey
+      prevOptionsKey = key
+      if (uniquePartial !== null && settled) return uniquePartial
+
+      // Options are mounted and there is no candidate even awaiting its settle
+      // confirmation: waiting longer adds nothing — the typeahead is the next
+      // move. A PENDING unique candidate (not yet settled) is worth one more
+      // poll even on this fast path, so it is exempted from the early break.
+      if (breakOnOptions && m.options.length > 0 && uniquePartial === null) return null
       if (Date.now() >= deadline) return null
       await wait(COMBOBOX_POLL_MS)
     }

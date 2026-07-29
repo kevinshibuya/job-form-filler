@@ -124,4 +124,42 @@ describe('resume CV text (B2a)', () => {
   it('returns null text when nothing is stored', async () => {
     await expect(loadResumeText()).resolves.toBeNull()
   })
+
+  it('never clobbers a resume uploaded WHILE a legacy-migration extraction is in flight (review fix)', async () => {
+    // A legacy record has NO `text` property at all. Write one directly.
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('jff', 1)
+      req.onupgradeneeded = () => { req.result.createObjectStore('resume') }
+      req.onsuccess = () => {
+        const db = req.result
+        const t = db.transaction('resume', 'readwrite')
+        t.objectStore('resume').put(
+          { name: 'old.pdf', mimeType: 'application/pdf', dataBase64: btoa('%PDF-1.4') } as unknown as StoredResume,
+          'current',
+        )
+        t.oncomplete = () => { db.close(); resolve() }
+        t.onerror = () => reject(t.error)
+      }
+      req.onerror = () => reject(req.error)
+    })
+
+    let releaseExtractor: (text: string) => void = () => {}
+    const deferredExtract = vi.fn(
+      () => new Promise<string | null>((resolve) => { releaseExtractor = resolve }),
+    )
+
+    const loadPromise = loadResumeText(deferredExtract)
+    // Mid-extraction: the user uploads a DIFFERENT resume.
+    await saveResume(new File(['new bytes'], 'fresh.pdf', { type: 'application/pdf' }), async () => 'FRESH TEXT')
+    // Now let the stale extraction resolve.
+    releaseExtractor('STALE LEGACY TEXT')
+
+    const returned = await loadPromise
+    // The freshly-uploaded record must survive untouched in IndexedDB...
+    await expect(loadResume()).resolves.toMatchObject({ name: 'fresh.pdf', text: 'FRESH TEXT' })
+    // ...and the caller must get the fresh record's text, never the stale
+    // legacy-migration text written over it.
+    expect(returned).toBe('FRESH TEXT')
+    expect(returned).not.toBe('STALE LEGACY TEXT')
+  })
 })

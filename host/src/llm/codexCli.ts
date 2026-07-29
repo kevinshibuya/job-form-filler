@@ -18,6 +18,16 @@ export class CodexError extends Error {
 export type CodexRunResult = { code: number; output: string; stderr: string; timedOut: boolean }
 export type CodexRunFn = (prompt: string) => Promise<CodexRunResult>
 
+/**
+ * Node's `timeout` option below kills the child with `killSignal` on the
+ * deadline; a codex that traps SIGTERM survives unless we escalate to
+ * SIGKILL (unblockable), so `close` can now report EITHER signal for the same
+ * "we killed it on the deadline" event — both must classify as a timeout.
+ */
+export function isTimeoutSignal(code: number | null, signal: NodeJS.Signals | null): boolean {
+  return code === null && (signal === 'SIGTERM' || signal === 'SIGKILL')
+}
+
 export interface CodexRunner {
   complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T>
 }
@@ -36,7 +46,9 @@ export function defaultCodexRun(codexPath: string): CodexRunFn {
       const child = spawn(
         codexPath,
         ['exec', '-m', 'gpt-5.6-sol', '-s', 'read-only', '--ephemeral', '--skip-git-repo-check', '--color', 'never', '-o', outFile, prompt],
-        { timeout: CODEX_TIMEOUT_MS, stdio: ['ignore', 'ignore', 'pipe'] },
+        // killSignal: SIGTERM alone lets a codex process that traps SIGTERM
+        // survive past the 120s deadline; SIGKILL cannot be trapped or ignored.
+        { timeout: CODEX_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'ignore', 'pipe'] },
       )
       let stderr = ''
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8') })
@@ -48,7 +60,7 @@ export function defaultCodexRun(codexPath: string): CodexRunFn {
       }
       child.on('error', (e) => { collect(); reject(e) })
       child.on('close', (code, signal) => {
-        resolve({ code: code ?? 1, output: collect(), stderr, timedOut: code === null && signal === 'SIGTERM' })
+        resolve({ code: code ?? 1, output: collect(), stderr, timedOut: isTimeoutSignal(code, signal) })
       })
     })
 }

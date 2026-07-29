@@ -98,6 +98,16 @@ export async function loadResumeText(extract: ExtractFn = lazyExtract): Promise<
   try {
     text = isPdf(legacy.name, legacy.mimeType) ? await extract(fromBase64(legacy.dataBase64)) : null
   } catch { /* spec D2: silent degradation */ }
+  // The extraction above `await`ed; the user may have uploaded a DIFFERENT
+  // resume in the meantime (saveResume runs independently). Re-read the
+  // current record and only persist the legacy-migration write if it still
+  // IS the same record we extracted from — else a fresher upload would be
+  // clobbered by stale text computed for the record it replaced.
+  const current = await tx<StoredResume | undefined>('readonly', (s) => s.get(KEY) as IDBRequest<StoredResume | undefined>)
+  const sameRecord = current !== undefined
+    && current.name === legacy.name
+    && current.dataBase64 === legacy.dataBase64
+  if (!sameRecord) return current?.text ?? null
   await tx('readwrite', (s) => s.put({ ...legacy, text }, KEY))
   return text
 }
