@@ -28,4 +28,33 @@ describe('canonicalUrl (A1)', () => {
   it('an unparseable url passes through trimmed', () => {
     expect(canonicalUrl('  not a url ')).toBe('not a url')
   })
+
+  it('ashby ATS host: ref/source drop there too', () => {
+    expect(canonicalUrl('https://jobs.ashbyhq.com/acme/6edf242b?ref=li&source=tw'))
+      .toBe('jobs.ashbyhq.com/acme/6edf242b')
+  })
+
+  it('unknown host: two jobs differing only by ref stay APART (never collide on one row)', () => {
+    expect(canonicalUrl('https://x.com/j/1?ref=a')).not.toBe(canonicalUrl('https://x.com/j/1?ref=b'))
+    expect(canonicalUrl('https://x.com/j/1?ref=a')).toBe('x.com/j/1?ref=a')
+  })
+
+  it('unknown host: two jobs differing only by source stay APART', () => {
+    expect(canonicalUrl('https://x.com/j/1?source=a')).not.toBe(canonicalUrl('https://x.com/j/1?source=b'))
+    expect(canonicalUrl('https://x.com/j/1?source=b')).toBe('x.com/j/1?source=b')
+  })
+
+  it('utm_*/gh_src stay GLOBAL: they drop even on an unknown host', () => {
+    expect(canonicalUrl('https://x.com/j/1?utm_source=a&utm_campaign=b&gh_src=c')).toBe('x.com/j/1')
+  })
+
+  it('the ATS host match is domain-boundary: a lookalike host gets no ATS treatment', () => {
+    expect(canonicalUrl('https://notgreenhouse.io/j/1?ref=a')).toBe('notgreenhouse.io/j/1?ref=a')
+    expect(canonicalUrl('https://evil-greenhouse.io.attacker.com/j/1?source=a'))
+      .toBe('evil-greenhouse.io.attacker.com/j/1?source=a')
+  })
+
+  it('an ATS apex host itself matches (not only its subdomains)', () => {
+    expect(canonicalUrl('https://greenhouse.io/j/1?ref=a')).toBe('greenhouse.io/j/1')
+  })
 })
