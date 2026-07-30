@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Wizard step 2</title></head>
+  <body>
+    <!--
+      Step 2 of the S4 re-projection fixture. Two deliberate differences from
+      step 1, each load-bearing:
+        1. 'Anything else?' is NEW and comes FIRST, so 'Why do you want to work
+           here?' enumerates at a DIFFERENT fid than it had on step 1 — a
+           ref-keyed carry would land the step-1 answer on the new question;
+        2. 'Salary expectation' is GONE, so the step-1 answer set is not a subset
+           match either.
+      The new question must arrive EMPTY: an answer the user never gave must
+      never be attributed to a label nobody has seen.
+    -->
+    <h1>Apply: Platform Engineer — step 2 of 2</h1>
+    <form id="wizard_step2">
+      <p>
+        <label for="anything">Anything else?</label>
+        <textarea id="anything" name="anything" rows="3"></textarea>
+      </p>
+      <p>
+        <label for="why">Why do you want to work here?</label>
+        <textarea id="why" name="why" rows="3"></textarea>
+      </p>
+    </form>
+  </body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Wizard step 1</title></head>
+  <body>
+    <!--
+      S4/S5 re-projection fixture, step 1 of 2. Deliberately script-free: the only
+      moving part is the <a> below, so the navigation the panel must classify as a
+      SAME-SITE wizard step is a plain top-frame document load — nothing here can
+      mask a missing webNavigation signal with a History-API shortcut.
+
+      Pairs with wizard-step2.html, which REORDERS these questions and swaps one
+      out. Refs (`frameId:fid`) restart on every enumeration, so a ref-keyed carry
+      would attach this page's answer to the wrong question over there; only the
+      label-keyed carry can survive.
+    -->
+    <h1>Apply: Platform Engineer — step 1 of 2</h1>
+    <form id="wizard_step1">
+      <p>
+        <label for="why">Why do you want to work here?</label>
+        <textarea id="why" name="why" rows="3"></textarea>
+      </p>
+      <p>
+        <label for="salary">Salary expectation</label>
+        <input id="salary" name="salary" type="text">
+      </p>
+    </form>
+    <a id="continue" href="wizard-step2.html">Continue</a>
+  </body>
+</html>

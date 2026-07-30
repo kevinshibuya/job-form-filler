@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect } from '@playwright/test'
 import { launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
+import { ONBOARDED_PROFILE, seedResume } from './seed'
 import { startFixtureServer } from './static-server'
 
 const SELF_CHECK = {
@@ -55,6 +56,11 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
   const embedSrv = await startFixtureServer('fixtures/ashby-embed')
   const ext = await launchWithExtension()
   try {
+    // O3 era: the stored resume is the extension-side half of the onboarding
+    // gate — without it the panel renders the setup wall and never scans. The
+    // host-side half is `profile.get` in the scripted bridge below.
+    await seedResume(ext)
+
     const target = await ext.context.newPage()
     await target.goto(`${hostSrv.origin}/newsletter-page.html?frame=${encodeURIComponent(`${embedSrv.origin}/apply-frame.html`)}`)
     const appFrame = target.frameLocator('#app-frame')
@@ -95,7 +101,12 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
         }
       }
       if (method === 'selector.get') return { requestId, ok: true, result: { selector: null } }
-      if (method === 'profile.get' || method === 'answerBank.get') return { requestId, ok: true, result: {} }
+      // O3 era: an EMPTY profile now puts the panel behind the onboarding wall,
+      // where it never scans. The scripted `resolve` above maps by kind alone and
+      // never reads facts, so answering the onboarded persona here changes
+      // nothing this spec measures — it only opens the gate.
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED_PROFILE }
+      if (method === 'answerBank.get') return { requestId, ok: true, result: {} }
       if (method === 'generate') {
         generateCalls.push(req.params as { cvText?: string })
         return { requestId, ok: true, result: { draft: 'E2E DRAFT' } }
@@ -165,9 +176,10 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
     await expect(panel.locator('[data-jff-editor="segmented"]').first()).toBeAttached()
     // The junk-filtered autofill pane renders NO row at all…
     await expect(panel.locator('[data-jff-rows] li', { hasText: '(unlabelled field)' })).toHaveCount(0)
-    // …and page-side it never received a file (A8 upload-target bypass; this
-    // run stores no resume, so the count is 0 either way — the assertion is the
-    // permanent guard once one is stored).
+    // …and page-side it never received a file (A8 upload-target bypass). The
+    // O3-era `seedResume` above turned this from a vacuous 0 into the real
+    // guard: a resume IS stored now, and the engine still must never upload it
+    // without the user clicking the row's own button.
     expect(await appFrame.locator('input.visually-hidden[type="file"]')
       .evaluate((n) => (n as HTMLInputElement).files?.length ?? 0)).toBe(0)
     // …and the newsletter field sits demoted under a header NAMING the elected

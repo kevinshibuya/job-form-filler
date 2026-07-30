@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
+import { seedResume } from './seed'
 import { startFixtureServer } from './static-server'
 
 let fixtures: Awaited<ReturnType<typeof startFixtureServer>>
@@ -8,6 +9,14 @@ let ext: LaunchedExtension
 test.beforeAll(async () => {
   fixtures = await startFixtureServer()
   ext = await launchWithExtension()
+  // O3 era, once for the whole file: the seam build's canned host already
+  // answers an ONBOARDED profile (port.ts), but a resume can only ever live in
+  // the extension origin, so without this the scan-outcomes test below renders
+  // the onboarding wall instead of a status. The relay panels `openFixtureTab`
+  // opens are unaffected either way — they use the REAL native port, which is
+  // unreachable in a test profile, so their completeness verdict is 'unknown'
+  // (scan anyway), never 'incomplete'.
+  await seedResume(ext)
 })
 
 test.afterAll(async () => {

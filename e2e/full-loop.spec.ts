@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import DatabaseCtor from 'better-sqlite3'
 import { launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
+import { seedOnboardedProfile, seedResume } from './seed'
 import { startFixtureServer } from './static-server'
 import { startHost } from './hostBridge'
 
@@ -58,12 +59,18 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
   const ext = await launchWithExtension()
 
   try {
-    // Seed the profile the way the panel's editor would.
-    const seeded = await host.request({
-      requestId: 'seed-1', method: 'profile.set',
-      params: { values: { firstName: 'Kevin', lastName: 'Shibuya', email: 'kevin@example.com' } },
-    }) as { ok: boolean }
-    expect(seeded.ok).toBe(true)
+    // O3 era: this is no longer just fill fodder — the panel REFUSES to scan
+    // until the profile is complete (email, phone, a name AND a stored resume),
+    // so an unseeded run lands on the onboarding wall and nothing below ever
+    // runs. `seedOnboardedProfile` supplies the host-side half straight into
+    // SQLite (the panel is what is under test; it must not be asked to store its
+    // own precondition) and `seedResume` the extension-side half.
+    // firstName/lastName are kept on top of the shared persona because the
+    // fixture's name fields are what the deterministic tier is asserted to fill
+    // below; ONBOARDED_PROFILE.email is the same 'kevin@example.com' this test
+    // has always asserted.
+    seedOnboardedProfile(host.dbPath, { firstName: 'Kevin', lastName: 'Shibuya' })
+    await seedResume(ext)
 
     // The page under test.
     const target = await ext.context.newPage()
@@ -172,11 +179,10 @@ test('a rate-limited claude leaves fields as needs-input and shows the right ban
   try {
     // Seeded so "only the LLM tier degraded" is something this test can actually
     // observe: without a stored profile the deterministic tier would have nothing
-    // to fill and its assertion below could not fail.
-    await host.request({
-      requestId: 'seed-rl-1', method: 'profile.set',
-      params: { values: { firstName: 'Kevin' } },
-    })
+    // to fill and its assertion below could not fail. O3 era: the seed is ALSO
+    // the onboarding gate's precondition now — see the first test.
+    seedOnboardedProfile(host.dbPath, { firstName: 'Kevin' })
+    await seedResume(ext)
 
     const target = await ext.context.newPage()
     await target.goto(`${fixtures.origin}/fixture-form.html`)
