@@ -340,6 +340,15 @@ describe('App scan status', () => {
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      // The mount auto-scan is incidental here, but it MUST enumerate something:
+      // an empty first pass puts runScan on its one-shot retry, whose 1.5s
+      // `sleep` is a bare setTimeout with no unmount linkage. This test asserts
+      // only on the Save button and returns in ~1ms, so that retry outlived the
+      // test and fired `inject` + JFF_SCAN into a LATER test's fresh
+      // chrome.runtime.sendMessage mock — the O1/O3 gate test counts scans on
+      // that global mock, so it failed ~1 run in 3 depending on how far the
+      // 1.5s drift carried.
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReply
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SNAPSHOT') {
         return new Promise((r) => { release = () => r({ ok: true, replies: [], failures: [] }) })
       }
@@ -351,6 +360,15 @@ describe('App scan status', () => {
     expect(((await screen.findByRole('button', { name: 'Saving…' })) as HTMLButtonElement).disabled).toBe(true)
     release!()
     await screen.findByRole('button', { name: 'Save answers' })
+    // Regression lock for the leak above: this test must leave NO scan in
+    // flight. A settled status is only reachable within the default waitFor
+    // budget when the first enumeration found fields; restore the empty
+    // JFF_SCAN reply and the panel is still on 'retrying' here (it settles only
+    // after the 1.5s retry), so the leak fails HERE, deterministically, instead
+    // of surfacing as a 1-in-3 flake forty tests downstream.
+    await waitFor(() => {
+      expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done')
+    })
   })
 })
 
@@ -1470,7 +1488,14 @@ describe('App — onboarding gate (O1/O3)', () => {
       if (method === 'profile.get' || method === 'answerBank.get') return new Promise<HostResponse>(() => {})
       return { requestId, ok: true, result: {} }
     }
-    render(<App />)
+    // hostWaitMs pinned past the test budget ON PURPOSE: this test's premise is a
+    // decision that stays pending forever, which is exactly the state the O3
+    // anti-brick latch exists to break — at the default 10s it fires, scans, and
+    // fails this negative assertion on any machine slow enough to still be here.
+    // The latch is correct product behavior ('a never-settling facts load times
+    // out to unknown and scans anyway' below pins it); this test is about the
+    // window BEFORE it, so move it out of reach rather than race it.
+    render(<App hostWaitMs={60_000} />)
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('connecting'))
     await new Promise((r) => setTimeout(r, 150))
     expect(scanCount()).toBe(0)
