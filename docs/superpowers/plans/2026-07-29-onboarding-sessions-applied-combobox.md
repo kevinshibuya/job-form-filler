@@ -34,25 +34,25 @@
 
 | Task | What | Rung | Effort | Rationale |
 |---|---|---|---|---|
-| 0 | Baseline verify (full suite incl. e2e) | verifier-sonnet-low | low | Gate; raw evidence only |
-| 1 | O1 `profileCompleteness` tri-state module | editor-sonnet-low | low | Complete code shipped |
-| 2 | O2 `FactFields` extraction + `OnboardingView` | implementer-sonnet-medium | medium | Single-component feature; copy plan-fixed |
-| 3 | O3 gate wiring in App + onboarded default persona sweep | implementer-sonnet-medium | medium | Fully specified incl. the harness sweep; escalate if the effect timing tests fight |
-| 4 | A1 host `applied_jobs` + `canonicalUrl` + `applied.*` plumbing | implementer-sonnet-medium | medium | Multi-file but mechanical; full code shipped |
-| 5 | A2 Mark applied + start-url capture | implementer-sonnet-medium | medium | App wiring, fully specified |
-| 6 | A3 submission detection + prompt (`JFF_PAGETEXT`) | implementer-sonnet-medium | medium | New detector is pure; App wiring specified |
-| 7 | A4 revisit badge + precedence | implementer-sonnet-medium | medium | Small App wiring |
-| 8 | A5 three-view navigation + ApplicationsView | implementer-sonnet-medium | medium | Component + toggle; copy plan-fixed |
-| 9 | C2 Greenhouse open gesture + committed-text fallback | implementer-sonnet-medium | medium | Spike recipe transcribed to exact code; Ashby arm regression-gated |
+| 0 | Baseline verify (full suite incl. e2e) | verifier-opus-low | low | Gate; raw evidence only |
+| 1 | O1 `profileCompleteness` tri-state module | editor-opus-low | low | Complete code shipped |
+| 2 | O2 `FactFields` extraction + `OnboardingView` | implementer-opus-medium | medium | Single-component feature; copy plan-fixed |
+| 3 | O3 gate wiring in App + onboarded default persona sweep | implementer-opus-medium | medium | Fully specified incl. the harness sweep; escalate if the effect timing tests fight |
+| 4 | A1 host `applied_jobs` + `canonicalUrl` + `applied.*` plumbing | implementer-opus-medium | medium | Multi-file but mechanical; full code shipped |
+| 5 | A2 Mark applied + start-url capture | implementer-opus-medium | medium | App wiring, fully specified |
+| 6 | A3 submission detection + prompt (`JFF_PAGETEXT`) | implementer-opus-medium | medium | New detector is pure; App wiring specified |
+| 7 | A4 revisit badge + precedence | implementer-opus-medium | medium | Small App wiring |
+| 8 | A5 three-view navigation + ApplicationsView | implementer-opus-medium | medium | Component + toggle; copy plan-fixed |
+| 9 | C2 Greenhouse open gesture + committed-text fallback | implementer-opus-medium | medium | Spike recipe transcribed to exact code; Ashby arm regression-gated |
 | 10 | C3 Greenhouse e2e fixture + regression spec | integrator-opus-high | high | Browser-timing judgment (session-6/7 precedent routes e2e to Opus) |
-| 11 | S8 clear-on-activate era test retirement (ONE batch) | editor-sonnet-low | low | Pure deletion by enumerated list |
-| 12 | S1/S5/S6 `sessions` + `sessionKey` + `site` modules; `normalizeQuestion` → shared | implementer-sonnet-medium | medium | Pure modules; the lock/mutate contract is fully test-pinned — escalate to integrator-opus-high on the FIRST honest failure |
-| 13 | S3 `navSignals` module | implementer-sonnet-medium | medium | Pure module, full code shipped |
+| 11 | S8 clear-on-activate era test retirement (ONE batch) | editor-opus-low | low | Pure deletion by enumerated list |
+| 12 | S1/S5/S6 `sessions` + `sessionKey` + `site` modules; `normalizeQuestion` → shared | implementer-opus-medium | medium | Pure modules; the lock/mutate contract is fully test-pinned — escalate to integrator-opus-high on the FIRST honest failure |
+| 13 | S3 `navSignals` module | implementer-opus-medium | medium | Pure module, full code shipped |
 | 14 | S2/S5/S6 App session lifecycle integration | integrator-opus-high | high | Multi-file App.tsx state-machine rewrite; design judgment |
 | 15 | S4 label-keyed answer carry + re-projection | integrator-opus-high | high | Silent-wrong-data surface #1 (merge keying) |
 | 16 | S7 single-flight + per-session epochs + push routing | integrator-opus-high | high | Silent-wrong-data surfaces #2/#3; **escalate to debugger-opus-xhigh on the FIRST honest failure** |
 | 17 | E2E batch: era adaptation + sessions/onboarding/wizard flows | integrator-opus-high | high | Cross-spec browser judgment; one batch by standing rule |
-| 18 | Full verify + plain dist + A6 seed + spec ticks | orchestrator + verifier-sonnet-low | — | Gate, not implementation |
+| 18 | Full verify + plain dist + A6 seed + spec ticks | orchestrator + verifier-opus-low | — | Gate, not implementation |
 | 19 | Manual browser gate on the real Greenhouse page | orchestrator (+ agent-driven browser) + USER | — | DOM-behavior truth |
 
 ## Spec TODO → Task map (every unticked spec TODO is covered)
@@ -85,7 +85,7 @@
 
 ### Task 0: Baseline verify (BEFORE any change)
 
-**Model:** verifier-sonnet-low (dispatched by the orchestrator).
+**Model:** verifier-opus-low (dispatched by the orchestrator).
 
 Standing rule: the baseline runs the plan's FULL verification suite — including every e2e spec — before Task 1. Stale-test findings become one batch fix before Task 1, not mid-execution surprises.
 
@@ -107,7 +107,7 @@ Standing rule: the baseline runs the plan's FULL verification suite — includin
 - Produces: `profileCompleteness(facts: Record<string, string>, hasResume: boolean, settled: boolean): 'complete' | 'incomplete' | 'unknown'`, `type Completeness`, `REQUIRED_FACTS` (the one exported, extensible required-key const).
 - Consumed by: Task 2 (OnboardingView Finish gating), Task 3 (App gate decision).
 
-**Model:** editor-sonnet-low — the complete code is below; zero decisions left.
+**Model:** editor-opus-low — the complete code is below; zero decisions left.
 
 **Verify:** `npx vitest run extension/src/panel/completeness.test.ts && npm run typecheck`
 
@@ -233,7 +233,7 @@ git commit -m "feat(onboarding): profileCompleteness tri-state with extensible r
     - `onFinish: (profile: Record<string, string>, bank: Record<string, string>) => Promise<void>`.
 - Consumed by: Task 3 (App renders it when `incomplete`).
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npx vitest run extension/src/panel/OnboardingView.test.tsx extension/src/panel/ProfileEditor.test.tsx && npm run typecheck && npm run lint`
 
@@ -487,7 +487,7 @@ git commit -m "feat(onboarding): OnboardingView over shared FactFields; CV uploa
 - Produces: App renders `OnboardingView` INSTEAD of the scan UI when the completeness decision is `incomplete`; the auto-scan effect additionally requires a settled decision. `unknown` = normal panel + host banner, scan proceeds.
 - Consumed by: Task 7 (precedence: onboarding gate > host gate > applied badge > scan), Task 17 (e2e gate flow).
 
-**Model:** implementer-sonnet-medium (escalate to integrator-opus-high only if the effect-ordering tests fight after a FIX-AND-REPORT attempt).
+**Model:** implementer-opus-medium (escalate to integrator-opus-high only if the effect-ordering tests fight after a FIX-AND-REPORT attempt).
 
 **Verify:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint`
 
@@ -808,7 +808,7 @@ git commit -m "feat(onboarding): hard gate wired — settled tri-state decision 
   - Host methods `applied.mark { url, company, jobTitle }` → `AppliedJob`; `applied.check { url }` → `{ applied: AppliedJob | null }`; `applied.list {}` → `{ jobs: AppliedJob[] }`.
 - Consumed by: Tasks 5, 7, 8, 17, 18.
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npm run build -w @jff/shared && npx vitest run host shared && npm run typecheck && npm run lint`
 
@@ -1065,7 +1065,7 @@ git commit -m "feat(host): applied_jobs table, canonicalUrl, applied.mark/check/
 - Produces: `startUrl` state (the FIRST scanned page of the current application — pre-sessions approximation; Task 14 folds it into `Session.startUrl`), `appliedHit` state + badge line, `onMarkApplied()`. "Ends the session" is, pre-S, the same clearing `resetScanState` does; Task 14 upgrades it to session deletion.
 - Consumed by: Task 6 (prompt's Mark applied), Task 7 (badge + Scan anyway), Task 14 (migration into Session).
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npx vitest run extension/src/panel/App.test.tsx && npm run typecheck && npm run lint`
 
@@ -1237,7 +1237,7 @@ git commit -m "feat(applied): Mark applied button records the start url and ends
   - The non-blocking prompt: `Looks like this application was submitted. Mark as applied?` with `Mark applied` / `Dismiss` buttons; dismissing never re-prompts for the same page load (= the same reset generation).
 - Consumed by: Task 17 (e2e), Task 19 (manual gate).
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npm run build -w @jff/shared && npx vitest run extension/src/panel shared && npm run typecheck && npm run lint`
 
@@ -1504,7 +1504,7 @@ git commit -m "feat(applied): submission detection prompt — fields-vanished + 
 - Produces: pre-scan `applied.check` inside `onScan`; a hit renders `Already applied on <date>.` + `Scan anyway` INSTEAD of scanning. Precedence: onboarding gate (Task 3 blocks `onScan` entirely) > host gate (`gateOpen` — the check IS a host call, so it necessarily runs behind it) > applied badge (this check, first thing a scan does) > scan. A check FAILURE proceeds as not-applied.
 - Consumed by: Task 17 (e2e), Task 19 (manual gate).
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npx vitest run extension/src/panel/App.test.tsx && npm run typecheck && npm run lint`
 
@@ -1620,7 +1620,7 @@ git commit -m "feat(applied): revisit badge checks applied.check before scanning
 - Produces: `view: 'session' | 'editor' | 'applications'` replaces `showEditor` — three mutually exclusive views, toggled from the actions row (`div[data-jff-actions]`, App.tsx:714–721; that is where the existing facts-editor toggle lives, not the `<header>`). `ApplicationsView({ load })` — read-only v1: date, company, title, link out.
 - Consumed by: Task 14 (view is PANEL-GLOBAL state per the partition table), Task 19.
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint`
 
@@ -1785,7 +1785,7 @@ git commit -m "feat(applied): applications list view + three-view header navigat
 - Produces: `dispatchOpenGesture(el)` (replaces the bare open click); `commitScopeLeaves(input)` + `visibleCommittedText(input, optionTextNorm, preTexts)` (structural walk, NEVER react-select class names; listbox content excluded; hardened per plan review: only a VISIBLE node whose text CHANGED INTO the option's across the commit click counts — a pre-click snapshot of the scope's leaf texts feeds the comparison); and the amended verification: an EMPTY `input.value` post-commit consults the fallback before the verdict.
 - Consumed by: Task 10 (e2e fixture), Task 19 (Degree dropdown on the real page).
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npx vitest run extension/src/content/fill.test.ts && npx vitest run && npm run typecheck && npm run lint`
 
@@ -2168,7 +2168,7 @@ git commit -m "test(e2e): Greenhouse react-select fixture — gesture-gated open
 
 **Interfaces:** none produced. This batch removes tests whose ASSERTED BEHAVIOR the S slices invert, so Tasks 14–16 never trip over era tests mid-slice (standing rule: stale tests are a pre-slice batch). The session-aware replacements are Task 14–16's plan-authored acceptance tests; the `data-jff-resets` hook has NO e2e consumer (verified at plan time: only `App.tsx` renders it; `App.test.tsx:440` asserts `data-jff-scans` only, which SURVIVES) and dies with `resetCount` in Task 14.
 
-**Model:** editor-sonnet-low — pure deletion by enumerated list.
+**Model:** editor-opus-low — pure deletion by enumerated list.
 
 **Verify:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint`
 
@@ -2292,7 +2292,7 @@ export interface SessionStore {
     **Tombstones:** `remove()` and `prune`'s deletes add the tabId to a permanent in-store `Set<number>`; a later `save()` for that tab is DROPPED (no pending re-creation) and a later `mutate()` resolves null without running `fn` — a stale displayed-state save landing after the tab closed must never resurrect the dead row. The set is never cleared, deliberately: Chrome does not reuse tab ids within a browser session, and the store dies with the panel.
     Quota/`set` failure policy (S6): evict the oldest PARKED stored session (by `createdAt`) — EXCLUDING the session being written AND the currently-displayed session per `opts.getDisplayedTabId` — and retry ONCE; an eviction also calls `onWarn` (it is the one data-loss path, and the user must see it). With NO eviction candidate, KEEP the row in the in-memory pending map (the next flush retries it) and call `onWarn` — the write is deferred, never silently discarded. Storage growth is per-tab-visited (the mount auto-scan creates sessions lazily); that is accepted, and this quota policy is what absorbs it.
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npm run build -w @jff/shared && npx vitest run extension/src shared host && npm run typecheck && npm run lint`
 
@@ -2809,7 +2809,7 @@ export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => voi
 
 - Consumed by: Task 14 (replaces `createTabScope`).
 
-**Model:** implementer-sonnet-medium.
+**Model:** implementer-opus-medium.
 
 **Verify:** `npx vitest run extension/src/panel/navSignals.test.ts && npm run typecheck && npm run lint`
 
@@ -3301,7 +3301,7 @@ git commit -m "test(e2e): onboarding/session era batch — seeding helper, wizar
 
 ### Task 18: Full verify, plain dist, A6 seed, spec ticks
 
-**Model:** orchestrator + verifier-sonnet-low (the verifier runs the commands and returns raw evidence; the orchestrator judges).
+**Model:** orchestrator + verifier-opus-low (the verifier runs the commands and returns raw evidence; the orchestrator judges).
 
 - [ ] **Step 1:** `npx vitest run` — all green (record count; expect ≳ 618 + this plan's additions).
 - [ ] **Step 2:** `npm run verify` on an IDLE machine (`pkill -f legacyScreenSaver` first). Foundation flake caveat: isolated re-run before judging `:128`/`:149`.
