@@ -69,6 +69,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // A3: "same page load" = same reset generation; a dismissal is remembered
   // against it, so only a NEW navigation can re-arm the prompt.
   const promptDismissedGenRef = useRef(-1)
+  const appliedOverrideRef = useRef(false)
   // Event-closure-safe mirrors (resetScanState runs from listeners that closed
   // over the first render).
   const fieldsCountRef = useRef(0)
@@ -171,6 +172,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // that reasoning staying true.
     lastOutcomeRef.current = null
     fieldsCountRef.current = 0
+    appliedOverrideRef.current = false
     setFields([]); setResolutions([]); setElection(null); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
     setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
     setReuseOverrides({})
@@ -308,6 +310,23 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (tab === null) { setScanStatus((s) => (s !== null && s.kind === 'superseded' ? null : s)); return }
       // A2: first settled trigger on this application captures the posting URL.
       if (resetGenRef.current === gen) setStartUrl((s) => s ?? (tab.url ?? null))
+      // A4: the applied badge outranks the scan itself — but never the user's
+      // explicit override, and a check FAILURE proceeds as not-applied (spec,
+      // Error handling). Precedence: onboarding gate (the auto-scan effect
+      // never calls us while incomplete) > host gate (gateOpen — this check IS
+      // a host call, so it necessarily runs after it) > this badge > scan.
+      // `?? null` is load-bearing: the canned fake answers unknown methods {},
+      // and an `undefined` here must read as a MISS, never as a hit.
+      if (!appliedOverrideRef.current) {
+        const chk = await port.request<{ applied: { markedAt: string } | null }>('applied.check', { url: tab.url ?? '' })
+        if (resetGenRef.current !== gen) return
+        const hit = chk.ok ? (chk.result.applied ?? null) : null
+        if (hit !== null) {
+          setAppliedHit({ markedAt: hit.markedAt })
+          setScanStatus(null)
+          return
+        }
+      }
       // A previous application on this same tab may have left snapshot rows in
       // storage.session; they must never merge into this scan's save.
       const staleKeys = Object.keys(await chrome.storage.session.get(null))
@@ -884,6 +903,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       {appliedHit !== null && (
         <div className={BANNER_BASE} role="status" data-jff-applied="1">
           Already applied on {new Date(appliedHit.markedAt).toLocaleDateString()}.
+          <button
+            type="button" className={`${BTN} ml-2`}
+            onClick={() => { appliedOverrideRef.current = true; setAppliedHit(null); setScanNonce((n) => n + 1) }}
+          >
+            Scan anyway
+          </button>
         </div>
       )}
       {submitPrompt && (

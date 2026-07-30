@@ -1710,3 +1710,46 @@ describe('App — submission detection prompt (A3)', () => {
     expect(document.querySelector('[data-jff-submit-prompt]')).toBeNull()
   })
 })
+
+describe('App — revisit badge (A4)', () => {
+  const HIT = { id: 1, url: 'https://jobs.acme.com/apply', canonicalUrl: 'c', company: 'Acme', jobTitle: 'Eng', markedAt: '2026-07-01T00:00:00.000Z' }
+  const scanCount = (): number => {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    return send.mock.calls.filter((c) => (c[0] as { message?: { type?: string } })?.message?.type === 'JFF_SCAN').length
+  }
+  function checkBridge(applied: unknown, checkFails = false): void {
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'applied.check') {
+        if (checkFails) return { requestId, ok: false, error: { kind: 'db', message: 'nope' } }
+        return { requestId, ok: true, result: { applied } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it('a previously applied page renders the badge INSTEAD of scanning', async () => {
+    checkBridge(HIT)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-applied]')).not.toBeNull())
+    expect(screen.getByText(/Already applied on/)).toBeTruthy()
+    expect(scanCount()).toBe(0)
+  })
+
+  it('Scan anyway overrides the badge and scans exactly once', async () => {
+    checkBridge(HIT)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-applied]')).not.toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Scan anyway' }))
+    await waitFor(() => expect(scanCount()).toBe(1))
+    expect(document.querySelector('[data-jff-applied]')).toBeNull()
+  })
+
+  it('a failed applied.check proceeds as not-applied', async () => {
+    checkBridge(null, true)
+    render(<App />)
+    await waitFor(() => expect(scanCount()).toBe(1))
+    expect(document.querySelector('[data-jff-applied]')).toBeNull()
+  })
+})
