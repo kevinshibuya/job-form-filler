@@ -10,7 +10,7 @@ import { clearResume, saveResume } from './resume'
  *  every resolve with zero) or a host that never answers at all. */
 function installHostBridge(answer: (method: string) => Promise<unknown>): void {
   window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> =>
-    ({ requestId, ok: true, result: await answer(method) })
+    ({ requestId, ok: true, result: method === 'profile.get' ? ONBOARDED : await answer(method) })
 }
 
 const SELF_CHECK = {
@@ -19,6 +19,9 @@ const SELF_CHECK = {
   auth: { ok: true, detail: 'logged in' },
   db: { ok: true, path: '(fake)' },
 }
+
+/** O3: the default test persona is ONBOARDED. Gate tests opt out explicitly. */
+const ONBOARDED = { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User' }
 
 /**
  * jsdom's Blob has no `arrayBuffer()`, so `saveResume(new File(...))` throws here
@@ -40,9 +43,12 @@ if (typeof Blob.prototype.arrayBuffer !== 'function') {
   })
 }
 
-afterEach(() => { delete window.__jffHostBridge })
+afterEach(async () => {
+  delete window.__jffHostBridge
+  await clearResume()
+})
 
-beforeEach(() => {
+beforeEach(async () => {
   // The compile-time seam is on in tests (vitest define), so the fake host answers.
   window.history.replaceState(null, '', '/?jffFakeHost=1')
   ;(globalThis as unknown as { chrome: unknown }).chrome = {
@@ -77,6 +83,9 @@ beforeEach(() => {
     // `remove` is required: onScan clears this tab's stale snapshot keys first.
     storage: { session: { get: vi.fn(async () => ({})), remove: vi.fn(async () => undefined) } },
   }
+  // O3: a stored resume is half of the completeness gate; the default persona
+  // has one. Gate tests call clearResume() explicitly.
+  await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
 })
 
 describe('hostnameOf', () => {
@@ -1015,6 +1024,7 @@ describe('App generate request', () => {
 
     const generateCalls: unknown[] = []
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve') {
         return { requestId, ok: true, result: { epoch: 1, resolutions: [
@@ -1059,6 +1069,7 @@ describe('App generate request', () => {
       })
       const generateCalls: unknown[] = []
       window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+        if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
         if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
         if (method === 'resolve') {
           return { requestId, ok: true, result: { epoch: 1, resolutions: [
@@ -1105,6 +1116,7 @@ describe('App — election rendering (A7/A9)', () => {
     })
     // Resolutions come back for the ELECTED frame's fields only, like the real host.
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve') {
         const p = params as { fields: { frameId: number; fid: number }[] }
@@ -1160,6 +1172,7 @@ describe('App — resume row wiring (A8/A9)', () => {
       return { ok: true }
     })
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve') {
         const p = params as { fields: { frameId: number; fid: number }[] }
@@ -1215,6 +1228,7 @@ describe('App — B3 page-accepted fills and failure surfacing', () => {
       return { ok: true }
     })
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve') {
         const p = params as { fields: { frameId: number; fid: number; kind: string }[] }
@@ -1270,6 +1284,7 @@ describe('App — committed canonical text (B1c)', () => {
       return { ok: true }
     })
     window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve') {
         return { requestId, ok: true, result: { epoch: 1, resolutions: [{
@@ -1348,6 +1363,7 @@ describe('App — per-field generating state (B3)', () => {
       return { ok: true }
     })
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve') {
         return { requestId, ok: true, result: { epoch: 1, resolutions: [0, 1].map((fid) => ({
@@ -1457,5 +1473,116 @@ describe('App — per-field generating state (B3)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate all remaining (2)' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Generate all remaining (2)' })).toBeTruthy())
     expect(calls).toEqual([0]) // row 1 was never attempted
+  })
+})
+
+describe('App — onboarding gate (O1/O3)', () => {
+  const scanCount = (): number => {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    return send.mock.calls.filter((c) => (c[0] as { message?: { type?: string } })?.message?.type === 'JFF_SCAN').length
+  }
+  const emptyProfileBridge = (): void => {
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it('a fresh install renders OnboardingView and fires NO scan', async () => {
+    await clearResume()
+    emptyProfileBridge()
+    render(<App />)
+    await screen.findByText('Welcome — set up your profile')
+    expect(document.querySelector('[data-jff-onboarding]')).not.toBeNull()
+    expect(document.querySelector('[data-jff-rows]')).toBeNull()
+    expect(scanCount()).toBe(0)
+  })
+
+  it('a dead host is unknown: normal panel + banner, never the onboarding wall', async () => {
+    await clearResume()
+    window.__jffHostBridge = async ({ requestId }): Promise<HostResponse> =>
+      ({ requestId, ok: false, error: { kind: 'unreachable', message: 'down' } })
+    render(<App />)
+    await waitFor(() => expect(scanCount()).toBeGreaterThan(0), { timeout: 5000 })
+    expect(document.querySelector('[data-jff-onboarding]')).toBeNull()
+  })
+
+  it('an onboarded profile never sees the gate', async () => {
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    expect(document.querySelector('[data-jff-onboarding]')).toBeNull()
+  })
+
+  it('an open host gate cannot race a scan past an unsettled completeness decision', async () => {
+    // profile.get never resolves: the decision stays pending, and no scan may
+    // fire even though selfCheck answered (gateOpen latched true).
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.get' || method === 'answerBank.get') return new Promise<HostResponse>(() => {})
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('connecting'))
+    await new Promise((r) => setTimeout(r, 150))
+    expect(scanCount()).toBe(0)
+  })
+
+  it('a never-settling facts load times out to unknown and scans anyway', async () => {
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.get' || method === 'answerBank.get') return new Promise<HostResponse>(() => {})
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App hostWaitMs={60} />)
+    await waitFor(() => expect(scanCount()).toBeGreaterThan(0), { timeout: 5000 })
+    expect(document.querySelector('[data-jff-onboarding]')).toBeNull()
+  })
+
+  it('Finish persists the facts and unlocks exactly one scan', async () => {
+    await clearResume()
+    const calls: string[] = []
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      calls.push(method)
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await screen.findByText('Welcome — set up your profile')
+    fireEvent.change(document.querySelector('[data-jff-ob-resume] input[type="file"]')!,
+      { target: { files: [new File(['cv'], 'cv.txt', { type: 'text/plain' })] } })
+    await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
+    fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
+    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    const finish = screen.getByRole('button', { name: 'Finish setup' })
+    await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(finish)
+    await waitFor(() => expect(calls).toContain('profile.set'))
+    await waitFor(() => expect(document.querySelector('[data-jff-onboarding]')).toBeNull())
+    await waitFor(() => expect(scanCount()).toBe(1))
+  })
+
+  it('a failed profile.set keeps the gate closed — nothing unlocks on a lie', async () => {
+    await clearResume()
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.set') return { requestId, ok: false, error: { kind: 'db', message: 'disk full' } }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await screen.findByText('Welcome — set up your profile')
+    fireEvent.change(document.querySelector('[data-jff-ob-resume] input[type="file"]')!,
+      { target: { files: [new File(['cv'], 'cv.txt', { type: 'text/plain' })] } })
+    await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
+    fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
+    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    const finish = screen.getByRole('button', { name: 'Finish setup' })
+    await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(finish)
+    // The failure surfaced; the gate stays; no scan ever fires.
+    await new Promise((r) => setTimeout(r, 100))
+    expect(document.querySelector('[data-jff-onboarding]')).not.toBeNull()
+    expect(scanCount()).toBe(0)
   })
 })

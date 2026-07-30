@@ -141,7 +141,11 @@ export function createFakeHostPort(): HostPort {
       }
       const canned: Record<string, unknown> = {
         selfCheck: FAKE_SELF_CHECK,
-        'profile.get': {},
+        // O3: the canned persona is ONBOARDED — a complete profile — so the
+        // seam-built panel (e2e foundation, dev clicking around) lands on the
+        // normal flow, not the onboarding gate. Gate tests install their own
+        // __jffHostBridge with an empty profile.
+        'profile.get': { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User' },
         'answerBank.get': {},
         'selector.get': { selector: null },
         resolve: { epoch: 0, resolutions: [], llmError: null },
