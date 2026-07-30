@@ -8,6 +8,7 @@ import { createHostPort, ERROR_COPY, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
+import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { pickResumeTarget } from './resumeTarget'
 import { runScan, ScanError, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
@@ -97,7 +98,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [company, setCompany] = useState('')
   const [unreachable, setUnreachable] = useState(0)
   const [activeCaptcha, setActiveCaptcha] = useState(false)
-  const [showEditor, setShowEditor] = useState(false)
+  const [view, setView] = useState<'session' | 'editor' | 'applications'>('session')
   const [facts, setFacts] = useState<Record<string, string>>({})
   const [factsLoaded, setFactsLoaded] = useState(false)
   const [resumeName, setResumeName] = useState<string | null>(null)
@@ -746,7 +747,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     await port.request('answerBank.set', { values: bank })
     // Merge, never replace: the editor omits keys it never loaded (Task 19 Step 9b).
     setFacts((f) => ({ ...f, ...profile, ...bank }))
-    setShowEditor(false)
+    setView('session')
   }
 
   const onOnboardingUpload = async (file: File): Promise<string | null> => {
@@ -847,6 +848,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     }
   }
 
+  const loadApplications = async (): Promise<AppliedJobRow[] | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request<{ jobs: AppliedJobRow[] }>('applied.list', {})
+    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    // `?? []`: a fake/stale host answering {} must render the empty state,
+    // never crash the view on `jobs.map`.
+    return r.result.jobs ?? []
+  }
+
   /* ---------------------------------------------------------------- markup */
 
   const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull })
@@ -854,7 +865,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   return (
     // The two counters are debug surface, not decoration: they are how a browser
     // smoke tells "the tab scope reset" apart from "the panel re-scanned".
-    <main className="p-3" data-jff-ready="1" data-jff-resets={String(resetCount)} data-jff-scans={String(scanNonce)}>
+    <main className="p-3" data-jff-ready="1" data-jff-resets={String(resetCount)} data-jff-scans={String(scanNonce)} data-jff-view={view}>
       <header className="flex items-center justify-between border-b border-neutral-200 pb-2 dark:border-neutral-700">
         <h1 className="m-0 text-[13px] font-semibold tracking-wide" data-jff-title="1">job-form-filler</h1>
         <span className="text-neutral-500 tabular-nums dark:text-neutral-400" data-jff-tab={String(tabId ?? '')}>
@@ -887,8 +898,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         <button type="button" className={BTN_PRIMARY} disabled={tabId === null || scanning} onClick={onScan}>
           {busyLabel(scanning, 'Scan', 'Scanning…')}
         </button>
-        <button type="button" className={BTN} onClick={() => setShowEditor((s) => !s)}>
-          {showEditor ? 'Back to fields' : 'Edit your facts'}
+        <button type="button" className={BTN} onClick={() => setView((v) => (v === 'editor' ? 'session' : 'editor'))}>
+          {view === 'editor' ? 'Back to fields' : 'Edit your facts'}
+        </button>
+        <button type="button" className={BTN} data-jff-nav-apps="1" onClick={() => setView((v) => (v === 'applications' ? 'session' : 'applications'))}>
+          {view === 'applications' ? 'Back to fields' : 'Applications'}
         </button>
         <button
           type="button" className={BTN} data-jff-mark-applied="1"
@@ -955,13 +969,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         </button>
       </label>
 
-      {showEditor
+      {view === 'editor'
         ? (
             // `key` remounts the editor the instant the facts arrive, so an editor
             // opened during the load is never stuck on an empty snapshot.
             <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
           )
-        : (
+        : view === 'applications'
+          ? <ApplicationsView load={loadApplications} />
+          : (
             <>
               {main.length > 0 && (
                 <section className="mt-4" data-jff-rows="1">
@@ -1018,9 +1034,6 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                   </ul>
                 </details>
               )}
-            </>
-          )}
-
       {saveItems.length > 0 && (
         <details className="mt-3" data-jff-savepreview="1">
           <summary className={`cursor-pointer ${MUTED}`}>Answers to save ({saveItems.length})</summary>
@@ -1048,6 +1061,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         </button>
         {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
       </div>
+            </>
+          )}
             </>
           )}
     </main>

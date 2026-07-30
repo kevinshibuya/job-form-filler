@@ -1753,3 +1753,21 @@ describe('App — revisit badge (A4)', () => {
     expect(document.querySelector('[data-jff-applied]')).toBeNull()
   })
 })
+
+describe('App — three-view navigation (A5)', () => {
+  it('session, facts editor and applications are mutually exclusive', async () => {
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Applications' }))
+    await waitFor(() => expect(document.querySelector('[data-jff-apps]')).not.toBeNull())
+    expect(document.querySelector('[data-jff-rows]')).toBeNull()
+    expect(document.querySelector('[data-jff-editor]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit your facts' }))
+    await waitFor(() => expect(document.querySelector('[data-jff-editor]')).not.toBeNull())
+    expect(document.querySelector('[data-jff-apps]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to fields' }))
+    await waitFor(() => expect(document.querySelector('main')?.getAttribute('data-jff-view')).toBe('session'))
+    expect(document.querySelector('[data-jff-editor]')).toBeNull()
+    expect(document.querySelector('[data-jff-apps]')).toBeNull()
+  })
+})
