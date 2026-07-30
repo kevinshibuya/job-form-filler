@@ -1636,3 +1636,77 @@ describe('App — mark applied (A2)', () => {
     expect((screen.getByRole('button', { name: 'Mark applied' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
+
+describe('App — submission detection prompt (A3)', () => {
+  /** Scan 1: one field. After the simulated navigation, scan 2: zero fields and
+   *  a confirmation body. The harness flips on a mutable switch. */
+  function installWizardEnd(state: { done: boolean }): void {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    const base = send.getMockImplementation()!
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN' && state.done) {
+        return {
+          ok: true,
+          replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply/done', payload: { ok: true, scan: { epoch: 2, fields: [], unreachableWidgets: 0, activeCaptcha: false } } }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_PAGETEXT') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, pageText: state.done ? 'Thank you for applying to Acme' : 'form page' } }], failures: [] }
+      }
+      return base(msg)
+    })
+  }
+  const navigate = (): void => {
+    const onUpdated = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } })
+      .chrome.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status?: string }) => void
+    act(() => onUpdated(7, { status: 'loading' }))
+  }
+
+  it('a same-site navigation re-scan to zero fields prompts — and never writes on its own', async () => {
+    const state = { done: false }
+    installWizardEnd(state)
+    const marks: unknown[] = []
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') return { requestId, ok: true, result: { epoch: 1, resolutions: [], llmError: null } }
+      if (method === 'applied.mark') { marks.push(params); return { requestId, ok: true, result: { markedAt: '2026-07-29T00:00:00.000Z' } } }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    state.done = true
+    // The wizard advanced: the TAB now sits on the confirmation url, so the
+    // start-vs-current assertion below is distinguishable, not vacuous.
+    const tabs = (globalThis as unknown as { chrome: { tabs: { get: ReturnType<typeof vi.fn> } } }).chrome.tabs
+    tabs.get.mockResolvedValue({ id: 7, url: 'https://jobs.acme.com/apply/done', title: 'Engineer at Acme' })
+    navigate()
+    await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull(), { timeout: 3000 })
+    expect(screen.getByText(/Mark as applied\?/)).toBeTruthy()
+    expect(marks.length).toBe(0) // never a silent write
+    // data hook, not getByRole: the actions row has its own 'Mark applied'
+    // button (Task 5), and two buttons sharing the accessible name would make
+    // getByRole throw "Found multiple elements".
+    fireEvent.click(document.querySelector('[data-jff-prompt-mark]')!)
+    await waitFor(() => expect(marks.length).toBe(1))
+    // Wizard flow: the RECORDED url is the START page, not the confirmation step.
+    expect(marks[0]).toMatchObject({ url: 'https://jobs.acme.com/apply' })
+  })
+
+  it('dismissing never re-prompts for the same page load', async () => {
+    const state = { done: false }
+    installWizardEnd(state)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    state.done = true
+    navigate()
+    await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull(), { timeout: 3000 })
+    fireEvent.click(document.querySelector('[data-jff-prompt-dismiss]')!)
+    expect(document.querySelector('[data-jff-submit-prompt]')).toBeNull()
+    // A manual re-scan of the SAME page load must not resurrect the prompt.
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('empty'))
+    expect(document.querySelector('[data-jff-submit-prompt]')).toBeNull()
+  })
+})

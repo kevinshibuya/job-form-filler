@@ -73,6 +73,10 @@ async function handle(raw: unknown): Promise<unknown> {
     return { ok: true, jobText: captureJobText(document, msg.selector) }
   }
 
+  if (msg.type === 'JFF_PAGETEXT') {
+    return { ok: true, pageText: (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 4000) }
+  }
+
   if (msg.type === 'JFF_PICK') {
     // ALWAYS settles: on click, on Escape (pick_cancelled), or at PICK_TIMEOUT_MS.
     // A pending promise here would hold the runtime message channel open for the

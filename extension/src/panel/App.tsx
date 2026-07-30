@@ -14,6 +14,7 @@ import { runScan, ScanError, type ElectionOutcome, type FrameReply, type FrameRe
 import { ScanStatus, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createTabScope } from './tabScope'
+import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
 
@@ -65,6 +66,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // The last SETTLED scan outcome. An action_failed line is transient: when the
   // retried action succeeds the panel goes back to what the scan said.
   const lastOutcomeRef = useRef<ScanUiState | null>(null)
+  // A3: "same page load" = same reset generation; a dismissal is remembered
+  // against it, so only a NEW navigation can re-arm the prompt.
+  const promptDismissedGenRef = useRef(-1)
+  // Event-closure-safe mirrors (resetScanState runs from listeners that closed
+  // over the first render).
+  const fieldsCountRef = useRef(0)
+  const lastScanHostRef = useRef<string | null>(null)
+  const navRescanRef = useRef<{ prevFields: number } | null>(null)
   // Provenance of `company`. A GUESS describes the page that is gone, so a reset
   // drops it; a value the user typed is theirs and survives every reset.
   const companyGuessedRef = useRef(false)
@@ -113,6 +122,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [startUrl, setStartUrl] = useState<string | null>(null)
   const [appliedHit, setAppliedHit] = useState<{ markedAt: string } | null>(null)
   const [marking, setMarking] = useState(false)
+  const [submitPrompt, setSubmitPrompt] = useState(false)
 
   const { main, foreign } = buildRows(fields, resolutions, election?.frameId ?? null)
   // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
@@ -147,6 +157,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   /** Everything a scan produced. Cleared on ANY tab-scope reset. All setters are
    *  stable, so the bind effect below may close over this once. */
   const resetScanState = (reason: 'activated' | 'navigated' | 'removed'): void => {
+    // A3: remember what the dying page had — the re-scan's detection compares
+    // against it. Only a navigation hands off; switches/closes detect nothing.
+    if (reason === 'navigated') navRescanRef.current = { prevFields: fieldsCountRef.current }
+    else navRescanRef.current = null
     // Invalidate whatever scan is in flight BEFORE clearing: its results describe
     // the page that just went away.
     resetGenRef.current++
@@ -156,9 +170,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // invariant ("a rollback target never outlives its page") must not depend on
     // that reasoning staying true.
     lastOutcomeRef.current = null
+    fieldsCountRef.current = 0
     setFields([]); setResolutions([]); setElection(null); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
     setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
     setReuseOverrides({})
+    setSubmitPrompt(false)
     // A guessed company belongs to the employer whose page just went away; keeping
     // it files the NEXT employer's answers under the previous company's name.
     if (companyGuessedRef.current) { companyGuessedRef.current = false; setCompany('') }
@@ -299,6 +315,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (staleKeys.length > 0) await chrome.storage.session.remove(staleKeys)
 
       const hostname = hostnameOf(tab.url)
+      // A3 trigger: this scan replays a NAVIGATION and stays on the same site.
+      // Pre-sessions approximation: same hostname (Task 14 upgrades this to
+      // registrable-domain classification).
+      const pendingNav = navRescanRef.current
+      navRescanRef.current = null
+      const sameSiteNav = pendingNav !== null && lastScanHostRef.current !== null && hostname === lastScanHostRef.current
+      lastScanHostRef.current = hostname
       // Company: the user's edit always wins; guess only while the field is empty.
       const co = companyOrNull ?? guessCompany(tab.title ?? '', hostname)
       // Post-await write: a dead page's guess must not name the live page's employer.
@@ -337,6 +360,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // resolutions and counts describe a page that is no longer on screen, and
       // every JFF_FILL they claim was answered stale_epoch. Drop the whole write.
       if (resetGenRef.current !== gen) return
+      fieldsCountRef.current = out.fields.length
       setFields(out.fields)
       // B3: a resolution whose batched auto-fill the page REJECTED is not
       // "filled" — demote it to needs_input carrying the fill reason, so the
@@ -386,6 +410,20 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         : out.llmError !== null ? { kind: 'failed', reason: ERROR_COPY[out.llmError.kind] }
         : { kind: 'done', filled, alreadyOnPage, proposed, needsInput },
       )
+      // A3: detection is only ever a PROMPT. Best-effort page text; a dead
+      // relay just means the field-count heuristic decides alone.
+      if (sameSiteNav && promptDismissedGenRef.current !== gen && appliedHit === null) {
+        let pageText = ''
+        try {
+          const { replies } = await sendToTab(0, { type: 'JFF_PAGETEXT', epoch: epochRef.current })
+          const p = replies[0]?.payload as { ok?: boolean; pageText?: string } | undefined
+          if (p?.ok === true) pageText = p.pageText ?? ''
+        } catch { /* best-effort */ }
+        if (resetGenRef.current !== gen) return
+        if (detectSubmission({ prevFields: pendingNav!.prevFields, newFields: out.fields.length, pageText })) {
+          setSubmitPrompt(true)
+        }
+      }
     } catch (e) {
       // Same rule as the success path: a dead generation's failure is not this
       // page's failure.
@@ -745,6 +783,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // End the session (pre-S: clear like a tab-scope reset, keep the badge).
       resetGenRef.current++
       lastOutcomeRef.current = null
+      fieldsCountRef.current = 0
       setFields([]); setResolutions([]); setElection(null); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
       setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
       setReuseOverrides({}); setScanStatus(null); setFrameReports([]); setStartUrl(null)
@@ -845,6 +884,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       {appliedHit !== null && (
         <div className={BANNER_BASE} role="status" data-jff-applied="1">
           Already applied on {new Date(appliedHit.markedAt).toLocaleDateString()}.
+        </div>
+      )}
+      {submitPrompt && (
+        <div className={BANNER_BASE} role="status" data-jff-submit-prompt="1">
+          Looks like this application was submitted. Mark as applied?
+          <span className="ml-2 inline-flex gap-2">
+            {/* data hooks: the actions row already owns a 'Mark applied'
+                accessible name (Task 5); tests target these, not roles. */}
+            <button type="button" className={BTN} data-jff-prompt-mark="1" onClick={() => { setSubmitPrompt(false); void onMarkApplied() }}>Mark applied</button>
+            <button type="button" className={BTN} data-jff-prompt-dismiss="1" onClick={() => { setSubmitPrompt(false); promptDismissedGenRef.current = resetGenRef.current }}>Dismiss</button>
+          </span>
         </div>
       )}
 
