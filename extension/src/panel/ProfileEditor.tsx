@@ -2,13 +2,36 @@ import { useState } from 'react'
 import { ANSWER_BANK_KEYS, PROFILE_KEYS } from '@jff/shared'
 import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
 
-const LABELS: Record<string, string> = {
+const FACT_LABELS: Record<string, string> = {
   firstName: 'First name', lastName: 'Last name', fullName: 'Full name',
   preferredName: 'Preferred name', email: 'Email', phone: 'Phone',
   location: 'Current location', linkedin: 'LinkedIn URL', github: 'GitHub URL',
   portfolio: 'Portfolio URL', workAuth: 'Work authorization', sponsorshipNeeded: 'Needs sponsorship',
   relocate: 'Willing to relocate', salary: 'Salary expectation', notice: 'Notice period',
   earliestStart: 'Earliest start date', remotePreference: 'Remote preference', pronouns: 'Pronouns',
+}
+
+/** O2: the one fact-grid renderer OnboardingView and ProfileEditor share.
+ *  `required` renders the * marker; `idPrefix` keeps ids unique across views. */
+export function FactFields({ draft, onChange, required = null, idPrefix = 'p' }: {
+  draft: Record<string, string>
+  onChange: (key: string, value: string) => void
+  required?: ReadonlySet<string> | null
+  idPrefix?: string
+}) {
+  return (
+    <>
+      {[...PROFILE_KEYS, ...ANSWER_BANK_KEYS].map((k) => (
+        <div className="mb-2 grid gap-0.5" key={k}>
+          <label className={`text-[12px] ${MUTED}`} htmlFor={`${idPrefix}-${k}`}>
+            {FACT_LABELS[k] ?? k}
+            {required?.has(k) === true && <span aria-hidden="true"> *</span>}
+          </label>
+          <input id={`${idPrefix}-${k}`} className={INPUT} value={draft[k] ?? ''} onChange={(e) => onChange(k, e.target.value)} />
+        </div>
+      ))}
+    </>
+  )
 }
 
 export function ProfileEditor({
@@ -71,12 +94,7 @@ export function ProfileEditor({
     <section className="mt-3" data-jff-editor="1">
       <h2 className="mb-0.5 text-[13px] font-semibold">Your facts</h2>
       <p className={`mb-2.5 ${MUTED}`}>These are the only values the tool will ever put on a page.</p>
-      {[...PROFILE_KEYS, ...ANSWER_BANK_KEYS].map((k) => (
-        <div className="mb-2 grid gap-0.5" key={k}>
-          <label className={`text-[12px] ${MUTED}`} htmlFor={`p-${k}`}>{LABELS[k] ?? k}</label>
-          <input id={`p-${k}`} className={INPUT} value={draft[k] ?? ''} onChange={(e) => set(k, e.target.value)} />
-        </div>
-      ))}
+      <FactFields draft={draft} onChange={set} />
       <div className="flex items-center gap-2">
         <button type="button" className={BTN_PRIMARY} disabled={!loaded} onClick={submit}>Save facts</button>
         <button
