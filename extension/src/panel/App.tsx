@@ -55,10 +55,17 @@ export const electedFrameName = (e: ElectionOutcome | null): string => {
 interface SessionRuntime {
   /** The session's generation. Bumped by everything that makes its in-flight
    *  work describe a page that is gone: navigation, parking, deletion. Every
-   *  post-await write is conditional on it (the old resetGenRef, per session). */
+   *  post-await write is conditional on it (the old resetGenRef, per session).
+   *  A tab SWITCH is deliberately not one of them: the outgoing session's
+   *  in-flight work is still valid, it just settles into storage instead. */
   gen: number
+  /** S7: the session's epoch counter, mirrored here so `runScan`'s synchronous
+   *  `nextEpoch` hand-off does not have to await the session write. Seeded from
+   *  (and never behind) the session's persisted `epoch`. */
+  epoch: number
   /** A scan trigger the GLOBAL single-flight latch swallowed; the running scan
-   *  replays it. */
+   *  replays it. Doubles as the queued re-scan's validity bit: parking or ending
+   *  the session clears it, and the FIFO drain skips what it no longer finds set. */
   pendingRescan: boolean
   /** A4: "Scan anyway" belongs to ONE session. */
   appliedOverride: boolean
@@ -71,8 +78,26 @@ interface SessionRuntime {
 }
 
 const newRuntime = (): SessionRuntime => ({
-  gen: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
+  gen: 0, epoch: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
 })
+
+/**
+ * S7: the one-shot enumeration retry sleeps RETRY_DELAY_MS with nothing able to
+ * cancel it. The `sleep` the panel injects rejects with this instead of resolving
+ * once the scan's session has navigated/died or the panel unmounted, so a dead
+ * scan can no longer fire a real inject + JFF_SCAN at a page it stopped
+ * describing. Recognised (and swallowed) by onScan's own catch.
+ */
+const SCAN_ABORTED = 'jff:scan-aborted'
+
+/**
+ * The routed writers below are fired-and-forgotten by design (a snapshot push, a
+ * background navigation, the epoch bump) and now reach `chrome.storage.session`,
+ * which REJECTS on an invalidated extension context. A floating rejection is a
+ * console error the panel cannot act on and the browser smoke would flag — the
+ * store's own quota/eviction policy is what reports the failures that matter.
+ */
+const swallow = (): undefined => undefined
 
 /** Everything a scan produced. A navigation makes ALL of it describe a page that
  *  is gone, and the ref-keyed halves are meaningless across a re-enumeration
@@ -120,12 +145,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     return seq
   }
   const runtimesRef = useRef(new Map<number, SessionRuntime>())
-  // The displayed session's epoch, mirrored for the synchronous `nextEpoch`
-  // hand-off into runScan. Re-seeded on every swap.
-  const epochRef = useRef(Date.now())
   // The GLOBAL single-flight latch: tab switching must never multiply the paid
   // `claude -p` resolves.
   const scanningRef = useRef(false)
+  // S7: re-scans the latch could not run yet, oldest first. Membership is the
+  // ORDER; `pendingRescan` on the runtime is the validity bit.
+  const rescanQueueRef = useRef<number[]>([])
+  // A dead panel must not keep scanning: the injected `sleep` reads this.
+  const mountedRef = useRef(true)
   // (tabId → the navigation last ACTED on). navSignals' fallback dedupe is
   // one-directional: Chrome can emit a combined tabs.onUpdated
   // {status:'loading', url} AHEAD of onCommitted, i.e. TWO identical
@@ -197,6 +224,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     return made
   }
 
+  /** S7: the runtime's epoch counter never goes backwards, and never behind the
+   *  session it belongs to — a fresh reply stamped by a previous scan must not
+   *  be able to collide with this one's. */
+  const seedEpoch = (s: Session): void => {
+    const rt = runtimeOf(s.tabId)
+    if (s.epoch > rt.epoch) rt.epoch = s.epoch
+  }
+
   /** A session ENDED (closed / marked / discarded). The runtime entry is kept
    *  but its generation bumped: a settle still in flight for the dead session
    *  must not land in whatever takes its place on the same tab. */
@@ -204,6 +239,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const rt = runtimeOf(id)
     rt.gen++
     rt.pendingRescan = false
+    rescanQueueRef.current = rescanQueueRef.current.filter((t) => t !== id)
     rt.appliedOverride = false
     rt.promptDismissedGen = -1
     rt.navRescan = null
@@ -235,14 +271,94 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }
 
   /**
-   * Mid-flight invalidation: a scan/generate/fill settling after its page died
-   * must not write into whatever is on screen now. In this slice the guard is
-   * display-scoped — a settle for a session that is no longer displayed is
-   * DROPPED (Task 16 upgrades drops to routed writes).
+   * S7 mid-flight invalidation: does this work still describe a LIVE page? Only
+   * the OWNING session's own navigation, parking or death answers no — a tab
+   * switch does not, because the outgoing session's work is still perfectly
+   * valid, it just has to settle into storage instead of onto the screen.
    */
+  const alive = (sc: { target: number; gen: number }): boolean => runtimeOf(sc.target).gen === sc.gen
+
+  /** …and it is the session ON SCREEN, so DISPLAY-only state (the status line,
+   *  the submit prompt, the per-row busy flags) may be touched too. Session
+   *  state never goes through this — it goes through `applyToSession`. */
   const inScope = (sc: { target: number; gen: number }): boolean => {
     const s = sessionRef.current
-    return s !== null && s.tabId === sc.target && runtimeOf(sc.target).gen === sc.gen
+    return s !== null && s.tabId === sc.target && alive(sc)
+  }
+
+  /** tabId → how many background writes for it are in flight. `store.onWrite`
+   *  repairs the display ONLY from these: an ordinary save-flush notification
+   *  carries the CAPPED row the display itself produced, and adopting that would
+   *  truncate the option lists an open combobox still needs — and could lose an
+   *  edit made between the write and the notification. */
+  const bgWriteRef = useRef(new Map<number, number>())
+
+  const mutateSession = async (tabId: number, fn: (s: Session | null) => Session | null): Promise<Session | null> => {
+    const marks = bgWriteRef.current
+    marks.set(tabId, (marks.get(tabId) ?? 0) + 1)
+    try {
+      return await store.mutate(tabId, fn)
+    } finally {
+      const left = (marks.get(tabId) ?? 1) - 1
+      if (left <= 0) marks.delete(tabId)
+      else marks.set(tabId, left)
+    }
+  }
+
+  /**
+   * S7, THE choke point. Every write that lands AFTER an await goes through here
+   * — an ENUMERATION of writers is exactly what kept missing writers (the
+   * company guess, `frameReports`, `lastOutcome` were all found late) — and it
+   * routes by tabId instead of assuming the display:
+   *
+   *  - the target is ON SCREEN and its generation still matches → an ordinary
+   *    display write: ref-mirrored (so the next reader sees it synchronously)
+   *    and save-through;
+   *  - anything else → `store.mutate`, NEVER load+save. The store's one global
+   *    FIFO lock plus its pending-first read are what make this read-your-writes
+   *    over the debounce. A display that swapped between the route decision and
+   *    here still lands its write, in the session it belongs to.
+   *
+   * The mutate fn re-checks the generation against the row it is handed and
+   * returns null — the drop arm — when the session died, moved on, or was
+   * already removed (`mutate` refuses a tombstoned tab on its own).
+   */
+  const applyToSession = async (tabId: number, gen: number, fn: (s: Session) => Session): Promise<void> => {
+    const cur = sessionRef.current
+    if (cur !== null && cur.tabId === tabId && runtimeOf(tabId).gen === gen) {
+      const next = fn(cur)
+      sessionRef.current = next
+      setSession(next)
+      store.save(next)
+      return
+    }
+    await mutateSession(tabId, (s) => (s === null || runtimeOf(tabId).gen !== gen ? null : fn(s)))
+  }
+
+  /** S7: the latch is GLOBAL, so a re-scan due for another session waits its
+   *  turn instead of multiplying paid resolves. */
+  const queueRescan = (target: number): void => {
+    runtimeOf(target).pendingRescan = true
+    if (!rescanQueueRef.current.includes(target)) rescanQueueRef.current.push(target)
+  }
+
+  /** Drain ONE queued re-scan, oldest first (the next one drains when this scan
+   *  releases the latch). A queued session that died or PARKED while it waited
+   *  is dropped rather than run: a paid resolve against an SSO detour page,
+   *  settling into a disabled session, is money spent on garbage. */
+  const drainRescans = (): void => {
+    while (!scanningRef.current && rescanQueueRef.current.length > 0) {
+      const next = rescanQueueRef.current.shift()!
+      const rt = runtimeOf(next)
+      if (!rt.pendingRescan) continue
+      rt.pendingRescan = false
+      // For the DISPLAYED session, bumping the nonce (rather than calling onScan
+      // here) re-runs the auto-scan effect, so the replay reads the current
+      // render's state instead of the finishing scan's dead-page closure.
+      if (tabIdRef.current === next) setScanNonce((n) => n + 1)
+      else void onScan(next).catch(swallow)
+      return
+    }
   }
 
   /** Bind the panel to a session (or to the empty state) and reset everything
@@ -251,7 +367,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  which is why that field is part of the stored shape. */
   const display = (s: Session | null): void => {
     showSession(s)
-    epochRef.current = s?.epoch ?? Date.now()
+    if (s !== null) seedEpoch(s)
     lastOutcomeRef.current = s?.lastOutcome ?? null
     setScanStatus(s?.lastOutcome ?? null)
     setSubmitPrompt(false)
@@ -309,15 +425,6 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     return () => port.disconnect()
   }, [])
 
-  /** A SETTLED scan outcome (done/empty/captcha/failed) — remembered so a later
-   *  action_failed line can be rolled back to it, and PERSISTED so switching
-   *  back to this tab restores the line instead of a blank panel. */
-  const setOutcome = (s: ScanUiState): void => {
-    lastOutcomeRef.current = s
-    setScanStatus(s)
-    writeSession((cur) => ({ ...cur, lastOutcome: s }))
-  }
-
   /** An Accept/Fill/Pick that succeeded retires the red line its failed attempt
    *  left behind; anything the scan itself put there stays. */
   const clearActionFailure = (): void => {
@@ -369,11 +476,50 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (wasDisplayed && !swapIsRescue && tabIdRef.current === dead) display(null)
   }
 
+  /**
+   * S7 constraint 6: a navigation on a tab NOBODY is looking at. The relay is
+   * target-bound now, so its eventual re-scan reaches the right page and its
+   * outcome routes to its own row — the visible panel never flickers.
+   *
+   * Classification runs INSIDE the mutate fn, which the store calls exactly once
+   * on its lock: read, classify and write are then one atomic step against the
+   * row that is really there (a load-then-write pair could classify against a
+   * row another writer had already replaced).
+   */
+  const onNavigatedBackground = async (ev: { tabId: number; frameId: number; url: string }): Promise<void> => {
+    const last = lastNavRef.current.get(ev.tabId)
+    if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
+    const rt = runtimeOf(ev.tabId)
+    const acted = { rescan: false }
+    await mutateSession(ev.tabId, (s) => {
+      // A background tab with no session has nothing to route. Lazy creation on
+      // a navigation is a DISPLAYED-tab affordance — that tab is the one the
+      // user is applying on; minting a session for every background navigation
+      // would fill session storage with pages nobody asked about.
+      if (s === null) return null
+      if (ev.frameId !== 0 && ev.frameId !== s.election?.frameId) return null
+      lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() })
+      const same = ev.url === '' || s.site === '' || sameSite(ev.url, s.startUrl)
+      if (!same) {
+        if (s.parked) return null
+        rt.gen++
+        rt.navRescan = null
+        // Drops a re-scan this session had already queued: parked pages never
+        // spend a resolve.
+        rt.pendingRescan = false
+        return { ...s, parked: true }
+      }
+      rt.gen++
+      rt.navRescan = { prevFields: s.fields.length }
+      acted.rescan = true
+      return clearScanResults({ ...s, parked: false })
+    })
+    // onScan queues this behind the global latch when a scan is already running.
+    if (acted.rescan) await onScan(ev.tabId)
+  }
+
   const onNavigated = (ev: { tabId: number; frameId: number; url: string }): void => {
-    // Sessions on OTHER tabs are storage-resident here; routing their navigation
-    // is Task 16's job (this slice's relay is still bound to the displayed tab,
-    // so a re-scan queued for a background tab would scan the wrong page).
-    if (tabIdRef.current !== ev.tabId) return
+    if (tabIdRef.current !== ev.tabId) { void onNavigatedBackground(ev).catch(swallow); return }
     const last = lastNavRef.current.get(ev.tabId)
     if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
     const record = (): void => { lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() }) }
@@ -527,25 +673,53 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }, [check])
 
   // Snapshot pushes arrive stamped by the SERVICE WORKER with the sender's
-  // tabId/frameId (the content script can know neither). Stale epochs are
-  // rejected: handles from an old scan must never leak into a save.
+  // tabId/frameId (the content script can know neither). S7: the stamp is
+  // ROUTING, not a filter — `m.tabId` is compared against the sessions, not
+  // against the active tab, so a background form's snapshot reaches ITS row
+  // instead of being thrown away. Stale epochs are still rejected: handles from
+  // an old scan must never leak into a save. The service worker's own
+  // storage.session fallback (`jff:snap:*`) is untouched by any of this.
   useEffect(() => {
     const onMsg = (raw: unknown): void => {
       const m = raw as { kind?: string; tabId?: number; frameId?: number; snap?: { epoch: number; values: Record<number, string> } }
-      const s = sessionRef.current
-      if (m?.kind !== 'snapshotPush' || m.snap === undefined || s === null || m.tabId !== s.tabId) return
-      if (m.snap.epoch !== s.epoch) return
+      if (m?.kind !== 'snapshotPush' || m.snap === undefined || typeof m.tabId !== 'number') return
+      const tabId = m.tabId
+      const epoch = m.snap.epoch
       const frameId = m.frameId ?? 0
       const values = m.snap.values
-      writeSession((cur) => {
+      const merge = (cur: Session): Session => {
         const next = { ...cur.snapshot }
         for (const [fid, v] of Object.entries(values)) next[`${frameId}:${fid}`] = v
         return { ...cur, snapshot: next }
-      })
+      }
+      const s = sessionRef.current
+      if (s !== null && s.tabId === tabId) {
+        if (epoch === s.epoch) writeSession(merge)
+        return
+      }
+      // Background: the epoch check runs against the row `fn` is handed
+      // (stored-or-pending), because only that row knows which scan it describes.
+      void mutateSession(tabId, (row) => (row === null || row.epoch !== epoch ? null : merge(row))).catch(swallow)
     }
     chrome.runtime.onMessage.addListener(onMsg)
     return () => chrome.runtime.onMessage.removeListener(onMsg)
   }, [])
+
+  // B1, the repair path back to the screen: a BACKGROUND write for a tab that is
+  // (or has just become) the displayed one re-projects the display from the row
+  // that was actually written. Without it a background→foreground swap racing a
+  // mutate leaves screen and storage silently divergent — the swap's load and
+  // the mutate are both on the store's FIFO lock, and whichever enqueues second
+  // wins its own copy.
+  useEffect(() => store.onWrite((writtenTabId, written) => {
+    if (!bgWriteRef.current.has(writtenTabId)) return
+    if (sessionRef.current === null || sessionRef.current.tabId !== writtenTabId) return
+    showSession(written)
+    lastOutcomeRef.current = written.lastOutcome
+    setScanStatus(written.lastOutcome)
+  }), [])
+
+  useEffect(() => () => { mountedRef.current = false }, [])
 
   /* --------------------------------------------------------------- actions */
 
@@ -583,19 +757,30 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     writeSession((s) => rememberAnswer({ ...s, edits: { ...s.edits, [ref]: value } }, ref, value, 'user'))
   }
 
-  const onScan = async (): Promise<void> => {
+  /**
+   * S7: `targetTabId` is the tab this scan is FOR. It defaults to the displayed
+   * tab (the auto-scan effect and the Scan button), and a queued background
+   * re-scan passes its own. Everything the scan touches — the relay triple, the
+   * epoch source, every settling write — is bound to it at dispatch time and
+   * NEVER re-read from a live ref, which is what keeps a JFF_FILL for tab 7 off
+   * tab 8's page after a mid-scan switch.
+   */
+  const onScan = async (targetTabId?: number): Promise<void> => {
     const port = portRef.current
-    const target = tabIdRef.current
+    const target = targetTabId ?? tabIdRef.current
     if (port === null || target === null) return
     if (scanningRef.current) {
       // Dropping this trigger silently is how a mid-scan navigation left the new
-      // page unscanned forever. Remember it; the running scan replays it.
-      runtimeOf(target).pendingRescan = true
+      // page unscanned forever. The latch is GLOBAL, so this queues across
+      // sessions too; the running scan drains it FIFO when it finishes.
+      queueRescan(target)
       return
     }
+    const displayed = tabIdRef.current === target
+    const shown = sessionRef.current
     // S5: a parked session's page is a detour (an SSO login form), not the
     // application — scanning it would spend a paid resolve on garbage.
-    if (sessionRef.current?.parked === true) return
+    if (displayed && shown !== null && shown.tabId === target && shown.parked) return
     // Busy state and re-entry guard flip TOGETHER, before any await: between them
     // the scan is already committed while the button would still read 'Scan'.
     scanningRef.current = true
@@ -603,29 +788,46 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // B8: at most ONE [data-jff-applied] node ever renders. Clearing the
     // transient post-mark confirmation HERE closes the post-mark → Scan →
     // check-hit overlap window.
-    setMarkedMsg(null)
+    if (displayed) setMarkedMsg(null)
     const rt = runtimeOf(target)
     // Every write below is conditional on this still being the current (tab,
-    // generation) pair.
+    // generation) pair — and lands in THIS tab's session either way.
     const sc = { target, gen: rt.gen }
     try {
+      // A queued re-scan for a session that is not on screen must prove the
+      // session is still there and still eligible: a row that was removed or
+      // parked while it waited in the queue gets no paid resolve.
+      let existing = shown !== null && shown.tabId === target ? shown : null
+      if (!displayed) {
+        existing = await store.load(target)
+        if (existing === null || existing.parked || !alive(sc)) return
+      }
       const tab = await getTab(target)
       // The tab closed between the trigger and here — this replay is a dead end.
       // A lingering 'superseded' from the reset that queued this replay would
       // otherwise promise a rescan that is never coming.
-      if (tab === null) { setScanStatus((s) => (s !== null && s.kind === 'superseded' ? null : s)); return }
-      if (tabIdRef.current !== target || runtimeOf(target).gen !== sc.gen) return
+      if (tab === null) {
+        if (inScope(sc)) setScanStatus((s) => (s !== null && s.kind === 'superseded' ? null : s))
+        return
+      }
+      // A tab SWITCH no longer aborts: only this session's own death does.
+      if (!alive(sc)) return
       const url = tab.url ?? ''
       // The session exists BEFORE the applied.check (ordering rule 2b): a badge
       // hit needs a row to land in, or A4's primary fresh-tab scenario writes the
       // badge into a session that does not exist yet and never renders it.
-      const current = sessionRef.current
-      if (current === null || current.tabId !== target) {
+      if (existing === null) {
         // A2: the FIRST scanned page of this application is the posting URL
         // applied.mark records — wizard step 2's URL is not the posting.
-        startSession(newSession(target, url))
+        const fresh = newSession(target, url)
+        seedEpoch(fresh)
+        // `save` is the creation path: `mutate` is not, and would be refused
+        // outright on a tab whose previous session was marked or discarded.
+        if (tabIdRef.current === target && sessionRef.current === null) startSession(fresh)
+        else store.save(fresh)
       } else {
-        writeSession((s) => ({
+        seedEpoch(existing)
+        await applyToSession(target, sc.gen, (s) => ({
           ...s,
           startUrl: s.startUrl === '' ? url : s.startUrl,
           site: s.startUrl === '' ? registrableDomain(url) : s.site,
@@ -642,11 +844,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // and an `undefined` here must read as a MISS, never as a hit.
       if (!rt.appliedOverride) {
         const chk = await port.request<{ applied: { markedAt: string } | null }>('applied.check', { url })
-        if (!inScope(sc)) return
+        // The sibling of Task 5's stale-action race: this round-trip is hundreds
+        // of ms wide, and the badge it decides belongs to the page it asked
+        // about. A dead generation drops it; a swapped display routes it.
+        if (!alive(sc)) return
         const hit = chk.ok ? (chk.result.applied ?? null) : null
         if (hit !== null) {
-          writeSession((s) => ({ ...s, appliedHit: { markedAt: hit.markedAt } }))
-          setScanStatus(null)
+          await applyToSession(target, sc.gen, (s) => ({ ...s, appliedHit: { markedAt: hit.markedAt } }))
+          if (inScope(sc)) setScanStatus(null)
           return
         }
       }
@@ -668,18 +873,21 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       rt.navRescan = null
       const sameSiteNav = pendingNav !== null
       // Company: the user's edit always wins; guess only while the field is empty.
-      const known = sessionRef.current?.company.trim() ?? ''
+      // Read from the session this scan OWNS, never from whatever is on screen.
+      const ownedSession = (): Session | null =>
+        sessionRef.current !== null && sessionRef.current.tabId === target ? sessionRef.current : existing
+      const known = ownedSession()?.company.trim() ?? ''
       const co = known === '' ? guessCompany(tab.title ?? '', hostname) : known
-      // Post-await write: a dead page's guess must not name the live page's employer.
-      if (co !== null && known === '' && inScope(sc)) {
-        writeSession((s) => ({ ...s, company: co, companyGuessed: true }))
+      // Post-await writes, and the mid-scan window they sit in is hundreds of ms
+      // wide: tab 7's guess belongs in tab 7's storage, never on tab 8's screen.
+      if (co !== null && known === '' && alive(sc)) {
+        await applyToSession(target, sc.gen, (s) => ({ ...s, company: co, companyGuessed: true }))
       }
-      if (inScope(sc)) writeSession((s) => ({ ...s, frameReports: [] }))
+      if (alive(sc)) await applyToSession(target, sc.gen, (s) => ({ ...s, frameReports: [] }))
       const out = await runScan({
-        tabId: target,
         nextEpoch: () => {
-          const next = ++epochRef.current
-          if (inScope(sc)) writeSession((s) => ({ ...s, epoch: next }))
+          const next = ++rt.epoch
+          void applyToSession(target, sc.gen, (s) => ({ ...s, epoch: next })).catch(swallow)
           return next
         },
         inject: async () => {
@@ -699,19 +907,28 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             : { kind: p.phase },
           )
         },
-        sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+        // The enumeration retry's only cancellation point: a scan whose session
+        // navigated or died — or a panel that unmounted — stops here instead of
+        // firing a real inject + JFF_SCAN 1.5s into a page it no longer describes.
+        sleep: (ms: number) => new Promise<void>((resolve, reject) => {
+          setTimeout(() => {
+            if (!mountedRef.current || !alive(sc)) reject(new Error(SCAN_ABORTED))
+            else resolve()
+          }, ms)
+        }),
         port,
         getResume: loadResume,
-        pastedJobText: sessionRef.current?.jobText ?? '',
+        pastedJobText: ownedSession()?.jobText ?? '',
         hostname,
         url,
         company: co,
       })
-      // The bound tab navigated (or closed, or the display swapped) while this
-      // scan ran: these fields, resolutions and counts describe a page that is no
-      // longer on screen, and every JFF_FILL they claim was answered stale_epoch.
-      // Drop the whole write.
-      if (!inScope(sc)) return
+      // The bound tab navigated or closed while this scan ran: these fields,
+      // resolutions and counts describe a page that is gone, and every JFF_FILL
+      // they claim was answered stale_epoch. Drop the whole write. A DISPLAY
+      // swap is not that — the results are still true of tab 7, so they go to
+      // tab 7's row instead of the screen.
+      if (!alive(sc)) return
       // B3: a resolution whose batched auto-fill the page REJECTED is not
       // "filled" — demote it to needs_input carrying the fill reason, so the
       // row drops to needs-input styling, REASON_HINT renders the hint
@@ -761,13 +978,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
         : out.llmError !== null ? { kind: 'failed', reason: ERROR_COPY[out.llmError.kind] }
         : { kind: 'done', filled, alreadyOnPage, proposed, needsInput }
-      lastOutcomeRef.current = outcome
-      setScanStatus(outcome)
+      if (inScope(sc)) { lastOutcomeRef.current = outcome; setScanStatus(outcome) }
       // S4: the ONE projection. Everything ref-keyed dies with the page the scan
       // replaced; the label-keyed carry re-attaches onto whatever refs the new
       // enumeration handed the same questions, and `committedEdits` outranks it.
-      // Task 16's background settle calls the SAME function inside store.mutate.
-      writeSession((s) => ({
+      // The background settle runs the SAME function inside store.mutate — a
+      // second implementation would be a second copy of the never-guess rules.
+      await applyToSession(target, sc.gen, (s) => ({
         ...projectAnswers(s, out.fields, settled, committedEdits),
         election: out.election,
         unreachable: out.unreachableWidgets,
@@ -777,12 +994,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         lastOutcome: outcome,
       }))
       if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
-      // A3: detection is only ever a PROMPT. Best-effort page text; a dead
-      // relay just means the field-count heuristic decides alone.
-      if (sameSiteNav && rt.promptDismissedGen !== sc.gen && sessionRef.current?.appliedHit == null) {
+      // A3: detection is only ever a PROMPT, and only for the session ON SCREEN
+      // — a background tab has no panel to prompt in. Best-effort page text; a
+      // dead relay just means the field-count heuristic decides alone.
+      if (sameSiteNav && rt.promptDismissedGen !== sc.gen && inScope(sc) && sessionRef.current?.appliedHit == null) {
         let pageText = ''
         try {
-          const { replies } = await sendToTab(target, 0, { type: 'JFF_PAGETEXT', epoch: epochRef.current })
+          const { replies } = await sendToTab(target, 0, { type: 'JFF_PAGETEXT', epoch: out.epoch })
           const p = replies[0]?.payload as { ok?: boolean; pageText?: string } | undefined
           if (p?.ok === true) pageText = p.pageText ?? ''
         } catch { /* best-effort */ }
@@ -792,30 +1010,30 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         }
       }
     } catch (e) {
+      // The retry's abort is not a failure to report — the page it described is
+      // gone, and so is the panel in the unmount case.
+      if (e instanceof Error && e.message === SCAN_ABORTED) return
       // Same rule as the success path: a dead generation's failure is not this
-      // page's failure.
-      if (!inScope(sc)) return
+      // page's failure — but a live one's IS, wherever that session now lives.
+      if (!alive(sc)) return
       const reason = e instanceof Error ? e.message : String(e)
-      setOutcome({ kind: 'failed', reason })
+      const outcome: ScanUiState = { kind: 'failed', reason }
       // Synthetic relay report (frameId -1): without it the diagnostics
       // disclosure could NEVER render for inject/broadcast failures, because
       // frameReports was cleared at scan start. ScanStatus renders -1 as "relay".
       // A ScanError died AFTER enumerating, so its evidence is kept and the
       // synthetic row APPENDED to it, never substituted for it.
       const relayRow: FrameReport = { frameId: -1, url: null, fields: null, error: reason }
-      writeSession((s) => ({ ...s, frameReports: e instanceof ScanError ? [...e.frameReports, relayRow] : [relayRow] }))
+      const reports = e instanceof ScanError ? [...e.frameReports, relayRow] : [relayRow]
+      if (inScope(sc)) { lastOutcomeRef.current = outcome; setScanStatus(outcome) }
+      await applyToSession(target, sc.gen, (s) => ({ ...s, lastOutcome: outcome, frameReports: reports }))
     } finally {
-      setScanning(false)
       scanningRef.current = false
-      // Replay a trigger the guard swallowed. Bumping the nonce (rather than
-      // calling onScan here) re-runs the auto-scan effect, so the replay reads
-      // the CURRENT render's state instead of this run's dead-page closure.
-      // A pending re-scan for a session that is no longer displayed STAYS
-      // pending — Task 16 owns draining those.
-      const rtNow = runtimeOf(target)
-      if (rtNow.pendingRescan && tabIdRef.current === target) {
-        rtNow.pendingRescan = false
-        setScanNonce((n) => n + 1)
+      if (mountedRef.current) {
+        setScanning(false)
+        // The latch is free: hand it to the oldest queued re-scan, in ANY
+        // session. A trigger this run swallowed is in that queue too.
+        drainRescans()
       }
     }
   }
@@ -907,12 +1125,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setActing({ ref, action: 'accept' })
     try {
       const committed = await fillOne(sc.target, row, value)
-      if (!inScope(sc)) return
+      if (!alive(sc)) return
       // Promote the TIER only. Writing `value` back onto the resolution would make
       // engine === final in buildSaveItems and silently drop every user correction
       // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
       // S4: what the PAGE took is the answer worth carrying — committed text wins.
-      writeSession((s) => rememberAnswer({
+      await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
         ...s,
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         resolutions: s.resolutions.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)),
@@ -922,7 +1140,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
         void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
       }
-      clearActionFailure()
+      if (inScope(sc)) clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
       setScanStatus({ kind: 'action_failed', reason: `Accept failed: ${e instanceof Error ? e.message : String(e)}` })
@@ -945,13 +1163,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setActing({ ref, action: 'fill' })
     try {
       const committed = await fillOne(sc.target, row, value)
-      if (!inScope(sc)) return
-      writeSession((s) => rememberAnswer({
+      if (!alive(sc)) return
+      await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
         ...s,
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         filledRefs: s.filledRefs.includes(ref) ? s.filledRefs : [...s.filledRefs, ref],
       }, ref, committed ?? value, 'user'))
-      clearActionFailure()
+      if (inScope(sc)) clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
       setScanStatus({ kind: 'action_failed', reason: `Fill failed: ${e instanceof Error ? e.message : String(e)}` })
@@ -975,11 +1193,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         handle: { frameId: row.field.frameId, fid: row.field.fid, epoch: row.field.epoch },
         fileName: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64,
       })
-      if (!inScope(sc)) return
+      if (!alive(sc)) return
       const p = replies[0]?.payload as { ok?: boolean; error?: string } | undefined
       if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the file')
-      writeSession((s) => ({ ...s, filledRefs: s.filledRefs.includes(ref) ? s.filledRefs : [...s.filledRefs, ref] }))
-      clearActionFailure()
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, filledRefs: s.filledRefs.includes(ref) ? s.filledRefs : [...s.filledRefs, ref] }))
+      if (inScope(sc)) clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
       setScanStatus({ kind: 'action_failed', reason: `Resume fill failed: ${e instanceof Error ? e.message : String(e)}` })
@@ -1008,12 +1226,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         company: companyOrNull,
         ...(cvText === null ? {} : { cvText }),
       })
-      if (!inScope(sc)) return 'aborted'
+      // Only the OWNING session's death aborts a draft — a tab switch just means
+      // it settles into storage. Two rows on two sessions can be generating at
+      // once and their drafts must never cross.
+      if (!alive(sc)) return 'aborted'
       if (r.ok) {
         const draft = r.result.draft
         // S4: a settled draft is carried with provenance 'generated', which is
         // what re-enters generatedRefs on the next step.
-        writeSession((s) => rememberAnswer({
+        await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
           ...s,
           edits: { ...s.edits, [ref]: draft },
           generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
@@ -1063,20 +1284,22 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }
 
   const onPickJobText = async (): Promise<void> => {
-    const sc = scopeNow()
-    if (sc === null || fields.length === 0 || picking) return
+    const owner = sessionRef.current
+    if (owner === null || fields.length === 0 || picking) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
     // The picked text — and the selector learned from it — describe the page the
     // pick started on; everything below this await is dropped once that page is gone.
     setPicking(true)
     try {
-      // Always settles: click, Escape (pick_cancelled) or timeout.
-      const { replies } = await sendToTab(sc.target, 0, { type: 'JFF_PICK', epoch: epochRef.current })
-      if (!inScope(sc)) return
+      // Always settles: click, Escape (pick_cancelled) or timeout. The epoch is
+      // the SESSION's, never a panel-global.
+      const { replies } = await sendToTab(sc.target, 0, { type: 'JFF_PICK', epoch: owner.epoch })
+      if (!alive(sc)) return
       const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
       if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
       const picked = p.pick
-      writeSession((s) => ({ ...s, jobText: picked.text }))
-      clearActionFailure()
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text }))
+      if (inScope(sc)) clearActionFailure()
       const tab = await getTab(sc.target)
       if (!inScope(sc)) return
       const hostname = hostnameOf(tab?.url)
@@ -1149,7 +1372,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  `store.remove` writes through and TOMBSTONES the tab, so a settle still in
    *  flight can never resurrect it. */
   const endSession = async (id: number): Promise<void> => {
-    bumpSwap()
+    // Same rule as `onTabRemoved` (Task 14, Finding 2): invalidate only the work
+    // that would put THIS session's tab on screen. An unconditional bump here
+    // cancelled a swap already heading to a different, live tab — Discard or
+    // Mark applied clicked during a tab switch stranded the panel on the tab it
+    // had just ended.
+    if (swapRef.current.target === id) bumpSwap()
     endRuntime(id)
     lastNavRef.current.delete(id)
     await store.remove(id)
@@ -1170,9 +1398,19 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const target = s.tabId
     const startUrl = s.startUrl
     const markCompany = s.company.trim() === '' ? null : s.company.trim()
+    // S7 closes Task 5's parked stale-action race (b): `startUrl` was read before
+    // the awaits, so a navigation mid-request paired job A's url with job B's
+    // title and wrote it to applied_jobs. The generation is captured at dispatch
+    // and re-checked at the moment the submit lands — the same rule every other
+    // post-await write now follows.
+    const gen = runtimeOf(target).gen
     setMarking(true)
     try {
       const tab = await getTab(target)
+      // The page this session described is gone: `tab.title` now names a
+      // DIFFERENT posting, and pairing it with job A's url is exactly the
+      // silent-wrong-data write. Marking stays available for the new page.
+      if (runtimeOf(target).gen !== gen) return
       const title = (tab?.title ?? '').trim()
       const r = await port.request<{ markedAt: string }>('applied.mark', {
         url: startUrl,
@@ -1199,7 +1437,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const onSaveAnswers = async (): Promise<void> => {
     const port = portRef.current
-    const target = tabIdRef.current
+    // S7 constraint 5: the SESSION's tabId, not a panel-global. With no session
+    // there is nothing to save but the empty payload, so the displayed tab still
+    // stands in.
+    const owner = sessionRef.current
+    const target = owner?.tabId ?? tabIdRef.current
     if (port === null || target === null || saving) return
     setSaving(true)
     try {
@@ -1210,7 +1452,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // honest declared type is `unknown`; mergeStoredSnapshots' own
       // SNAPSHOT_KEY_RE filter is what actually guarantees the shape it reads.
       const stored: Record<string, unknown> = await chrome.storage.session.get(null)
-      const epoch = sessionRef.current?.epoch ?? epochRef.current
+      const epoch = owner?.epoch ?? runtimeOf(target).epoch
       const live: Record<string, string> = {
         ...snapshot,
         // Tab- and epoch-filtered in save.ts, where the rejection rules are tested.
@@ -1299,7 +1541,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       )}
 
       <div className="my-2.5 flex items-center gap-2" data-jff-actions="1">
-        <button type="button" className={BTN_PRIMARY} disabled={tabId === null || scanning || parked} onClick={onScan}>
+        {/* onScan takes an explicit target now — never hand it a click event. */}
+        <button type="button" className={BTN_PRIMARY} disabled={tabId === null || scanning || parked} onClick={() => { void onScan() }}>
           {busyLabel(scanning, 'Scan', 'Scanning…')}
         </button>
         <button type="button" className={BTN} onClick={() => setView((v) => (v === 'editor' ? 'session' : 'editor'))}>
