@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { EnumField } from '@jff/shared'
+import type { EnumField, FieldKey, Resolution } from '@jff/shared'
 import { sessionKey } from '../sessionKey'
 import {
-  answerKey, capForStorage, createSessionStore, MAX_PERSISTED_OPTIONS,
-  newSession, parseStoredSession, SESSION_VERSION, type Session,
+  answerKey, answerKeysByRef, capForStorage, createSessionStore, MAX_PERSISTED_OPTIONS,
+  newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION,
+  type Session,
 } from './sessions'
 
 interface Hold { on: boolean; release: () => void }
@@ -175,6 +176,32 @@ describe('sessions module (S1/S6)', () => {
     expect(warn).toHaveBeenCalledTimes(1)                // …and VISIBLY so
     await store.flush()                                  // area recovered: retry lands
     expect(rows[sessionKey(7)]).toBeDefined()
+  })
+
+  it('a quota failure inside mutate parks the merged row in pending and resolves the CAPPED row, never null', async () => {
+    // Contract pin, NOT a behaviour change: on the deferral arm nothing was
+    // written and `fn` did not drop, so null would be a lie. Task 16 re-projects
+    // the display from this return value, and a null there reads as "dropped" —
+    // it would blank a panel whose row is merely waiting for the retry.
+    const { rows, area, failNextSet } = fakeArea()
+    const warn = vi.fn()
+    const store = createSessionStore(area, 0, { onWarn: warn })
+    store.save(newSession(7, 'https://a.com'))
+    await store.flush()
+
+    failNextSet.on = true    // no parked candidate exists, so eviction cannot rescue it
+    const written = await store.mutate(7, (s) => (s === null ? null : {
+      ...s, jobText: 'from-settle', fields: [field(0, Array.from({ length: 250 }, (_, i) => `o${i}`))],
+    }))
+
+    expect(written).not.toBeNull()
+    expect(written!.jobText).toBe('from-settle')
+    // …and it is the row that WOULD have been stored — capForStorage'd, not fn's raw return.
+    expect(written!.fields[0]!.options.length).toBe(MAX_PERSISTED_OPTIONS)
+    expect(warn).toHaveBeenCalledTimes(1)                              // deferral is never silent
+    expect((rows[sessionKey(7)] as Session).jobText).toBe('')          // nothing reached storage…
+    await store.flush()
+    expect((rows[sessionKey(7)] as Session).jobText).toBe('from-settle') // …it parked in pending
   })
 
   it('load during a pending debounced write sees the pending value (read-your-writes)', async () => {
@@ -399,5 +426,130 @@ describe('sessions module (S1/S6)', () => {
   it('answerKey is normalizeQuestion — accent/hyphen/case insensitive', () => {
     expect(answerKey('E-mail')).toBe(answerKey('email'))
     expect(answerKey('Por quê?')).toBe(answerKey('por que'))
+  })
+})
+
+describe('label-keyed answer carry (S4)', () => {
+  const labelled = (fid: number, label: string | null): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const resolutionFor = (fid: number, key: FieldKey | null = null): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
+    source: null, key, answerId: null, reason: 'custom',
+  })
+  const sessionOf = (over: Partial<Session>): Session => ({ ...newSession(7, 'https://jobs.acme.com/apply'), ...over })
+
+  const WHY = 'Why do you want to work here?'
+
+  it('answerKeysByRef keeps only labels EXACTLY ONE field on the page claims', () => {
+    const index = answerKeysByRef([
+      labelled(0, 'Phone'), labelled(1, 'phone'),   // twins: neither may own the key
+      labelled(2, 'E-mail'), labelled(3, null), labelled(4, '   '),
+    ])
+    expect(index.get('0:2')).toBe(answerKey('email'))
+    expect([...index.keys()]).toEqual(['0:2'])
+  })
+
+  it('rememberAnswer keys by the NORMALIZED label and carries the resolution fieldKey', () => {
+    const s = sessionOf({ fields: [labelled(0, 'E-mail')], resolutions: [resolutionFor(0, 'email')] })
+    expect(rememberAnswer(s, '0:0', 'kevin@example.com', 'user').answers).toEqual({
+      email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' },
+    })
+  })
+
+  it('rememberAnswer refuses an unlabelled field and a duplicated label (never-guess, write side)', () => {
+    const s = sessionOf({
+      fields: [labelled(0, 'Phone'), labelled(1, 'Phone'), labelled(2, null)],
+      resolutions: [resolutionFor(0), resolutionFor(1), resolutionFor(2)],
+    })
+    expect(rememberAnswer(s, '0:0', '+1 555 0100', 'user').answers).toEqual({})
+    expect(rememberAnswer(s, '0:1', '+1 555 0100', 'user').answers).toEqual({})
+    expect(rememberAnswer(s, '0:2', 'orphan', 'user').answers).toEqual({})
+  })
+
+  it('rememberAnswer DELETES the entry when the box is cleared', () => {
+    const s = sessionOf({
+      fields: [labelled(0, 'E-mail')],
+      resolutions: [resolutionFor(0, 'email')],
+      answers: { email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' } },
+    })
+    expect(rememberAnswer(s, '0:0', '', 'user').answers).toEqual({})
+  })
+
+  it('projectAnswers re-attaches by label and drops EVERY ref-keyed assertion', () => {
+    const s = sessionOf({
+      fields: [labelled(0, WHY)],
+      resolutions: [resolutionFor(0)],
+      answers: { [answerKey(WHY)]: { value: 'Because reasons', provenance: 'user', fieldKey: null } },
+      edits: { '0:0': 'Because reasons' },
+      filledRefs: ['0:0'], generatedRefs: ['0:0'],
+      snapshot: { '0:0': 'from the page' },
+      reuseOverrides: { '0:0': 'company_specific' },
+      election: { frameId: 0, score: 3, url: null },
+    })
+    // Step 2 re-enumerates: the same question is ref 0:1 now, and 0:0 is new.
+    const next = projectAnswers(s, [labelled(0, 'Anything else?'), labelled(1, WHY)], [resolutionFor(0), resolutionFor(1)], {})
+    expect(next.edits).toEqual({ '0:1': 'Because reasons' })   // and NOTHING for the new label
+    expect(next.filledRefs).toEqual([])
+    expect(next.generatedRefs).toEqual([])
+    expect(next.snapshot).toEqual({})
+    expect(next.reuseOverrides).toEqual({})
+    expect(next.election).toBeNull()
+    expect(next.answers).toEqual(s.answers)                    // the carry itself rides on
+  })
+
+  it('projectAnswers re-enters generatedRefs for a carried DRAFT only', () => {
+    const s = sessionOf({
+      answers: {
+        [answerKey(WHY)]: { value: 'A drafted answer', provenance: 'generated', fieldKey: null },
+        [answerKey('Salary expectation')]: { value: '90000', provenance: 'user', fieldKey: null },
+      },
+    })
+    const next = projectAnswers(s, [labelled(0, 'Salary expectation'), labelled(1, WHY)], [resolutionFor(0), resolutionFor(1)], {})
+    expect(next.edits).toEqual({ '0:0': '90000', '0:1': 'A drafted answer' })
+    expect(next.generatedRefs).toEqual(['0:1'])
+  })
+
+  it('committedEdits outrank the projection — the row keeps speaking the page language', () => {
+    const s = sessionOf({
+      answers: { [answerKey('Country')]: { value: 'bra', provenance: 'user', fieldKey: null } },
+    })
+    const next = projectAnswers(s, [labelled(0, 'Country')], [resolutionFor(0)], { '0:0': 'Brazil' })
+    expect(next.edits).toEqual({ '0:0': 'Brazil' })
+  })
+
+  it('the fieldKey fallback rescues a relabelled field ONLY when exactly one answer claims the key', () => {
+    const one = sessionOf({
+      answers: { email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' } },
+    })
+    expect(projectAnswers(one, [labelled(0, 'Email address')], [resolutionFor(0, 'email')], {}).edits)
+      .toEqual({ '0:0': 'kevin@example.com' })
+
+    const ambiguous = sessionOf({
+      answers: {
+        email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' },
+        'work email': { value: 'kevin@work.com', provenance: 'user', fieldKey: 'email' },
+      },
+    })
+    expect(projectAnswers(ambiguous, [labelled(0, 'Email address')], [resolutionFor(0, 'email')], {}).edits).toEqual({})
+    // A keyless new resolution never reaches the fallback at all.
+    expect(projectAnswers(one, [labelled(0, 'Email address')], [resolutionFor(0)], {}).edits).toEqual({})
+  })
+
+  it('duplicated labels on the NEW page receive nothing — fieldKey fallback included', () => {
+    const s = sessionOf({
+      answers: { email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' } },
+    })
+    const next = projectAnswers(
+      s,
+      // 'E-mail' and 'Email' normalize to ONE key: twins, so neither may own it —
+      // and a twin forfeits the fieldKey fallback too, or the ambiguity just walks
+      // in through the other door.
+      [labelled(0, 'E-mail'), labelled(1, 'Email'), labelled(2, null)],
+      [resolutionFor(0, 'email'), resolutionFor(1, 'email'), resolutionFor(2, 'email')],
+      {},
+    )
+    expect(next.edits).toEqual({})
   })
 })

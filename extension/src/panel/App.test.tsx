@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
-import type { EnumField, HostResponse, Resolution } from '@jff/shared'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import type { EnumField, FieldHandle, FieldKey, HostResponse, Resolution } from '@jff/shared'
 import { App, hostnameOf } from './App'
 import { clearResume, saveResume } from './resume'
-import { capForStorage, newSession, type Session } from './sessions'
+import { answerKey, capForStorage, newSession, type Session } from './sessions'
 
 /** The fake port forwards to `window.__jffHostBridge` when one is installed, so
  *  this is how a test gives the panel real resolutions (the canned fake answers
@@ -2255,5 +2255,301 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await waitFor(() => { expect(status()).toBe('done') })
     // No double-unpark: exactly one further scan.
     expect(scanCount()).toBe(afterMount + 2)
+  })
+})
+
+describe('App — label-keyed answer carry (S4)', () => {
+  const APPLY = 'https://jobs.acme.com/apply'
+  const STEP_2 = 'https://jobs.acme.com/apply/step2'
+  const STEP_3 = 'https://jobs.acme.com/apply/step3'
+  const WHY = 'Why do you want to work here?'
+  const SALARY = 'Salary expectation'
+  const DRAFT = 'A drafted answer'
+
+  const sendMock = () => chromeFake().runtime.sendMessage
+  const tabsGet = () => chromeFake().tabs.get
+  const onMessageReg = () => (globalThis as unknown as {
+    chrome: { runtime: { onMessage: { addListener: ReturnType<typeof vi.fn> } } }
+  }).chrome.runtime.onMessage
+  const status = (): string | null | undefined =>
+    document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')
+  const scanCount = (): number =>
+    sendMock().mock.calls.filter((c) => (c[0] as { message?: { type?: string } })?.message?.type === 'JFF_SCAN').length
+  const row = (tabId: number): Session | undefined => storageRows()[`jff:session:${tabId}`] as Session | undefined
+  const valueOf = (label: string): string => (screen.getByLabelText(label) as HTMLTextAreaElement).value
+  /** The <li> one row owns — Generate/Fill live on several rows at once. */
+  const rowFor = (label: string): HTMLElement => screen.getByLabelText(label).closest('li') as HTMLElement
+  const companyInput = (): HTMLInputElement =>
+    document.querySelector('[data-jff-company] input') as HTMLInputElement
+  const jobTextArea = (): HTMLTextAreaElement =>
+    document.querySelector('[data-jff-paste] textarea') as HTMLTextAreaElement
+  const previewQuestions = (): string[] =>
+    [...document.querySelectorAll('[data-jff-savepreview] li')].map((li) => li.textContent ?? '')
+
+  /** One field of one wizard step. `auto`/`committed` make it a BATCH-FILL row:
+   *  the scan auto-fills `auto` and the page commits `committed` (B1c). */
+  interface Spec { fid: number; label: string; key?: FieldKey; auto?: string; committed?: string }
+
+  /** The wizard, one page per scan; the last page repeats for any further scan. */
+  let pages: Spec[][] = []
+  let scans = 0
+  /** The page the LAST enumeration described — what resolve and the fill echo
+   *  answer against. */
+  let current: Spec[] = []
+
+  const enumField = (spec: Spec): EnumField => ({
+    // frameId -1 is what a content script reports; the panel stamps the real one.
+    frameId: -1, fid: spec.fid, epoch: 1, label: spec.label, name: null, idAttr: null,
+    kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+
+  const scanReply = (page: Spec[]) => ({
+    ok: true,
+    replies: [{
+      frameId: 0, url: APPLY,
+      payload: { ok: true, scan: { epoch: 1, fields: page.map(enumField), unreachableWidgets: 0, activeCaptcha: false } },
+    }],
+    failures: [],
+  })
+
+  const installScan = (): void => {
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        current = pages[Math.min(scans, pages.length - 1)] ?? []
+        scans++
+        return scanReply(current)
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        // The page ACCEPTS every fill, committing its own canonical text where
+        // the spec names one.
+        const { fills } = msg.message as unknown as { fills: { handle: FieldHandle; value: string }[] }
+        return {
+          ok: true,
+          replies: [{
+            frameId: 0,
+            payload: { ok: true, fill: { epoch: 1, failed: [],
+              filled: fills.map((f) => ({
+                handle: f.handle,
+                committed: current.find((s) => s.fid === f.handle.fid)?.committed ?? null,
+              })) } },
+          }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      return { ok: true }
+    })
+  }
+
+  const resolutionFor = (f: EnumField): Resolution => {
+    const spec = current.find((s) => s.fid === f.fid)
+    const handle = { frameId: f.frameId, fid: f.fid, epoch: f.epoch }
+    return spec?.auto === undefined
+      ? { handle, tier: 'needs_input', value: null, source: null, key: spec?.key ?? null, answerId: null, reason: 'custom' }
+      : { handle, tier: 'auto', value: spec.auto, source: 'answer_bank', key: spec.key ?? null, answerId: null, reason: 'exact' }
+  }
+
+  const installBridge = (): void => {
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'generate') return { requestId, ok: true, result: { draft: DRAFT } }
+      if (method === 'resolve') {
+        const p = params as { fields: EnumField[] }
+        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map(resolutionFor), llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  /** A service-worker-stamped snapshot push for the displayed session's epoch. */
+  const pushSnapshot = async (epoch: number, values: Record<number, string>): Promise<void> => {
+    const fn = await firstListener<(m: unknown) => void>(onMessageReg())
+    await act(async () => { fn({ kind: 'snapshotPush', tabId: 7, frameId: 0, snap: { epoch, values } }) })
+  }
+
+  /** The wizard's next step: a SAME-SITE commit keeps the session and re-scans. */
+  const step = async (url: string, nth: number): Promise<void> => {
+    await commit(7, url)
+    await waitFor(() => { expect(scanCount()).toBe(nth) })
+    await waitFor(() => { expect(status()).toBe('done') })
+  }
+
+  beforeEach(() => {
+    pages = []
+    scans = 0
+    current = []
+    installBridge()
+  })
+
+  it('wizard step 2 re-projects the draft onto the matching label and attaches NOTHING to a new label', async () => {
+    // Different count AND order across the step: refs are meaningless here, which
+    // is the whole point of keying the carry by label.
+    pages = [
+      [{ fid: 0, label: WHY }, { fid: 1, label: SALARY }],
+      [{ fid: 0, label: 'Anything else?' }, { fid: 1, label: WHY }],
+    ]
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    fireEvent.change(screen.getByLabelText(WHY), { target: { value: 'Because reasons' } })
+
+    await step(STEP_2, 2)
+
+    // The same question, now ref 0:1, still carries the answer…
+    expect(valueOf(WHY)).toBe('Because reasons')
+    // …and a label that was never on step 1 gets NOTHING (silent-wrong-data #1).
+    expect(valueOf('Anything else?')).toBe('')
+    await waitFor(() => { expect(row(7)?.edits).toEqual({ '0:1': 'Because reasons' }) })
+  })
+
+  it('a generated draft survives the step with its badge; filled badges and snapshot do NOT', async () => {
+    pages = [
+      [{ fid: 0, label: WHY }, { fid: 1, label: SALARY }],
+      [
+        { fid: 0, label: 'Anything else?' },
+        { fid: 1, label: WHY },
+        // Step 2 batch-fills this row and the page commits its own text.
+        { fid: 2, label: SALARY, key: 'salary', auto: '100000', committed: '100,000' },
+      ],
+    ]
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+
+    fireEvent.click(within(rowFor(WHY)).getByRole('button', { name: 'Generate with AI' }))
+    await waitFor(() => { expect(valueOf(WHY)).toBe(DRAFT) })
+    fireEvent.change(screen.getByLabelText(SALARY), { target: { value: '90000' } })
+    fireEvent.click(within(rowFor(SALARY)).getByRole('button', { name: 'Fill' }))
+    expect(await screen.findByText('on the page')).toBeTruthy()
+    // A page snapshot for ref 0:0 — the ref step 2 hands to a DIFFERENT question.
+    await waitFor(() => { expect(row(7)?.epoch).toBeGreaterThan(0) })
+    await pushSnapshot(row(7)!.epoch, { 0: 'Snapshot text' })
+    await waitFor(() => { expect(row(7)?.snapshot).toEqual({ '0:0': 'Snapshot text' }) })
+
+    await step(STEP_2, 2)
+
+    // The draft rode the step onto its new ref, and is still a draft.
+    expect(valueOf(WHY)).toBe(DRAFT)
+    await waitFor(() => { expect(row(7)?.generatedRefs).toEqual(['0:1']) })
+    // Everything else ref-keyed died with the page it described.
+    expect(row(7)!.filledRefs).toEqual([])
+    expect(screen.queryByText('on the page')).toBeNull()
+    expect(row(7)!.snapshot).toEqual({})
+    // A surviving snapshot would mint a save item for the new label out of the
+    // OLD page's text; an empty one mints nothing.
+    expect(previewQuestions().some((q) => q.includes('Anything else?'))).toBe(false)
+    // S6 collision rule: the batch fill's committed text outranks the carry.
+    expect(valueOf(SALARY)).toBe('100,000')
+  })
+
+  it('a batch fill the page accepted VERBATIM outranks the carry too (committed: null)', async () => {
+    // The narrow reading of the collision rule — seed only the refs the page
+    // CANONICALIZED — leaves a verbatim fill absent from the authoritative map,
+    // and the carry then overwrites a field the page had just filled. The panel
+    // row and the save diff would claim 90000 while the page holds 120000.
+    pages = [
+      [{ fid: 0, label: SALARY }],
+      // No `committed`: the echo reports committed:null, the shape a widget that
+      // takes the value as sent produces.
+      [{ fid: 0, label: 'Anything else?' }, { fid: 1, label: SALARY, key: 'salary', auto: '120000' }],
+    ]
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    fireEvent.change(screen.getByLabelText(SALARY), { target: { value: '90000' } })
+    await waitFor(() => { expect(row(7)?.answers[answerKey(SALARY)]?.value).toBe('90000') })
+
+    await step(STEP_2, 2)
+
+    expect(valueOf(SALARY)).toBe('120000')
+    await waitFor(() => { expect(row(7)?.edits['0:1']).toBe('120000') })
+  })
+
+  it('the fieldKey fallback rescues a relabelled field only when it is UNAMBIGUOUS', async () => {
+    pages = [
+      [{ fid: 0, label: 'E-mail', key: 'email' }],
+      [{ fid: 0, label: 'Anything else?' }, { fid: 1, label: 'Email address', key: 'email' }],
+      [{ fid: 0, label: 'Your e-mail', key: 'email' }],
+    ]
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    fireEvent.change(screen.getByLabelText('E-mail'), { target: { value: 'kevin@example.com' } })
+
+    await step(STEP_2, 2)
+
+    // answerKey('E-mail') !== answerKey('Email address'): only the single map
+    // entry carrying fieldKey 'email' can have rescued this.
+    expect(valueOf('Email address')).toBe('kevin@example.com')
+
+    // Plan deviation (reported): the plan plants the SECOND fieldKey-'email'
+    // entry directly. Typing into the step-2 row plants it through the product's
+    // own write path, which is strictly stronger evidence for the same rule.
+    fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'kevin@work.com' } })
+    await waitFor(() => { expect(Object.keys(row(7)?.answers ?? {}).length).toBe(2) })
+
+    await step(STEP_3, 3)
+
+    // Two answers now claim fieldKey 'email'. Never guess: nothing projects.
+    expect(valueOf('Your e-mail')).toBe('')
+  })
+
+  it('company and jobText ride the session across the step; a user-typed company still beats a later guess', async () => {
+    pages = [[{ fid: 0, label: WHY }], [{ fid: 0, label: WHY }]]
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    fireEvent.change(companyInput(), { target: { value: 'Initech' } })
+    fireEvent.change(jobTextArea(), { target: { value: 'Job description text' } })
+    // Step 2's tab TITLE names a different employer, so a fresh guess would show.
+    tabsGet().mockResolvedValue({ id: 7, url: STEP_2, title: 'Engineer at Globex' })
+
+    await step(STEP_2, 2)
+
+    expect(companyInput().value).toBe('Initech')
+    expect(jobTextArea().value).toBe('Job description text')
+  })
+
+  it('a GUESSED company rides the step too — navigation no longer clears it (S8 inversion)', async () => {
+    // Constraint 4's deliberate inversion: the S8-era "clear a guessed company on
+    // navigation" behaviour is GONE. company/companyGuessed ride the session, and
+    // the employer boundary is the cross-site park (Task 14), not the wizard step.
+    pages = [[{ fid: 0, label: WHY }], [{ fid: 0, label: WHY }]]
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect(companyInput().value).toBe('Acme') })
+    tabsGet().mockResolvedValue({ id: 7, url: STEP_2, title: 'Engineer at Globex' })
+
+    await step(STEP_2, 2)
+
+    expect(companyInput().value).toBe('Acme')
+    await waitFor(() => { expect(row(7)?.companyGuessed).toBe(true) })
+  })
+
+  it('duplicate labels on ONE page: none write into answers, none project (never-guess)', async () => {
+    pages = [
+      [{ fid: 0, label: 'Phone' }, { fid: 1, label: 'Phone' }],
+      [{ fid: 0, label: 'Phone' }],
+    ]
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    fireEvent.change(screen.getAllByLabelText('Phone')[0]!, { target: { value: '+1 555 0100' } })
+    // The edit itself is real — it is the CARRY that must refuse the twins.
+    await waitFor(() => { expect(row(7)?.edits['0:0']).toBe('+1 555 0100') })
+    expect(row(7)!.answers).toEqual({})
+
+    await step(STEP_2, 2)
+
+    await waitFor(() => { expect(screen.getAllByLabelText('Phone').length).toBe(1) })
+    // The carry cannot know which twin the value belonged to: it attaches to neither.
+    expect(valueOf('Phone')).toBe('')
+    await waitFor(() => { expect(row(7)?.fields.length).toBe(1) })
+    expect(Object.keys(row(7)!.answers)).not.toContain(answerKey('Phone'))
   })
 })

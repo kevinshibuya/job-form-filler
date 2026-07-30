@@ -15,7 +15,7 @@ import { runScan, ScanError, type ElectionOutcome, type FrameReply, type FrameRe
 import { ScanStatus, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
-import { createSessionStore, newSession, SESSION_SAVE_DEBOUNCE_MS, type Session, type SessionStore } from './sessions'
+import { createSessionStore, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, type Session, type SessionStore } from './sessions'
 import { registrableDomain, sameSite } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
@@ -81,8 +81,8 @@ const newRuntime = (): SessionRuntime => ({
 const clearScanResults = (s: Session): Session => ({
   ...s,
   fields: [], resolutions: [], election: null, edits: {}, filledRefs: [], generatedRefs: [],
-  snapshot: {}, unreachable: 0, activeCaptcha: false, frameReports: [], lastOutcome: null,
-  appliedHit: null,
+  snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
+  lastOutcome: null, appliedHit: null,
 })
 
 export interface AppProps {
@@ -576,8 +576,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     try { return await chrome.tabs.get(target) } catch { return null }
   }
 
+  /** S4: every displayed-row answer is written TWICE — ref-keyed into `edits`,
+   *  which the page and the save diff speak, and label-keyed into `answers`,
+   *  which is what survives the next re-enumeration. */
   const onEdit = (ref: string, value: string): void => {
-    writeSession((s) => ({ ...s, edits: { ...s.edits, [ref]: value } }))
+    writeSession((s) => rememberAnswer({ ...s, edits: { ...s.edits, [ref]: value } }, ref, value, 'user'))
   }
 
   const onScan = async (): Promise<void> => {
@@ -720,12 +723,25 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         failedFillReason.has(refOf(r.handle))
           ? { ...r, tier: 'needs_input' as const, reason: failedFillReason.get(refOf(r.handle))! }
           : r)
-      // B1c: batch fills that committed canonical text different from the sent
-      // value seed `edits`, so the row, the save diff and the choice highlight
-      // all speak the page's language ('bra' → 'Brazil').
+      // B1c: the batch fill is authoritative for EVERY ref it put a value on, not
+      // just the ones the page rewrote. `committed` is the page's canonical text
+      // where it canonicalized ('bra' → 'Brazil') and NULL where the page took the
+      // sent value verbatim — both mean the same thing, "this is what the page
+      // holds now". Seeding only the canonicalized half is how a verbatim fill
+      // stayed absent here and let S4's carry re-seed the row (and the save diff)
+      // with a stale answer for a field the page had just filled. The row, the
+      // save diff and the choice highlight all speak the page's language.
+      const sentValue = new Map(settled.map((r) => [refOf(r.handle), r.value]))
       const committedEdits: Record<string, string> = {}
       for (const f of out.fill.filled) {
-        if (f.committed !== null) committedEdits[refOf(f.handle)] = f.committed
+        const ref = refOf(f.handle)
+        // A null `committed` with no resolution value behind it is unreachable
+        // through runScan (it only batch-fills resolutions whose value is a
+        // non-empty string). If it ever happens we have NO evidence of what the
+        // page holds, so seed nothing: a '' here would blank the row AND suppress
+        // the carry, asserting an emptiness nobody observed.
+        const value = f.committed ?? sentValue.get(ref) ?? null
+        if (value !== null) committedEdits[ref] = value
       }
       // A9/B3 status semantics: `filled` = PAGE-ACCEPTED batched fills, straight
       // from the frames' JFF_FILL reports — never inferred from tiers, so a
@@ -747,18 +763,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         : { kind: 'done', filled, alreadyOnPage, proposed, needsInput }
       lastOutcomeRef.current = outcome
       setScanStatus(outcome)
+      // S4: the ONE projection. Everything ref-keyed dies with the page the scan
+      // replaced; the label-keyed carry re-attaches onto whatever refs the new
+      // enumeration handed the same questions, and `committedEdits` outranks it.
+      // Task 16's background settle calls the SAME function inside store.mutate.
       writeSession((s) => ({
-        ...s,
-        fields: out.fields,
-        resolutions: settled,
+        ...projectAnswers(s, out.fields, settled, committedEdits),
         election: out.election,
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
-        edits: committedEdits,
-        generatedRefs: [],
-        filledRefs: [],
-        snapshot: {},
         jobText: out.jobText !== '' ? out.jobText : s.jobText,
         lastOutcome: outcome,
       }))
@@ -897,11 +911,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // Promote the TIER only. Writing `value` back onto the resolution would make
       // engine === final in buildSaveItems and silently drop every user correction
       // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
-      writeSession((s) => ({
+      // S4: what the PAGE took is the answer worth carrying — committed text wins.
+      writeSession((s) => rememberAnswer({
         ...s,
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         resolutions: s.resolutions.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)),
-      }))
+      }, ref, committed ?? value, 'user'))
       // Accepting an AI key match IS the user confirmation the spec's
       // learned_mappings flow needs: promote it to a deterministic mapping.
       if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
@@ -931,11 +946,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     try {
       const committed = await fillOne(sc.target, row, value)
       if (!inScope(sc)) return
-      writeSession((s) => ({
+      writeSession((s) => rememberAnswer({
         ...s,
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         filledRefs: s.filledRefs.includes(ref) ? s.filledRefs : [...s.filledRefs, ref],
-      }))
+      }, ref, committed ?? value, 'user'))
       clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
@@ -996,11 +1011,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (!inScope(sc)) return 'aborted'
       if (r.ok) {
         const draft = r.result.draft
-        writeSession((s) => ({
+        // S4: a settled draft is carried with provenance 'generated', which is
+        // what re-enters generatedRefs on the next step.
+        writeSession((s) => rememberAnswer({
           ...s,
           edits: { ...s.edits, [ref]: draft },
           generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
-        }))
+        }, ref, draft, 'generated'))
         return 'ok'
       }
       setHostError(ERROR_COPY[r.error.kind])

@@ -1,5 +1,6 @@
 import { normalizeQuestion, type EnumField, type FieldKey, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
+import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
 import type { ScanUiState } from './ScanStatus'
 import { registrableDomain } from './site'
@@ -77,6 +78,130 @@ export function newSession(tabId: number, startUrl = ''): Session {
     frameReports: [],
     lastOutcome: null,
     appliedHit: null,
+  }
+}
+
+/**
+ * S4, one page's field list → (ref → the `answers` key that ref may use).
+ *
+ * NEVER-GUESS, and it runs in BOTH directions (writes and projection): a key
+ * claimed by two or more fields of the SAME page is absent from the map
+ * entirely. The carry cannot tell the twins apart, so attributing a value to
+ * either of them — here or on the next page — is a silent-wrong-data write.
+ * Fields whose label is empty (or normalizes to nothing) never enter, the same
+ * rule `save.ts` applies: no key, no carry.
+ */
+export function answerKeysByRef(fields: EnumField[]): Map<string, string> {
+  const claims = new Map<string, string[]>()
+  for (const f of fields) {
+    const key = answerKey(f.label ?? '')
+    if (key === '') continue
+    const refs = claims.get(key)
+    if (refs === undefined) claims.set(key, [refOf(f)])
+    else refs.push(refOf(f))
+  }
+  const out = new Map<string, string>()
+  for (const [key, refs] of claims) if (refs.length === 1) out.set(refs[0]!, key)
+  return out
+}
+
+/**
+ * S4 write path: record what ONE ref now answers under its LABEL key, so the
+ * answer outlives the ref. Pure, and a no-op for a field that may not own a key
+ * (unlabelled, or a label this page duplicates).
+ *
+ * An EMPTY value DELETES the entry: a box the user cleared is not an answer, and
+ * a stale entry left behind would re-seed the value on the next step.
+ */
+export function rememberAnswer(
+  s: Session,
+  ref: string,
+  value: string,
+  provenance: AnswerProvenance,
+): Session {
+  const key = answerKeysByRef(s.fields).get(ref)
+  if (key === undefined) return s
+  if (value === '') {
+    if (!(key in s.answers)) return s
+    const answers = { ...s.answers }
+    delete answers[key]
+    return { ...s, answers }
+  }
+  const fieldKey = s.resolutions.find((r) => refOf(r.handle) === ref)?.key ?? null
+  return { ...s, answers: { ...s.answers, [key]: { value, provenance, fieldKey } } }
+}
+
+/**
+ * S4 projection: THE one place a re-scanned session is rebuilt. App's displayed
+ * scan settle and Task 16's background `store.mutate` both call this — a second
+ * implementation would be a second copy of the never-guess rules to keep in sync.
+ *
+ * Refs are meaningless across a re-enumeration (`fid` restarts at 0), so every
+ * ref-keyed assertion dies with the page: `filledRefs`, `generatedRefs`,
+ * `snapshot`, `reuseOverrides`, `election` and the old `edits`. What comes back
+ * is derived from the label-keyed carry:
+ *  - primary hit: `answers[answerKey(label)]`;
+ *  - secondary hit (primary missed and the new resolution has a key): the SINGLE
+ *    answer whose `fieldKey` matches — two or more candidates rescue NOTHING;
+ *  - no hit: nothing is attached at all.
+ * `committedEdits` — what the batch fill actually put on the page (B1c: its
+ * canonical text where the page rewrote the value, else the value that was sent
+ * and accepted verbatim) — is AUTHORITATIVE for EVERY ref the fill touched, not
+ * merely the ones it canonicalized: the row must keep speaking the page's
+ * language, so the projection only seeds refs absent from it.
+ *
+ * The caller layers the rest of its scan outcome (election, counts, reports) on
+ * top of the returned row.
+ */
+export function projectAnswers(
+  session: Session,
+  newFields: EnumField[],
+  newResolutions: Resolution[],
+  committedEdits: Record<string, string>,
+): Session {
+  const keyOfRef = answerKeysByRef(newFields)
+  const fieldKeyOfRef = new Map(newResolutions.map((r) => [refOf(r.handle), r.key]))
+  // fieldKey → the SINGLE answer claiming it, or null once contested. The same
+  // never-guess rule from the MAP's side: two candidates rescue nothing.
+  const byFieldKey = new Map<FieldKey, string | null>()
+  for (const [key, a] of Object.entries(session.answers)) {
+    if (a.fieldKey === null) continue
+    byFieldKey.set(a.fieldKey, byFieldKey.has(a.fieldKey) ? null : key)
+  }
+
+  const edits: Record<string, string> = { ...committedEdits }
+  const generatedRefs: string[] = []
+  for (const f of newFields) {
+    const ref = refOf(f)
+    // The batch fill already spoke for this ref, in the page's own words.
+    if (ref in committedEdits) continue
+    const key = keyOfRef.get(ref)
+    // No usable label, or one this page duplicates: the carry may attach nothing
+    // here at all — the fieldKey fallback included, since two twins matching one
+    // answer is the same wrong write from the other end.
+    if (key === undefined) continue
+    let hit = session.answers[key]
+    if (hit === undefined) {
+      const fieldKey = fieldKeyOfRef.get(ref) ?? null
+      const single = fieldKey === null ? undefined : byFieldKey.get(fieldKey)
+      if (single != null) hit = session.answers[single]
+    }
+    if (hit === undefined || hit.value === '') continue
+    edits[ref] = hit.value
+    // The draft badge survives the wizard step; nothing else ref-keyed does.
+    if (hit.provenance === 'generated') generatedRefs.push(ref)
+  }
+
+  return {
+    ...session,
+    fields: newFields,
+    resolutions: newResolutions,
+    edits,
+    generatedRefs,
+    filledRefs: [],
+    snapshot: {},
+    reuseOverrides: {},
+    election: null,
   }
 }
 
