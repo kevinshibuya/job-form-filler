@@ -145,6 +145,9 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_PICK'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_JOBTEXT'), epoch: z.number().int().nonnegative(), selector: z.string().nullable() }),
+  // A3: the panel's submission-detection needs the page's VISIBLE text after a
+  // wizard-step re-scan; jobText heuristics answer a different question.
+  z.object({ type: z.literal('JFF_PAGETEXT'), epoch: z.number().int().nonnegative() }),
   z.object({
     type: z.literal('JFF_FILL_RESUME'),
     epoch: z.number().int().nonnegative(),
