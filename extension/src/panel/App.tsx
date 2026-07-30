@@ -107,6 +107,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [factsOk, setFactsOk] = useState<boolean | null>(null)     // null = load pending
   const [resumeOk, setResumeOk] = useState<boolean | null>(null)
   const [completeness, setCompleteness] = useState<'pending' | Completeness>('pending')
+  // A2: the FIRST scanned page of this application — the posting URL applied.mark
+  // records (wizard step 2's URL is not the posting). Task 14 moves this into
+  // the per-tab Session; until then it survives `navigated` resets only.
+  const [startUrl, setStartUrl] = useState<string | null>(null)
+  const [appliedHit, setAppliedHit] = useState<{ markedAt: string } | null>(null)
+  const [marking, setMarking] = useState(false)
 
   const { main, foreign } = buildRows(fields, resolutions, election?.frameId ?? null)
   // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
@@ -156,6 +162,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // A guessed company belongs to the employer whose page just went away; keeping
     // it files the NEXT employer's answers under the previous company's name.
     if (companyGuessedRef.current) { companyGuessedRef.current = false; setCompany('') }
+    // A2: a navigation within the same tab is (pre-sessions) still the same
+    // application — the start url survives it. A tab switch or close is not.
+    if (reason !== 'navigated') { setStartUrl(null); setAppliedHit(null) }
     // A scan still draining cannot be cancelled (host-protocol change, deferred to
     // a future slice), and its own writes are dropped — so a blank line here is
     // minutes of a frozen-looking panel. Say what is being waited on instead.
@@ -281,6 +290,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // A lingering 'superseded' from the reset that queued this replay would
       // otherwise promise a rescan that is never coming.
       if (tab === null) { setScanStatus((s) => (s !== null && s.kind === 'superseded' ? null : s)); return }
+      // A2: first settled trigger on this application captures the posting URL.
+      if (resetGenRef.current === gen) setStartUrl((s) => s ?? (tab.url ?? null))
       // A previous application on this same tab may have left snapshot rows in
       // storage.session; they must never merge into this scan's save.
       const staleKeys = Object.keys(await chrome.storage.session.get(null))
@@ -714,6 +725,34 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setScanNonce((n) => n + 1)
   }
 
+  /** A2: record the application under the session's START url, then end the
+   *  session. A failed mark keeps the session — it is retryable (spec, Error
+   *  handling). Task 14 replaces the manual clearing with session deletion. */
+  const onMarkApplied = async (): Promise<void> => {
+    const port = portRef.current
+    if (port === null || startUrl === null || marking) return
+    setMarking(true)
+    try {
+      const tab = await getTab()
+      const title = (tab?.title ?? '').trim()
+      const r = await port.request<{ markedAt: string }>('applied.mark', {
+        url: startUrl,
+        company: companyOrNull,
+        jobTitle: title === '' ? null : title,
+      })
+      if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return }
+      setAppliedHit({ markedAt: r.result.markedAt })
+      // End the session (pre-S: clear like a tab-scope reset, keep the badge).
+      resetGenRef.current++
+      lastOutcomeRef.current = null
+      setFields([]); setResolutions([]); setElection(null); setEdits({}); setFilledRefs([]); setGeneratedRefs([])
+      setSnapshot({}); setUnreachable(0); setActiveCaptcha(false); setJobText(''); setSaveMsg(null)
+      setReuseOverrides({}); setScanStatus(null); setFrameReports([]); setStartUrl(null)
+    } finally {
+      setMarking(false)
+    }
+  }
+
   const onSaveAnswers = async (): Promise<void> => {
     const port = portRef.current
     if (port === null || tabId === null || saving) return
@@ -793,9 +832,21 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         <button type="button" className={BTN} onClick={() => setShowEditor((s) => !s)}>
           {showEditor ? 'Back to fields' : 'Edit your facts'}
         </button>
+        <button
+          type="button" className={BTN} data-jff-mark-applied="1"
+          disabled={tabId === null || marking || startUrl === null}
+          onClick={() => { void onMarkApplied() }}
+        >
+          {busyLabel(marking, 'Mark applied', 'Marking…')}
+        </button>
       </div>
 
       <ScanStatus status={scanStatus} reports={frameReports} />
+      {appliedHit !== null && (
+        <div className={BANNER_BASE} role="status" data-jff-applied="1">
+          Already applied on {new Date(appliedHit.markedAt).toLocaleDateString()}.
+        </div>
+      )}
 
       <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
         Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}

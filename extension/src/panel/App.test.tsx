@@ -1586,3 +1586,53 @@ describe('App — onboarding gate (O1/O3)', () => {
     expect(scanCount()).toBe(0)
   })
 })
+
+describe('App — mark applied (A2)', () => {
+  function markingBridge(behind: { params: unknown[] }, fail = false): void {
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'applied.mark') {
+        behind.params.push(params)
+        if (fail) return { requestId, ok: false, error: { kind: 'db', message: 'nope' } }
+        return { requestId, ok: true, result: { id: 1, url: (params as { url: string }).url, canonicalUrl: 'c', company: null, jobTitle: null, markedAt: '2026-07-29T00:00:00.000Z' } }
+      }
+      if (method === 'resolve') {
+        return { requestId, ok: true, result: { epoch: 1, resolutions: [], llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it('records the START url, tab title and company, then ends the session', async () => {
+    const seen = { params: [] as unknown[] }
+    markingBridge(seen)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(document.querySelector('[data-jff-company] input')!, { target: { value: 'Acme' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
+    await waitFor(() => expect(seen.params.length).toBe(1))
+    expect(seen.params[0]).toEqual({ url: 'https://jobs.acme.com/apply', company: 'Acme', jobTitle: 'Engineer at Acme' })
+    // Session ended: rows gone, badge line up.
+    await waitFor(() => expect(document.querySelector('[data-jff-rows]')).toBeNull())
+    expect(document.querySelector('[data-jff-applied]')).not.toBeNull()
+  })
+
+  it('a failed mark keeps the session (retryable) and surfaces the host banner', async () => {
+    const seen = { params: [] as unknown[] }
+    markingBridge(seen, true)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
+    await waitFor(() => expect(seen.params.length).toBe(1))
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Mark applied' }) as HTMLButtonElement).disabled).toBe(false))
+    expect(document.querySelector('[data-jff-applied]')).toBeNull()
+  })
+
+  it('the button is disabled before any scan captured a start url', async () => {
+    markingBridge({ params: [] })
+    render(<App />)
+    // Before the auto-scan settles the button must not be actionable.
+    expect((screen.getByRole('button', { name: 'Mark applied' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
