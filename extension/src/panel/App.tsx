@@ -5,6 +5,8 @@ import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
 import { buildRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, type HostPort } from './port'
+import { profileCompleteness, type Completeness } from './completeness'
+import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { pickResumeTarget } from './resumeTarget'
@@ -102,6 +104,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [picking, setPicking] = useState(false)
   const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' } | null>(null)
   const [gateOpen, setGateOpen] = useState(false)
+  const [factsOk, setFactsOk] = useState<boolean | null>(null)     // null = load pending
+  const [resumeOk, setResumeOk] = useState<boolean | null>(null)
+  const [completeness, setCompleteness] = useState<'pending' | Completeness>('pending')
 
   const { main, foreign } = buildRows(fields, resolutions, election?.frameId ?? null)
   // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
@@ -195,8 +200,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }, [])
 
   useEffect(() => {
-    void loadResume().then((r) => setResumeName(r?.name ?? null))
-    void loadResumeText().then(setCvText)
+    void Promise.all([loadResume(), loadResumeText()])
+      .then(([r, text]) => { setResumeName(r?.name ?? null); setCvText(text); setResumeOk(true) })
+      .catch(() => { setResumeName(null); setCvText(null); setResumeOk(false) })
   }, [])
 
   // Pre-fill the facts editor from the host once the self-check answered.
@@ -209,6 +215,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     ]).then(([p, b]) => {
       setFacts({ ...(p.ok ? p.result : {}), ...(b.ok ? b.result : {}) })
       setFactsLoaded(true)
+      setFactsOk(p.ok && b.ok)
     })
   }, [check])
 
@@ -413,11 +420,36 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const timer = setTimeout(() => setGateOpen(true), hostWaitMs)
     return () => clearTimeout(timer)
   }, [hostAnswered, hostWaitMs])
+
+  // O3 deadline, anchored ONCE at mount: a port that never answers must not
+  // pin a fresh panel on 'pending' forever, and a PARTIAL settle must not
+  // restart the clock. Past the deadline an unsettled decision becomes
+  // 'unknown' (normal panel + banner) — the gate can ONLY ever be shown by a
+  // successful load proving incompleteness.
+  useEffect(() => {
+    const timer = setTimeout(() => setCompleteness((c) => (c === 'pending' ? 'unknown' : c)), hostWaitMs)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // O3: the completeness decision LATCHES on its first settled verdict — a
+  // facts load limping in after the deadline must not flip a working panel
+  // into (or out of) onboarding mid-session. Only Finish moves it afterwards.
+  useEffect(() => {
+    if (completeness !== 'pending') return
+    if (factsOk !== null && resumeOk !== null) {
+      setCompleteness(profileCompleteness(facts, resumeName !== null, factsOk && resumeOk))
+    }
+  }, [factsOk, resumeOk, completeness])
+
   useEffect(() => {
     if (tabId === null) return
-    if (!gateOpen) { setScanStatus({ kind: 'connecting' }); return }
+    if (!gateOpen || completeness === 'pending') { setScanStatus({ kind: 'connecting' }); return }
+    // O3: a profile PROVEN incomplete renders OnboardingView instead of scan UI
+    // — no scan may fire. 'unknown' scans anyway: a dead host must never brick
+    // an existing user (they see the normal panel plus the host banner).
+    if (completeness === 'incomplete') return
     void onScan()
-  }, [tabId, scanNonce, gateOpen])
+  }, [tabId, scanNonce, gateOpen, completeness])
 
   /** Put one value on the page. Shared by Accept and Fill; what they additionally
    *  CONFIRM is the only difference between them. THROWS if the relay or the
@@ -649,6 +681,39 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setShowEditor(false)
   }
 
+  const onOnboardingUpload = async (file: File): Promise<string | null> => {
+    await saveResume(file)
+    const text = await loadResumeText()
+    setCvText(text)
+    setResumeName(file.name)
+    return text
+  }
+
+  const onOnboardingExtract = async (cv: string): Promise<Record<string, string> | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request<Record<string, string>>('facts.extract', { cvText: cv })
+    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    return r.result
+  }
+
+  const onOnboardingFinish = async (profile: Record<string, string>, bank: Record<string, string>): Promise<void> => {
+    const port = portRef.current
+    if (port === null) return
+    // A failed write must NOT unlock scanning: nothing was persisted, and a
+    // 'complete' verdict here would be a lie the next panel open disproves.
+    // Surface the banner and stay in onboarding — Finish is retryable.
+    const p = await port.request('profile.set', { values: profile })
+    if (!p.ok) { setHostError(ERROR_COPY[p.error.kind]); return }
+    const b = await port.request('answerBank.set', { values: bank })
+    if (!b.ok) { setHostError(ERROR_COPY[b.error.kind]); return }
+    setFacts((f) => ({ ...f, ...profile, ...bank }))
+    // The gate's one sanctioned exit; the nonce re-fires the (blocked) auto-scan
+    // effect exactly once.
+    setCompleteness('complete')
+    setScanNonce((n) => n + 1)
+  }
+
   const onSaveAnswers = async (): Promise<void> => {
     const port = portRef.current
     if (port === null || tabId === null || saving) return
@@ -702,6 +767,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
       <SelfCheckBanner check={check} error={hostError} />
 
+      {completeness === 'incomplete'
+        ? (
+            <OnboardingView
+              key={factsLoaded ? 'loaded' : 'pending'}
+              values={facts} loaded={factsLoaded} resumeName={resumeName}
+              onUpload={onOnboardingUpload} onExtract={onOnboardingExtract} onFinish={onOnboardingFinish}
+            />
+          )
+        : (
+            <>
       {activeCaptcha && (
         <div className={`${BANNER_BASE} ${BANNER_BAD}`} role="status" data-jff-captcha="1">
           A CAPTCHA challenge is active on this page. Solve it yourself; the extension will not touch it.
@@ -847,6 +922,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         </button>
         {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
       </div>
+            </>
+          )}
     </main>
   )
 }
