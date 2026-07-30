@@ -77,6 +77,18 @@ describe('HostRequestSchema', () => {
   })
 })
 
+describe('HostRequestSchema — applied.* (A1)', () => {
+  it('accepts the three applied methods', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'applied.mark', params: { url: 'https://x.com/j/1', company: null, jobTitle: null } }).success).toBe(true)
+    expect(HostRequestSchema.safeParse({ requestId: 'r2', method: 'applied.check', params: { url: 'https://x.com/j/1' } }).success).toBe(true)
+    expect(HostRequestSchema.safeParse({ requestId: 'r3', method: 'applied.list', params: {} }).success).toBe(true)
+  })
+
+  it('rejects applied.mark without a url', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r4', method: 'applied.mark', params: { company: null, jobTitle: null } }).success).toBe(false)
+  })
+})
+
 describe('HostResponseSchema', () => {
   it('accepts an error response with a taxonomy kind', () => {
     const res = HostResponseSchema.parse({

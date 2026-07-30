@@ -160,3 +160,33 @@ describe('handleRequest', () => {
     expect(complete.mock.calls[0]![0] as string).toContain('CV BODY')
   })
 })
+
+describe('applied.* (A1)', () => {
+  it('mark → check round-trips through the canonical url', async () => {
+    const marked = await handleRequest(deps, { requestId: 'am-1', method: 'applied.mark', params: { url: 'https://x.com/j/1?utm_source=a', company: 'Acme', jobTitle: 'Eng' } })
+    expect(marked.ok).toBe(true)
+    const checked = await handleRequest(deps, { requestId: 'am-2', method: 'applied.check', params: { url: 'https://x.com/j/1?utm_medium=b' } })
+    expect(checked).toMatchObject({ ok: true, result: { applied: { company: 'Acme', jobTitle: 'Eng', canonicalUrl: 'x.com/j/1' } } })
+  })
+
+  it('re-marking preserves the ORIGINAL marked_at and updates the rest', async () => {
+    const first = await handleRequest(deps, { requestId: 'am-3', method: 'applied.mark', params: { url: 'https://x.com/j/2', company: null, jobTitle: null } })
+    const firstAt = (first as { result: { markedAt: string } }).result.markedAt
+    const again = await handleRequest(deps, { requestId: 'am-4', method: 'applied.mark', params: { url: 'https://x.com/j/2/?utm_source=x', company: 'Acme', jobTitle: 'Eng II' } })
+    expect((again as { result: { markedAt: string } }).result.markedAt).toBe(firstAt)
+    expect(again).toMatchObject({ ok: true, result: { company: 'Acme', jobTitle: 'Eng II' } })
+  })
+
+  it('check misses on a different job', async () => {
+    const r = await handleRequest(deps, { requestId: 'am-5', method: 'applied.check', params: { url: 'https://x.com/j/999' } })
+    expect(r).toMatchObject({ ok: true, result: { applied: null } })
+  })
+
+  it('list returns newest-first', async () => {
+    await handleRequest(deps, { requestId: 'am-6', method: 'applied.mark', params: { url: 'https://x.com/j/a', company: null, jobTitle: 'A' } })
+    await handleRequest(deps, { requestId: 'am-7', method: 'applied.mark', params: { url: 'https://x.com/j/b', company: null, jobTitle: 'B' } })
+    const r = await handleRequest(deps, { requestId: 'am-8', method: 'applied.list', params: {} })
+    const jobs = (r as { result: { jobs: { jobTitle: string }[] } }).result.jobs
+    expect(jobs.map((j) => j.jobTitle)).toEqual(['B', 'A'])
+  })
+})

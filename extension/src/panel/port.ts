@@ -146,6 +146,12 @@ export function createFakeHostPort(): HostPort {
         // normal flow, not the onboarding gate. Gate tests install their own
         // __jffHostBridge with an empty profile.
         'profile.get': { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User' },
+        // A1: the canned persona has applied to NOTHING — the revisit badge
+        // (Task 7) reads `applied` off this shape, so the miss must be an
+        // explicit null, never a missing key answering {}.
+        'applied.check': { applied: null },
+        'applied.list': { jobs: [] },
+        'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString() },
         'answerBank.get': {},
         'selector.get': { selector: null },
         resolve: { epoch: 0, resolutions: [], llmError: null },

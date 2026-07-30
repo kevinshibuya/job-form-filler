@@ -6,9 +6,10 @@ import {
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  getAnswerBank, getCachedResponse, getProfile, getSelector, insertApplication,
-  listAllAnswers, listReferenceAnswers, putCachedResponse, saveLearnedMapping,
-  saveSelector, setAnswerBank, setProfile, upsertAnswer,
+  checkApplied, getAnswerBank, getCachedResponse, getProfile, getSelector,
+  insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
+  markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
+  setProfile, upsertAnswer,
 } from './db/repos.js'
 import { ClaudeError, type ClaudeRunner } from './llm/claudeCli.js'
 import { CodexError, type CodexRunner } from './llm/codexCli.js'
@@ -156,6 +157,17 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         // No panel consumer in v1 (deliberate): this method is the executable
         // proof of the {page, done} chunking protocol. See Task 11 preamble.
         return ok(req.requestId, paginate(listAllAnswers(db), req.params.page))
+
+      case 'applied.mark':
+        return ok(req.requestId, markApplied(db, {
+          url: req.params.url, company: req.params.company, jobTitle: req.params.jobTitle,
+        }))
+
+      case 'applied.check':
+        return ok(req.requestId, { applied: checkApplied(db, req.params.url) })
+
+      case 'applied.list':
+        return ok(req.requestId, { jobs: listApplied(db) })
 
       case 'facts.extract':
         return ok(req.requestId, await runFactsExtract(deps.runner, req.params.cvText))

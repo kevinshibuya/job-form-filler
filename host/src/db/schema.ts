@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS request_log (
   response_json TEXT NOT NULL,
   created_at    TEXT NOT NULL
 );
+
+-- A1: one row per job actually SUBMITTED (the applications table above is a
+-- save-event log — different semantics, no UNIQUE). marked_at, not applied_at.
+CREATE TABLE IF NOT EXISTS applied_jobs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  url           TEXT NOT NULL,
+  canonical_url TEXT NOT NULL UNIQUE,
+  company       TEXT,
+  job_title     TEXT,
+  marked_at     TEXT NOT NULL
+);
 `
 
 export function migrate(db: Database.Database): void {
