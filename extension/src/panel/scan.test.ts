@@ -17,7 +17,6 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
     payload: { ok: true, scan: { epoch, fields, unreachableWidgets: 0, activeCaptcha: false } },
   })
   const deps: ScanDeps = {
-    tabId: 1,
     nextEpoch: () => ++epoch,
     inject: vi.fn(async () => [0]),
     sendToTab: vi.fn(async (_frameId, message) => {

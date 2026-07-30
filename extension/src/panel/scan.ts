@@ -38,13 +38,20 @@ export type ScanProgress =
  *  into a poller. */
 export const RETRY_DELAY_MS = 1_500
 
+/**
+ * S7: there is deliberately NO `tabId` here. A scan's target lives in the
+ * `inject`/`sendToTab` pair the caller BINDS to it — a declared-but-unread
+ * tabId invited a second, disagreeing source of truth for where a JFF_FILL
+ * lands, and JFF_FILL writes to the page.
+ */
 export interface ScanDeps {
-  tabId: number
-  /** Monotonic epoch source. The PANEL owns it; content scripts only store it. */
+  /** Monotonic epoch source, per SESSION. The PANEL owns it; content scripts
+   *  only store it. */
   nextEpoch: () => number
-  /** THROWS on relay failure — a page we cannot reach is an error, not an empty scan. */
+  /** THROWS on relay failure — a page we cannot reach is an error, not an empty
+   *  scan. Bound by the caller to the tab this scan was dispatched for. */
   inject: () => Promise<number[]>
-  /** THROWS on relay failure, same contract as inject. */
+  /** THROWS on relay failure, same contract as inject. Bound to the same tab. */
   sendToTab: (frameId: number | undefined, message: ContentMessage) => Promise<SendResult>
   onProgress: (p: ScanProgress) => void
   sleep: (ms: number) => Promise<void>

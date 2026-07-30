@@ -2553,3 +2553,404 @@ describe('App — label-keyed answer carry (S4)', () => {
     expect(Object.keys(row(7)!.answers)).not.toContain(answerKey('Phone'))
   })
 })
+
+describe('App — session concurrency (S7)', () => {
+  const APPLY_A = 'https://jobs.acme.com/apply'
+  const JOB_B = 'https://jobs.globex.com/apply'
+  const JOB_B2 = 'https://jobs.globex.com/apply/step2'
+  const JOB_C = 'https://jobs.initech.com/apply'
+  const JOB_C2 = 'https://jobs.initech.com/apply/step2'
+  const SSO = 'https://okta-sso.com/login'
+  const WHY = 'Why do you want to work here?'
+  const DRAFT = 'A drafted answer'
+  const MARKED_AT = '2026-07-29T00:00:00.000Z'
+  const EMPTY_COPY = 'No application session on this tab yet. Click Scan to start.'
+
+  const sendMock = () => chromeFake().runtime.sendMessage
+  const tabsGet = () => chromeFake().tabs.get
+  const onMessageReg = () => (globalThis as unknown as {
+    chrome: { runtime: { onMessage: { addListener: ReturnType<typeof vi.fn> } } }
+  }).chrome.runtime.onMessage
+  const status = (): string | null | undefined =>
+    document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')
+  const sessionAttr = (): string | null | undefined =>
+    document.querySelector('main')?.getAttribute('data-jff-session')
+  const row = (tabId: number): Session | undefined => storageRows()[`jff:session:${tabId}`] as Session | undefined
+  const rowFor = (label: string): HTMLElement => screen.getByLabelText(label).closest('li') as HTMLElement
+
+  interface Addressed { kind?: string; tabId?: number; message?: { type?: string; fills?: { handle: FieldHandle; value: string }[] } }
+  const addressed = (from = 0): Addressed[] => sendMock().mock.calls.slice(from).map((c) => c[0] as Addressed)
+  /** Which tab each JFF_SCAN was addressed to, in order. */
+  const scanTargets = (from = 0): (number | undefined)[] =>
+    addressed(from).filter((m) => m?.kind === 'toContent' && m.message?.type === 'JFF_SCAN').map((m) => m.tabId)
+  /** Every tab the panel asked the background to touch — relay OR inject. */
+  const pageTargets = (from = 0): (number | undefined)[] =>
+    addressed(from).filter((m) => m?.kind === 'toContent' || m?.kind === 'inject').map((m) => m.tabId)
+  const injectCount = (): number => addressed().filter((m) => m?.kind === 'inject').length
+
+  /** What `prune` considers alive. The ACTIVE query still answers tab 7 — the
+   *  panel binds to it — while `chrome.tabs.query({})` reports the whole set, so
+   *  a seeded background session is not swept at mount. */
+  const liveTabs = (ids: number[]): void => {
+    chromeFake().tabs.query.mockImplementation(async (q: { active?: boolean } | undefined) =>
+      q?.active === true
+        ? [{ id: 7, url: APPLY_A, title: 'Engineer at Acme' }]
+        : ids.map((id) => ({ id, url: pages.get(id)?.url ?? APPLY_A, title: `Job on tab ${id}` })))
+  }
+
+  /** One page, per tab. `auto` makes its single field a batch-fill row. */
+  interface Page { url: string; label: string; fid: number; auto?: string }
+  let pages = new Map<number, Page>()
+
+  const enumField = (fid: number, label: string, frameId = -1): EnumField => ({
+    frameId, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const needsInput = (fid: number): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input',
+    value: null, source: null, key: null, answerId: null, reason: 'custom',
+  })
+
+  const scanReplyFor = (p: Page) => ({
+    ok: true,
+    replies: [{
+      frameId: 0, url: p.url,
+      payload: { ok: true, scan: { epoch: 1, fields: [enumField(p.fid, p.label)], unreachableWidgets: 0, activeCaptcha: false } },
+    }],
+    failures: [],
+  })
+
+  /** The relay answers PER TARGET TAB, which is what makes a mis-addressed send
+   *  observable: a scan pointed at the wrong tab enumerates the wrong page. */
+  const installScan = (): void => {
+    sendMock().mockImplementation(async (msg: Addressed) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        const p = pages.get(msg.tabId ?? -1)
+        return p === undefined ? { ok: true, replies: [], failures: [] } : scanReplyFor(p)
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        const fills = msg.message.fills ?? []
+        return {
+          ok: true,
+          replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, failed: [], filled: fills.map((f) => ({ handle: f.handle, committed: null })) } } }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      return { ok: true }
+    })
+  }
+
+  interface Gate { open: () => void; passed: Promise<void> }
+  const newGate = (): Gate => {
+    let open = (): void => {}
+    const passed = new Promise<void>((r) => { open = r })
+    return { open: () => { open() }, passed }
+  }
+
+  /** Fids whose `resolve` is held open — how a scan is parked mid-flight for the
+   *  session it was dispatched for, without touching any other session's. */
+  let heldFids = new Set<number>()
+  let resolveGate = newGate()
+  let generateGate: Gate | null = null
+  let marks: { url: string; jobTitle: string | null }[] = []
+
+  const resolutionFor = (f: EnumField): Resolution => {
+    const p = [...pages.values()].find((x) => x.fid === f.fid)
+    const handle = { frameId: f.frameId, fid: f.fid, epoch: f.epoch }
+    return p?.auto === undefined
+      ? { handle, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' }
+      : { handle, tier: 'auto', value: p.auto, source: 'answer_bank', key: null, answerId: null, reason: 'exact' }
+  }
+
+  const installBridge = (): void => {
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'applied.check') return { requestId, ok: true, result: { applied: null } }
+      if (method === 'applied.mark') {
+        const p = params as { url: string; jobTitle: string | null }
+        marks.push({ url: p.url, jobTitle: p.jobTitle })
+        return { requestId, ok: true, result: { markedAt: MARKED_AT } }
+      }
+      if (method === 'generate') {
+        if (generateGate !== null) await generateGate.passed
+        return { requestId, ok: true, result: { draft: DRAFT } }
+      }
+      if (method === 'resolve') {
+        const p = params as { fields: EnumField[] }
+        if (p.fields.some((f) => heldFids.has(f.fid))) await resolveGate.passed
+        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map(resolutionFor), llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  /** Park the store's read of ONE session row until `release` is called (same
+   *  device as the S2 suite: the store's single FIFO lock is what makes an
+   *  in-flight swap observable). */
+  const parkSessionLoad = (tabId: number): { release: () => void; issued: () => boolean } => {
+    const area = (globalThis as unknown as {
+      chrome: { storage: { session: { get: ReturnType<typeof vi.fn> } } }
+    }).chrome.storage.session
+    const realGet = area.get.getMockImplementation() as (k: string | string[] | null) => Promise<Record<string, unknown>>
+    let release = (): void => {}
+    const parked = new Promise<void>((r) => { release = r })
+    let issued = false
+    area.get.mockImplementation(async (keys: string | string[] | null) => {
+      if (keys === `jff:session:${tabId}`) { issued = true; area.get.mockImplementation(realGet); await parked }
+      return await realGet(keys)
+    })
+    return { release: () => { release() }, issued: () => issued }
+  }
+
+  beforeEach(() => {
+    pages = new Map([[7, { url: APPLY_A, label: 'Email', fid: 0 }]])
+    heldFids = new Set<number>()
+    resolveGate = newGate()
+    generateGate = null
+    marks = []
+    installBridge()
+    tabsGet().mockImplementation(async (id: number) => ({ id, url: pages.get(id)?.url ?? APPLY_A, title: `Job on tab ${id}` }))
+  })
+
+  it('snapshotPush routes to the MATCHING background session, never the visible one', async () => {
+    const E = 4242
+    liveTabs([7, 9])
+    storageRows()['jff:session:9'] = capForStorage({
+      ...newSession(9, JOB_C),
+      epoch: E,
+      fields: [enumField(2, 'Salary', 0)],
+      resolutions: [needsInput(2)],
+    })
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+
+    const onMsg = await firstListener<(m: unknown) => void>(onMessageReg())
+    await act(async () => { onMsg({ kind: 'snapshotPush', tabId: 9, frameId: 0, snap: { epoch: E, values: { 2: 'from-9' } } }) })
+
+    await waitFor(() => { expect(row(9)?.snapshot['0:2']).toBe('from-9') })
+    // …and NOTHING of tab 9 reached the visible session or the screen.
+    expect(sessionAttr()).toBe('7')
+    expect(row(7)?.snapshot).toEqual({})
+    expect(screen.queryByLabelText('Salary')).toBeNull()
+    expect(document.body.textContent).not.toContain('from-9')
+
+    // A push stamped with a LATER epoch than the row describes a scan that row
+    // never saw: dropped, not merged.
+    await act(async () => { onMsg({ kind: 'snapshotPush', tabId: 9, frameId: 0, snap: { epoch: E + 1, values: { 2: 'stale' } } }) })
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)) })
+    expect(row(9)?.snapshot).toEqual({ '0:2': 'from-9' })
+  })
+
+  it('a scan settling after a tab switch writes to ITS session in storage, never the screen', async () => {
+    heldFids.add(0)
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('resolving') })
+
+    await activate(8)
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+
+    await act(async () => { resolveGate.open() })
+
+    await waitFor(() => { expect(row(7)?.fields.length).toBe(1) })
+    expect(row(7)?.resolutions.length).toBe(1)
+    expect(row(7)?.lastOutcome?.kind).toBe('done')
+    // The displayed session (tab 8, none) never gained a row of tab 7's work.
+    expect(sessionAttr()).toBe('none')
+    expect(document.querySelector('[data-jff-rows]')).toBeNull()
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
+    expect(row(8)).toBeUndefined()
+  })
+
+  it('a settling write to a DEAD session is dropped — even when the removal RACES the settle', async () => {
+    heldFids.add(0)
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('resolving') })
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+
+    // Release and remove in the SAME tick: firing onRemoved comfortably before
+    // the release would pass even with the resurrection race live.
+    const onRemoved = await firstListener<(id: number) => void>(chromeFake().tabs.onRemoved)
+    await act(async () => { resolveGate.open(); onRemoved(7) })
+    await act(async () => { await new Promise((r) => setTimeout(r, 60)) })
+
+    expect(row(7)).toBeUndefined()
+    expect(sessionAttr()).toBe('none')
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
+  })
+
+  it('the scan latch is global: a background session due re-scan queues and drains FIFO', async () => {
+    liveTabs([7, 8, 9])
+    storageRows()['jff:session:8'] = capForStorage(newSession(8, JOB_B))
+    storageRows()['jff:session:9'] = capForStorage(newSession(9, JOB_C))
+    pages = new Map([
+      [7, { url: APPLY_A, label: 'Email', fid: 0 }],
+      [8, { url: JOB_B2, label: 'Salary', fid: 5, auto: '100000' }],
+      [9, { url: JOB_C2, label: 'Phone', fid: 9 }],
+    ])
+    heldFids.add(0)
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('resolving') })
+    const scansBefore = scanTargets().length
+
+    // Tab 8 steps within its OWN site — a re-scan is due for a session nobody is
+    // looking at. Tab 9 steps too, then detours cross-site before the latch frees.
+    await commit(8, JOB_B2)
+    await commit(9, JOB_C2)
+    await commit(9, SSO)
+    await waitFor(() => { expect(row(9)?.parked).toBe(true) })
+    // The global latch is still held by tab 7's paid resolve: nothing re-scanned.
+    expect(scanTargets().length).toBe(scansBefore)
+
+    const mark = sendMock().mock.calls.length
+    await act(async () => { resolveGate.open() })
+
+    await waitFor(() => { expect(row(8)?.fields.length).toBe(1) })
+    // Exactly ONE queued scan drained, and it was tab 8's.
+    expect(scanTargets(mark)).toEqual([8])
+    // B4: every send that scan produced — inject, JFF_SCAN, JFF_JOBTEXT,
+    // JFF_FILL — was addressed to tab 8, never to the tab on screen.
+    expect([...new Set(pageTargets(mark))]).toEqual([8])
+    expect(addressed(mark).filter((m) => m?.message?.type === 'JFF_FILL').map((m) => m.tabId)).toEqual([8])
+    // S11: the queued re-scan for the session that PARKED never fired at all.
+    expect(scanTargets()).not.toContain(9)
+    expect(row(9)?.fields).toEqual([])
+    // …and the visible panel never flickered off tab 7.
+    expect(sessionAttr()).toBe('7')
+  })
+
+  it('a swap racing a background settle repairs the display from the row that was WRITTEN', async () => {
+    // B1. The swap's load and the settle's mutate both queue on the store's one
+    // FIFO lock. Load first → the swap displays the PRE-settle row, the mutate
+    // writes the settled one behind it, and screen and storage diverge silently.
+    liveTabs([7, 8])
+    storageRows()['jff:session:8'] = capForStorage(newSession(8, JOB_B))
+    pages = new Map([
+      [7, { url: APPLY_A, label: 'Email', fid: 0 }],
+      [8, { url: JOB_B2, label: 'Salary', fid: 5 }],
+    ])
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+
+    // A re-scan for the BACKGROUND session, parked inside its paid resolve.
+    heldFids.add(5)
+    await commit(8, JOB_B2)
+    await waitFor(() => { expect(scanTargets()).toContain(8) })
+
+    // Park tab 8's row read, then switch to it: the load is issued BEFORE the
+    // settle's mutate can enqueue.
+    const incoming = parkSessionLoad(8)
+    await activate(8)
+    await waitFor(() => { expect(incoming.issued()).toBe(true) })
+
+    await act(async () => { resolveGate.open() })
+    await act(async () => { incoming.release() })
+
+    await waitFor(() => { expect(row(8)?.fields.length).toBe(1) })
+    expect(sessionAttr()).toBe('8')
+    // Storage says tab 8 has a scanned field; so must the screen.
+    expect(await screen.findByLabelText('Salary')).toBeTruthy()
+  })
+
+  it('concurrent generates on two sessions keep their drafts apart', async () => {
+    liveTabs([7, 8])
+    storageRows()['jff:session:8'] = capForStorage({
+      ...newSession(8, JOB_B),
+      fields: [enumField(3, WHY, 0)],
+      resolutions: [needsInput(3)],
+    })
+    pages = new Map([[7, { url: APPLY_A, label: WHY, fid: 0 }]])
+    installScan()
+    generateGate = newGate()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+
+    fireEvent.click(within(rowFor(WHY)).getByRole('button', { name: 'Generate with AI' }))
+    await activate(8)
+    await waitFor(() => { expect(sessionAttr()).toBe('8') })
+
+    await act(async () => { generateGate!.open() })
+
+    await waitFor(() => { expect(row(7)?.answers[answerKey(WHY)]?.value).toBe(DRAFT) })
+    expect(row(7)?.answers[answerKey(WHY)]?.provenance).toBe('generated')
+    expect(row(7)?.edits['0:0']).toBe(DRAFT)
+    expect(row(7)?.generatedRefs).toEqual(['0:0'])
+    // Tab 8 asks the SAME question and stays empty — on screen and in storage.
+    expect((screen.getByLabelText(WHY) as HTMLInputElement).value).toBe('')
+    expect(row(8)?.edits).toEqual({})
+  })
+
+  it('a navigation mid Mark-applied drops the stale submit (Task 5 parked race b)', async () => {
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(APPLY_A) })
+
+    // chrome.tabs.get parks, so the mark is genuinely mid-request when the tab
+    // moves on — and it comes back carrying job B's title.
+    let releaseTab = (): void => {}
+    const held = new Promise<void>((r) => { releaseTab = r })
+    tabsGet().mockImplementation(async (id: number) => { await held; return { id, url: JOB_B, title: 'Engineer at Globex' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Marking…' })).toBeTruthy() })
+
+    await commit(7, JOB_B)
+    await act(async () => { releaseTab() })
+    await act(async () => { await new Promise((r) => setTimeout(r, 40)) })
+
+    // Job A's url was never paired with job B's title and submitted.
+    expect(marks).toEqual([])
+    // …and the session is still there to be marked deliberately.
+    expect(row(7)).toBeDefined()
+  })
+
+  it('ending a session does not cancel a swap already heading to a DIFFERENT tab', async () => {
+    liveTabs([7, 8])
+    storageRows()['jff:session:8'] = capForStorage(newSession(8, JOB_B))
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+
+    const incoming = parkSessionLoad(8)
+    await activate(8)
+    await waitFor(() => { expect(incoming.issued()).toBe(true) })
+
+    // Discard the OUTGOING session while the swap toward tab 8 is still in
+    // flight. Ending session 7 has nothing to do with a swap heading elsewhere;
+    // invalidating it would strand the panel on the discarded tab.
+    fireEvent.click(screen.getByRole('button', { name: 'Discard session' }))
+    await act(async () => { incoming.release() })
+
+    await waitFor(() => { expect(sessionAttr()).toBe('8') })
+    expect(document.querySelector('[data-jff-tab]')?.getAttribute('data-jff-tab')).toBe('8')
+    await waitFor(() => { expect(row(7)).toBeUndefined() })
+  })
+
+  it('a session that dies during the enumeration retry aborts it instead of scanning on', async () => {
+    // No page for tab 7: every frame enumerates empty, so runScan arms its
+    // one-shot 1.5s retry. That sleep had no abort path — a dead scan still fired
+    // a real inject + JFF_SCAN at a page it no longer described.
+    pages = new Map()
+    installScan()
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('retrying') })
+    const injectsBefore = injectCount()
+
+    await closeTab(7)
+    await act(async () => { await new Promise((r) => setTimeout(r, 2_200)) })
+
+    expect(injectCount()).toBe(injectsBefore)
+  }, 15_000)
+})
