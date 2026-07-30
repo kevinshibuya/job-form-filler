@@ -6,7 +6,7 @@
 
 **Architecture:** Four slices, executed O → A → C → S (spec §Execution, binding). O (Tasks 1–3) composes existing profile blocks behind a tri-state completeness gate. A (Tasks 4–8) adds the host `applied_jobs` table + `applied.*` methods, then panel mark/detect/badge/list; the A slices deliberately land BEFORE sessions exist, carrying a small `startUrl` state that Task 14 folds into the Session shape. C (Tasks 9–10) implements the C1 spike recipe verbatim (pointer+mouse open gesture; committed-text fallback to the widget's visible value) plus a Greenhouse-shaped e2e fixture. S (Tasks 11–16) retires the clear-on-activate era in one test batch, builds the sessions + navigation-signal modules pure-first, then rewires App.tsx in three integrator slices ordered by risk surface: session lifecycle (S2/S5/S6), label-keyed answer carry (S4), concurrency + routing (S7). Task 17 is the e2e batch (all e2e adaptation to the onboarding/session era happens HERE, in one batch); Tasks 18–19 are the verify gate and the live manual gate on <https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002>.
 
-**Tech Stack:** TypeScript workspaces (shared/host/extension), zod, vitest (baseline 618 tests / 43 files), Playwright e2e (baseline 13/13), React 18 MV3 side panel (vite 7 + @crxjs), better-sqlite3 host, `chrome.storage.session`, `chrome.webNavigation` (permission already granted — `extension/manifest.config.ts:22`).
+**Tech Stack:** TypeScript workspaces (shared/host/extension), zod, vitest (baseline 626 tests / 43 files), Playwright e2e (baseline 13/13), React 18 MV3 side panel (vite 7 + @crxjs), better-sqlite3 host, `chrome.storage.session`, `chrome.webNavigation` (permission already granted — `extension/manifest.config.ts:22`).
 
 ## Worker preamble (read before every task)
 
@@ -26,7 +26,7 @@
 - The general BUTTON rail in `extension/src/content/fill.ts` (`fillOne`'s hard rail: `if (el.tagName === 'BUTTON' || …) return { ok: false, reason: 'unsupported-widget' }`) stays **byte-identical**. Never auto-submit.
 - Session-7 combobox invariants (B1a–B1d) are regression surface: the typeahead is always driven, unique-substring matching stays min-3-chars + two-poll-settled, committed-text verification stays exact normalized equality against the CLICKED option. Every existing fill.test.ts combobox test stays green through Task 9.
 - Spec checkboxes (in the spec file) are ticked in Task 18/19; plan checkboxes are execution-tracking only.
-- Measured baseline at plan-authoring time (Task 0 re-confirms): unit **618 tests / 43 files**, e2e **13/13**. No numeric perf budgets are set by this plan.
+- Measured baseline, re-confirmed by Task 0 at execution start (`edd492d`, 2026-07-30): unit **626 tests / 43 files**, e2e **13/13**, all green. No numeric perf budgets are set by this plan. (Plan authoring recorded 618/43; `563113b..edd492d` is docs-only, so 618 was a mis-transcription, not a regression — 626 is the authoritative baseline.)
 - Reviews are NOT tasks: the fresh-context Opus plan review + codex cross-vendor review run BEFORE Task 1; the consolidated branch review runs after Task 18 — **at effort xhigh for the S-slice surface** (see closing section).
 - New user-facing copy is fixed by this plan verbatim (onboarding copy, badge/prompt/button labels, empty states). Do not rewrite it at implementation time.
 
@@ -89,11 +89,11 @@
 
 Standing rule: the baseline runs the plan's FULL verification suite — including every e2e spec — before Task 1. Stale-test findings become one batch fix before Task 1, not mid-execution surprises.
 
-- [ ] **Step 1:** `git status` — clean tree on `main`, tip is the spec commit or later.
-- [ ] **Step 2:** `npx vitest run` — expect **618 tests / 43 files**, all green. Record the exact numbers.
-- [ ] **Step 3:** `npm run verify` on an IDLE machine (`pkill -f legacyScreenSaver` first). Expect all components green; e2e **13/13**. If `foundation.spec.ts:128/:149` fail, re-run that file isolated before judging.
-- [ ] **Step 4:** `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` — restore the plain dist (verify leaves a seam dist), expect `0`.
-- [ ] **Step 5:** Report raw evidence. Any red is a batch fix BEFORE Task 1 (orchestrator decision), never a mid-plan interruption.
+- [x] **Step 1:** `git status` — clean tree on `main`, tip is the spec commit or later.
+- [x] **Step 2:** `npx vitest run` — expect **626 tests / 43 files**, all green. Record the exact numbers.
+- [x] **Step 3:** `npm run verify` on an IDLE machine (`pkill -f legacyScreenSaver` first). Expect all components green; e2e **13/13**. If `foundation.spec.ts:128/:149` fail, re-run that file isolated before judging.
+- [x] **Step 4:** `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` — restore the plain dist (verify leaves a seam dist), expect `0`.
+- [x] **Step 5:** Report raw evidence. Any red is a batch fix BEFORE Task 1 (orchestrator decision), never a mid-plan interruption.
 
 ---
 
@@ -3303,9 +3303,9 @@ git commit -m "test(e2e): onboarding/session era batch — seeding helper, wizar
 
 **Model:** orchestrator + verifier-opus-low (the verifier runs the commands and returns raw evidence; the orchestrator judges).
 
-- [ ] **Step 1:** `npx vitest run` — all green (record count; expect ≳ 618 + this plan's additions).
+- [ ] **Step 1:** `npx vitest run` — all green (record count; expect ≳ 626 + this plan's additions).
 - [ ] **Step 2:** `npm run verify` on an IDLE machine (`pkill -f legacyScreenSaver` first). Foundation flake caveat: isolated re-run before judging `:128`/`:149`.
-- [ ] **Step 3:** `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` → `0` (plain dist restored — the user's Chrome loads this directory).
+- [x] **Step 3:** `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` → `0` (plain dist restored — the user's Chrome loads this directory).
 - [ ] **Step 4 (A6): seed the session-7 job as applied** — against the REAL host DB (this machine's `~/.job-form-filler`, honoring a custom `dbPath` in config). **First quit Chrome (or at least close the side panel)** so the native host child releases the WAL-mode DB — this script is a second writer on the user's live database. Note this run is also the live DB's `applied_jobs` MIGRATION: `openDb` runs `migrate()` (`CREATE TABLE IF NOT EXISTS`), creating the table on the real DB for the first time.
 
 ```bash
