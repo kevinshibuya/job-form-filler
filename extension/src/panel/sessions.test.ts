@@ -259,6 +259,41 @@ describe('sessions module (S1/S6)', () => {
     expect(rows[sessionKey(7)]).toBeUndefined()
   })
 
+  it('a tombstone buries the REMOVED session only — a new one on the same LIVE tab persists', async () => {
+    // `remove` is not a dead-tab-only path: Task 14's lifecycle table calls it for
+    // Mark applied and Discard, on a tab that is still alive. A PERMANENT tombstone
+    // made every later application in that tab memory-only (and made `mutate`
+    // answer null, which Task 16 would misread as "dropped").
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 0)
+    // The clock is FROZEN here (fake timers), so every createdAt/removedAt is
+    // stated explicitly rather than inferred from wall time.
+    const removedAt = Date.now()
+    const first: Session = { ...newSession(7, 'https://a.com'), createdAt: removedAt - 1 }
+    store.save(first)
+    await store.flush()
+
+    await store.remove(7)                     // Mark applied on a tab that is still open
+    expect(rows[sessionKey(7)]).toBeUndefined()
+
+    // The removed session itself may never come back…
+    store.save({ ...first, company: 'resurrected' })
+    await store.flush()
+    expect(rows[sessionKey(7)]).toBeUndefined()
+    await expect(store.mutate(7, (s) => (s === null ? null : { ...s, company: 'zombie' }))).resolves.toBeNull()
+
+    // …but the NEXT application in that same tab is a different session, and it
+    // must persist exactly like any other.
+    const second: Session = { ...newSession(7, 'https://b.com'), createdAt: removedAt + 1 }
+    store.save(second)
+    await store.flush()
+    expect((rows[sessionKey(7)] as Session).startUrl).toBe('https://b.com')
+
+    const written = await store.mutate(7, (s) => (s === null ? null : { ...s, company: 'Globex' }))
+    expect(written?.company).toBe('Globex')
+    expect((rows[sessionKey(7)] as Session).company).toBe('Globex')
+  })
+
   it('flush during an in-flight mutate does not clobber it', async () => {
     const { rows, area, holdNextSet } = fakeArea()
     const store = createSessionStore(area, 500)
