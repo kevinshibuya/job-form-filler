@@ -32,4 +32,21 @@ describe('ApplicationsView (A5)', () => {
     render(<ApplicationsView load={async () => [{ ...JOB, jobTitle: null }]} />)
     await waitFor(() => expect(screen.getAllByText('Acme').length).toBeGreaterThan(0))
   })
+
+  it('renders the failure state when load REJECTS (never hangs on Loading…)', async () => {
+    render(<ApplicationsView load={async () => { throw new Error('host down') }} />)
+    await screen.findByText('Could not load your applications.')
+    expect(screen.queryByText('Loading…')).toBeNull()
+  })
+
+  it.each([
+    ['javascript:', 'javascript:alert(1)'],
+    ['data:', 'data:text/html,<script>alert(1)</script>'],
+    ['unparseable', 'not a url at all'],
+  ])('a %s url is NOT clickable, but its text is still shown', async (_label, url) => {
+    render(<ApplicationsView load={async () => [{ ...JOB, url }]} />)
+    await screen.findByText('Engineer')
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByText(url)).toBeTruthy()
+  })
 })
