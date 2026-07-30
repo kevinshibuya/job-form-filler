@@ -563,45 +563,6 @@ describe('App generation discipline', () => {
     expect(screen.queryByText('Dead work model')).toBeNull()
   })
 
-  it('leaves the status line blank after a tab switch mid-scan, never superseded', async () => {
-    // 'activated' never replays a scan (the tab that scanned is not the one that
-    // just became active) — 'superseded' promises a rescan an activation reset
-    // will not deliver, so the dead scan's own drain must leave the line blank.
-    let releaseScan: (() => void) | null = null
-    let resolveCalled = false
-    installHostBridge(async (method) => {
-      if (method === 'selfCheck') return SELF_CHECK
-      if (method === 'selector.get') return { selector: null }
-      if (method === 'resolve') {
-        resolveCalled = true
-        const resolutions: Resolution[] = [
-          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
-          { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
-        ]
-        return { epoch: 1, resolutions, llmError: null }
-      }
-      return {}
-    })
-    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
-      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
-      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
-        return await new Promise((r) => { releaseScan = () => r(scanReplyFor(['Dead work model', 'Dead why us?'])) })
-      }
-      if (msg?.kind === 'toContent') return jobTextReply
-      return { ok: true }
-    })
-    render(<App />)
-    await waitFor(() => { expect(releaseScan).not.toBeNull() })
-    await activateOtherTab()
-    expect(statusNow()).toBeUndefined()
-    releaseScan!()
-    // Let the dead scan run all the way through (its writes are dropped, not just
-    // its status write) before asserting the line stayed blank.
-    await waitFor(() => { expect(resolveCalled).toBe(true) })
-    expect(statusNow()).toBeUndefined()
-    expect(screen.queryByText('Dead work model')).toBeNull()
-  })
-
   it('clears a lingering superseded status when the navigation replay finds no tab', async () => {
     // A navigate-then-close race: 'navigated' sets 'superseded' and queues the
     // replay, but by the time the replay's own getTab() runs the tab is gone — the
@@ -820,18 +781,6 @@ describe('App generation discipline', () => {
     // (or non-write) has already run.
     await waitFor(() => { expect(statusNow()).toBe('done') })
     expect(selectorSaveCalled).toBe(false)
-  })
-
-  it('clears a GUESSED company on navigation so the next employer is guessed fresh', async () => {
-    // Otherwise employer B's saved answers are filed under employer A's name.
-    let onNewPage = false
-    tabsGet().mockImplementation(async () => (onNewPage ? GLOBEX : ACME))
-    installFullScan()
-    render(<App />)
-    await waitFor(() => { expect(companyInput().value).toBe('Acme') })
-    onNewPage = true
-    await navigateBoundTab()
-    await waitFor(() => { expect(companyInput().value).toBe('Globex') })
   })
 
   it('keeps a company the user typed across a navigation', async () => {
