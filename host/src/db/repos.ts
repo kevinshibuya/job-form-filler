@@ -1,6 +1,7 @@
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import { isProfileKey, type FieldKey } from '@jff/shared'
+import { canonicalUrl } from '../canonicalUrl.js'
 import { migrate } from './schema.js'
 
 const REQUEST_LOG_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -197,4 +198,51 @@ export function putCachedResponse(db: Database.Database, requestId: string, json
 /** created_at is always an ISO string, so a plain lexical compare is correct. */
 export function pruneRequestLog(db: Database.Database, cutoffIso: string): void {
   db.prepare(`DELETE FROM request_log WHERE created_at < ?`).run(cutoffIso)
+}
+
+/* ------------------------------------------------------------- applied (A1) */
+
+export interface AppliedJob {
+  id: number
+  url: string
+  canonicalUrl: string
+  company: string | null
+  jobTitle: string | null
+  markedAt: string
+}
+
+interface RawApplied {
+  id: number; url: string; canonical_url: string
+  company: string | null; job_title: string | null; marked_at: string
+}
+
+const toApplied = (r: RawApplied): AppliedJob => ({
+  id: r.id, url: r.url, canonicalUrl: r.canonical_url,
+  company: r.company, jobTitle: r.job_title, markedAt: r.marked_at,
+})
+
+/** Upsert by canonical_url. `marked_at` is NOT in the update set: re-marking
+ *  after a "Scan anyway" re-apply keeps the ORIGINAL date (spec A1). */
+export function markApplied(
+  db: Database.Database,
+  row: { url: string; company: string | null; jobTitle: string | null },
+): AppliedJob {
+  const canonical = canonicalUrl(row.url)
+  db.prepare(
+    `INSERT INTO applied_jobs (url, canonical_url, company, job_title, marked_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(canonical_url) DO UPDATE SET
+       url = excluded.url, company = excluded.company, job_title = excluded.job_title`,
+  ).run(row.url, canonical, row.company, row.jobTitle, new Date().toISOString())
+  const got = db.prepare(`SELECT * FROM applied_jobs WHERE canonical_url = ?`).get(canonical) as RawApplied
+  return toApplied(got)
+}
+
+export function checkApplied(db: Database.Database, url: string): AppliedJob | null {
+  const row = db.prepare(`SELECT * FROM applied_jobs WHERE canonical_url = ?`)
+    .get(canonicalUrl(url)) as RawApplied | undefined
+  return row === undefined ? null : toApplied(row)
+}
+
+export function listApplied(db: Database.Database): AppliedJob[] {
+  return (db.prepare(`SELECT * FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
 }
