@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>react-select degree fixture</title>
+<body>
+<form>
+  <label for="degree-input">Degree</label>
+  <div id="degree-control">
+    <div id="degree-value"></div>
+    <div><input id="degree-input" role="combobox" aria-haspopup="true" aria-expanded="false" autocomplete="off"></div>
+  </div>
+</form>
+<!-- Permanently-mounted decoy: the intl-tel-input country listbox (244 options). -->
+<ul role="listbox" id="country-decoy" style="display:none"></ul>
+<script>
+  // 'Another' + 'Other' + prefix filtering mirror the unit suite's typeahead-leg
+  // case: 'oth' is ambiguous on the mounted list, so the fill must TYPE and let
+  // the widget's own filter disambiguate (plan review N2).
+  const OPTIONS = ['Another', 'Associate', 'Bachelor', 'Doctorate', 'Master', 'Other']
+  const decoy = document.getElementById('country-decoy')
+  for (let i = 0; i < 244; i++) {
+    const li = document.createElement('li')
+    li.setAttribute('role', 'option')
+    li.textContent = i === 0 ? 'Other' : 'Country ' + i
+    decoy.appendChild(li)
+  }
+  const input = document.getElementById('degree-input')
+  const control = document.getElementById('degree-control')
+  const seen = new Set()
+  let open = false
+  function renderMenu() {
+    const old = document.getElementById('degree-menu')
+    if (old) old.remove()
+    if (!open) { input.removeAttribute('aria-controls'); input.setAttribute('aria-expanded', 'false'); return }
+    input.setAttribute('aria-controls', 'degree-menu')
+    input.setAttribute('aria-expanded', 'true')
+    const lb = document.createElement('ul')
+    lb.id = 'degree-menu'
+    lb.setAttribute('role', 'listbox')
+    const filter = input.value.trim().toLowerCase()
+    for (const t of OPTIONS.filter((o) => o.toLowerCase().startsWith(filter))) {
+      const li = document.createElement('li')
+      li.setAttribute('role', 'option')
+      li.textContent = t
+      li.addEventListener('click', () => {
+        input.value = ''
+        document.getElementById('degree-value').textContent = t
+        open = false
+        renderMenu()
+      })
+      lb.appendChild(li)
+    }
+    // Portal-style: the menu mounts at document.body, like real react-select.
+    document.body.appendChild(lb)
+  }
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    control.addEventListener(type, () => {
+      seen.add(type)
+      if (!open && ['pointerdown', 'mousedown', 'mouseup', 'click'].every((t) => seen.has(t))) {
+        open = true
+        renderMenu()
+      }
+    })
+  }
+  input.addEventListener('input', () => { if (open) renderMenu() })
+</script>
+</body>

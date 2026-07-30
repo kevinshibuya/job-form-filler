@@ -25,16 +25,19 @@ interface Harness {
   close: () => Promise<void>
 }
 
-/** Fresh panel page + fixture tab + injected content script, torn down per test. */
-async function openFixtureTab(): Promise<Harness> {
+/** Fresh panel page + fixture tab + injected content script, torn down per test.
+ *  `file` names the fixture served out of `fixtures/greenhouse-apply`; it is
+ *  threaded through BOTH the navigation and the chrome.tabs URL glob, so every
+ *  caller keeps addressing the tab it actually opened. */
+async function openFixtureTab(file = 'fixture-form.html'): Promise<Harness> {
   const panel = await ext.context.newPage()
   await panel.goto(panelUrl(ext.extensionId))
   const target = await ext.context.newPage()
-  await target.goto(`${fixtures.origin}/fixture-form.html`)
-  const tabId = await panel.evaluate(async () => {
-    const tabs = await chrome.tabs.query({ url: '*://*/fixture-form.html' })
+  await target.goto(`${fixtures.origin}/${file}`)
+  const tabId = await panel.evaluate(async (name) => {
+    const tabs = await chrome.tabs.query({ url: `*://*/${name}` })
     return tabs[tabs.length - 1]!.id!
-  })
+  }, file)
   const injected = await panel.evaluate((id) => chrome.runtime.sendMessage({ kind: 'inject', tabId: id }), tabId)
   expect(injected).toMatchObject({ ok: true })
   const send = (message: unknown, frameId?: number) =>
@@ -208,4 +211,95 @@ test('the panel surfaces scan outcomes: captcha on the fixture form, done on a c
 
   await panel2.close(); await blank.close(); await panelPlain.close(); await plain.close()
   await panel.close(); await finder.close(); await target.close()
+})
+
+/**
+ * TERMINAL scan outcomes. Everything else means the panel's own pipeline is
+ * still going: the five progress kinds obviously, but ALSO `superseded` (a scan
+ * is running and a rescan is already queued behind it) and NO status element at
+ * all (the tab scope just reset, or the panel has not bound its tab yet) — both
+ * of those read as "idle" to a not-in-the-busy-list test, and that mistake is
+ * exactly what let a queued rescan land in the middle of the driven fill.
+ */
+const PANEL_SETTLED: string[] = ['done', 'empty', 'captcha', 'failed', 'action_failed']
+
+/**
+ * The relay panel binds to the ACTIVE tab — which is the fixture tab this
+ * harness just opened — so it runs its own scan pipeline against the same page.
+ * A6's option harvest CLICKS every optionless combobox there and then RESTORES
+ * the pre-click value, and the pipeline re-stamps the frame epoch on each
+ * enumerate. Overlapping a driven fill with that is a genuine race: the
+ * harvest's restore write lands mid-typeahead and re-widens the filtered menu,
+ * and the fill then reports `no-matching-option` on a widget that works.
+ * Wait for the panel to reach a terminal state first — or to render
+ * OnboardingView, which never scans at all.
+ */
+async function waitForPanelIdle(panel: Page): Promise<void> {
+  await expect
+    .poll(
+      () => panel.evaluate((settled) => {
+        if (document.querySelector('[data-jff-onboarding]') !== null) return true
+        const kind = document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')
+        return kind != null && settled.includes(kind)
+      }, PANEL_SETTLED),
+      { timeout: 60_000, message: 'the panel never settled; its own scan would race the driven fill' },
+    )
+    .toBe(true)
+}
+
+test('the Greenhouse react-select shape fills through the gesture + value-container recipe (C2/C3)', async () => {
+  // C3: the whole C2 recipe in a REAL browser, on a widget shaped like the live
+  // Greenhouse Degree field — the menu opens ONLY on the full pointer+mouse
+  // gesture, it portals to <body>, 'oth' is ambiguous until the widget's own
+  // filter runs, and the commit CLEARS the input and renders the text in a
+  // sibling value container. jsdom cannot prove any of it: it has no real
+  // PointerEvent trust model and no layout for the visibility gate.
+  const t = await openFixtureTab('react-select-form.html')
+  try {
+    await waitForPanelIdle(t.panel)
+    const epoch = 6
+    const scan = await t.send({ type: 'JFF_SCAN', epoch })
+    type ScanPayload = { ok: boolean; scan?: { fields: { fid: number; idAttr: string | null; kind: string }[] } }
+    const fields = (scan.replies.find((r) => r.frameId === 0)!.payload as ScanPayload).scan!.fields
+    const degree = fields.find((f) => f.idAttr === 'degree-input')!
+    expect(degree.kind).toBe('combobox')
+
+    const fill = await t.send({
+      type: 'JFF_FILL', epoch,
+      fills: [{ handle: { frameId: 0, fid: degree.fid, epoch }, value: 'oth' }],
+    })
+    type FillPayload = {
+      ok: boolean
+      fill?: { filled: { committed: string | null }[]; failed: { reason: string }[] }
+    }
+    const report = (fill.replies.find((r) => r.frameId === 0)!.payload as FillPayload).fill!
+    // 1. the page ACCEPTED the fill, and the report carries the canonical text
+    //    the widget committed — not the 'oth' that was asked for.
+    expect(report.failed).toEqual([])
+    expect(report.filled).toHaveLength(1)
+    expect(report.filled[0]!.committed).toBe('Other')
+
+    // 2. the page's own state, read independently of the fill report: the
+    //    committed text lives in the value container and the input is EMPTY.
+    await expect(t.target.locator('#degree-value')).toHaveText('Other')
+    expect(await t.target.inputValue('#degree-input')).toBe('')
+
+    // 3. the permanently-mounted intl-tel-input decoy — whose first option is
+    //    also 'Other' — was never opened, filtered or read from.
+    const decoy = await t.target.evaluate(() => {
+      const ul = document.getElementById('country-decoy')!
+      const options = Array.from(ul.querySelectorAll('[role="option"]'))
+      return {
+        count: options.length,
+        display: getComputedStyle(ul).display,
+        // Still the trap it was built to be: its FIRST option is 'Other' too.
+        first: options[0]?.textContent ?? null,
+      }
+    })
+    expect(decoy).toEqual({ count: 244, display: 'none', first: 'Other' })
+
+    // 4. no console errors: asserted in afterAll across EVERY test in this file.
+  } finally {
+    await t.close()
+  }
 })
