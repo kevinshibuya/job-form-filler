@@ -218,10 +218,90 @@ const COMBOBOX_TYPE_WAIT_MS = 2000
 const COMBOBOX_POLL_MS = 50
 
 /**
+ * C2: react-select (Greenhouse) opens its menu ONLY on a real pointer gesture —
+ * el.click() alone, a lone synthetic mousedown, ArrowDown and a native-setter
+ * input while closed are all no-ops (C1 spike, proven live on the real Degree
+ * widget). The full bubbling pointer+mouse sequence is what a trusted user
+ * press produces; widgets that open on a plain click (Ashby) see their click
+ * at the end of the sequence, so the old behavior is a strict subset.
+ * PointerEvent falls back to MouseEvent where the environment lacks it (jsdom)
+ * — listeners dispatch by TYPE, so the constructor difference is inert.
+ */
+function dispatchOpenGesture(el: HTMLElement): void {
+  const opts = { bubbles: true, cancelable: true } as const
+  const pointer = (type: string): Event =>
+    typeof PointerEvent === 'function'
+      ? new PointerEvent(type, { ...opts, pointerId: 1, pointerType: 'mouse', isPrimary: true })
+      : new MouseEvent(type, opts)
+  el.dispatchEvent(pointer('pointerdown'))
+  el.dispatchEvent(new MouseEvent('mousedown', opts))
+  el.dispatchEvent(pointer('pointerup'))
+  el.dispatchEvent(new MouseEvent('mouseup', opts))
+  el.dispatchEvent(new MouseEvent('click', opts))
+}
+
+/** The candidate leaves the commit fallback may read: every childless element
+ *  within ≤5 ancestor levels of the input, excluding the input itself and
+ *  anything inside ANY listbox (menu remnants and the page's permanently-
+ *  mounted intl-tel-input decoy included). */
+function commitScopeLeaves(input: HTMLInputElement): HTMLElement[] {
+  // A Set: each ancestor's querySelectorAll re-visits the levels below it, and
+  // without dedupe every leaf would be collected (and style-walked) up to 5×.
+  const out = new Set<HTMLElement>()
+  let scope: Element | null = input.parentElement
+  for (let depth = 0; scope !== null && depth < 5; depth++, scope = scope.parentElement) {
+    for (const node of Array.from(scope.querySelectorAll<HTMLElement>('*'))) {
+      if (node === input || node.closest('[role="listbox"]') !== null) continue
+      if (node.children.length === 0) out.add(node)
+    }
+  }
+  return [...out]
+}
+
+/** Computed-style walk, NOT offsetParent/rects: jsdom renders no layout (every
+ *  rect is zero), and display:none / visibility:hidden — plus the `hidden`
+ *  attribute and aria-hidden — are exactly what the decoy and closed-menu
+ *  remnants wear in both environments. */
+const isDisplayHidden = (node: HTMLElement): boolean => {
+  for (let el: HTMLElement | null = node; el !== null; el = el.parentElement) {
+    if (el.hidden === true || el.getAttribute('aria-hidden') === 'true') return true
+    const cs = getComputedStyle(el)
+    if (cs.display === 'none' || cs.visibility === 'hidden') return true
+  }
+  return false
+}
+
+/**
+ * C2: react-select commits by CLEARING its input and rendering the committed
+ * text in a sibling value container (.select__single-value on the real page —
+ * but the walk is STRUCTURAL, never class-named). Hardened two ways (plan
+ * review): the node must be VISIBLE, and its text must have CHANGED INTO the
+ * option's across the commit click — pre-existing page text that merely
+ * matches ('Other', 'Yes', …) is not evidence the widget committed anything.
+ * A node absent from the pre-click snapshot is a fresh value render and counts.
+ */
+function visibleCommittedText(
+  input: HTMLInputElement,
+  optionTextNorm: string,
+  preTexts: WeakMap<HTMLElement, string>,
+): string | null {
+  for (const node of commitScopeLeaves(input)) {
+    if (isDisplayHidden(node)) continue
+    const text = node.textContent ?? ''
+    if (norm(text) !== optionTextNorm) continue
+    const before = preTexts.get(node)
+    if (before !== undefined && norm(before) === optionTextNorm) continue
+    return text.trim()
+  }
+  return null
+}
+
+/**
  * B1: interact ONLY with a listbox attributable to this control — aria-owns/
  * aria-controls, or one that appeared in response to OUR interaction (the same
  * attributableListbox rule the harvest defined; the document-wide fallback was
- * the cross-combobox bug). The open click stays, then the typeahead is ALWAYS
+ * the cross-combobox bug). The open gesture stays (C2 widened the bare click
+ * into the full pointer+mouse sequence), then the typeahead is ALWAYS
  * driven when there is an input to type into: real Ashby comboboxes ("Start
  * typing...") mount options only AFTER keystrokes, so bailing on "no listbox
  * yet" was the silent no-op the user filmed (spec D1).
@@ -251,7 +331,9 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
   const snapshot = input === null ? null : input.value
   const before = mountedListboxes(document, el)
-  ;(el as HTMLElement).click()
+  // C2: the full pointer+mouse open gesture, dispatched on the control itself
+  // (bubbling from the input reaches the react-select control wrapper).
+  if (el instanceof HTMLElement) dispatchOpenGesture(el)
   const target = norm(value)
 
   const lookup = (): { mounted: boolean; options: HTMLElement[] } => {
@@ -329,6 +411,12 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   }
 
   const optionText = norm(hit.textContent ?? '')
+  // C2 hardening: snapshot the candidate leaves' texts BEFORE the commit
+  // click, so the fallback can demand a CHANGE into the option text.
+  const preTexts = new WeakMap<HTMLElement, string>()
+  if (input !== null) {
+    for (const node of commitScopeLeaves(input)) preTexts.set(node, node.textContent ?? '')
+  }
   hit.click()
   await nextFrame()
   // B1c: EXACT normalized equality against the CLICKED OPTION's text, never
@@ -337,7 +425,14 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   // the misfill-reported-as-success class stays dead.
   // Non-input widgets report their textContent TRIMMED (review fix, minors 17)
   // — the normalized-equality verdict is unaffected either way.
-  const committed = input !== null ? input.value : (el.textContent ?? '').trim()
+  let committed = input !== null ? input.value : (el.textContent ?? '').trim()
+  // C2 (Greenhouse): a successful react-select commit leaves input.value EMPTY
+  // — the committed text lives in the widget's visible value container. Only
+  // an EMPTY input consults the structural fallback; a non-empty input.value
+  // stays authoritative, so the Ashby arm's verification is untouched (B1c).
+  if (input !== null && committed === '') {
+    committed = visibleCommittedText(input, optionText, preTexts) ?? ''
+  }
   if (norm(committed) !== optionText) return failClosed('no-matching-option')
   return { ok: true, committed: committed === value ? null : committed }
 }

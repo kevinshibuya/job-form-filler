@@ -583,3 +583,108 @@ describe('fillChoice — step-0 idempotency (B5e)', () => {
     expect(clicks).toEqual(['No'])
   })
 })
+
+describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
+  /** The C1-proven widget: opens ONLY once the full pointer+mouse gesture has
+   *  arrived, filters on input, and on commit CLEARS the input while rendering
+   *  the committed text in a sibling value container. A permanently-mounted
+   *  hidden decoy listbox (the intl-tel-input country list) sits elsewhere. */
+  function mountReactSelect(
+    options: string[],
+    { updateHolder = true, prefixFilter = false, hiddenHolder = false, staleText = null as string | null } = {},
+  ): { input: HTMLInputElement } {
+    document.body.innerHTML = `
+      <ul role="listbox" id="decoy" style="display:none">
+        ${options.map((o) => `<li role="option">${o}</li>`).join('')}
+      </ul>
+      <div id="control">
+        ${staleText === null ? '' : `<span id="stale">${staleText}</span>`}
+        <div id="value-holder"${hiddenHolder ? ' style="display:none"' : ''}></div>
+        <input id="c" role="combobox" aria-haspopup="true">
+      </div>`
+    const input = document.getElementById('c') as HTMLInputElement
+    const control = document.getElementById('control')!
+    const seen = new Set<string>()
+    let open = false
+    const renderMenu = (): void => {
+      document.getElementById('menu')?.remove()
+      if (!open) { input.removeAttribute('aria-controls'); return }
+      input.setAttribute('aria-controls', 'menu')
+      const lb = document.createElement('ul')
+      lb.id = 'menu'
+      lb.setAttribute('role', 'listbox')
+      const filter = input.value.trim().toLowerCase()
+      // prefixFilter mirrors widgets whose own filtering is startsWith — the
+      // page can then disambiguate what our substring ladder cannot.
+      const match = (o: string): boolean =>
+        prefixFilter ? o.toLowerCase().startsWith(filter) : o.toLowerCase().includes(filter)
+      for (const t of options.filter(match)) {
+        const li = document.createElement('li')
+        li.setAttribute('role', 'option')
+        li.textContent = t
+        li.addEventListener('click', () => {
+          // react-select commit: input CLEARED, value container updated, menu closed.
+          input.value = ''
+          if (updateHolder) document.getElementById('value-holder')!.textContent = t
+          open = false
+          renderMenu()
+        })
+        lb.appendChild(li)
+      }
+      control.appendChild(lb)
+    }
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      control.addEventListener(type, () => {
+        seen.add(type)
+        // Opens ONLY once the full gesture arrived (C1: el.click() alone and a
+        // lone mousedown are both no-ops on the real widget).
+        if (!open && ['pointerdown', 'mousedown', 'mouseup', 'click'].every((t) => seen.has(t))) {
+          open = true
+          renderMenu()
+        }
+      })
+    }
+    input.addEventListener('input', () => { if (open) renderMenu() })
+    return { input }
+  }
+
+  it('opens via the pointer gesture, matches "oth" → "Other", and verifies through the value container', async () => {
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'])
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: true, committed: 'Other' })
+    expect(document.getElementById('value-holder')!.textContent).toBe('Other')
+    expect(input.value).toBe('')
+  }, 10_000)
+
+  it('drives the typeahead when the mounted list is ambiguous: page-side prefix filtering disambiguates', async () => {
+    // 'oth' is a substring of BOTH Other and Another, so the open-click poll
+    // fails on ambiguity; typing lets the widget's own (prefix) filter shrink
+    // the list to exactly Other — the B1a leg through the new open gesture.
+    const { input } = mountReactSelect(['Another', 'Other'], { prefixFilter: true })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: true, committed: 'Other' })
+    expect(document.getElementById('value-holder')!.textContent).toBe('Other')
+  }, 10_000)
+
+  it('never reads committed text out of a listbox (the decoy stays excluded)', async () => {
+    // Sabotaged commit: the input clears but the value container never updates —
+    // the only 'Other' text left on the page lives inside listboxes. The fill
+    // must fail closed, not false-verify off the decoy.
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    expect(input.value).toBe('')
+  }, 10_000)
+
+  it('pre-existing text that merely MATCHES the option never verifies a commit', async () => {
+    // A '<span>Other</span>' sat in the walk scope from the start; the commit
+    // clears the input but updates nothing. Text that did not CHANGE INTO the
+    // option is not evidence the widget committed anything.
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false, staleText: 'Other' })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+  }, 10_000)
+
+  it('a HIDDEN value container never verifies a commit', async () => {
+    // The holder receives the committed text but is display:none — invisible
+    // text is not the page-visible commit the verification promises.
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { hiddenHolder: true })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+  }, 10_000)
+})
