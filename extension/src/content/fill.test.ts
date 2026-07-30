@@ -655,6 +655,26 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     expect(input.value).toBe('')
   }, 10_000)
 
+  it('dispatches the FULL five-event open gesture, in order', async () => {
+    // Neither fixture can prove this on its own. THIS one accumulates events in
+    // a Set whose open predicate omits `pointerup` entirely and never checks
+    // order; the C3 e2e fixture has the same Set, and there the relay panel's
+    // own harvest lands a stray `click` in it BEFORE the driven gesture — so a
+    // regression that dropped the final click would still open both widgets and
+    // both suites would stay green. The C1 spike proved the live Greenhouse
+    // widget needs all five, in this order, so pin the sequence directly at the
+    // one layer that can see it: what dispatchOpenGesture actually emits.
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'])
+    const seq: string[] = []
+    const control = document.getElementById('control')!
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      control.addEventListener(type, (e) => seq.push(e.type))
+    }
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: true, committed: 'Other' })
+    // Only the OPEN gesture's five; the commit click on the option bubbles here too.
+    expect(seq.slice(0, 5)).toEqual(['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'])
+  }, 10_000)
+
   it('drives the typeahead when the mounted list is ambiguous: page-side prefix filtering disambiguates', async () => {
     // 'oth' is a substring of BOTH Other and Another, so the open-click poll
     // fails on ambiguity; typing lets the widget's own (prefix) filter shrink
