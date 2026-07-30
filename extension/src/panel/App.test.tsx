@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
-import type { HostResponse, Resolution } from '@jff/shared'
+import type { EnumField, HostResponse, Resolution } from '@jff/shared'
 import { App, hostnameOf } from './App'
 import { clearResume, saveResume } from './resume'
+import { capForStorage, newSession, type Session } from './sessions'
 
 /** The fake port forwards to `window.__jffHostBridge` when one is installed, so
  *  this is how a test gives the panel real resolutions (the canned fake answers
@@ -43,6 +44,73 @@ if (typeof Blob.prototype.arrayBuffer !== 'function') {
   })
 }
 
+/** The backing object of the stateful `chrome.storage.session` fake: the session
+ *  store reads and writes real rows through it, so a test can seed storage before
+ *  a mount and inspect what the panel persisted afterwards. Each test gets a
+ *  FRESH object which the fake closes over BY VALUE — a scan leaked from an
+ *  earlier test keeps writing into its own (now unobserved) rows instead of
+ *  resurrecting a row the current test just deleted. */
+let sessionRows: Record<string, unknown> = {}
+const storageRows = (): Record<string, unknown> => sessionRows
+
+const statefulSessionArea = (rows: Record<string, unknown>) => ({
+  get: vi.fn(async (keys: string | string[] | null) => {
+    if (keys === null || keys === undefined) return { ...rows }
+    const wanted = typeof keys === 'string' ? [keys] : keys
+    const out: Record<string, unknown> = {}
+    for (const k of wanted) { if (k in rows) out[k] = rows[k] }
+    return out
+  }),
+  set: vi.fn(async (items: Record<string, unknown>) => { Object.assign(rows, items) }),
+  remove: vi.fn(async (keys: string | string[]) => {
+    for (const k of (typeof keys === 'string' ? [keys] : keys)) delete rows[k]
+  }),
+})
+
+/** Fire a listener the panel registered on a chrome event, waiting for the
+ *  registration first — the panel binds its navigation signals only after the
+ *  mount's rehydrate+prune resolves. */
+async function firstListener<T>(reg: { addListener: ReturnType<typeof vi.fn> }): Promise<T> {
+  await waitFor(() => { expect(reg.addListener.mock.calls.length).toBeGreaterThan(0) })
+  return reg.addListener.mock.calls[0]![0] as T
+}
+
+const chromeFake = () => (globalThis as unknown as {
+  chrome: {
+    tabs: {
+      get: ReturnType<typeof vi.fn>
+      query: ReturnType<typeof vi.fn>
+      onActivated: { addListener: ReturnType<typeof vi.fn> }
+      onUpdated: { addListener: ReturnType<typeof vi.fn> }
+      onRemoved: { addListener: ReturnType<typeof vi.fn> }
+    }
+    webNavigation: {
+      onCommitted: { addListener: ReturnType<typeof vi.fn> }
+      onHistoryStateUpdated: { addListener: ReturnType<typeof vi.fn> }
+    }
+    runtime: { sendMessage: ReturnType<typeof vi.fn> }
+  }
+}).chrome
+
+/** Chrome commits a navigation in the given frame of the given tab. */
+const commit = async (tabId: number, url: string, frameId = 0): Promise<void> => {
+  const fn = await firstListener<(d: { tabId: number; frameId: number; url: string }) => void>(
+    chromeFake().webNavigation.onCommitted)
+  await act(async () => { fn({ tabId, frameId, url }) })
+}
+
+/** A tab in the panel's window (id 1, per chrome.windows.getCurrent) became active. */
+const activate = async (tabId: number, windowId = 1): Promise<void> => {
+  const fn = await firstListener<(info: { tabId: number; windowId: number }) => void>(
+    chromeFake().tabs.onActivated)
+  await act(async () => { fn({ tabId, windowId }) })
+}
+
+const closeTab = async (tabId: number): Promise<void> => {
+  const fn = await firstListener<(id: number) => void>(chromeFake().tabs.onRemoved)
+  await act(async () => { fn(tabId) })
+}
+
 afterEach(async () => {
   delete window.__jffHostBridge
   await clearResume()
@@ -51,7 +119,13 @@ afterEach(async () => {
 beforeEach(async () => {
   // The compile-time seam is on in tests (vitest define), so the fake host answers.
   window.history.replaceState(null, '', '/?jffFakeHost=1')
+  sessionRows = {}
   ;(globalThis as unknown as { chrome: unknown }).chrome = {
+    windows: { getCurrent: vi.fn(async () => ({ id: 1 })) },
+    webNavigation: {
+      onCommitted: { addListener: vi.fn(), removeListener: vi.fn() },
+      onHistoryStateUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+    },
     tabs: {
       query: vi.fn(async () => [{ id: 7, url: 'https://jobs.acme.com/apply', title: 'Engineer at Acme' }]),
       get: vi.fn(async () => ({ id: 7, url: 'https://jobs.acme.com/apply', title: 'Engineer at Acme' })),
@@ -80,8 +154,9 @@ beforeEach(async () => {
       }),
       onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
     },
-    // `remove` is required: onScan clears this tab's stale snapshot keys first.
-    storage: { session: { get: vi.fn(async () => ({})), remove: vi.fn(async () => undefined) } },
+    // STATEFUL: the session store persists real rows here, and onScan sweeps
+    // this tab's stale snapshot keys out of the same area.
+    storage: { session: statefulSessionArea(sessionRows) },
   }
   // O3: a stored resume is half of the completeness gate; the default persona
   // has one. Gate tests call clearResume() explicitly.
@@ -385,12 +460,11 @@ describe('App mid-scan navigation', () => {
     failures: [],
   })
 
-  /** Fire the tab-scope listener the panel registered, exactly as Chrome would
-   *  when the bound tab starts loading a new document. */
-  const navigateBoundTab = async (): Promise<void> => {
-    const onUpdated = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } })
-      .chrome.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status: string }) => void
-    await act(async () => { onUpdated(7, { status: 'loading' }) })
+  /** Harness adaptation (Task 14): navigation truth is webNavigation, and the
+   *  event carries the url. A SAME-SITE step keeps the session and re-scans —
+   *  a cross-site url would PARK it, which is a different behaviour entirely. */
+  const navigateBoundTab = async (url = 'https://jobs.acme.com/apply/step2'): Promise<void> => {
+    await commit(7, url)
   }
 
   beforeEach(() => {
@@ -526,18 +600,10 @@ describe('App generation discipline', () => {
     })
   }
 
-  const navigateBoundTab = async (): Promise<void> => {
-    const onUpdated = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } })
-      .chrome.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status: string }) => void
-    await act(async () => { onUpdated(7, { status: 'loading' }) })
-  }
-
-  /** Fires the tab-scope listener as Chrome would when a DIFFERENT tab becomes
-   *  active — the bound tab itself neither navigates nor closes. */
-  const activateOtherTab = async (): Promise<void> => {
-    const onActivated = (globalThis as unknown as { chrome: { tabs: { onActivated: { addListener: ReturnType<typeof vi.fn> } } } })
-      .chrome.tabs.onActivated.addListener.mock.calls[0]![0] as (info: { tabId: number }) => void
-    await act(async () => { onActivated({ tabId: 99 }) })
+  /** Harness adaptation (Task 14): a SAME-SITE webNavigation commit — the event
+   *  that keeps the session and re-scans. */
+  const navigateBoundTab = async (url = 'https://jobs.acme.com/apply/step2'): Promise<void> => {
+    await commit(7, url)
   }
 
   beforeEach(() => {
@@ -802,14 +868,19 @@ describe('App generation discipline', () => {
   })
 
   it('keeps a company the user typed across a navigation', async () => {
+    // Harness adaptation (Task 14): the step-2 page is SAME-SITE (careers.acme.com
+    // shares acme.com with jobs.acme.com) — a cross-site hop now PARKS the
+    // session instead of re-scanning. Its TITLE still names a different employer,
+    // so the assertion keeps its teeth: a fresh guess would overwrite 'Initech'.
+    const STEP2 = { id: 7, url: 'https://careers.acme.com/apply/step2', title: 'Engineer at Globex' }
     let onNewPage = false
-    tabsGet().mockImplementation(async () => (onNewPage ? GLOBEX : ACME))
+    tabsGet().mockImplementation(async () => (onNewPage ? STEP2 : ACME))
     installFullScan()
     render(<App />)
     await waitFor(() => { expect(companyInput().value).toBe('Acme') })
     fireEvent.change(companyInput(), { target: { value: 'Initech' } })
     onNewPage = true
-    await navigateBoundTab()
+    await navigateBoundTab(STEP2.url)
     await waitFor(() => { expect(statusNow()).toBe('done') })
     expect(companyInput().value).toBe('Initech')
   })
@@ -1377,10 +1448,8 @@ describe('App — per-field generating state (B3)', () => {
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
     fireEvent.click(screen.getAllByRole('button', { name: 'Generate with AI' })[0]!)
     await waitFor(() => expect(finish).not.toBeNull())
-    // The bound tab navigates: tabScope fires 'navigated' on status:'loading'.
-    const chromeMock = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } }).chrome
-    const onUpdated = chromeMock.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status?: string }) => void
-    act(() => { onUpdated(7, { status: 'loading' }) })
+    // The bound tab navigates SAME-SITE: webNavigation commits the wizard step.
+    await commit(7, 'https://jobs.acme.com/apply/step2')
     // The reset triggers a re-scan; let it settle, THEN let the dead generate answer.
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
     await act(async () => { finish!() })
@@ -1631,11 +1700,9 @@ describe('App — submission detection prompt (A3)', () => {
       return base(msg)
     })
   }
-  const navigate = (): void => {
-    const onUpdated = (globalThis as unknown as { chrome: { tabs: { onUpdated: { addListener: ReturnType<typeof vi.fn> } } } })
-      .chrome.tabs.onUpdated.addListener.mock.calls[0]![0] as (id: number, change: { status?: string }) => void
-    act(() => onUpdated(7, { status: 'loading' }))
-  }
+  /** Harness adaptation (Task 14): the wizard's confirmation step is a SAME-SITE
+   *  webNavigation commit — that is what keeps the session and re-scans. */
+  const navigate = async (): Promise<void> => { await commit(7, 'https://jobs.acme.com/apply/done') }
 
   it('a same-site navigation re-scan to zero fields prompts — and never writes on its own', async () => {
     const state = { done: false }
@@ -1655,7 +1722,7 @@ describe('App — submission detection prompt (A3)', () => {
     // start-vs-current assertion below is distinguishable, not vacuous.
     const tabs = (globalThis as unknown as { chrome: { tabs: { get: ReturnType<typeof vi.fn> } } }).chrome.tabs
     tabs.get.mockResolvedValue({ id: 7, url: 'https://jobs.acme.com/apply/done', title: 'Engineer at Acme' })
-    navigate()
+    await navigate()
     await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull(), { timeout: 3000 })
     expect(screen.getByText(/Mark as applied\?/)).toBeTruthy()
     expect(marks.length).toBe(0) // never a silent write
@@ -1674,7 +1741,7 @@ describe('App — submission detection prompt (A3)', () => {
     render(<App />)
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
     state.done = true
-    navigate()
+    await navigate()
     await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull(), { timeout: 3000 })
     fireEvent.click(document.querySelector('[data-jff-prompt-dismiss]')!)
     expect(document.querySelector('[data-jff-submit-prompt]')).toBeNull()
@@ -1743,5 +1810,450 @@ describe('App — three-view navigation (A5)', () => {
     await waitFor(() => expect(document.querySelector('main')?.getAttribute('data-jff-view')).toBe('session'))
     expect(document.querySelector('[data-jff-editor]')).toBeNull()
     expect(document.querySelector('[data-jff-apps]')).toBeNull()
+  })
+})
+
+describe('App — per-tab sessions (S2/S5/S6)', () => {
+  const APPLY_A = 'https://jobs.acme.com/apply'
+  const STEP_2 = 'https://careers.acme.com/apply/step2'
+  const SSO = 'https://okta-sso.com/login'
+  const JOB_B = 'https://jobs.globex.com/apply'
+  const MARKED_AT = '2026-07-29T00:00:00.000Z'
+  const MARKED_ON = new Date(MARKED_AT).toLocaleDateString()
+  const EMPTY_COPY = 'No application session on this tab yet. Click Scan to start.'
+
+  const sendMock = () => chromeFake().runtime.sendMessage
+  const tabsGet = () => chromeFake().tabs.get
+  const status = (): string | null | undefined =>
+    document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')
+  const sessionAttr = (): string | null | undefined =>
+    document.querySelector('main')?.getAttribute('data-jff-session')
+  const scanCount = (): number =>
+    sendMock().mock.calls.filter((c) => (c[0] as { message?: { type?: string } })?.message?.type === 'JFF_SCAN').length
+  const row = (tabId: number): Session | undefined => storageRows()[`jff:session:${tabId}`] as Session | undefined
+  const appliedNodes = (): number => document.querySelectorAll('[data-jff-applied]').length
+  /** Park the store's read of ONE session row until the returned `release` is
+   *  called. The store serializes every operation on a single FIFO lock, so this
+   *  is what lets a test observe a tab swap while it is still in flight — and it
+   *  proves the ordering too: the parked read can only have been issued after
+   *  every operation enqueued ahead of it finished. */
+  const parkSessionLoad = (tabId: number): { release: () => void; issued: () => boolean } => {
+    const area = (globalThis as unknown as {
+      chrome: { storage: { session: { get: ReturnType<typeof vi.fn> } } }
+    }).chrome.storage.session
+    const realGet = area.get.getMockImplementation() as (k: string | string[] | null) => Promise<Record<string, unknown>>
+    let release = (): void => {}
+    const parked = new Promise<void>((r) => { release = r })
+    let issued = false
+    area.get.mockImplementation(async (keys: string | string[] | null) => {
+      // One-shot: restore the real get so nothing behind this parks too.
+      if (keys === `jff:session:${tabId}`) { issued = true; area.get.mockImplementation(realGet); await parked }
+      return await realGet(keys)
+    })
+    return { release: () => { release() }, issued: () => issued }
+  }
+
+  /** Every tab the panel asked the background to relay TO, in order — narrowed to
+   *  one content-message type when given. */
+  const relayTargets = (type?: string): (number | undefined)[] =>
+    sendMock().mock.calls
+      .map((c) => c[0] as { kind?: string; tabId?: number; message?: { type?: string } })
+      .filter((m) => m?.kind === 'toContent' && (type === undefined || m.message?.type === type))
+      .map((m) => m.tabId)
+
+  const field = (fid: number, label: string): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const resolutionFor = (fid: number): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input',
+    value: null, source: null, key: null, answerId: null, reason: 'custom',
+  })
+
+  const scanReply = (url: string, label: string) => ({
+    ok: true,
+    replies: [{
+      frameId: 0, url,
+      payload: { ok: true, scan: { epoch: 1, fields: [{ ...field(0, label), frameId: -1 }], unreachableWidgets: 0, activeCaptcha: false } },
+    }],
+    failures: [],
+  })
+
+  interface HostState { marks: { url: string }[]; applied: Set<string> }
+  const newHostState = (): HostState => ({ marks: [], applied: new Set<string>() })
+
+  const installBridge = (state: HostState): void => {
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        const p = params as { fields: { frameId: number; fid: number }[] }
+        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => resolutionFor(f.fid)), llmError: null } }
+      }
+      if (method === 'applied.check') {
+        const url = (params as { url: string }).url
+        return { requestId, ok: true, result: { applied: state.applied.has(url) ? { markedAt: MARKED_AT } : null } }
+      }
+      if (method === 'applied.mark') {
+        const p = params as { url: string }
+        state.marks.push(p)
+        state.applied.add(p.url)
+        return { requestId, ok: true, result: { markedAt: MARKED_AT } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  /** inject + one enumerated field + no job text: a scan that settles `done`. */
+  const installScan = (urlOf: () => string = () => APPLY_A, labelOf: () => string = () => 'Email'): void => {
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReply(urlOf(), labelOf())
+      if (msg?.kind === 'toContent') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      return { ok: true }
+    })
+  }
+
+  const mountScanned = async (): Promise<void> => {
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+  }
+
+  beforeEach(() => { installBridge(newHostState()) })
+
+  it('a tab switch saves the session and displays the activated tab: empty state, NO scan', async () => {
+    installScan()
+    await mountScanned()
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'kevin@example.com' } })
+    const scansBefore = scanCount()
+
+    await activate(8)
+
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
+    expect(document.querySelector('[data-jff-rows]')).toBeNull()
+    // Tab 8 has no session: nothing to re-scan, and a scan per tab switch would
+    // spend one batched `claude -p` resolve every time.
+    expect(scanCount()).toBe(scansBefore)
+    await waitFor(() => { expect(row(7)?.edits['0:0']).toBe('kevin@example.com') })
+    expect(row(8)).toBeUndefined()
+  })
+
+  it('switching back restores the first session with its work intact', async () => {
+    installScan()
+    await mountScanned()
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'kevin@example.com' } })
+    await activate(8)
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    const scansBefore = scanCount()
+
+    await activate(7)
+
+    await waitFor(() => { expect(sessionAttr()).toBe('7') })
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('kevin@example.com')
+    // Restoring is not re-scanning.
+    expect(scanCount()).toBe(scansBefore)
+  })
+
+  it('an activation from another window is ignored', async () => {
+    installScan()
+    await mountScanned()
+
+    await activate(8, 2)
+
+    expect(sessionAttr()).toBe('7')
+    expect(screen.getByLabelText('Email')).toBeTruthy()
+  })
+
+  it('cross-site navigation PARKS; returning to the domain restores', async () => {
+    installScan()
+    await mountScanned()
+    const scansBefore = scanCount()
+
+    await commit(7, SSO)
+
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    expect(screen.getByText('Session parked — return to acme.com to continue. Scanning is paused on this page.')).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Scan' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(document.querySelector('[data-jff-rows]')).toBeNull()
+    await waitFor(() => { expect(row(7)?.parked).toBe(true) })
+    expect(scanCount()).toBe(scansBefore)
+
+    await commit(7, STEP_2)
+
+    await waitFor(() => { expect(scanCount()).toBe(scansBefore + 1) })
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).toBeNull() })
+    await waitFor(() => { expect(row(7)?.parked).toBe(false) })
+    expect(await screen.findByLabelText('Email')).toBeTruthy()
+  })
+
+  it('panel reopen rehydrates from storage and prunes dead tabs', async () => {
+    // The scan parks on inject, so what renders can only be the REHYDRATED row.
+    sendMock().mockImplementation(async (msg: { kind?: string }) => {
+      if (msg?.kind === 'inject') return await new Promise(() => undefined)
+      return { ok: true, replies: [], failures: [] }
+    })
+    const seeded: Session = {
+      ...newSession(7, APPLY_A),
+      fields: [field(0, 'Email')],
+      resolutions: [resolutionFor(0)],
+      edits: { '0:0': 'seeded@example.com' },
+    }
+    storageRows()['jff:session:7'] = capForStorage(seeded)
+    storageRows()['jff:session:99'] = capForStorage(newSession(99, 'https://jobs.initech.com/apply'))
+    // chrome.tabs.query({}) answers only tab 7: tab 99 is dead.
+
+    render(<App />)
+
+    await waitFor(() => { expect(sessionAttr()).toBe('7') })
+    expect(((await screen.findByLabelText('Email')) as HTMLInputElement).value).toBe('seeded@example.com')
+    await waitFor(() => { expect(storageRows()['jff:session:99']).toBeUndefined() })
+  })
+
+  it('tab close deletes the session', async () => {
+    installScan()
+    await mountScanned()
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+
+    await closeTab(7)
+
+    await waitFor(() => { expect(row(7)).toBeUndefined() })
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
+  })
+
+  it('Mark applied deletes the session instead of hand-clearing state', async () => {
+    const state = newHostState()
+    installBridge(state)
+    installScan()
+    await mountScanned()
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
+
+    await waitFor(() => { expect(state.marks).toHaveLength(1) })
+    await waitFor(() => { expect(row(7)).toBeUndefined() })
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
+    // B8: the session it would have ridden on no longer exists, so the
+    // confirmation is the panel-global one — and it is the ONLY applied node.
+    expect(screen.getByText(`Marked as applied on ${MARKED_ON}.`)).toBeTruthy()
+    expect(appliedNodes()).toBe(1)
+
+    // Transient: cleared on a tab switch.
+    await activate(8)
+    await waitFor(() => { expect(appliedNodes()).toBe(0) })
+    await activate(7)
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    expect(appliedNodes()).toBe(0)
+
+    // S5 overlap guard: the check now HITS the just-marked url. markedMsg wins
+    // while set and onScan clears it on entry, so exactly one badge exists at
+    // every observable point.
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    expect(appliedNodes()).toBeLessThanOrEqual(1)
+    await waitFor(() => { expect(screen.getByText(/Already applied on/)).toBeTruthy() })
+    expect(appliedNodes()).toBe(1)
+  })
+
+  it('Discard deletes the session', async () => {
+    const state = newHostState()
+    installBridge(state)
+    installScan()
+    await mountScanned()
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard session' }))
+
+    await waitFor(() => { expect(row(7)).toBeUndefined() })
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
+    expect(state.marks).toHaveLength(0)
+  })
+
+  it('never marks job A once the same tab moved on to job B (Task 5 boundary defect)', async () => {
+    // The pre-session panel PRESERVED startUrl across every `navigated` reset and
+    // capture was first-wins, so job B's scan could not replace job A's url:
+    // Mark applied recorded job A while job B was on screen. The S5 classifier
+    // plus the hardened disabled predicate are what close it.
+    const state = newHostState()
+    installBridge(state)
+    let tab = { id: 7, url: APPLY_A, title: 'Engineer at Acme' }
+    tabsGet().mockImplementation(async () => tab)
+    installScan(() => tab.url)
+    await mountScanned()
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(APPLY_A) })
+
+    // The user opens a DIFFERENT job in the same tab.
+    tab = { id: 7, url: JOB_B, title: 'Engineer at Globex' }
+    await commit(7, JOB_B)
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+
+    // Job A's session is parked, so nothing on this screen may be marked as it.
+    const markBtn = screen.getByRole('button', { name: 'Mark applied' }) as HTMLButtonElement
+    expect(markBtn.disabled).toBe(true)
+    fireEvent.click(markBtn)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(state.marks).toHaveLength(0)
+
+    // Job B gets its own session, and its own start url.
+    fireEvent.click(screen.getByRole('button', { name: 'Discard session' }))
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect((screen.getByRole('button', { name: 'Mark applied' }) as HTMLButtonElement).disabled).toBe(false) })
+    fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
+
+    await waitFor(() => { expect(state.marks).toHaveLength(1) })
+    expect(state.marks[0]!.url).toBe(JOB_B)
+    expect(state.marks.some((m) => m.url === APPLY_A)).toBe(false)
+  })
+
+  it('a full storage area warns in its OWN banner, never through the host banner', async () => {
+    // S6: `hostError` feeds SelfCheckBanner AND the hostAnswered→gateOpen latch;
+    // a storage warning is not a host answer, and routing it there would be a
+    // category error with a scan-gate side effect.
+    installScan()
+    const area = statefulSessionArea(storageRows())
+    area.set.mockImplementation(async () => { throw new Error('QUOTA_BYTES quota exceeded') })
+    ;(globalThis as unknown as { chrome: { storage: { session: unknown } } }).chrome.storage.session = area
+
+    await mountScanned()
+
+    await waitFor(() => { expect(document.querySelector('[data-jff-storage-warn]')).not.toBeNull() })
+    expect(screen.getByText('Session storage is full — recent changes may not survive closing the panel.')).toBeTruthy()
+    // The host is still reported as healthy: the warning did not ride hostError.
+    expect(screen.getByText(/Host ready/)).toBeTruthy()
+  })
+
+  it('an in-flight scan keeps relaying to the tab it was DISPATCHED for, never the one on screen', async () => {
+    // The relay target is resolved at CALL time. Before the per-tab era the panel
+    // was bound to ONE tab for its lifetime, so an in-flight scan's closure pinned
+    // every message to the tab the scan started on; a mutable binding retargets the
+    // rest of that scan to whatever is displayed when the await resolves. JFF_FILL
+    // WRITES to the page — the later inScope check drops the RESULT, but the
+    // message has already been delivered to the wrong tab.
+    let releaseResolve = (): void => {}
+    const resolving = new Promise<void>((r) => { releaseResolve = r })
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve') {
+        await resolving
+        const p = params as { fields: { fid: number }[] }
+        // tier 'auto' with a value is what makes runScan batch a JFF_FILL.
+        const resolutions: Resolution[] = p.fields.map((f) => ({
+          handle: { frameId: 0, fid: f.fid, epoch: 1 }, tier: 'auto',
+          value: 'kevin@example.com', source: 'profile', key: null, answerId: null, reason: 'recognizer:email',
+        }))
+        return { requestId, ok: true, result: { epoch: 1, resolutions, llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+    installScan()
+    render(<App />)
+    // The scan is parked inside `resolve`, dispatched for tab 7.
+    await waitFor(() => { expect(status()).toBe('resolving') })
+
+    await activate(8)
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+
+    await act(async () => { releaseResolve() })
+
+    await waitFor(() => { expect(relayTargets('JFF_FILL').length).toBeGreaterThan(0) })
+    expect(relayTargets('JFF_FILL')).toEqual([7])
+    // Nothing this scan sends may reach tab 8 — not the fill, not the enumeration.
+    expect(relayTargets()).not.toContain(8)
+  })
+
+  it('a tab closing while a swap to another LIVE tab is in flight lands on that tab, not the dead one', async () => {
+    // Chrome activates the successor BEFORE it emits `removed`, so the swap toward
+    // the live tab is routinely already in flight when the close arrives. A removal
+    // that invalidates ALL swap work strands the panel on the dead tab — and since
+    // the successor is already active, no further `activated` is coming to repair it.
+    installScan()
+    await mountScanned()
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+    storageRows()['jff:session:8'] = capForStorage(newSession(8, JOB_B))
+
+    // Park the swap on its INCOMING load, so the removal's own tail runs while
+    // that swap is still in flight — the window a blanket display(null) blanks.
+    const incoming = parkSessionLoad(8)
+
+    const onActivated = await firstListener<(i: { tabId: number; windowId: number }) => void>(
+      chromeFake().tabs.onActivated)
+    const onRemoved = await firstListener<(id: number) => void>(chromeFake().tabs.onRemoved)
+    // Both events inside one turn: the swap suspends on its outgoing flush before
+    // `removed` runs, which is exactly the real ordering.
+    await act(async () => { onActivated({ tabId: 8, windowId: 1 }); onRemoved(7) })
+
+    // The store lock serializes flush → remove → load, so the incoming load being
+    // issued proves the removal already finished: its row is gone and its tail ran.
+    await waitFor(() => { expect(incoming.issued()).toBe(true) })
+    expect(row(7)).toBeUndefined()
+    // …and it did NOT clobber the swap: no flash of the empty state on the way.
+    expect(sessionAttr()).toBe('7')
+
+    await act(async () => { incoming.release() })
+
+    await waitFor(() => { expect(sessionAttr()).toBe('8') })
+    expect(document.querySelector('[data-jff-tab]')?.getAttribute('data-jff-tab')).toBe('8')
+  })
+
+  it('a swap toward a tab that CLOSES mid-swap is abandoned — the dead tab never reaches the display', async () => {
+    // The other half of the same rule: a removal invalidates exactly the work
+    // that would put the REMOVED tab on screen. Here that IS the in-flight swap.
+    installScan()
+    await mountScanned()
+    storageRows()['jff:session:8'] = capForStorage(newSession(8, JOB_B))
+    const incoming = parkSessionLoad(8)
+
+    const onActivated = await firstListener<(i: { tabId: number; windowId: number }) => void>(
+      chromeFake().tabs.onActivated)
+    const onRemoved = await firstListener<(id: number) => void>(chromeFake().tabs.onRemoved)
+    await act(async () => { onActivated({ tabId: 8, windowId: 1 }) })
+    await waitFor(() => { expect(incoming.issued()).toBe(true) })
+
+    // Tab 8 closes while the panel is still loading its session. `remove` queues
+    // BEHIND the parked read on the store lock, so release it to let both finish.
+    await act(async () => { onRemoved(8) })
+    await act(async () => { incoming.release() })
+
+    await waitFor(() => { expect(row(8)).toBeUndefined() })
+    expect(sessionAttr()).toBe('7')
+    expect(screen.getByLabelText('Email')).toBeTruthy()
+  })
+
+  it('a repeated navigated event for the same url is idempotent', async () => {
+    // navSignals' fallback dedupe is one-directional: Chrome can emit a combined
+    // tabs.onUpdated {status:'loading', url} AHEAD of onCommitted, i.e. TWO
+    // identical `navigated` events for one navigation.
+    installScan()
+    await mountScanned()
+    const afterMount = scanCount()
+
+    await commit(7, STEP_2)
+    await commit(7, STEP_2)
+    await waitFor(() => { expect(status()).toBe('done') })
+    // Exactly ONE re-scan, and one nonce spent on it.
+    expect(scanCount()).toBe(afterMount + 1)
+    expect(document.querySelector('main')?.getAttribute('data-jff-scans')).toBe('1')
+
+    await commit(7, SSO)
+    await commit(7, SSO)
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    await waitFor(() => { expect(row(7)?.parked).toBe(true) })
+    // No double-park: the session's own work is untouched and no scan ran.
+    expect(row(7)?.startUrl).toBe(APPLY_A)
+    expect(scanCount()).toBe(afterMount + 1)
+
+    await commit(7, STEP_2)
+    await commit(7, STEP_2)
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).toBeNull() })
+    await waitFor(() => { expect(status()).toBe('done') })
+    // No double-unpark: exactly one further scan.
+    expect(scanCount()).toBe(afterMount + 2)
   })
 })

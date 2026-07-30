@@ -134,8 +134,9 @@ export interface SessionStore {
    *  with jff:snap:* rows, which are not ours to read (or prune). */
   loadAll(): Promise<Session[]>
   /** Debounced latest-wins per tab. Rows pass capForStorage at ENTRY, so the
-   *  pending map and storage always agree on shape. A save against a
-   *  TOMBSTONED tab is silently dropped (see below). */
+   *  pending map and storage always agree on shape. A save of a session a
+   *  `remove` already buried is silently dropped; a save of a session CREATED
+   *  after that removal lifts the tombstone and persists normally (see below). */
   save(session: Session): void
   /**
    * THE way concurrent/settling writers touch a session they do not display
@@ -161,8 +162,11 @@ export interface SessionStore {
    *  lock link has settled — a flush cannot outrun an in-flight mutate. */
   flush(): Promise<void>
   /** Drops the tab's PENDING row, deletes the stored row, and TOMBSTONES the
-   *  tabId — all on the store lock, so a remove issued during an in-flight
-   *  mutate or flush wins (no resurrection). */
+   *  session (the tabId stamped with the removal time) — all on the store lock,
+   *  so a remove issued during an in-flight mutate or flush wins (no
+   *  resurrection). Also a LIVE-tab path: Mark applied and Discard end a session
+   *  on a tab that stays open, which is why the tombstone buries that session
+   *  rather than the tab id forever. */
   remove(tabId: number): Promise<void>
   /** Per-key delete on the store lock; deleted tabs are tombstoned and their
    *  pending rows dropped; keys not matching SESSION_KEY_RE are untouched. */
@@ -181,10 +185,31 @@ export function createSessionStore(
 ): SessionStore {
   /** Debounce buffer only — NOT a lock. Rows here are already capForStorage'd. */
   const pending = new Map<number, Session>()
-  /** Permanent, deliberately never cleared: Chrome does not reuse tab ids within
-   *  a browser session, and this store dies with the panel. A stale displayed-state
-   *  save landing after the tab closed must never resurrect the dead row. */
-  const tombstones = new Set<number>()
+  /** tabId → the `Date.now()` of the removal that buried it.
+   *
+   *  A tombstone buries exactly ONE session: the one that was removed. `remove` is
+   *  NOT a dead-tab-only path — the panel's lifecycle calls it for Mark applied and
+   *  Discard too, on a tab that is still ALIVE — so a session CREATED after the
+   *  removal is a different application and must be allowed to persist. A dead tab
+   *  can never produce one (nothing creates a session for a tab that is gone), so
+   *  the anti-resurrection property is preserved exactly: a stale displayed-state
+   *  save landing after the tab closed carries the REMOVED session's `createdAt`
+   *  and is still dropped. `<=` is the conservative edge: a save whose createdAt
+   *  ties the removal is treated as the removed session. */
+  const tombstones = new Map<number, number>()
+
+  /** Is this exact session buried? (Only `createdAt` can answer — the tabId alone
+   *  cannot tell the removed session apart from its successor.) */
+  const buried = (s: Session): boolean => {
+    const removedAt = tombstones.get(s.tabId)
+    return removedAt !== undefined && s.createdAt <= removedAt
+  }
+  /** A genuinely newer session claims the tab back, so later reads (`mutate`)
+   *  stop refusing it. Call sites must have cleared `buried` first. */
+  const unbury = (s: Session): void => {
+    const removedAt = tombstones.get(s.tabId)
+    if (removedAt !== undefined && s.createdAt > removedAt) tombstones.delete(s.tabId)
+  }
   const subs = new Set<(tabId: number, s: Session) => void>()
   let timer: ReturnType<typeof setTimeout> | null = null
 
@@ -260,7 +285,7 @@ export function createSessionStore(
         } catch { /* fall through to deferral */ }
       }
       // No candidate (or the retry failed too): defer, never discard.
-      if (!pending.has(row.tabId) && !tombstones.has(row.tabId)) pending.set(row.tabId, row)
+      if (!pending.has(row.tabId) && !buried(row)) pending.set(row.tabId, row)
       opts.onWarn?.()
       return false
     }
@@ -270,7 +295,8 @@ export function createSessionStore(
     clearTimer()
     for (const row of [...pending.values()]) {
       pending.delete(row.tabId)
-      if (tombstones.has(row.tabId)) continue
+      // A `remove` that landed between the save and this flush buries the row.
+      if (buried(row)) continue
       await writeRow(row)
     }
   }
@@ -299,11 +325,18 @@ export function createSessionStore(
     }),
 
     save(session) {
-      if (tombstones.has(session.tabId)) return
+      if (buried(session)) return
+      // The one place a tombstone is LIFTED: persisting a session created after
+      // the removal is what proves the tab came back into use.
+      unbury(session)
       pending.set(session.tabId, capForStorage(session))
       armTimer()
     },
 
+    // The tombstone reads below stay keyed on the tabId alone, and that is exact:
+    // a session newer than the removal can only reach `pending`/storage through
+    // `save`, which LIFTS the tombstone first. So a tombstone still standing here
+    // means the only session this tab could hold is the removed one.
     mutate: (tabId, fn) => withLock(async () => {
       if (tombstones.has(tabId)) return null
       let base = pending.get(tabId) ?? null
@@ -331,7 +364,7 @@ export function createSessionStore(
 
     remove: (tabId) => withLock(async () => {
       pending.delete(tabId)
-      tombstones.add(tabId)
+      tombstones.set(tabId, Date.now())
       await area.remove(sessionKey(tabId))
     }),
 
@@ -343,7 +376,7 @@ export function createSessionStore(
         const tabId = Number(m[1])
         if (liveTabIds.has(tabId)) continue
         pending.delete(tabId)
-        tombstones.add(tabId)
+        tombstones.set(tabId, Date.now())
         await area.remove(key)
       }
     }),
