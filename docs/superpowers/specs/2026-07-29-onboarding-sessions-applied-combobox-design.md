@@ -84,7 +84,15 @@ Implementation status. Tick as each lands with its tests.
       marked_at)` (`marked_at`, not `applied_at` — the existing `applications` save-log
       column has different semantics) + exported `canonicalUrl()`: lowercase host, strip
       fragment + trailing slash, keep identity params (`ashby_jid`, `gh_jid`, `jobId`),
-      drop tracking params (`utm_*`, `gh_src`, `ref`, `source`). Upsert by canonical_url
+      drop tracking params: `utm_*` and `gh_src` EVERYWHERE, and `ref`/`source` only on
+      known ATS hosts (greenhouse.io, ashbyhq.com). **Narrowed during implementation,
+      2026-07-31 — this text originally said `ref`/`source` were dropped globally.**
+      `ref` and `source` can be IDENTITY params on an arbitrary site, so stripping them
+      everywhere risks collapsing two distinct postings onto one canonical_url — marking
+      job A would badge job B, i.e. corruption. Keeping them off-ATS costs only a missed
+      badge. Accepted residual, named in `host/src/canonicalUrl.ts`: a company running an
+      ATS on its OWN domain (`trmlabs.com/careers?ashby_jid=…` — the A6 seed) is not a
+      listed host, so `ref`/`source` survive there. Upsert by canonical_url
       preserves the ORIGINAL `marked_at`. Methods `applied.mark` / `applied.check` /
       `applied.list` with the full plumbing: `HostRequestSchema` union entries,
       `compute()` switch arms, repo functions
