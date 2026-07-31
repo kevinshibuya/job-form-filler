@@ -222,7 +222,14 @@ const toApplied = (r: RawApplied): AppliedJob => ({
 })
 
 /** Upsert by canonical_url. `marked_at` is NOT in the update set: re-marking
- *  after a "Scan anyway" re-apply keeps the ORIGINAL date (spec A1). */
+ *  after a "Scan anyway" re-apply keeps the ORIGINAL date (spec A1).
+ *
+ *  The identity columns follow the same rule via COALESCE. The panel sends
+ *  `company: null` for a blank field and `jobTitle: null` for an empty tab title,
+ *  and both are routine on a re-mark (the company guess misses on a step-2 url,
+ *  the tab has not settled its title yet). A plain `excluded.company` there
+ *  DELETES a company the first mark got right — a null is "I have nothing to
+ *  say", never "erase what you know". */
 export function markApplied(
   db: Database.Database,
   row: { url: string; company: string | null; jobTitle: string | null },
@@ -231,7 +238,9 @@ export function markApplied(
   db.prepare(
     `INSERT INTO applied_jobs (url, canonical_url, company, job_title, marked_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(canonical_url) DO UPDATE SET
-       url = excluded.url, company = excluded.company, job_title = excluded.job_title`,
+       url = excluded.url,
+       company = COALESCE(excluded.company, company),
+       job_title = COALESCE(excluded.job_title, job_title)`,
   ).run(row.url, canonical, row.company, row.jobTitle, new Date().toISOString())
   const got = db.prepare(`SELECT * FROM applied_jobs WHERE canonical_url = ?`).get(canonical) as RawApplied
   return toApplied(got)

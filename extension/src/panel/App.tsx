@@ -439,8 +439,19 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  tab activation would spend one batched `claude -p` resolve per switch. */
   const swapTo = async (next: number): Promise<void> => {
     // Chrome re-activates the already-active tab in several flows; a repeat is a
-    // no-op, never a re-swap.
-    if (tabIdRef.current === next) return
+    // no-op, never a re-swap. But "already on screen" is NOT "nothing in flight":
+    // `tabIdRef` is assigned at the very END of a swap, so the user coming
+    // straight back to the tab they left lands HERE while the swap toward the
+    // other tab is still parked on its flush/load — and a bare return leaves that
+    // swap's seq untouched, so it commits and displays a tab the user is not
+    // looking at. Nothing repairs that: the tab on screen would be the ACTIVE
+    // one, so no further `activated` is coming, and the next Scan would inject
+    // and FILL the OTHER tab's page. Cancel the outbound swap instead.
+    if (tabIdRef.current === next) {
+      const heading = swapRef.current.target
+      if (heading !== null && heading !== next) bumpSwap()
+      return
+    }
     const seq = bumpSwap(next)
     const outgoing = sessionRef.current
     if (outgoing !== null) {
@@ -551,9 +562,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const nextSession = { ...s, parked: true }
       showSession(nextSession)
       // Session-suspending event: un-debounced, so the parked row survives a
-      // panel close that follows immediately.
+      // panel close that follows immediately. The `swallow` sink is belt-and-braces
+      // over `flush`'s own contract (it ABSORBS storage failure and resolves, which
+      // sessions.test.ts pins): chrome.storage rejects on an invalidated extension
+      // context, and a floating rejection at teardown is a console error, not a
+      // diagnosis. Every other `void`ed promise in this file carries the same sink.
       store.save(nextSession)
-      void store.flush()
+      void store.flush().catch(swallow)
       setScanStatus(null)
       lastOutcomeRef.current = null
       setSubmitPrompt(false)
@@ -612,11 +627,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // — which is why `booted` (not `tabId`) is what unlocks the auto-scan
         // effect below.
         const live = new Set<number>([bound])
+        let enumerated = true
         try {
           for (const t of await chrome.tabs.query({})) { if (t.id !== undefined) live.add(t.id) }
-        } catch { /* keep at least the bound tab alive */ }
+        } catch { enumerated = false }
         if (cancelled) return
-        await store.prune(live)
+        // Pruning against a FAILED enumeration is not conservative, it is the
+        // worst case: `live` would be just the bound tab, so the sweep would
+        // delete AND tombstone every other session — live parked applications in
+        // other windows included. A row that outlives its tab costs storage; a
+        // wrong sweep costs the user's work. Skip the sweep entirely.
+        if (enumerated) await store.prune(live)
         if (cancelled) return
         const restored = await store.load(bound)
         if (cancelled) return
@@ -641,7 +662,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const flushNow = (): void => {
       const s = sessionRef.current
       if (s !== null) store.save(s)
-      void store.flush()
+      // Same belt-and-braces sink as the park arm: this handler runs on the way
+      // out, which is exactly where chrome.storage starts rejecting.
+      void store.flush().catch(swallow)
     }
     const onVisibility = (): void => { if (document.visibilityState === 'hidden') flushNow() }
     document.addEventListener('visibilitychange', onVisibility)
@@ -1443,6 +1466,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const owner = sessionRef.current
     const target = owner?.tabId ?? tabIdRef.current
     if (port === null || target === null || saving) return
+    // Same rule as onMarkApplied: the payload below is closed over from THIS
+    // render, but `url` is re-read from the tab after several awaits — so a
+    // navigation mid-save would file step 1's answers under step 2's url. The
+    // generation is captured at dispatch and re-checked at the submit.
+    const gen = runtimeOf(target).gen
     setSaving(true)
     try {
       // Merge every snapshot source: SW-stamped pushes (state), the storage.session
@@ -1466,6 +1494,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull })
         .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
       const tab = await getTab(target)
+      // The page these answers came from is gone: `tab.url` now names a DIFFERENT
+      // step (or a different posting), and pairing it with them is the
+      // silent-wrong-data write. Saving stays available for the new page.
+      if (runtimeOf(target).gen !== gen) return
       const r = await port.request<{ saved: number }>('save', {
         url: tab?.url ?? '',
         company: companyOrNull,
