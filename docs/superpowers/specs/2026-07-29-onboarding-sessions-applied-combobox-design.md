@@ -19,68 +19,68 @@ Implementation status. Tick as each lands with its tests.
 
 ### O — onboarding
 
-- [ ] O1 Completeness is TRI-state: `complete` / `incomplete` / `unknown`. Exported
+- [x] O1 Completeness is TRI-state: `complete` / `incomplete` / `unknown`. Exported
       `profileCompleteness(facts, hasResume, settled)` — `incomplete` only when the
       profile+resume loads SETTLED successfully and resume or a core fact (email, phone,
       fullName-or-firstName+lastName) is missing; load failure or timeout → `unknown`.
       Required-key list is one exported const (extensible)
-- [ ] O2 `OnboardingView`: CV upload (reuses `saveResume`) → auto-runs `facts.extract`
+- [x] O2 `OnboardingView`: CV upload (reuses `saveResume`) → auto-runs `facts.extract`
       and pre-fills EMPTY fields (non-PDF uploads store the blob but skip auto-extract —
       the user types the fields) → all 18 `FIELD_KEYS` rendered with required markers →
       Finish enabled only on `complete`, persists via `profile.set`/`answerBank.set`
-- [ ] O3 Gate wiring: auto-scan requires `gateOpen` AND a settled completeness decision;
+- [x] O3 Gate wiring: auto-scan requires `gateOpen` AND a settled completeness decision;
       `incomplete` renders OnboardingView INSTEAD of scan UI (no scan triggers);
       `unknown` renders the NORMAL panel + host-error banner (never bricks an existing
       user when the host is down); existing complete profiles never see the gate
 
 ### S — per-tab sessions
 
-- [ ] S1 `sessions` module: `Session` type with `version: 1`, an EXHAUSTIVE partition of
+- [x] S1 `sessions` module: `Session` type with `version: 1`, an EXHAUSTIVE partition of
       App state (see Design table — per-session vs panel-global, including
       `companyGuessedRef` per-session), persisted to `chrome.storage.session` under
       `jff:session:<tabId>` (exported key regex beside `snapshotKey.ts`; must never
       match `SNAPSHOT_KEY_RE`); writes debounced AND flushed on
       `pagehide`/`visibilitychange:hidden`, un-debounced on tab switch and
       session-ending events; corrupt or version-mismatched rows dropped
-- [ ] S2 Tab switch (filtered to the panel's own window) SAVES the current session and
+- [x] S2 Tab switch (filtered to the panel's own window) SAVES the current session and
       DISPLAYS the activated tab's session or an empty state — no scan fires on
       activation (today's economics kept: switching to a fresh tab shows empty state
       until the user clicks Scan or the tab navigates)
-- [ ] S3 Navigation signal moves to `chrome.webNavigation.onCommitted` +
+- [x] S3 Navigation signal moves to `chrome.webNavigation.onCommitted` +
       `onHistoryStateUpdated` (permission already granted), carrying frameId + URL:
       top-frame AND elected-application-frame navigations both count as wizard steps;
       other subframes are noise. `tabs.onUpdated status==='loading'` remains only as a
       fallback signal
-- [ ] S4 Same-site navigation keeps the session and re-scans: kept answers/drafts live
+- [x] S4 Same-site navigation keeps the session and re-scans: kept answers/drafts live
       in a ref-INDEPENDENT `answers` map keyed by `normalizeQuestion(label)` (+
       `fieldKey` when present) holding the value + provenance; after the new page's
       resolve they re-project onto matching new refs. All ref-keyed DOM assertions
       (`filledRefs`, `generatedRefs`, `snapshot`, `reuseOverrides`, `election`) are
       DROPPED on re-scan. Acceptance test: wizard step 2 with different field
       count/order attaches NO answer to a field whose label did not appear on step 1
-- [ ] S5 Cross-site navigation PARKS the session (kept in storage, inactive) — SSO/OAuth
+- [x] S5 Cross-site navigation PARKS the session (kept in storage, inactive) — SSO/OAuth
       round-trips and policy-page detours must not destroy paid drafts; returning to the
       session's registrable domain restores it. Deletion only on: tab close, mark
       applied, explicit discard. "Same site" = same registrable domain via a minimal
       suffix heuristic (full PSL out of scope)
-- [ ] S6 Panel reopen rehydrates from storage; sessions whose tab is gone are pruned.
+- [x] S6 Panel reopen rehydrates from storage; sessions whose tab is gone are pruned.
       Persisted `fields[].options` capped (≤100/field); on quota error evict the oldest
       PARKED session, never the active one
-- [ ] S7 Concurrency: scan latch stays GLOBAL single-flight (at most one `resolve` in
+- [x] S7 Concurrency: scan latch stays GLOBAL single-flight (at most one `resolve` in
       flight across all sessions; a background session's due re-scan queues via
       per-session pending-rescan). Epochs and generation counters are per-session.
       `snapshotPush` routes by `m.tabId` into the MATCHING session and compares against
       THAT session's epoch; `onSaveAnswers` merges with the session's tabId+epoch. A
       scan/generate settling after a tab switch writes to ITS session (storage), never
       the visible one; if its session died, the write is dropped
-- [ ] S8 Retire/rewrite the clear-on-activate era tests in ONE batch before the S
+- [x] S8 Retire/rewrite the clear-on-activate era tests in ONE batch before the S
       slices: `tabScope.test.ts`, `App.test.tsx` "activated never replays a scan" /
       "clears a GUESSED company on navigation", and the `data-jff-resets`/
       `data-jff-scans` e2e hooks get session-aware equivalents
 
 ### A — applied jobs
 
-- [ ] A1 Host: `applied_jobs(id, url, canonical_url UNIQUE, company, job_title,
+- [x] A1 Host: `applied_jobs(id, url, canonical_url UNIQUE, company, job_title,
       marked_at)` (`marked_at`, not `applied_at` — the existing `applications` save-log
       column has different semantics) + exported `canonicalUrl()`: lowercase host, strip
       fragment + trailing slash, keep identity params (`ashby_jid`, `gh_jid`, `jobId`),
@@ -88,23 +88,23 @@ Implementation status. Tick as each lands with its tests.
       preserves the ORIGINAL `marked_at`. Methods `applied.mark` / `applied.check` /
       `applied.list` with the full plumbing: `HostRequestSchema` union entries,
       `compute()` switch arms, repo functions
-- [ ] A2 Panel "Mark applied" button: records via `applied.mark` (url = session's
+- [x] A2 Panel "Mark applied" button: records via `applied.mark` (url = session's
       captured START URL — the first scanned page, not the current wizard step;
       job_title from `tab.title`, nullable; company from the panel field) and ends the
       session
-- [ ] A3 Submission detection prompt (never a silent write): after a same-site
+- [x] A3 Submission detection prompt (never a silent write): after a same-site
       navigation re-scan, fillable fields went >0 → 0 OR page text matches
       confirmation patterns (en: "thank you for applying", "application submitted",
       "application received"; pt: "obrigado por se candidatar", "candidatura enviada",
       "recebemos sua candidatura") → non-blocking "Mark as applied?"; dismissing never
       re-prompts for the same page load
-- [ ] A4 Revisit badge: before auto-scan, `applied.check` on the canonicalized page
+- [x] A4 Revisit badge: before auto-scan, `applied.check` on the canonicalized page
       URL; a hit renders "Already applied on <date>" instead of scanning, with "Scan
       anyway" (also the re-apply escape hatch)
-- [ ] A5 Applications list view: date, company, title, link out. Panel navigation
+- [x] A5 Applications list view: date, company, title, link out. Panel navigation
       model: three mutually exclusive views (session / profile editor / applications
       list) toggled from the header
-- [ ] A6 Seed the session-7 job as applied:
+- [x] A6 Seed the session-7 job as applied:
       `https://www.trmlabs.com/careers?ashby_jid=6edf242b-984d-41fb-8027-5f133a6353d4`
 
 ### C — Greenhouse combobox
@@ -113,14 +113,14 @@ Implementation status. Tick as each lands with its tests.
       (systematic-debugging). Output — root cause + the failing DOM shape — is an INPUT
       to plan authoring; C2/C3 are only planned once it lands. **DONE 2026-07-29 —
       results in Design §C below**
-- [ ] C2 Fix `fill.ts` for the Greenhouse widget class without regressing the Ashby arm
+- [x] C2 Fix `fill.ts` for the Greenhouse widget class without regressing the Ashby arm
       (B1a–B1d invariants: typeahead always driven, unique-substring match,
       committed-text verification; session-7 combobox e2e stays green)
-- [ ] C3 E2E fixture reproducing the Greenhouse widget behavior as a regression test
+- [x] C3 E2E fixture reproducing the Greenhouse widget behavior as a regression test
 
 ### Cross-cutting
 
-- [ ] E2E: two-tab switching preserves both sessions' work; same-site wizard navigation
+- [x] E2E: two-tab switching preserves both sessions' work; same-site wizard navigation
       re-projects answers by label; onboarding gate blocks scan until complete
 - [ ] Manual browser gate on the real Greenhouse page: onboarding (fresh profile), scan,
       fill incl. the Degree dropdown, tab-switch round-trip, mark applied, revisit badge
