@@ -177,6 +177,19 @@ describe('applied.* (A1)', () => {
     expect(again).toMatchObject({ ok: true, result: { company: 'Acme', jobTitle: 'Eng II' } })
   })
 
+  it('re-marking with a BLANK company keeps the company the first mark got right', async () => {
+    // The panel sends `company: null` for an empty field and `jobTitle: null` for
+    // an empty tab title, and both are routine on a re-mark: "Scan anyway" on a
+    // step-2 url guesses no company. A plain `excluded.company` upsert NULLED the
+    // stored one — a null is "nothing to say", never "erase what you know".
+    const first = await handleRequest(deps, { requestId: 'am-9', method: 'applied.mark', params: { url: 'https://x.com/j/3', company: 'Acme', jobTitle: 'Eng' } })
+    const firstAt = (first as { result: { markedAt: string } }).result.markedAt
+    const again = await handleRequest(deps, { requestId: 'am-10', method: 'applied.mark', params: { url: 'https://x.com/j/3?utm_source=x', company: null, jobTitle: null } })
+    expect(again).toMatchObject({ ok: true, result: { company: 'Acme', jobTitle: 'Eng', markedAt: firstAt } })
+    const checked = await handleRequest(deps, { requestId: 'am-11', method: 'applied.check', params: { url: 'https://x.com/j/3' } })
+    expect(checked).toMatchObject({ ok: true, result: { applied: { company: 'Acme', jobTitle: 'Eng' } } })
+  })
+
   it('check misses on a different job', async () => {
     const r = await handleRequest(deps, { requestId: 'am-5', method: 'applied.check', params: { url: 'https://x.com/j/999' } })
     expect(r).toMatchObject({ ok: true, result: { applied: null } })

@@ -278,10 +278,14 @@ describe('sessions module (S1/S6)', () => {
   it('save after remove is dropped — a dead tab is never resurrected (tombstone)', async () => {
     const { rows, area } = fakeArea()
     const store = createSessionStore(area, 0)
-    store.save(newSession(7, 'https://a.com'))
+    // The SAME session object throughout: what a stale displayed-state save
+    // carries after the tab closed is the session that was removed, not a fresh
+    // one (nothing mints a session for a tab that is gone).
+    const s = newSession(7, 'https://a.com')
+    store.save(s)
     await store.flush()
     await store.remove(7)
-    store.save(newSession(7, 'https://a.com'))   // a stale displayed-state save after the tab closed
+    store.save({ ...s, company: 'late write' })
     await store.flush()
     expect(rows[sessionKey(7)]).toBeUndefined()
   })
@@ -291,12 +295,15 @@ describe('sessions module (S1/S6)', () => {
     // Mark applied and Discard, on a tab that is still alive. A PERMANENT tombstone
     // made every later application in that tab memory-only (and made `mutate`
     // answer null, which Task 16 would misread as "dropped").
+    //
+    // The clock is FROZEN here (fake timers), so this is also the SAME-MILLISECOND
+    // case: Mark applied → `remove` resolves → an onCommitted for that tab lands
+    // in the same tick and lazily creates the next session. Nothing is hand-stamped
+    // — the sessions are minted in the real order, and the store's strictly
+    // increasing stamps are what have to tell them apart.
     const { rows, area } = fakeArea()
     const store = createSessionStore(area, 0)
-    // The clock is FROZEN here (fake timers), so every createdAt/removedAt is
-    // stated explicitly rather than inferred from wall time.
-    const removedAt = Date.now()
-    const first: Session = { ...newSession(7, 'https://a.com'), createdAt: removedAt - 1 }
+    const first = newSession(7, 'https://a.com')
     store.save(first)
     await store.flush()
 
@@ -311,7 +318,7 @@ describe('sessions module (S1/S6)', () => {
 
     // …but the NEXT application in that same tab is a different session, and it
     // must persist exactly like any other.
-    const second: Session = { ...newSession(7, 'https://b.com'), createdAt: removedAt + 1 }
+    const second = newSession(7, 'https://b.com')
     store.save(second)
     await store.flush()
     expect((rows[sessionKey(7)] as Session).startUrl).toBe('https://b.com')
@@ -319,6 +326,63 @@ describe('sessions module (S1/S6)', () => {
     const written = await store.mutate(7, (s) => (s === null ? null : { ...s, company: 'Globex' }))
     expect(written?.company).toBe('Globex')
     expect((rows[sessionKey(7)] as Session).company).toBe('Globex')
+  })
+
+  it('a session whose stamp TIES the removal is the NEWER one — a tie is never buried', async () => {
+    // Which way an EQUAL pair falls is not symmetric: burying is unrecoverable
+    // (only `save` lifts a tombstone, and burying is exactly what drops the save),
+    // while treating a tie as newer can at worst persist one row a moment longer.
+    // Every stamp being distinct is what makes that safe — an OLDER session can
+    // never tie, because the removal's own stamp came after it.
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 0)
+    store.save(newSession(7, 'https://a.com'))
+    await store.flush()
+    await store.remove(7)
+    // Under a frozen clock the stamps are consecutive integers, so the one the
+    // removal just consumed is exactly one below the next one handed out.
+    const removedAt = newSession(0).createdAt - 1
+    store.save({ ...newSession(7, 'https://b.com'), createdAt: removedAt })
+    await store.flush()
+    expect((rows[sessionKey(7)] as Session).startUrl).toBe('https://b.com')
+  })
+
+  it('flush ABSORBS a dead storage area — a fire-and-forget caller cannot float a rejection', async () => {
+    // chrome.storage rejects on an INVALIDATED extension context, and the panel
+    // dispatches `flush` with `void` on exactly the two paths that run while the
+    // context is going away (the cross-site park, the pagehide handler). It also
+    // `await`s it inside `swapTo`, from a `void`ed handler. Both are only safe
+    // because flush resolves whatever storage does — that is the invariant here;
+    // the `.catch` sinks at those call sites are belt-and-braces over it.
+    const { area } = fakeArea()
+    const mocks = area as unknown as { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }
+    const store = createSessionStore(area, 500)
+    store.save(newSession(7, 'https://a.com'))
+    const dead = async (): Promise<never> => { throw new Error('Extension context invalidated.') }
+    mocks.get.mockImplementation(dead)
+    mocks.set.mockImplementation(dead)
+    mocks.remove.mockImplementation(dead)
+    await expect(store.flush()).resolves.toBeUndefined()
+  })
+
+  it('a mutation the callback DROPS keeps the debounced row instead of discarding it', async () => {
+    // The drop arm is routine: a background subframe navigation (ad/chat iframes
+    // navigate constantly), a stale-generation settling write, a rejected
+    // snapshotPush. `mutate` takes the pending row out of the debounce buffer
+    // BEFORE it knows whether fn will write — so a drop used to delete an unsaved
+    // edit outright, leaving storage on the OLDER row and losing the edit at the
+    // next rehydrate.
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 500)
+    const s = newSession(7, 'https://a.com')
+    store.save({ ...s, company: 'stored' })
+    await store.flush()
+    store.save({ ...s, company: 'edited' })      // debounced, not yet written
+    await expect(store.mutate(7, () => null)).resolves.toBeNull()
+    await vi.advanceTimersByTimeAsync(500)
+    expect((rows[sessionKey(7)] as Session).company).toBe('edited')
+    // …and read-your-writes still holds for it.
+    expect((await store.load(7))?.company).toBe('edited')
   })
 
   it('flush during an in-flight mutate does not clobber it', async () => {

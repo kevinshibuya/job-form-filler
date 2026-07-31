@@ -47,12 +47,28 @@ export interface Session {
  *  ref changing across a re-scan. */
 export const answerKey = (label: string): string => normalizeQuestion(label)
 
+/**
+ * THE stamp source for a session's `createdAt` and for the tombstone times that
+ * are compared against it. Clock-seeded, but STRICTLY INCREASING: `Date.now()`
+ * alone hands two events in the same millisecond the same number, and the
+ * tombstone edge (below) is a `createdAt` vs `removedAt` comparison — a tie
+ * there either buries a legitimately new session forever or resurrects a removed
+ * one. Every stamp being distinct makes the comparison exact in both directions:
+ * created-before-the-removal is always `<`, created-after is always `>`.
+ */
+let lastStamp = 0
+const nextStamp = (): number => {
+  const now = Date.now()
+  lastStamp = now > lastStamp ? now : lastStamp + 1
+  return lastStamp
+}
+
 /** The default `startUrl` is the LAZILY-created case (a tab with no scan yet:
  *  `site` stays '' until the first settled scan captures both). */
 export function newSession(tabId: number, startUrl = ''): Session {
   // Clock-seeded for the reason App's old epochRef was: a fresh session must
   // never collide with in-flight replies stamped by a previous one.
-  const now = Date.now()
+  const now = nextStamp()
   return {
     version: SESSION_VERSION,
     tabId,
@@ -310,7 +326,7 @@ export function createSessionStore(
 ): SessionStore {
   /** Debounce buffer only — NOT a lock. Rows here are already capForStorage'd. */
   const pending = new Map<number, Session>()
-  /** tabId → the `Date.now()` of the removal that buried it.
+  /** tabId → the `nextStamp()` of the removal that buried it.
    *
    *  A tombstone buries exactly ONE session: the one that was removed. `remove` is
    *  NOT a dead-tab-only path — the panel's lifecycle calls it for Mark applied and
@@ -319,15 +335,19 @@ export function createSessionStore(
    *  can never produce one (nothing creates a session for a tab that is gone), so
    *  the anti-resurrection property is preserved exactly: a stale displayed-state
    *  save landing after the tab closed carries the REMOVED session's `createdAt`
-   *  and is still dropped. `<=` is the conservative edge: a save whose createdAt
-   *  ties the removal is treated as the removed session. */
+   *  and is still dropped. Both sides come from `nextStamp`, so an existing
+   *  session's `createdAt` is ALWAYS strictly below the stamp of a later removal
+   *  and a session minted afterwards is ALWAYS strictly above it — which is why
+   *  the edge below is `<` and not `<=`: a tie can only be a session the removal
+   *  did not precede, and burying it would lose it forever (only `save` lifts a
+   *  tombstone, and `save` is exactly what a tie would drop). */
   const tombstones = new Map<number, number>()
 
   /** Is this exact session buried? (Only `createdAt` can answer — the tabId alone
    *  cannot tell the removed session apart from its successor.) */
   const buried = (s: Session): boolean => {
     const removedAt = tombstones.get(s.tabId)
-    return removedAt !== undefined && s.createdAt <= removedAt
+    return removedAt !== undefined && s.createdAt < removedAt
   }
   /** A genuinely newer session claims the tab back, so later reads (`mutate`)
    *  stop refusing it. Call sites must have cleared `buried` first. */
@@ -471,10 +491,23 @@ export function createSessionStore(
         // a save that landed during the get must not be silently discarded.
         base = pending.get(tabId) ?? stored
       }
+      // What is about to leave the debounce buffer — re-read for the same reason
+      // `base` was, and with no await between the read and the delete.
+      const held = pending.get(tabId) ?? null
       pending.delete(tabId)
       if (tombstones.has(tabId)) return null
       const next = fn(base)
-      if (next === null) return null
+      if (next === null) {
+        // fn DROPPED the mutation (a non-elected subframe navigation, a stale
+        // generation, a rejected snapshotPush) — but the debounced row is already
+        // out of `pending`, and nothing below will write it. Put it back, or the
+        // user's unsaved edits are silently replaced by the OLDER stored row on
+        // the next rehydrate. `armTimer` is a no-op when a timer is already
+        // running; it matters when the drop raced the flush that was going to
+        // write this row.
+        if (held !== null) { pending.set(tabId, held); armTimer() }
+        return null
+      }
       const capped = capForStorage(next)
       await writeRow(capped)
       return capped
@@ -489,7 +522,7 @@ export function createSessionStore(
 
     remove: (tabId) => withLock(async () => {
       pending.delete(tabId)
-      tombstones.set(tabId, Date.now())
+      tombstones.set(tabId, nextStamp())
       await area.remove(sessionKey(tabId))
     }),
 
@@ -501,7 +534,7 @@ export function createSessionStore(
         const tabId = Number(m[1])
         if (liveTabIds.has(tabId)) continue
         pending.delete(tabId)
-        tombstones.set(tabId, Date.now())
+        tombstones.set(tabId, nextStamp())
         await area.remove(key)
       }
     }),

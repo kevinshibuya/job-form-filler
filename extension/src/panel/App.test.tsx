@@ -4,7 +4,7 @@ import { act, render, screen, fireEvent, waitFor, within } from '@testing-librar
 import type { EnumField, FieldHandle, FieldKey, HostResponse, Resolution } from '@jff/shared'
 import { App, hostnameOf } from './App'
 import { clearResume, saveResume } from './resume'
-import { answerKey, capForStorage, newSession, type Session } from './sessions'
+import { answerKey, capForStorage, MAX_PERSISTED_OPTIONS, newSession, type Session } from './sessions'
 
 /** The fake port forwards to `window.__jffHostBridge` when one is installed, so
  *  this is how a test gives the panel real resolutions (the canned fake answers
@@ -2202,6 +2202,31 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     expect(document.querySelector('[data-jff-tab]')?.getAttribute('data-jff-tab')).toBe('8')
   })
 
+  it('coming straight back to the ORIGINAL tab mid-swap does not strand the panel on the other one', async () => {
+    installScan()
+    await mountScanned()
+    await waitFor(() => { expect(row(7)).toBeDefined() })
+    storageRows()['jff:session:8'] = capForStorage(newSession(8, JOB_B))
+
+    const incoming = parkSessionLoad(8)
+    const onActivated = await firstListener<(i: { tabId: number; windowId: number }) => void>(
+      chromeFake().tabs.onActivated)
+    await act(async () => { onActivated({ tabId: 8, windowId: 1 }) })
+    await waitFor(() => { expect(incoming.issued()).toBe(true) })
+
+    // The user goes straight back to 7 while the swap to 8 is still parked.
+    // swapTo(7) fast-returns because tabIdRef is STILL 7 — it is only assigned at
+    // the very end of swapTo — so nothing cancels the in-flight swap to 8.
+    await act(async () => { onActivated({ tabId: 7, windowId: 1 }) })
+    await act(async () => { incoming.release() })
+
+    // Tab 7 is the ACTIVE tab. Chrome will emit no further `activated` for it, so
+    // if the panel lands on 8 here nothing will ever repair it — and a Scan would
+    // inject and FILL tab 8's page while the user is looking at tab 7.
+    await waitFor(() => { expect(sessionAttr()).toBe('7') })
+    expect(document.querySelector('[data-jff-tab]')?.getAttribute('data-jff-tab')).toBe('7')
+  })
+
   it('a swap toward a tab that CLOSES mid-swap is abandoned — the dead tab never reaches the display', async () => {
     // The other half of the same rule: a removal invalidates exactly the work
     // that would put the REMOVED tab on screen. Here that IS the in-flight swap.
@@ -2255,6 +2280,116 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await waitFor(() => { expect(status()).toBe('done') })
     // No double-unpark: exactly one further scan.
     expect(scanCount()).toBe(afterMount + 2)
+  })
+
+  it('a boot whose tab enumeration FAILS prunes nothing — other windows keep their sessions', async () => {
+    // `live` is seeded with the bound tab alone, so pruning against a failed
+    // enumeration deletes AND tombstones every other session — parked
+    // applications in other windows included. A row that outlives its tab costs
+    // storage; a wrong sweep costs the user's work.
+    installScan()
+    storageRows()['jff:session:9'] = capForStorage({ ...newSession(9, JOB_B), parked: true })
+    chromeFake().tabs.query.mockImplementation(async (q: { active?: boolean }) => {
+      if (q.active === true) return [{ id: 7, url: APPLY_A, title: 'Engineer at Acme' }]
+      // What Chrome does while a tab is being dragged between windows.
+      throw new Error('Tabs cannot be queried right now.')
+    })
+
+    await mountScanned()
+
+    expect(row(9)?.startUrl).toBe(JOB_B)
+    // …and it is still there once the bound tab's own first write has flushed:
+    // the sweep is skipped, not merely late.
+    await waitFor(() => { expect(row(7)).toBeDefined() }, { timeout: 4_000 })
+    expect(row(9)?.startUrl).toBe(JOB_B)
+  })
+
+  it('a navigation mid-save cancels the save instead of filing these answers under the NEXT page url', async () => {
+    // `onSaveAnswers` reads the url from the tab AFTER several awaits, so a wizard
+    // step landing mid-flight paired step 1's answers with step 2's url in the
+    // applications log. Same rule as Mark applied: the generation is captured at
+    // dispatch and re-checked at the submit.
+    const saves: { url: string }[] = []
+    const base = window.__jffHostBridge!
+    window.__jffHostBridge = async (req): Promise<HostResponse> => {
+      if (req.method === 'save') {
+        saves.push(req.params as { url: string })
+        return { requestId: req.requestId, ok: true, result: { saved: 1 } }
+      }
+      return await base(req)
+    }
+    installScan()
+    await mountScanned()
+
+    // Park the tab read the save uses for its url (one-shot: the re-scan the
+    // navigation triggers must not park too).
+    let release = (): void => {}
+    let issued = false
+    const realGet = tabsGet().getMockImplementation() as () => Promise<unknown>
+    const parked = new Promise<void>((r) => { release = r })
+    tabsGet().mockImplementation(async () => {
+      issued = true
+      tabsGet().mockImplementation(realGet)
+      await parked
+      return await realGet()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save answers' }))
+    await waitFor(() => { expect(issued).toBe(true) })
+    await commit(7, STEP_2)
+    await act(async () => { release() })
+
+    await waitFor(() => { expect(status()).toBe('done') })
+    expect(saves).toEqual([])
+  })
+
+  it('an ordinary debounce flush never adopts its own CAPPED row over the display', async () => {
+    // `store.save` puts capForStorage(session) into pending, and the flush notifies
+    // subscribers with THAT row. Without the background-write guard on the repair
+    // subscription, every routine flush of the displayed session would adopt it:
+    // a 244-option country picker would silently collapse to the persisted 100 a
+    // beat after the scan settled, and a transient action_failed line would be
+    // overwritten by the stored scan outcome.
+    const OPTIONS = Array.from({ length: MAX_PERSISTED_OPTIONS + 144 }, (_, i) => `Country ${i}`)
+    sendMock().mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return {
+          ok: true,
+          replies: [{
+            frameId: 0, url: APPLY_A,
+            payload: { ok: true, scan: { epoch: 1, fields: [{ ...field(0, 'Country'), frameId: -1, options: OPTIONS }], unreachableWidgets: 0, activeCaptcha: false } },
+          }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_FILL') {
+        return {
+          ok: true,
+          replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 1, filled: [], failed: [{ handle: { frameId: 0, fid: 0, epoch: 1 }, reason: 'no-matching-option' }] } } }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      return { ok: true }
+    })
+    await mountScanned()
+    const optionCount = (): number => document.querySelectorAll('datalist option').length
+    expect(optionCount()).toBe(OPTIONS.length)
+
+    // An edit arms the debounce; a refused fill leaves the transient red line.
+    fireEvent.change(screen.getByLabelText('Country'), { target: { value: 'Brazil' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }))
+    await waitFor(() => { expect(status()).toBe('action_failed') })
+
+    // The flush landed — and what it wrote really is the capped row.
+    await waitFor(() => { expect(row(7)?.edits['0:0']).toBe('Brazil') }, { timeout: 4_000 })
+    expect(row(7)?.fields[0]?.options.length).toBe(MAX_PERSISTED_OPTIONS)
+
+    expect(optionCount()).toBe(OPTIONS.length)
+    expect(status()).toBe('action_failed')
   })
 })
 
