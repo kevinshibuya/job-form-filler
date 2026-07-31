@@ -1523,6 +1523,15 @@ describe('App — onboarding gate (O1/O3)', () => {
       return { requestId, ok: true, result: {} }
     }
   }
+  /** selfCheck answers (so the HOST gate latches open) but the facts never
+   *  arrive — the panel sits in the 'pending' completeness window. */
+  const hangingProfileBridge = (): void => {
+    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.get' || method === 'answerBank.get') return new Promise<HostResponse>(() => {})
+      return { requestId, ok: true, result: {} }
+    }
+  }
 
   it('a fresh install renders OnboardingView and fires NO scan', async () => {
     await clearResume()
@@ -1568,6 +1577,67 @@ describe('App — onboarding gate (O1/O3)', () => {
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('connecting'))
     await new Promise((r) => setTimeout(r, 150))
     expect(scanCount()).toBe(0)
+  })
+
+  it('the Scan button is DEAD while the completeness decision is pending', async () => {
+    // The `pending` hole: the onboarding wall only replaces the scan UI on a
+    // PROVEN 'incomplete', so during the (up to hostWaitMs) pending window the
+    // normal UI rendered with a live Scan button. One click spent a paid
+    // `claude -p` resolve against a profile with no resume and no facts, and
+    // the wall then hid the session it drained into. Spec O3: the gate means no
+    // scan triggers — the button is one.
+    hangingProfileBridge()
+    render(<App hostWaitMs={60_000} />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('connecting'))
+    const scan = screen.getByRole('button', { name: 'Scan' }) as HTMLButtonElement
+    expect(scan.disabled).toBe(true)
+    fireEvent.click(scan)
+    await new Promise((r) => setTimeout(r, 150))
+    expect(scanCount()).toBe(0)
+  })
+
+  it('a background-tab navigation cannot scan past a pending decision either', async () => {
+    // The button is not the only un-gated caller: `onNavigatedBackground` calls
+    // `onScan(tabId)` DIRECTLY, never through the auto-scan effect that holds
+    // the gate. It is also why the guard reads a ref — those nav listeners are
+    // registered once at mount, so a state-reading closure would freeze on the
+    // mount-time gate and refuse every background re-scan forever after.
+    hangingProfileBridge()
+    render(<App hostWaitMs={60_000} />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('connecting'))
+    // A live session on a tab the panel is not displaying (seeded after boot, so
+    // the mount's prune does not sweep it), then that tab navigates same-site.
+    storageRows()['jff:session:9'] = capForStorage(newSession(9, 'https://jobs.acme.com/apply'))
+    await commit(9, 'https://jobs.acme.com/apply/step2')
+    await new Promise((r) => setTimeout(r, 150))
+    expect(scanCount()).toBe(0)
+  })
+
+  it('an empty-but-successful facts load with a stalled RESUME read still times out to unknown', async () => {
+    // T3, the partial settle the O3 deadline exists for: the host answers (with
+    // an EMPTY profile — 'incomplete' if it were the whole story), while the
+    // other half of the verdict, the IndexedDB resume read, never settles. The
+    // latch must not sit on 'pending' forever, must not show the wall on half an
+    // answer, and must scan exactly ONCE when it gives up.
+    emptyProfileBridge()
+    const realOpen = indexedDB.open.bind(indexedDB)
+    // An IDB request that never fires success/error: `resume.ts`'s open() awaits
+    // those events, so both loadResume and loadResumeText hang forever.
+    indexedDB.open = (() => ({ onupgradeneeded: null, onsuccess: null, onerror: null })) as unknown as typeof indexedDB.open
+    try {
+      render(<App hostWaitMs={60} />)
+      await waitFor(() => expect(scanCount()).toBeGreaterThan(0), { timeout: 5000 })
+    } finally {
+      indexedDB.open = realOpen
+    }
+    // Scanning at all IS the 'unknown' verdict: had the decision settled it
+    // would have settled on 'incomplete' (empty facts) and walled the panel.
+    expect(document.querySelector('[data-jff-onboarding]')).toBeNull()
+    expect(document.querySelector('[data-jff-actions]')).not.toBeNull()
+    expect(screen.getByRole('button', { name: /^Scan/ })).toBeTruthy()
+    // Exactly one: both the host gate and the completeness verdict LATCH.
+    await new Promise((r) => setTimeout(r, 200))
+    expect(scanCount()).toBe(1)
   })
 
   it('a never-settling facts load times out to unknown and scans anyway', async () => {
@@ -1749,6 +1819,28 @@ describe('App — submission detection prompt (A3)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('empty'))
     expect(document.querySelector('[data-jff-submit-prompt]')).toBeNull()
+  })
+
+  it('a NEW navigation re-arms a dismissed prompt', async () => {
+    // T6: dismissal is scoped to the generation it was made against
+    // (`promptDismissedGen` vs the generation each navigation bumps). Only the
+    // suppressing half of that was pinned, and permanent suppression is the
+    // worse failure direction — the user dismisses once on step 2 and never
+    // gets offered "Mark as applied?" again for the rest of the application.
+    const state = { done: false }
+    installWizardEnd(state)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    state.done = true
+    await navigate()
+    await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull(), { timeout: 3000 })
+    fireEvent.click(document.querySelector('[data-jff-prompt-dismiss]')!)
+    expect(document.querySelector('[data-jff-submit-prompt]')).toBeNull()
+
+    // A DIFFERENT url, so navSignals' fallback dedupe treats it as a new
+    // navigation rather than a replay of the one just dismissed against.
+    await commit(7, 'https://jobs.acme.com/apply/done-2')
+    await waitFor(() => expect(document.querySelector('[data-jff-submit-prompt]')).not.toBeNull(), { timeout: 3000 })
   })
 })
 

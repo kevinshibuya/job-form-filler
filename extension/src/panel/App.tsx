@@ -57,7 +57,14 @@ interface SessionRuntime {
    *  work describe a page that is gone: navigation, parking, deletion. Every
    *  post-await write is conditional on it (the old resetGenRef, per session).
    *  A tab SWITCH is deliberately not one of them: the outgoing session's
-   *  in-flight work is still valid, it just settles into storage instead. */
+   *  in-flight work is still valid, it just settles into storage instead.
+   *
+   *  Values come from ONE panel-wide monotonic source (`nextGen`), not a
+   *  per-tab count. Only equality is ever asked of them, and global uniqueness
+   *  is what makes a runtime entry SAFE TO DELETE when its tab closes: a
+   *  runtime rebuilt for that tab id later starts beyond every generation ever
+   *  issued, so an in-flight settle still carrying the old one is refused. A
+   *  per-tab counter restarting at 0 would ACCEPT it. */
   gen: number
   /** S7: the session's epoch counter, mirrored here so `runScan`'s synchronous
    *  `nextEpoch` hand-off does not have to await the session write. Seeded from
@@ -77,8 +84,8 @@ interface SessionRuntime {
   navRescan: { prevFields: number } | null
 }
 
-const newRuntime = (): SessionRuntime => ({
-  gen: 0, epoch: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
+const newRuntime = (gen: number): SessionRuntime => ({
+  gen, epoch: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
 })
 
 /**
@@ -163,6 +170,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // The last SETTLED scan outcome. An action_failed line is transient: when the
   // retried action succeeds the panel goes back to what the scan said.
   const lastOutcomeRef = useRef<ScanUiState | null>(null)
+  // O3: the scan gate as `onScan` must read it. It has to be a REF: the nav
+  // signal listeners are registered once at mount, so `onNavigatedBackground`'s
+  // `onScan` closure would forever see the mount-time (closed, 'pending') gate
+  // and silently refuse every background re-scan for the life of the panel.
+  const scanGateRef = useRef(false)
 
   /* -------------------------------------------------- panel-global UI state */
 
@@ -216,13 +228,24 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }
   const store = storeRef.current
 
+  /** Panel-wide, strictly increasing. Starts at 1 so it never collides with
+   *  `promptDismissedGen`'s -1 sentinel. */
+  const genSeqRef = useRef(0)
+  const nextGen = (): number => ++genSeqRef.current
+
   const runtimeOf = (id: number): SessionRuntime => {
     const found = runtimesRef.current.get(id)
     if (found !== undefined) return found
-    const made = newRuntime()
+    const made = newRuntime(nextGen())
     runtimesRef.current.set(id, made)
     return made
   }
+
+  /** F11: the NON-creating generation read, for the post-await checks. A tab
+   *  whose runtime was pruned (its tab closed) must not be resurrected in the
+   *  map by a late settle merely asking whether it is still current — and the
+   *  honest answer to that question is no, which `null` gives. */
+  const genOf = (id: number): number | null => runtimesRef.current.get(id)?.gen ?? null
 
   /** S7: the runtime's epoch counter never goes backwards, and never behind the
    *  session it belongs to — a fresh reply stamped by a previous scan must not
@@ -237,7 +260,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  must not land in whatever takes its place on the same tab. */
   const endRuntime = (id: number): void => {
     const rt = runtimeOf(id)
-    rt.gen++
+    rt.gen = nextGen()
     rt.pendingRescan = false
     rescanQueueRef.current = rescanQueueRef.current.filter((t) => t !== id)
     rt.appliedOverride = false
@@ -276,7 +299,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    * switch does not, because the outgoing session's work is still perfectly
    * valid, it just has to settle into storage instead of onto the screen.
    */
-  const alive = (sc: { target: number; gen: number }): boolean => runtimeOf(sc.target).gen === sc.gen
+  const alive = (sc: { target: number; gen: number }): boolean => genOf(sc.target) === sc.gen
 
   /** …and it is the session ON SCREEN, so DISPLAY-only state (the status line,
    *  the submit prompt, the per-row busy flags) may be touched too. Session
@@ -325,14 +348,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    */
   const applyToSession = async (tabId: number, gen: number, fn: (s: Session) => Session): Promise<void> => {
     const cur = sessionRef.current
-    if (cur !== null && cur.tabId === tabId && runtimeOf(tabId).gen === gen) {
+    if (cur !== null && cur.tabId === tabId && genOf(tabId) === gen) {
       const next = fn(cur)
       sessionRef.current = next
       setSession(next)
       store.save(next)
       return
     }
-    await mutateSession(tabId, (s) => (s === null || runtimeOf(tabId).gen !== gen ? null : fn(s)))
+    await mutateSession(tabId, (s) => (s === null || genOf(tabId) !== gen ? null : fn(s)))
   }
 
   /** S7: the latch is GLOBAL, so a re-scan due for another session waits its
@@ -480,6 +503,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (!swapIsRescue && (wasDisplayed || swapping === dead)) bumpSwap()
     endRuntime(dead)
     lastNavRef.current.delete(dead)
+    // F11: the tab is GONE — nothing will ever consult its runtime again except
+    // a settle already in flight, and that settle is refused either way
+    // (`genOf` answers null for a pruned tab). Dropping it here is what keeps
+    // `runtimesRef` from growing for the whole life of the panel, one entry per
+    // tab ever seen. Deliberately NOT done by `endRuntime`: Mark applied and
+    // Discard end a session on a tab that stays OPEN and keeps navigating, and
+    // that tab needs its runtime (and its bumped generation).
+    runtimesRef.current.delete(dead)
     // Tombstones the session: no later save can bring the row back.
     await store.remove(dead)
     // The rescuing swap owns the display; blanking here would fight it (and lose
@@ -513,14 +544,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const same = ev.url === '' || s.site === '' || sameSite(ev.url, s.startUrl)
       if (!same) {
         if (s.parked) return null
-        rt.gen++
+        rt.gen = nextGen()
         rt.navRescan = null
         // Drops a re-scan this session had already queued: parked pages never
         // spend a resolve.
         rt.pendingRescan = false
         return { ...s, parked: true }
       }
-      rt.gen++
+      rt.gen = nextGen()
       rt.navRescan = { prevFields: s.fields.length }
       acted.rescan = true
       return clearScanResults({ ...s, parked: false })
@@ -556,7 +587,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (!same) {
       // Idempotent: a second hop deeper into the same detour stays parked.
       if (s.parked) return
-      rt.gen++
+      rt.gen = nextGen()
       rt.navRescan = null
       rt.pendingRescan = false
       const nextSession = { ...s, parked: true }
@@ -577,7 +608,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     }
 
     // Same site: the session survives the step (and a parked one comes home).
-    rt.gen++
+    rt.gen = nextGen()
     rt.navRescan = { prevFields: s.fields.length }
     const nextSession = clearScanResults({ ...s, parked: false })
     showSession(nextSession)
@@ -792,6 +823,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const port = portRef.current
     const target = targetTabId ?? tabIdRef.current
     if (port === null || target === null) return
+    // O3: no scan may fire while the profile verdict is undecided or the host
+    // gate is shut — including the ones the button and the nav-driven re-scans
+    // reach directly, which never passed through the auto-scan effect's check.
+    // Not queued: there is nothing to replay to. The gate opening is itself a
+    // scan trigger (the auto-scan effect keys on it).
+    if (!scanGateRef.current) return
     if (scanningRef.current) {
       // Dropping this trigger silently is how a mid-scan navigation left the new
       // page unscanned forever. The latch is GLOBAL, so this queues across
@@ -1099,9 +1136,27 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     }
   }, [factsOk, resumeOk, completeness])
 
+  /**
+   * O3: "the gate means no scan triggers" — and until this existed only the
+   * AUTO-scan honoured it. While the decision is 'pending' the normal scan UI
+   * still rendered (the onboarding wall only replaces it on a PROVEN
+   * 'incomplete'), with a live Scan button that would spend a paid `claude -p`
+   * resolve against a profile with no resume and no facts, draining into a
+   * session the wall then hides. Both the button and `onScan` read this.
+   *
+   * Brick-safety is untouched: past the hostWaitMs deadline the latch opens and
+   * the decision becomes 'unknown', which is not 'pending' — so a dead host
+   * REOPENS the gate rather than sealing it.
+   *
+   * Assigned during render on purpose: an effect would let the auto-scan effect
+   * below observe a stale ref within the same commit.
+   */
+  const scanGateOpen = gateOpen && completeness !== 'pending'
+  scanGateRef.current = scanGateOpen
+
   useEffect(() => {
     if (!booted) return
-    if (!gateOpen || completeness === 'pending') { setScanStatus({ kind: 'connecting' }); return }
+    if (!scanGateOpen) { setScanStatus({ kind: 'connecting' }); return }
     // O3: a profile PROVEN incomplete renders OnboardingView instead of scan UI
     // — no scan may fire. 'unknown' scans anyway: a dead host must never brick
     // an existing user (they see the normal panel plus the host banner).
@@ -1433,7 +1488,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // The page this session described is gone: `tab.title` now names a
       // DIFFERENT posting, and pairing it with job A's url is exactly the
       // silent-wrong-data write. Marking stays available for the new page.
-      if (runtimeOf(target).gen !== gen) return
+      if (genOf(target) !== gen) return
       const title = (tab?.title ?? '').trim()
       const r = await port.request<{ markedAt: string }>('applied.mark', {
         url: startUrl,
@@ -1497,7 +1552,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // The page these answers came from is gone: `tab.url` now names a DIFFERENT
       // step (or a different posting), and pairing it with them is the
       // silent-wrong-data write. Saving stays available for the new page.
-      if (runtimeOf(target).gen !== gen) return
+      if (genOf(target) !== gen) return
       const r = await port.request<{ saved: number }>('save', {
         url: tab?.url ?? '',
         company: companyOrNull,
@@ -1574,7 +1629,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
       <div className="my-2.5 flex items-center gap-2" data-jff-actions="1">
         {/* onScan takes an explicit target now — never hand it a click event. */}
-        <button type="button" className={BTN_PRIMARY} disabled={tabId === null || scanning || parked} onClick={() => { void onScan() }}>
+        <button type="button" className={BTN_PRIMARY} disabled={tabId === null || scanning || parked || !scanGateOpen} onClick={() => { void onScan() }}>
           {busyLabel(scanning, 'Scan', 'Scanning…')}
         </button>
         <button type="button" className={BTN} onClick={() => setView((v) => (v === 'editor' ? 'session' : 'editor'))}>

@@ -70,6 +70,21 @@ describe('createNavSignals (S3)', () => {
     expect(seen[1]).toEqual({ type: 'removed', tabId: 9 })
   })
 
+  it('a removal drops the tab from the dedupe map (F11: it grew one entry per tab, forever)', () => {
+    // The map is private, so its emptiness is probed the only way it is
+    // observable: the dedupe window is what an entry BUYS, and after the
+    // removal a tick inside that window is no longer suppressed. `removed` is
+    // not otherwise a signal this module reacts to, so without the delete the
+    // entry survives for the whole life of the panel.
+    const events = installChrome()
+    const seen: NavEvent[] = []
+    createNavSignals(1, (e) => seen.push(e))
+    ;(listenerOf(events.committed) as (d: { tabId: number; frameId: number; url: string }) => void)({ tabId: 7, frameId: 0, url: 'https://a.com' })
+    ;(listenerOf(events.removed) as (id: number) => void)(7)
+    ;(listenerOf(events.updated) as (id: number, c: { status?: string; url?: string }) => void)(7, { status: 'loading', url: 'https://a.com/x' })
+    expect(seen.map((e) => e.type)).toEqual(['navigated', 'removed', 'navigated'])
+  })
+
   it('the disposer removes every listener', () => {
     const events = installChrome()
     const stop = createNavSignals(1, () => {})

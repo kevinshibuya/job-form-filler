@@ -39,7 +39,14 @@ export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => voi
     if (info.windowId !== windowId) return
     onEvent({ type: 'activated', tabId: info.tabId })
   }
-  const onRemoved = (id: number): void => onEvent({ type: 'removed', tabId: id })
+  const onRemoved = (id: number): void => {
+    // F11: the dedupe window is 1.5s wide and a closed tab emits no further
+    // navigations, so this entry is dead weight the moment the tab is gone.
+    // Without the delete the map grows one entry per tab ever navigated, for
+    // the whole life of the panel.
+    lastWebNav.delete(id)
+    onEvent({ type: 'removed', tabId: id })
+  }
 
   chrome.webNavigation.onCommitted.addListener(onCommitted)
   chrome.webNavigation.onHistoryStateUpdated.addListener(onHistory)
