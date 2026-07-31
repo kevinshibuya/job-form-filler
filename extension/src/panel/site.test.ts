@@ -11,8 +11,24 @@ describe('registrableDomain / sameSite (S5)', () => {
     ['https://foo.bar.co.uk/x', 'bar.co.uk'],
     ['https://empresa.com.br/vagas', 'empresa.com.br'],
     ['not a url', ''],
+    // F10: an IP literal has no registrable domain — the suffix heuristic sliced
+    // '127.0.0.1' down to '0.1', so every loopback origin looked like one site.
+    ['http://127.0.0.1:3000/x', '127.0.0.1'],
+    ['http://192.168.1.10/apply', '192.168.1.10'],
+    ['http://[::1]:8080/x', '[::1]'],
+    ['http://localhost:5173/x', 'localhost'],
   ])('%s → %s', (url, domain) => {
     expect(registrableDomain(url)).toBe(domain)
+  })
+
+  it('different local HOSTS are not one site; a different port on one host still is (F10)', () => {
+    // Production impact is nil — every ATS is a named host. What the '0.1' slice
+    // cost was any ability to tell local hosts apart at all. Ports are correctly
+    // NOT part of a site, before or after: two fixture servers on 127.0.0.1
+    // stayed same-site either way.
+    expect(sameSite('http://127.0.0.1:3000/a', 'http://127.0.0.2:3000/b')).toBe(false)
+    expect(sameSite('http://127.0.0.1:3000/a', 'http://localhost:3000/b')).toBe(false)
+    expect(sameSite('http://127.0.0.1:3000/a', 'http://127.0.0.1:4000/b')).toBe(true)
   })
 
   it('sameSite: subdomains of one registrable domain match; unparseable never matches', () => {

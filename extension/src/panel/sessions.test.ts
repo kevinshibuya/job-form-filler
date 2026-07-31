@@ -91,7 +91,32 @@ describe('sessions module (S1/S6)', () => {
     expect(await store.load(8)).toBeNull()
     rows[sessionKey(9)] = 'garbage'
     expect(await store.load(9)).toBeNull()
-    expect((await store.loadAll()).map((x) => x.tabId)).toEqual([7])
+  })
+
+  it('a row whose CONTAINERS are right but whose contents are junk is dropped, not exploded on', async () => {
+    // F13: `Array.isArray` said yes to `fields: [1, 2, 3]`, so a row like this
+    // parsed — and the first thing to touch it was capForStorage's
+    // `f.options.length`, throwing SYNCHRONOUSLY inside `save`, from a React
+    // event handler. Spec: a corrupt row drops to fresh state, never crashes
+    // the panel. The proof is both halves: null out, and no throw from the
+    // consumer that used to die.
+    const s = newSession(7, 'https://jobs.acme.com/apply')
+    for (const bad of [
+      { ...s, fields: [1, 2, 3] },
+      { ...s, fields: [{ frameId: 0, fid: 0, label: 'Email' }] },   // no options array
+      { ...s, resolutions: ['nope'] },
+      { ...s, frameReports: [null] },
+      { ...s, filledRefs: [0] },
+      { ...s, generatedRefs: [{}] },
+    ]) {
+      expect(parseStoredSession(bad)).toBeNull()
+    }
+    // …and the throw the parse now stands in front of is real, not hypothetical.
+    expect(() => capForStorage({ ...s, fields: [1, 2, 3] } as unknown as Session)).toThrow()
+    const { rows, area } = fakeArea()
+    const store = createSessionStore(area, 0)
+    rows[sessionKey(9)] = { ...s, tabId: 9, fields: [1, 2, 3] }
+    expect(await store.load(9)).toBeNull()
   })
 
   it('remove cancels the pending debounced write', async () => {
@@ -475,13 +500,12 @@ describe('sessions module (S1/S6)', () => {
     off()
   })
 
-  it('loadAll and prune ignore foreign jff:snap rows sharing the storage area', async () => {
+  it('prune ignores foreign jff:snap rows sharing the storage area', async () => {
     const { rows, area } = fakeArea()
     const store = createSessionStore(area, 0)
     rows['jff:snap:7:0'] = { epoch: 1, values: { 0: 'x' } }
     store.save(newSession(7, 'https://a.com'))
     await store.flush()
-    expect((await store.loadAll()).map((s) => s.tabId)).toEqual([7])
     await store.prune(new Set<number>())
     expect(rows['jff:snap:7:0']).toBeDefined()   // snapshot rows are not ours to prune
     expect(rows[sessionKey(7)]).toBeUndefined()

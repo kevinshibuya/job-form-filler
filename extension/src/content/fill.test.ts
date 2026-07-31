@@ -591,7 +591,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
    *  hidden decoy listbox (the intl-tel-input country list) sits elsewhere. */
   function mountReactSelect(
     options: string[],
-    { updateHolder = true, prefixFilter = false, hiddenHolder = false, staleText = null as string | null } = {},
+    { updateHolder = true, prefixFilter = false, hiddenHolder = false, staleText = null as string | null, prefill = '' } = {},
   ): { input: HTMLInputElement } {
     document.body.innerHTML = `
       <ul role="listbox" id="decoy" style="display:none">
@@ -603,6 +603,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
         <input id="c" role="combobox" aria-haspopup="true">
       </div>`
     const input = document.getElementById('c') as HTMLInputElement
+    input.value = prefill
     const control = document.getElementById('control')!
     const seen = new Set<string>()
     let open = false
@@ -706,5 +707,26 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     // text is not the page-visible commit the verification promises.
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { hiddenHolder: true })
     await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+  }, 10_000)
+
+  it("a failed commit restores a PREFILLED answer — the user's text, not '' — before Escape", async () => {
+    // T9: every other C2 failure test starts from an EMPTY input, so all of them
+    // pass whether failClosed restores the snapshot or clears the field. This is
+    // the arm that can tell the difference: the react-select commit CLEARS the
+    // input (which is what routes the verification through visibleCommittedText
+    // at all), the fallback finds nothing, and what has to come back is the
+    // answer that was already on the page.
+    const PREFILL = 'Bachelor of Science'
+    const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false, prefill: PREFILL })
+    const seq: string[] = []
+    input.addEventListener('input', () => seq.push('input'))
+    input.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Escape') seq.push('escape') })
+
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+
+    expect(input.value).toBe(PREFILL)
+    // …and the restore write landed BEFORE the close, or the input event it
+    // fires would re-open the dropdown Escape just closed.
+    expect(seq.slice(-2)).toEqual(['input', 'escape'])
   }, 10_000)
 })

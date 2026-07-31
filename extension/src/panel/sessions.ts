@@ -236,6 +236,22 @@ export function capForStorage(s: Session): Session {
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/**
+ * F13: validating the CONTAINER is not validating the row. `Array.isArray` says
+ * yes to `fields: [1, 2, 3]`, and the first thing that touches such a row is
+ * `capForStorage`'s `f.options.length` — which throws SYNCHRONOUSLY, inside
+ * `save`, from a React event handler, i.e. it takes the whole panel down. The
+ * spec's contract for a corrupt row is "drop to fresh state, never crash the
+ * panel", so the elements every consumer dereferences get a cheap shape check
+ * here, where the answer is a null instead of an exception.
+ */
+const isField = (v: unknown): boolean =>
+  isRecord(v) && Array.isArray(v.options)
+  && typeof v.frameId === 'number' && typeof v.fid === 'number'
+  && typeof v.label === 'string'
+
+const allStrings = (a: unknown[]): boolean => a.every((x) => typeof x === 'string')
+
 /** Structural gate on untrusted storage rows: a version mismatch or any shape
  *  surprise yields null rather than a half-typed Session. Never throws. */
 export function parseStoredSession(raw: unknown): Session | null {
@@ -251,6 +267,9 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (!Array.isArray(raw.fields) || !Array.isArray(raw.resolutions)) return null
     if (!Array.isArray(raw.filledRefs) || !Array.isArray(raw.generatedRefs)) return null
     if (!Array.isArray(raw.frameReports)) return null
+    if (!raw.fields.every(isField)) return null
+    if (!raw.resolutions.every(isRecord) || !raw.frameReports.every(isRecord)) return null
+    if (!allStrings(raw.filledRefs) || !allStrings(raw.generatedRefs)) return null
     if (!isRecord(raw.edits) || !isRecord(raw.answers)) return null
     if (!isRecord(raw.snapshot) || !isRecord(raw.reuseOverrides)) return null
     return raw as unknown as Session
@@ -271,9 +290,6 @@ export interface SessionStore {
   /** Pending-first read-your-writes — and it runs on the STORE LOCK (below),
    *  so a load issued during an in-flight mutate observes the mutated row. */
   load(tabId: number): Promise<Session | null>
-  /** Only rows whose key matches SESSION_KEY_RE — the storage area is shared
-   *  with jff:snap:* rows, which are not ours to read (or prune). */
-  loadAll(): Promise<Session[]>
   /** Debounced latest-wins per tab. Rows pass capForStorage at ENTRY, so the
    *  pending map and storage always agree on shape. A save of a session a
    *  `remove` already buried is silently dropped; a save of a session CREATED
@@ -456,17 +472,6 @@ export function createSessionStore(
       const held = pending.get(tabId)
       if (held !== undefined) return held
       return await readRow(tabId)
-    }),
-
-    loadAll: () => withLock(async () => {
-      const all = await area.get(null)
-      const out: Session[] = []
-      for (const [key, raw] of Object.entries(all)) {
-        if (!SESSION_KEY_RE.test(key)) continue
-        const s = parseStoredSession(raw)
-        if (s !== null) out.push(s)
-      }
-      return out
     }),
 
     save(session) {

@@ -39,8 +39,26 @@ interface Harness {
  *  threaded through BOTH the navigation and the chrome.tabs URL glob, so every
  *  caller keeps addressing the tab it actually opened. */
 async function openFixtureTab(file = 'fixture-form.html'): Promise<Harness> {
+  // ?tabId=-1 binds this panel to a tab that does not exist, and that is the
+  // whole point: it is a RELAY here, never a scanner. Every caller drives the
+  // page through `send`/`panel.evaluate`, which need no binding at all.
+  //
+  // Bound to a real tab it would bind to THIS fixture — `boot()` is async
+  // (windows.getCurrent → tabs.query({active:true}) → prune → load) and the
+  // active-tab query routinely resolves after the fixture tab is created and
+  // activated. Its auto-scan then re-stamps the content script with a fresh
+  // `newSession()` epoch of Date.now() magnitude, which is exactly how the
+  // stale-epoch and submit-snapshot tests kept failing order-dependently
+  // (`Received: 1785524502101` against a test-stamped `epoch: 40`).
+  //
+  // -1 specifically: override mode ignores `activated`, `store.load(-1)` is
+  // null, `prune` keeps -1 in `live`, and the auto-scan effect hits
+  // `getTab(-1)` → null and returns BEFORE `inject` — so there is no relay
+  // traffic AND no console error, which `afterAll`'s empty-consoleErrors
+  // assertion requires. A blank tab is NOT equivalent: it would still inject.
+  // sessions.spec.ts dodges the same hazard by loading manifest.json.
   const panel = await ext.context.newPage()
-  await panel.goto(panelUrl(ext.extensionId))
+  await panel.goto(panelUrl(ext.extensionId, '?tabId=-1'))
   const target = await ext.context.newPage()
   await target.goto(`${fixtures.origin}/${file}`)
   const tabId = await panel.evaluate(async (name) => {
@@ -222,40 +240,6 @@ test('the panel surfaces scan outcomes: captcha on the fixture form, done on a c
   await panel.close(); await finder.close(); await target.close()
 })
 
-/**
- * TERMINAL scan outcomes. Everything else means the panel's own pipeline is
- * still going: the five progress kinds obviously, but ALSO `superseded` (a scan
- * is running and a rescan is already queued behind it) and NO status element at
- * all (the tab scope just reset, or the panel has not bound its tab yet) — both
- * of those read as "idle" to a not-in-the-busy-list test, and that mistake is
- * exactly what let a queued rescan land in the middle of the driven fill.
- */
-const PANEL_SETTLED: string[] = ['done', 'empty', 'captcha', 'failed', 'action_failed']
-
-/**
- * The relay panel binds to the ACTIVE tab — which is the fixture tab this
- * harness just opened — so it runs its own scan pipeline against the same page.
- * A6's option harvest CLICKS every optionless combobox there and then RESTORES
- * the pre-click value, and the pipeline re-stamps the frame epoch on each
- * enumerate. Overlapping a driven fill with that is a genuine race: the
- * harvest's restore write lands mid-typeahead and re-widens the filtered menu,
- * and the fill then reports `no-matching-option` on a widget that works.
- * Wait for the panel to reach a terminal state first — or to render
- * OnboardingView, which never scans at all.
- */
-async function waitForPanelIdle(panel: Page): Promise<void> {
-  await expect
-    .poll(
-      () => panel.evaluate((settled) => {
-        if (document.querySelector('[data-jff-onboarding]') !== null) return true
-        const kind = document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')
-        return kind != null && settled.includes(kind)
-      }, PANEL_SETTLED),
-      { timeout: 60_000, message: 'the panel never settled; its own scan would race the driven fill' },
-    )
-    .toBe(true)
-}
-
 test('the Greenhouse react-select shape fills through the gesture + value-container recipe (C2/C3)', async () => {
   // C3: the whole C2 recipe in a REAL browser, on a widget shaped like the live
   // Greenhouse Degree field — the menu opens ONLY on the full pointer+mouse
@@ -263,9 +247,15 @@ test('the Greenhouse react-select shape fills through the gesture + value-contai
   // filter runs, and the commit CLEARS the input and renders the text in a
   // sibling value container. jsdom cannot prove any of it: it has no real
   // PointerEvent trust model and no layout for the visibility gate.
+  // No wait for the relay panel to go idle any more, and none is possible: it
+  // is bound to tab -1, so it never scans this fixture at all. The wait used to
+  // exist because the panel bound to THIS tab and ran its own pipeline against
+  // it — A6's option harvest CLICKS every optionless combobox and restores the
+  // pre-click value, which landed mid-typeahead and re-widened the filtered
+  // menu, failing a widget that works. Unbinding the panel removes the race at
+  // its source instead of waiting it out.
   const t = await openFixtureTab('react-select-form.html')
   try {
-    await waitForPanelIdle(t.panel)
     const epoch = 6
     const scan = await t.send({ type: 'JFF_SCAN', epoch })
     type ScanPayload = { ok: boolean; scan?: { fields: { fid: number; idAttr: string | null; kind: string }[] } }
