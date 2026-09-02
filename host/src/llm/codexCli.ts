@@ -3,13 +3,24 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { z } from 'zod'
-import { parseLooseJson } from './claudeCli.js'
+import { parseLooseJson, type SleepFn } from './claudeCli.js'
 
-/** B2d: the review pass must never hold generation hostage — 120s, then degrade. */
+/** The runner's default budget. Callers that need longer pass `timeoutMs`
+ *  per call; the review pass keeps this default so it never holds generation
+ *  hostage. */
 const CODEX_TIMEOUT_MS = 120_000
+const TRANSIENT_BACKOFF_MS = 2_000
+
+// Order matters: "authentication rate limit exceeded" matches AUTH_RE too and
+// must classify as rate_limit, exactly as the claude runner does.
+const RATE_LIMIT_RE = /rate.?limit|429|overloaded|too many requests|usage limit/i
+const AUTH_RE = /not logged in|login|auth|unauthor|sign.?in/i
 
 export class CodexError extends Error {
-  constructor(readonly kind: 'not_installed' | 'process' | 'timeout' | 'invalid_output', message: string) {
+  constructor(
+    readonly kind: 'not_installed' | 'not_authed' | 'rate_limit' | 'process' | 'timeout' | 'invalid_output',
+    message: string,
+  ) {
     super(message)
     this.name = 'CodexError'
   }
@@ -65,26 +76,53 @@ export function defaultCodexRun(codexPath: string): CodexRunFn {
     })
 }
 
-export function createCodexRunner(opts: { codexPath?: string; run?: CodexRunFn } = {}): CodexRunner {
+export function createCodexRunner(
+  opts: { codexPath?: string; run?: CodexRunFn; sleep?: SleepFn } = {},
+): CodexRunner {
   const run = opts.run ?? defaultCodexRun(opts.codexPath ?? 'codex')
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+
   return {
     async complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T> {
       const wrapped = `${prompt}\n\nRespond with ONLY a single JSON value matching the schema described above. No prose, no code fences.`
-      let res: CodexRunResult
-      try {
-        res = await run(wrapped)
-      } catch (e) {
-        const err = e as NodeJS.ErrnoException
-        throw err?.code === 'ENOENT'
-          ? new CodexError('not_installed', 'the `codex` CLI was not found at the configured path')
-          : new CodexError('process', err?.message ?? String(e))
-      }
-      if (res.timedOut) throw new CodexError('timeout', `codex exec exceeded ${CODEX_TIMEOUT_MS}ms`)
-      if (res.code !== 0) throw new CodexError('process', res.stderr.trim() || `codex exited ${res.code}`)
-      try {
-        return schema.parse(parseLooseJson(res.output))
-      } catch (e) {
-        throw new CodexError('invalid_output', `codex did not return schema-valid JSON: ${String(e)}`)
+      let transientUsed = 0
+
+      for (;;) {
+        let err: CodexError
+        let res: CodexRunResult | undefined
+
+        try {
+          res = await run(wrapped)
+        } catch (e) {
+          const e2 = e as NodeJS.ErrnoException
+          err = e2?.code === 'ENOENT'
+            ? new CodexError('not_installed', 'the `codex` CLI was not found at the configured path')
+            : new CodexError('process', e2?.message ?? String(e))
+        }
+
+        if (res) {
+          if (res.timedOut) {
+            err = new CodexError('timeout', `codex exec exceeded the call's time budget`)
+          } else if (res.code !== 0) {
+            const stderr = res.stderr.trim()
+            if (RATE_LIMIT_RE.test(res.stderr)) err = new CodexError('rate_limit', 'codex subscription rate limit reached')
+            else if (AUTH_RE.test(res.stderr)) err = new CodexError('not_authed', 'codex CLI is not logged in')
+            else err = new CodexError('process', stderr || `codex exited ${res.code}`)
+          } else {
+            try {
+              return schema.parse(parseLooseJson(res.output))
+            } catch (e) {
+              throw new CodexError('invalid_output', `codex did not return schema-valid JSON: ${String(e)}`)
+            }
+          }
+        }
+
+        // Terminal kinds name codex and throw at once; only timeout and process
+        // get the one retry.
+        const kind = err!.kind
+        if (kind !== 'timeout' && kind !== 'process') throw err!
+        if (transientUsed++ >= 1) throw err!
+        await sleep(TRANSIENT_BACKOFF_MS)
       }
     },
   }
