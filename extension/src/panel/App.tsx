@@ -4,7 +4,7 @@ import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
 import { buildRows, refOf, type Row } from './group'
-import { createHostPort, ERROR_COPY, type HostPort } from './port'
+import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
@@ -431,7 +431,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const port = portRef.current
     if (port === null) return null
     const r = await port.request<Record<string, string>>('facts.extract', { cvText })
-    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return null }
     return r.result
   }
 
@@ -443,7 +443,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     port.onDisconnect(() => setHostError(ERROR_COPY.unreachable))
     void port.request<SelfCheck>('selfCheck', {}).then((r) => {
       if (r.ok) setCheck(r.result)
-      else setHostError(ERROR_COPY[r.error.kind])
+      else setHostError(hostErrorText(r.error))
     })
     return () => port.disconnect()
   }, [])
@@ -1036,7 +1036,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // DISTINCT frames: a frame that errored first-pass and replied on the retry
         // contributes two reports but is still one frame on the page.
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
-        : out.llmError !== null ? { kind: 'failed', reason: ERROR_COPY[out.llmError.kind] }
+        : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
         : { kind: 'done', filled, alreadyOnPage, proposed, needsInput }
       if (inScope(sc)) { lastOutcomeRef.current = outcome; setScanStatus(outcome) }
       // S4: the ONE projection. Everything ref-keyed dies with the page the scan
@@ -1053,7 +1053,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         jobText: out.jobText !== '' ? out.jobText : s.jobText,
         lastOutcome: outcome,
       }))
-      if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
+      if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
       // A3: detection is only ever a PROMPT, and only for the session ON SCREEN
       // — a background tab has no panel to prompt in. Best-effort page text; a
       // dead relay just means the field-count heuristic decides alone.
@@ -1319,7 +1319,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         }, ref, draft, 'generated'))
         return 'ok'
       }
-      setHostError(ERROR_COPY[r.error.kind])
+      setHostError(hostErrorText(r.error))
       return r.error.kind
     } finally {
       setGeneratingRefs((s) => { const next = new Set(s); next.delete(ref); return next })
@@ -1425,7 +1425,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const port = portRef.current
     if (port === null) return null
     const r = await port.request<Record<string, string>>('facts.extract', { cvText: cv })
-    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return null }
     return r.result
   }
 
@@ -1436,9 +1436,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // 'complete' verdict here would be a lie the next panel open disproves.
     // Surface the banner and stay in onboarding — Finish is retryable.
     const p = await port.request('profile.set', { values: profile })
-    if (!p.ok) { setHostError(ERROR_COPY[p.error.kind]); return }
+    if (!p.ok) { setHostError(hostErrorText(p.error)); return }
     const b = await port.request('answerBank.set', { values: bank })
-    if (!b.ok) { setHostError(ERROR_COPY[b.error.kind]); return }
+    if (!b.ok) { setHostError(hostErrorText(b.error)); return }
     setFacts((f) => ({ ...f, ...profile, ...bank }))
     // The gate's one sanctioned exit; the nonce re-fires the (blocked) auto-scan
     // effect exactly once.
@@ -1495,7 +1495,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         company: markCompany,
         jobTitle: title === '' ? null : title,
       })
-      if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return }
+      if (!r.ok) { setHostError(hostErrorText(r.error)); return }
       await endSession(target)
       // B8: the session it would have ridden on no longer exists, so the
       // confirmation is panel-global — and it WINS over any applied badge while
@@ -1559,7 +1559,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         items,
         generatedCount: generatedRefs.length,
       })
-      setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : ERROR_COPY[r.error.kind])
+      setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : hostErrorText(r.error))
     } catch (e) {
       setSaveMsg(`Save failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
@@ -1571,7 +1571,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const port = portRef.current
     if (port === null) return null
     const r = await port.request<{ jobs: AppliedJobRow[] }>('applied.list', {})
-    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return null }
     // `?? []`: a fake/stale host answering {} must render the empty state,
     // never crash the view on `jobs.map`.
     return r.result.jobs ?? []
