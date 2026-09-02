@@ -16,11 +16,18 @@ export class ClaudeError extends Error {
 }
 
 export type RunResult = { code: number; stdout: string; stderr: string; timedOut: boolean }
-export type RunFn = (prompt: string) => Promise<RunResult>
+/** Every call names its model; `timeoutMs` overrides the runner default. */
+export type CallOpts = { model: string; timeoutMs?: number }
+export type RunFn = (prompt: string, opts: CallOpts) => Promise<RunResult>
 export type SleepFn = (ms: number) => Promise<void>
 
 export interface ClaudeRunner {
-  complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T>
+  complete<T>(prompt: string, schema: z.ZodType<T>, opts: CallOpts): Promise<T>
+}
+
+/** Pure so the argv can be asserted without spawning anything. */
+export function buildArgv(prompt: string, opts: CallOpts): string[] {
+  return ['-p', prompt, '--model', opts.model, '--output-format', 'json']
 }
 
 /**
@@ -29,10 +36,10 @@ export interface ClaudeRunner {
  * failure message. The prompt goes through argv (-p), never stdin.
  */
 export function defaultRun(claudePath: string): RunFn {
-  return (prompt) =>
+  return (prompt, opts) =>
     new Promise<RunResult>((resolve, reject) => {
-      const child = spawn(claudePath, ['-p', prompt, '--output-format', 'json'], {
-        timeout: SPAWN_TIMEOUT_MS,
+      const child = spawn(claudePath, buildArgv(prompt, opts), {
+        timeout: opts.timeoutMs ?? SPAWN_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let stdout = ''
@@ -70,7 +77,7 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
 
   return {
-    async complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T> {
+    async complete<T>(prompt: string, schema: z.ZodType<T>, opts: CallOpts): Promise<T> {
       const wrapped = `${prompt}\n\nRespond with ONLY a single JSON value matching the schema described above. No prose, no code fences, no explanation.`
       let transientUsed = 0
       let parseUsed = 0
@@ -82,7 +89,7 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
         let res: RunResult | undefined
 
         try {
-          res = await run(wrapped)
+          res = await run(wrapped, opts)
         } catch (e: unknown) {
           const err = e as NodeJS.ErrnoException
           if (err?.code === 'ENOENT') {
@@ -94,7 +101,7 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
 
         if (res) {
           if (res.timedOut) {
-            kind = 'timeout'; message = `claude -p exceeded ${SPAWN_TIMEOUT_MS}ms`; cls = 'transient'
+            kind = 'timeout'; message = `claude -p exceeded the call's time budget`; cls = 'transient'
           } else if (res.code !== 0) {
             // RATE_LIMIT first: "authentication rate limit exceeded" also matches
             // AUTH_RE and must classify as rate_limit, not not_authed.

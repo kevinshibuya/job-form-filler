@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { z } from 'zod'
-import { parseLooseJson, type SleepFn } from './claudeCli.js'
+import { parseLooseJson, type CallOpts, type SleepFn } from './claudeCli.js'
 
 /** The runner's default budget. Callers that need longer pass `timeoutMs`
  *  per call; the review pass keeps this default so it never holds generation
@@ -27,7 +27,12 @@ export class CodexError extends Error {
 }
 
 export type CodexRunResult = { code: number; output: string; stderr: string; timedOut: boolean }
-export type CodexRunFn = (prompt: string) => Promise<CodexRunResult>
+export type CodexRunFn = (prompt: string, opts: CallOpts) => Promise<CodexRunResult>
+
+/** Pure so the argv can be asserted without spawning anything. */
+export function buildCodexArgv(prompt: string, opts: CallOpts, outFile: string): string[] {
+  return ['exec', '-m', opts.model, '-s', 'read-only', '--ephemeral', '--skip-git-repo-check', '--color', 'never', '-o', outFile, prompt]
+}
 
 /**
  * Node's `timeout` option below kills the child with `killSignal` on the
@@ -40,7 +45,7 @@ export function isTimeoutSignal(code: number | null, signal: NodeJS.Signals | nu
 }
 
 export interface CodexRunner {
-  complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T>
+  complete<T>(prompt: string, schema: z.ZodType<T>, opts: CallOpts): Promise<T>
 }
 
 /**
@@ -50,16 +55,16 @@ export interface CodexRunner {
  * checks — the host may run from any cwd.
  */
 export function defaultCodexRun(codexPath: string): CodexRunFn {
-  return (prompt) =>
+  return (prompt, opts) =>
     new Promise<CodexRunResult>((resolve, reject) => {
       const dir = mkdtempSync(join(tmpdir(), 'jff-codex-'))
       const outFile = join(dir, 'out.md')
       const child = spawn(
         codexPath,
-        ['exec', '-m', 'gpt-5.6-sol', '-s', 'read-only', '--ephemeral', '--skip-git-repo-check', '--color', 'never', '-o', outFile, prompt],
+        buildCodexArgv(prompt, opts, outFile),
         // killSignal: SIGTERM alone lets a codex process that traps SIGTERM
-        // survive past the 120s deadline; SIGKILL cannot be trapped or ignored.
-        { timeout: CODEX_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'ignore', 'pipe'] },
+        // survive past the deadline; SIGKILL cannot be trapped or ignored.
+        { timeout: opts.timeoutMs ?? CODEX_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'ignore', 'pipe'] },
       )
       let stderr = ''
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8') })
@@ -83,7 +88,7 @@ export function createCodexRunner(
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
 
   return {
-    async complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T> {
+    async complete<T>(prompt: string, schema: z.ZodType<T>, opts: CallOpts): Promise<T> {
       const wrapped = `${prompt}\n\nRespond with ONLY a single JSON value matching the schema described above. No prose, no code fences.`
       let transientUsed = 0
 
@@ -92,7 +97,7 @@ export function createCodexRunner(
         let res: CodexRunResult | undefined
 
         try {
-          res = await run(wrapped)
+          res = await run(wrapped, opts)
         } catch (e) {
           const e2 = e as NodeJS.ErrnoException
           err = e2?.code === 'ENOENT'

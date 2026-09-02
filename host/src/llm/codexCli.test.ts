@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createCodexRunner, isTimeoutSignal, type CodexRunFn, type CodexRunResult } from './codexCli.js'
+import { buildCodexArgv, createCodexRunner, isTimeoutSignal, type CodexRunFn, type CodexRunResult } from './codexCli.js'
 
 const schema = z.object({ draft: z.string() })
 const okRun = (output: string): CodexRunFn => async () => ({ code: 0, output, stderr: '', timedOut: false })
@@ -118,5 +118,19 @@ describe('isTimeoutSignal (review fix: SIGKILL deadline)', () => {
 
   it('does not classify an unrelated signal as a timeout', () => {
     expect(isTimeoutSignal(null, 'SIGINT')).toBe(false)
+  })
+})
+
+
+describe('buildCodexArgv', () => {
+  it('passes the model after -m and the out file after -o, prompt last', () => {
+    expect(buildCodexArgv('hello', { model: 'gpt-5.6-sol' }, '/tmp/o.md')).toEqual([
+      'exec', '-m', 'gpt-5.6-sol', '-s', 'read-only', '--ephemeral',
+      '--skip-git-repo-check', '--color', 'never', '-o', '/tmp/o.md', 'hello',
+    ])
+  })
+
+  it('carries whatever model the caller names', () => {
+    expect(buildCodexArgv('p', { model: 'gpt-5.6-luna' }, '/tmp/o.md')).toContain('gpt-5.6-luna')
   })
 })

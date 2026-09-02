@@ -46,11 +46,11 @@ describe('buildReviewPrompt', () => {
 describe('reviewDraft', () => {
   it('returns the reviewer draft', async () => {
     const runner = { complete: vi.fn(async () => ({ draft: 'refined' })) } as unknown as CodexRunner
-    await expect(reviewDraft(runner, input, 'original')).resolves.toBe('refined')
+    await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' })).resolves.toBe('refined')
   })
 
   it('propagates a codex failure to the caller (the handler degrades, not this module)', async () => {
     const runner = { complete: vi.fn(async () => { throw new Error('codex died') }) } as unknown as CodexRunner
-    await expect(reviewDraft(runner, input, 'original')).rejects.toThrow('codex died')
+    await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' })).rejects.toThrow('codex died')
   })
 })

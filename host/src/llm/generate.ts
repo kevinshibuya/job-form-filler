@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ClaudeRunner } from './claudeCli.js'
+import type { CallOpts, ClaudeRunner } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
 export interface GenerationInput {
@@ -94,7 +94,7 @@ export function sanitizeDraft(s: string): string {
     .slice(0, CAPS.answer)
 }
 
-export async function runGeneration(runner: ClaudeRunner, input: GenerationInput): Promise<string> {
-  const out = await runner.complete(buildGenerationPrompt(input), GenerationResponseSchema)
+export async function runGeneration(runner: ClaudeRunner, input: GenerationInput, opts: CallOpts): Promise<string> {
+  const out = await runner.complete(buildGenerationPrompt(input), GenerationResponseSchema, opts)
   return sanitizeDraft(out.draft)
 }

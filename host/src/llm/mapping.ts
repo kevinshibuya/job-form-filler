@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { FIELD_KEYS, isFieldKey, type EnumField, type FieldKey } from '@jff/shared'
-import type { ClaudeRunner } from './claudeCli.js'
+import type { CallOpts, ClaudeRunner } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
 export interface MappingCandidate {
@@ -132,13 +132,13 @@ export function validateMappingResponse(
   return out
 }
 
-export async function runMapping(runner: ClaudeRunner, input: MappingInput): Promise<Map<string, MappingDecision>> {
+export async function runMapping(runner: ClaudeRunner, input: MappingInput, opts: CallOpts): Promise<Map<string, MappingDecision>> {
   const fields = input.fields.slice(0, CAPS.fieldsPerCall)
   if (fields.length === 0) return new Map()
   const refs = fields.map(refOf)
   const ids = input.candidates.map((c) => c.id)
   // Deliberately parse as `unknown` here: validateMappingResponse owns every
   // structural rule, so a schema failure and a rule failure take the same path.
-  const raw = await runner.complete(buildMappingPrompt({ ...input, fields }), z.unknown())
+  const raw = await runner.complete(buildMappingPrompt({ ...input, fields }), z.unknown(), opts)
   return validateMappingResponse(raw, refs, ids)
 }

@@ -60,11 +60,11 @@ export function realAuthCache(path: string): Pick<SelfCheckDeps, 'readAuthCache'
 }
 
 /** One tiny real call: the only reliable signal that `claude` is logged in. */
-export function realProbeAuth(claudePath: string): () => Promise<{ ok: boolean; detail: string }> {
+export function realProbeAuth(claudePath: string, model: string): () => Promise<{ ok: boolean; detail: string }> {
   return async () => {
     const runner = createClaudeRunner({ claudePath })
     try {
-      await runner.complete('Reply with exactly {"ok":true}.', z.object({ ok: z.boolean() }))
+      await runner.complete('Reply with exactly {"ok":true}.', z.object({ ok: z.boolean() }), { model })
       return { ok: true, detail: 'logged in' }
     } catch (e) {
       if (e instanceof ClaudeError && e.kind === 'not_authed') return { ok: false, detail: 'claude CLI is not logged in. Run `claude` once in a terminal.' }

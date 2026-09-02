@@ -8,21 +8,23 @@ import { createCodexRunner } from './llm/codexCli.js'
 import { handleRequest, type HandlerDeps } from './handlers.js'
 import { log } from './log.js'
 import { realAuthCache, realFileExists, realProbeAuth, selfCheck } from './selfcheck.js'
+import { resolveModels } from './llm/models.js'
 
 const config = loadConfig()
 const db = openDb(config.dbPath)
 const runner = createClaudeRunner({ claudePath: config.claudePath })
 const codex = createCodexRunner({ codexPath: config.codexPath })
 const authCache = realAuthCache(config.authCachePath)
+const models = resolveModels(config.models)
 
 const deps: HandlerDeps = {
-  db, runner, codex, config,
+  db, runner, codex, config, models,
   selfCheckFn: () => selfCheck({
     claudePath: config.claudePath,
     dbPath: config.dbPath,
     fileExists: realFileExists,
     dbOk: () => { try { db.prepare('SELECT 1').get(); return true } catch { return false } },
-    probeAuth: realProbeAuth(config.claudePath),
+    probeAuth: realProbeAuth(config.claudePath, models.claudeAuthProbe),
     now: () => new Date(),
     ...authCache,
   }),
