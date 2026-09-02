@@ -1,5 +1,8 @@
 # Scan/Fill Correctness — Plan 1 of 3: A-core (A1–A5) Implementation Plan
 
+**Status:** completed 2026-07-29
+Progress was tracked in the SDD ledger, which no longer exists. Checkboxes below reflect authoring, not execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the scan read real ATS forms correctly at the unit level: recover dangling labels through a binding descriptor, recover the CSS-class/`*` required convention, detect hidden-input-plus-buttons "choice" widgets, capture per-field descriptions and plumb them into BOTH LLM prompts, and stop junk (`visible:false` leftovers, "Select…" placeholders) from reaching the paid resolve, the auto-fill loop and the panel.
@@ -8,7 +11,7 @@
 
 **Tech Stack:** TypeScript strict, zod (closed schemas in `shared/src`), vitest (host=node project, extension=jsdom project), React panel, ESLint 8.57.1. No new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-07-28-scan-fill-correctness-design.md` (approved; sections A1–A5). This plan covers the first 11 Slice-A TODOs. A6–A9 are plan 2; B1–B3 are plan 3.
+**Spec:** `docs/specs/2026-07-28-scan-fill-correctness-design.md` (approved; sections A1–A5). This plan covers the first 11 Slice-A TODOs. A6–A9 are plan 2; B1–B3 are plan 3.
 
 **Scope guard:** Do NOT implement harvest (A6), frame election (A7), resume-target scoring (A8), panel rendering/ordering/status (A9), or any fill-path change (B1–B3). This plan only *produces the interfaces* those slices consume (see "Interfaces produced for later slices").
 
@@ -2104,7 +2107,7 @@ Expected: clean build (the seam build from `npm run smoke` is overwritten with t
 
 - [ ] **Step 4: Tick the spec TODOs**
 
-In `docs/superpowers/specs/2026-07-28-scan-fill-correctness-design.md`, tick Slice-A TODOs 1–11 (the items quoted in "Verification" below).
+In `docs/specs/2026-07-28-scan-fill-correctness-design.md`, tick Slice-A TODOs 1–11 (the items quoted in "Verification" below).
 
 - [ ] **Step 5: Commit**
 

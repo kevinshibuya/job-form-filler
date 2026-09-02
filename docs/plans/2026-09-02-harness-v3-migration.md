@@ -62,10 +62,10 @@ The date is the author date of the last commit that touched the plan file or the
 
 **Boundaries:** No content edits beyond the status block and path strings. Do not touch `.superpowers/`, `HANDOFF*.md`, this plan, its spec, or the active plan's body.
 
-- [ ] `git mv` both folders' files, remove the empty `docs/superpowers` tree
-- [ ] Rewrite `docs/superpowers/` path strings in the tracked files the grep names
-- [ ] Add the status block to the six finished plans with the computed dates
-- [ ] Run the check, commit `docs: move plans and specs to docs/plans and docs/specs, stamp finished plans`
+- [x] `git mv` both folders' files, remove the empty `docs/superpowers` tree
+- [x] Rewrite `docs/superpowers/` path strings in the tracked files the grep names
+- [x] Add the status block to the six finished plans with the computed dates
+- [x] Run the check, commit `docs: move plans and specs to docs/plans and docs/specs, stamp finished plans`
 
 ### Task 2: Retrofit the active plan to v3
 

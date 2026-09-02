@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Land the four items from the 2026-07-29 user review per the authoritative spec `docs/superpowers/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md` (spec tip `563113b`): (1) a hard onboarding gate before any scanning, (2) per-tab application sessions that survive tab switching and multi-page wizards, (3) an applied-jobs record with revisit badge, detection prompt and list view, and (4) the Greenhouse react-select combobox fill fix proven by the C1 spike.
+**Goal:** Land the four items from the 2026-07-29 user review per the authoritative spec `docs/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md` (spec tip `563113b`): (1) a hard onboarding gate before any scanning, (2) per-tab application sessions that survive tab switching and multi-page wizards, (3) an applied-jobs record with revisit badge, detection prompt and list view, and (4) the Greenhouse react-select combobox fill fix proven by the C1 spike.
 
 **Architecture:** Four slices, executed O → A → C → S (spec §Execution, binding). O (Tasks 1–3) composes existing profile blocks behind a tri-state completeness gate. A (Tasks 4–8) adds the host `applied_jobs` table + `applied.*` methods, then panel mark/detect/badge/list; the A slices deliberately land BEFORE sessions exist, carrying a small `startUrl` state that Task 14 folds into the Session shape. C (Tasks 9–10) implements the C1 spike recipe verbatim (pointer+mouse open gesture; committed-text fallback to the widget's visible value) plus a Greenhouse-shaped e2e fixture. S (Tasks 11–16) retires the clear-on-activate era in one test batch, builds the sessions + navigation-signal modules pure-first, then rewires App.tsx in three integrator slices ordered by risk surface: session lifecycle (S2/S5/S6), label-keyed answer carry (S4), concurrency + routing (S7). Task 17 is the e2e batch (all e2e adaptation to the onboarding/session era happens HERE, in one batch); Tasks 18–19 are the verify gate and the live manual gate on <https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002>.
 
@@ -3325,7 +3325,7 @@ db.close()
 ```
 
 Idempotent by design (re-running keeps the original `marked_at`). Record the printed canonical url + date as the A6 evidence.
-- [ ] **Step 5:** Tick every landed TODO checkbox in the SPEC file (`docs/superpowers/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md`) except the final manual-gate item; `grep -c '^- \[ \]' <spec>` should print `1`.
+- [ ] **Step 5:** Tick every landed TODO checkbox in the SPEC file (`docs/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md`) except the final manual-gate item; `grep -c '^- \[ \]' <spec>` should print `1`.
 - [ ] **Step 6: Commit**
 
 ```bash

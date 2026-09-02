@@ -1,5 +1,8 @@
 # job-form-filler v1 Implementation Plan
 
+**Status:** completed 2026-07-29
+Progress was tracked in the SDD ledger, which no longer exists. Checkboxes below reflect authoring, not execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a Chrome MV3 extension plus a local native-messaging host that scans any job-application form, resolves each field through a deterministic → saved-answer → `claude -p` waterfall, fills it under human review, and grows a local SQLite answer memory after every application.
@@ -10550,7 +10553,7 @@ answer, fill, submit the form yourself, then press Save answers. Confirm:
 
 - [ ] **Step 8: Record the outcome**
 
-Append a dated line to `docs/superpowers/plans/2026-07-27-job-form-filler-v1.md` under a
+Append a dated line to `docs/plans/2026-07-27-job-form-filler-v1.md` under a
 `## Manual handshake log` heading: date, Chrome version, extension id, result, and any fix
 applied. Commit it.
 
@@ -10785,7 +10788,7 @@ Open risks the executing engineer should watch for, none of them blocking:
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-07-27-job-form-filler-v1.md`. Two
+Plan complete and saved to `docs/plans/2026-07-27-job-form-filler-v1.md`. Two
 execution options:
 
 **1. Subagent-Driven (recommended)** — a fresh subagent per task, routed by the Model Routing
