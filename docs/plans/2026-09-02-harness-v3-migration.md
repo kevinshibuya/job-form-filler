@@ -87,11 +87,11 @@ The date is the author date of the last commit that touched the plan file or the
 
 **Boundaries:** Do not edit any task's Work, Files or Acceptance text other than Task 19's routing paragraph. Do not delete `.superpowers/`. If a ledger ruling cannot be summarised in two sentences without losing its meaning, quote the ledger line verbatim instead.
 
-- [ ] Header edits
-- [ ] Tick Tasks 0 to 18 and add the 19 Done lines
-- [ ] Write `## Progress notes` from the ledger
-- [ ] Rewrite the Task 19 routing paragraph
-- [ ] Run the check, commit `docs(plan): retrofit the active plan to v3, progress in file`
+- [x] Header edits
+- [x] Tick Tasks 0 to 18 and add the 19 Done lines
+- [x] Write `## Progress notes` from the ledger
+- [x] Rewrite the Task 19 routing paragraph
+- [x] Run the check, commit `docs(plan): retrofit the active plan to v3, progress in file`
 
 ### Task 3: ADRs
 
