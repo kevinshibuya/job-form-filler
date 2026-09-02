@@ -113,8 +113,8 @@ The date is the author date of the last commit that touched the plan file or the
 
 **Boundaries:** No implementation details beyond the ones the spec's A5 already names. No status frontmatter.
 
-- [ ] Write the six files
-- [ ] Run the check, commit `docs(adr): record the six standing decisions`
+- [x] Write the six files
+- [x] Run the check, commit `docs(adr): record the six standing decisions`
 
 ### Task 4: Project CLAUDE.md and settings
 
