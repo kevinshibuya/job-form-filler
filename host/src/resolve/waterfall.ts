@@ -5,14 +5,15 @@ import {
 import {
   findExactAnswer, getAnswerById, getStoredValue, listReusableAnswers, touchAnswer,
 } from '../db/repos.js'
-import { ClaudeError, type CallOpts, type ClaudeRunner } from '../llm/claudeCli.js'
+import type { CallOpts } from '../llm/claudeCli.js'
+import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
 import { recognize } from './recognizers.js'
 
 export interface WaterfallDeps {
   db: Database.Database
-  runner: ClaudeRunner
+  codex: CodexRunner
   /** The model + budget the mapping call runs under. */
   mappingOpts: CallOpts
 }
@@ -120,11 +121,11 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
 
     let decisions = new Map<string, MappingDecision>()
     try {
-      decisions = await runMapping(deps.runner, {
+      decisions = await runMapping(deps.codex, {
         fields: unresolved, jobText: input.jobText, company: input.company, candidates,
       }, deps.mappingOpts)
     } catch (e) {
-      const err = e instanceof ClaudeError ? e : new ClaudeError('process', String(e))
+      const err = e instanceof CodexError ? e : new CodexError('process', String(e))
       llmError = { kind: err.kind, message: err.message }
     }
 

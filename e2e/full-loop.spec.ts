@@ -172,9 +172,11 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
   }
 })
 
-test('a rate-limited claude leaves fields as needs-input and shows the right banner', async () => {
+test('a rate-limited codex leaves fields as needs-input and shows the right banner', async () => {
   const fixtures = await startFixtureServer()
-  const host = await startHost({ mode: 'rate_limit' })
+  // Mapping runs on codex now, so the rate limit that degrades the resolve tier
+  // is the CODEX one; claude stays healthy and is never reached here.
+  const host = await startHost({ codexMode: 'rate_limit' })
   const ext = await launchWithExtension()
   try {
     // Seeded so "only the LLM tier degraded" is something this test can actually

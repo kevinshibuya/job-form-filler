@@ -314,10 +314,10 @@ export function realProbeCodexAuth(codexPath: string, model: string): () => Prom
 
 **Boundaries:** The auto-scan gate logic in `App.tsx` (around lines 1104 to 1117) is untouched; a failed codex probe shows in the banner and does not block the gate any differently than a failed claude probe does today. No new panel component.
 
-- [ ] Schema, shared rebuild, five fixtures, typecheck green
-- [ ] `selfcheck.ts` cache shape and codex probe, tests red then green
-- [ ] Banner lines, `index.ts` wiring
-- [ ] Run the check, commit `feat(selfcheck): probe codex sign-in beside claude`
+- [x] Schema, shared rebuild, five fixtures, typecheck green
+- [x] `selfcheck.ts` cache shape and codex probe, tests red then green
+- [x] Banner lines, `index.ts` wiring
+- [x] Run the check, commit `feat(selfcheck): probe codex sign-in beside claude`
 
 ### Task 10: Route facts extraction and mapping to Codex
 

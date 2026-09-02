@@ -85,7 +85,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       }
 
       case 'resolve':
-        return ok(req.requestId, await resolveFields({ db, runner: deps.runner, mappingOpts: { model: deps.models.mapping } }, req.params))
+        return ok(req.requestId, await resolveFields({ db, codex: deps.codex, mappingOpts: { model: deps.models.mapping, timeoutMs: 240_000 } }, req.params))
 
       case 'generate': {
         const lang = detectLanguage(req.params.questionRaw)
@@ -173,13 +173,15 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         return ok(req.requestId, { jobs: listApplied(db) })
 
       case 'facts.extract':
-        return ok(req.requestId, await runFactsExtract(deps.runner, req.params.cvText, { model: deps.models.factsExtract }))
+        return ok(req.requestId, await runFactsExtract(deps.codex, req.params.cvText, { model: deps.models.factsExtract, timeoutMs: 240_000 }))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req
     return fail((never as HostRequest).requestId, 'bad_request', 'unknown method')
   } catch (e) {
     if (e instanceof ClaudeError) return fail(req.requestId, e.kind, e.message)
+    // Every CodexError kind exists in HOST_ERROR_KINDS, so the mapping is 1:1.
+    if (e instanceof CodexError) return fail(req.requestId, e.kind, e.message)
     const message = e instanceof Error ? e.message : String(e)
     log('error', 'handler failed', { method: req.method, message })
     return fail(req.requestId, 'db', message)

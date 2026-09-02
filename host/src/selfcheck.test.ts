@@ -1,13 +1,18 @@
 import { describe, it, expect, vi } from 'vitest'
-import { selfCheck } from './selfcheck.js'
+import { realAuthCache, selfCheck } from './selfcheck.js'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const base = {
   claudePath: '/opt/homebrew/bin/claude',
+  codexPath: '/opt/homebrew/bin/codex',
   dbPath: '/tmp/jff-test.sqlite',
   fileExists: () => true,
   dbOk: () => true,
   readAuthCache: () => null,
   writeAuthCache: vi.fn(),
+  probeCodexAuth: async () => ({ ok: true, detail: 'logged in' }),
   now: () => new Date('2026-07-27T12:00:00Z'),
 }
 
@@ -34,7 +39,7 @@ describe('selfCheck', () => {
     const probeAuth = vi.fn(async () => ({ ok: true, detail: 'fresh' }))
     const r = await selfCheck({
       ...base, probeAuth,
-      readAuthCache: () => ({ ok: true, detail: 'cached', at: '2026-07-27T06:00:00Z' }),
+      readAuthCache: () => ({ claude: { ok: true, detail: 'cached', at: '2026-07-27T06:00:00Z' } }),
     })
     expect(probeAuth).not.toHaveBeenCalled()
     expect(r.auth).toEqual({ ok: true, detail: 'cached' })
@@ -44,7 +49,7 @@ describe('selfCheck', () => {
     const probeAuth = vi.fn(async () => ({ ok: true, detail: 'fresh' }))
     const r = await selfCheck({
       ...base, probeAuth,
-      readAuthCache: () => ({ ok: true, detail: 'stale', at: '2026-07-26T06:00:00Z' }),
+      readAuthCache: () => ({ claude: { ok: true, detail: 'stale', at: '2026-07-26T06:00:00Z' } }),
     })
     expect(probeAuth).toHaveBeenCalledTimes(1)
     expect(r.auth.detail).toBe('fresh')
@@ -52,7 +57,108 @@ describe('selfCheck', () => {
 
   it('never caches a failed auth probe', async () => {
     const writeAuthCache = vi.fn()
-    await selfCheck({ ...base, writeAuthCache, probeAuth: async () => ({ ok: false, detail: 'not logged in' }) })
+    await selfCheck({
+      ...base, writeAuthCache,
+      probeAuth: async () => ({ ok: false, detail: 'not logged in' }),
+      // Keep codex failing too, so nothing at all is written and the claim
+      // stays exactly what it was before the second vendor existed.
+      probeCodexAuth: async () => ({ ok: false, detail: 'not logged in' }),
+    })
     expect(writeAuthCache).not.toHaveBeenCalled()
+  })
+
+  it('caches the succeeding vendor even when the other probe fails', async () => {
+    const writeAuthCache = vi.fn()
+    await selfCheck({
+      ...base, writeAuthCache,
+      probeAuth: async () => ({ ok: false, detail: 'not logged in' }),
+      probeCodexAuth: async () => ({ ok: true, detail: 'codex in' }),
+    })
+    expect(writeAuthCache).toHaveBeenCalledTimes(1)
+    expect(writeAuthCache.mock.calls[0][0].claude).toBeUndefined()
+    expect(writeAuthCache.mock.calls[0][0].codex).toMatchObject({ ok: true })
+  })
+
+  it('probes both vendors when neither cache entry exists', async () => {
+    const probeAuth = vi.fn(async () => ({ ok: true, detail: 'claude in' }))
+    const probeCodexAuth = vi.fn(async () => ({ ok: true, detail: 'codex in' }))
+    const r = await selfCheck({ ...base, probeAuth, probeCodexAuth })
+    expect(probeAuth).toHaveBeenCalledTimes(1)
+    expect(probeCodexAuth).toHaveBeenCalledTimes(1)
+    expect(r.codexAuth).toEqual({ ok: true, detail: 'codex in' })
+  })
+
+  it('skips the codex probe when its cache entry is fresh', async () => {
+    const probeCodexAuth = vi.fn(async () => ({ ok: true, detail: 'fresh' }))
+    const r = await selfCheck({
+      ...base, probeCodexAuth,
+      probeAuth: async () => ({ ok: true, detail: 'ok' }),
+      readAuthCache: () => ({ codex: { ok: true, detail: 'cached codex', at: '2026-07-27T06:00:00Z' } }),
+    })
+    expect(probeCodexAuth).not.toHaveBeenCalled()
+    expect(r.codexAuth).toEqual({ ok: true, detail: 'cached codex' })
+  })
+
+  it('reports codex not found when the configured path does not exist', async () => {
+    const probeCodexAuth = vi.fn(async () => ({ ok: true, detail: 'never' }))
+    const r = await selfCheck({
+      ...base, probeCodexAuth,
+      probeAuth: async () => ({ ok: true, detail: 'ok' }),
+      fileExists: (p: string) => p !== base.codexPath,
+    })
+    expect(r.codex).toMatchObject({ ok: false })
+    expect(r.codex.detail).toMatch(/codex CLI not found/i)
+    expect(probeCodexAuth).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a codex sign-in failure as codexAuth.ok false', async () => {
+    const r = await selfCheck({
+      ...base,
+      probeAuth: async () => ({ ok: true, detail: 'ok' }),
+      probeCodexAuth: async () => ({ ok: false, detail: 'codex CLI is not logged in. Run `codex login` in a terminal.' }),
+    })
+    expect(r.codexAuth.ok).toBe(false)
+    expect(r.codexAuth.detail).toMatch(/codex login/)
+  })
+
+  it('caching one vendor keeps the other vendor entry', async () => {
+    const writeAuthCache = vi.fn()
+    await selfCheck({
+      ...base, writeAuthCache,
+      probeAuth: async () => ({ ok: true, detail: 'claude in' }),
+      probeCodexAuth: async () => ({ ok: false, detail: 'codex out' }),
+      readAuthCache: () => ({ codex: { ok: true, detail: 'old codex', at: '2026-07-20T06:00:00Z' } }),
+    })
+    // The codex probe failed, so only claude is written — and the stale codex
+    // entry survives the write rather than being dropped.
+    const written = writeAuthCache.mock.calls[0][0]
+    expect(written.claude).toMatchObject({ ok: true, detail: 'claude in' })
+    expect(written.codex).toMatchObject({ detail: 'old codex' })
+  })
+})
+
+describe('realAuthCache', () => {
+  it('reads a legacy flat entry as the claude entry', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jff-auth-'))
+    const path = join(dir, 'authcheck.json')
+    writeFileSync(path, JSON.stringify({ ok: true, detail: 'legacy', at: '2026-07-27T06:00:00Z' }), 'utf8')
+    const file = realAuthCache(path).readAuthCache()
+    expect(file?.claude).toMatchObject({ ok: true, detail: 'legacy' })
+    expect(file?.codex).toBeUndefined()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('reads a per-vendor file unchanged', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jff-auth-'))
+    const path = join(dir, 'authcheck.json')
+    writeFileSync(path, JSON.stringify({ claude: { ok: true, detail: 'c', at: 'x' }, codex: { ok: false, detail: 'd', at: 'y' } }), 'utf8')
+    const file = realAuthCache(path).readAuthCache()
+    expect(file?.claude).toMatchObject({ detail: 'c' })
+    expect(file?.codex).toMatchObject({ detail: 'd' })
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('returns null when the file is absent', () => {
+    expect(realAuthCache('/nonexistent/authcheck.json').readAuthCache()).toBeNull()
   })
 })
