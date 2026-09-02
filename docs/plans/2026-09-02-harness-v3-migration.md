@@ -150,8 +150,8 @@ The date is the author date of the last commit that touched the plan file or the
 
 **Boundaries:** No hooks, model, mode or env in the settings file. No lesson that the code or the spec already states.
 
-- [ ] Write both files
-- [ ] Run the check, commit `chore: project CLAUDE.md and verification allowlist`
+- [x] Write both files
+- [x] Run the check, commit `chore: project CLAUDE.md and verification allowlist`
 
 ### Task 5: Model registry and config
 
