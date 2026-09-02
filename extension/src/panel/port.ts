@@ -19,12 +19,12 @@ export interface HostPort {
 
 /** The spec's error table, rendered for a human. No spaced em-dashes. */
 export const ERROR_COPY: Record<HostErrorKind, string> = {
-  not_installed: 'claude CLI not found. Check the host config path.',
-  not_authed: 'claude CLI not logged in. Run `claude` once in a terminal.',
+  not_installed: 'AI helper not found. Check the host config path.',
+  not_authed: 'AI helper not signed in. Run `claude` or `codex login` in a terminal, then retry.',
   rate_limit: 'Subscription rate limit. Retry later; fields are left as needs-input.',
-  timeout: 'claude call failed. Retry or fill manually.',
-  process: 'claude call failed. Retry or fill manually.',
-  invalid_output: 'claude returned unusable output. Fields are left as needs-input.',
+  timeout: 'AI call failed. Retry or fill manually.',
+  process: 'AI call failed. Retry or fill manually.',
+  invalid_output: 'AI returned unusable output. Fields are left as needs-input.',
   db: 'Local database error. See ~/.job-form-filler/host.log.',
   bad_request: 'The panel sent something the host did not understand. Re-scan.',
   unreachable: 'Local host unreachable. Re-run the install script, then reopen Chrome.',
@@ -176,4 +176,13 @@ export function createHostPort(search: string = location.search): HostPort {
     return createFakeHostPort()
   }
   return createRetryingHostPort()
+}
+
+/** The copy for a host error, followed by the host's own message when it adds
+ *  something — that message is what names the vendor ("codex CLI is not logged
+ *  in"), which the vendor-neutral copy above deliberately does not. */
+export function hostErrorText(error: { kind: HostErrorKind; message?: string }): string {
+  const copy = ERROR_COPY[error.kind]
+  const detail = (error.message ?? '').trim()
+  return detail === '' || detail === copy ? copy : `${copy} — ${detail}`
 }

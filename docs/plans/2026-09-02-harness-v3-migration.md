@@ -378,9 +378,9 @@ invalid_output:'AI returned unusable output. Fields are left as needs-input.'
 
 **Boundaries:** No change to `Banner.tsx` (Task 9 owns it). No change to error kinds.
 
-- [ ] Update the copy and the two tests
-- [ ] Render the host message under the copy
-- [ ] Run the check, commit `feat(panel): vendor-neutral AI error copy, host message shown beneath`
+- [x] Update the copy and the two tests
+- [x] Render the host message under the copy
+- [x] Run the check, commit `feat(panel): vendor-neutral AI error copy, host message shown beneath`
 
 ### Task 12: Full verify, plain dist, live model ids
 

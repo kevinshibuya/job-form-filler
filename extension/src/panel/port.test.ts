@@ -137,12 +137,12 @@ describe('createHostPort', () => {
 
 describe('ERROR_COPY', () => {
   it('has one message per taxonomy kind, matching the spec', () => {
-    expect(ERROR_COPY.not_installed).toBe('claude CLI not found. Check the host config path.')
-    expect(ERROR_COPY.not_authed).toBe('claude CLI not logged in. Run `claude` once in a terminal.')
+    expect(ERROR_COPY.not_installed).toBe('AI helper not found. Check the host config path.')
+    expect(ERROR_COPY.not_authed).toBe('AI helper not signed in. Run `claude` or `codex login` in a terminal, then retry.')
     expect(ERROR_COPY.rate_limit).toBe('Subscription rate limit. Retry later; fields are left as needs-input.')
-    expect(ERROR_COPY.timeout).toBe('claude call failed. Retry or fill manually.')
-    expect(ERROR_COPY.process).toBe('claude call failed. Retry or fill manually.')
-    expect(ERROR_COPY.invalid_output).toBe('claude returned unusable output. Fields are left as needs-input.')
+    expect(ERROR_COPY.timeout).toBe('AI call failed. Retry or fill manually.')
+    expect(ERROR_COPY.process).toBe('AI call failed. Retry or fill manually.')
+    expect(ERROR_COPY.invalid_output).toBe('AI returned unusable output. Fields are left as needs-input.')
     expect(ERROR_COPY.unreachable).toBe('Local host unreachable. Re-run the install script, then reopen Chrome.')
   })
 
