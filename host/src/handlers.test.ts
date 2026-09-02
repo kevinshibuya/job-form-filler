@@ -30,7 +30,7 @@ beforeEach(() => {
     db,
     runner,
     codex,
-    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json' },
+    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', models: {} },
     selfCheckFn: async () => ({
       node: { ok: true, version: 'v20.0.0' },
       claude: { ok: true, path: '/bin/true', detail: 'found' },
