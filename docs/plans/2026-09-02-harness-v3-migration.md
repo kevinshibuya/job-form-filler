@@ -278,9 +278,9 @@ The two argv tests: export a pure `buildArgv(prompt: string, opts: CallOpts): st
 
 **Boundaries:** No host or panel code. No new spec file; the modes get exercised by Tasks 9 and 10.
 
-- [ ] Write the fake, chmod +x, shell-check its four modes
-- [ ] Repoint `hostBridge.ts`, pass the mode env
-- [ ] Run the check, commit `test(e2e): fake codex binary beside the fake claude`
+- [x] Write the fake, chmod +x, shell-check its four modes
+- [x] Repoint `hostBridge.ts`, pass the mode env
+- [x] Run the check, commit `test(e2e): fake codex binary beside the fake claude`
 
 ### Task 9: Codex probe in the Self-check
 
@@ -455,10 +455,10 @@ Record unit and e2e counts, the grep result, and the three CLI replies under `##
 
 **Boundaries:** Never run the `main` push yourself. Never merge. The review wave on the PR is the user's to trigger.
 
-- [ ] Create the repo and remote
-- [ ] Ask the user for the `main` push, wait
-- [ ] Create and push `ai-staging`, push the branch, open the PR
-- [ ] Rewrite `HANDOFF.md`, give the rundown, stop
+- [x] Create the repo and remote
+- [x] Ask the user for the `main` push, wait
+- [x] Create and push `ai-staging`, push the branch, open the PR
+- [x] Rewrite `HANDOFF.md`, give the rundown, stop
 
 ## Progress
 
