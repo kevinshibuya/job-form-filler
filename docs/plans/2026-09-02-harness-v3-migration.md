@@ -186,9 +186,9 @@ export interface HostConfig { /* existing five fields */ models: ModelOverrides 
 
 **Boundaries:** Do not touch the runners or handler logic here. `authCachePath` stays non-overridable.
 
-- [ ] Write `models.ts` and its test, red then green
-- [ ] Extend `config.ts` and its test, patch the handlers test literal
-- [ ] Run the check, commit `feat(host): explicit per-task model registry with config overrides`
+- [x] Write `models.ts` and its test, red then green
+- [x] Extend `config.ts` and its test, patch the handlers test literal
+- [x] Run the check, commit `feat(host): explicit per-task model registry with config overrides`
 
 ### Task 6: Codex runner: classification and one transient retry
 
