@@ -34,8 +34,8 @@
 
 **Boundaries:** No file edits beyond the Progress section. If unit counts differ from 794/51, record the difference and continue; if any test is red, stop and report `blocked: baseline red: <test>`.
 
-- [ ] `git checkout -b harness-v3-migration`, then commit the three untracked docs as `docs: glossary, migration spec and plan`
-- [ ] Run typecheck, lint, unit; write the counts under `## Progress`; commit `docs(plan): task 0 baseline`
+- [x] `git checkout -b harness-v3-migration`, then commit the three untracked docs as `docs: glossary, migration spec and plan`
+- [x] Run typecheck, lint, unit; write the counts under `## Progress`; commit `docs(plan): task 0 baseline`
 
 ### Task 1: Move the docs tree and stamp the finished plans
 
@@ -462,4 +462,14 @@ Record unit and e2e counts, the grep result, and the three CLI replies under `##
 
 ## Progress
 
-(Task 0 writes the baseline here; Task 12 writes the verify evidence.)
+### Task 0 baseline (2026-09-02)
+
+Branch `harness-v3-migration` created from `main` at `23248d8`. The three untracked docs committed as `79fce81`.
+
+Measured on this branch, machine under load (load average 10.11 on 8 cores; unit tests are not gated on an idle machine, `verify` and `smoke` are):
+
+- `npm run typecheck` — exit 0
+- `npm run lint` — exit 0
+- `npx vitest run` — exit 0, 51 test files, 794 tests, all passing
+
+Identical to the counts recorded at plan authoring. No drift.
