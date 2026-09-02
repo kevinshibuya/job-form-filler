@@ -26,12 +26,14 @@ export function SelfCheckBanner({ check, error }: { check: SelfCheck | null; err
   if (!check.node.ok) problems.push(`Node ${check.node.version} is too old. Install Node 20 or newer.`)
   if (!check.claude.ok) problems.push(check.claude.detail)
   if (!check.auth.ok) problems.push(check.auth.detail)
+  if (!check.codex.ok) problems.push(check.codex.detail)
+  if (!check.codexAuth.ok) problems.push(check.codexAuth.detail)
   if (!check.db.ok) problems.push(`Database not writable at ${check.db.path}.`)
 
   if (problems.length === 0) {
     return (
       <div className={`${BANNER_BASE} ${BANNER_GOOD}`} role="status" data-jff-banner="ok">
-        Host ready. Node {check.node.version}, claude found, logged in.
+        Host ready. Node {check.node.version}, claude and codex found, both signed in.
       </div>
     )
   }

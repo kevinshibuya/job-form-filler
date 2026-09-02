@@ -96,6 +96,8 @@ export const SelfCheckSchema = z.object({
   node: z.object({ ok: z.boolean(), version: z.string() }),
   claude: z.object({ ok: z.boolean(), path: z.string(), detail: z.string() }),
   auth: z.object({ ok: z.boolean(), detail: z.string() }),
+  codex: z.object({ ok: z.boolean(), path: z.string(), detail: z.string() }),
+  codexAuth: z.object({ ok: z.boolean(), detail: z.string() }),
   db: z.object({ ok: z.boolean(), path: z.string() }),
 })
 export type SelfCheck = z.infer<typeof SelfCheckSchema>

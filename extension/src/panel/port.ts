@@ -122,6 +122,8 @@ const FAKE_SELF_CHECK: SelfCheck = {
   node: { ok: true, version: 'v20.0.0' },
   claude: { ok: true, path: '(fake)', detail: 'found' },
   auth: { ok: true, detail: 'logged in' },
+  codex: { ok: true, path: '(fake)', detail: 'found' },
+  codexAuth: { ok: true, detail: 'logged in' },
   db: { ok: true, path: '(fake)' },
 }
 

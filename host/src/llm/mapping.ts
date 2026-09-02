@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { FIELD_KEYS, isFieldKey, type EnumField, type FieldKey } from '@jff/shared'
-import type { CallOpts, ClaudeRunner } from './claudeCli.js'
+import type { CallOpts } from './claudeCli.js'
+import type { CodexRunner } from './codexCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
 export interface MappingCandidate {
@@ -132,7 +133,7 @@ export function validateMappingResponse(
   return out
 }
 
-export async function runMapping(runner: ClaudeRunner, input: MappingInput, opts: CallOpts): Promise<Map<string, MappingDecision>> {
+export async function runMapping(runner: CodexRunner, input: MappingInput, opts: CallOpts): Promise<Map<string, MappingDecision>> {
   const fields = input.fields.slice(0, CAPS.fieldsPerCall)
   if (fields.length === 0) return new Map()
   const refs = fields.map(refOf)

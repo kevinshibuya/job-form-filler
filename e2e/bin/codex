@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// Canned stand-in for the `codex` CLI, beside the fake `claude`. The host runs
+// facts extraction, mapping, the draft review and the codex auth probe through
+// this binary, so the e2e suite needs no real codex (and no network).
+// Contract: `exec ... -o <outFile> <prompt>` — write ONE JSON body to outFile,
+// never to stdout (stdout carries a transcript the host must never parse).
+//   JFF_FAKE_CODEX_MODE=ok           (default) answer per prompt shape
+//   JFF_FAKE_CODEX_MODE=not_authed   exit 1 with a sign-in message on stderr
+//   JFF_FAKE_CODEX_MODE=rate_limit   exit 1 with a usage-limit message on stderr
+//   JFF_FAKE_CODEX_MODE=timeout      sleep past the host deadline so SIGKILL fires
+// Deliberately written to parse identically as CommonJS or ESM: the file has no
+// extension, so Node picks the goal symbol itself and this must not care. That
+// rules out `require` and a top-level `return`.
+const args = process.argv.slice(2)
+const prompt = args[args.length - 1] ?? ''
+const outFile = args[args.indexOf('-o') + 1] ?? ''
+const mode = process.env.JFF_FAKE_CODEX_MODE ?? 'ok'
+// Read the claude mode too, so the salary tests keep their contract now that
+// mapping has moved off the claude runner.
+const claudeMode = process.env.JFF_FAKE_CLAUDE_MODE ?? 'ok'
+
+const body = () => {
+  // The codex auth probe from selfCheck.
+  if (/Reply with exactly/.test(prompt)) return { ok: true }
+
+  // The review pass: hand the drafted answer back unchanged, so the full-loop
+  // suite still asserts the claude draft it always did.
+  if (/You review ONE drafted answer/.test(prompt)) {
+    const m = prompt.match(/<draft_under_review>([\s\S]*?)<\/draft_under_review>/)
+    return { draft: m ? m[1] : '' }
+  }
+
+  // Facts extraction: the closed key set, empty is valid.
+  if (/You extract job-application facts/.test(prompt)) return {}
+
+  // The mapping call: one entry per ref, in the order the prompt lists them.
+  const refs = [...prompt.matchAll(/ref=(\d+:\d+)/g)].map((m) => m[1])
+  return refs.map((ref) => {
+    if (claudeMode === 'salary') {
+      const line = prompt.split('\n').find((l) => l.includes(`ref=${ref}`)) ?? ''
+      if (/salary|compensation|pretens/i.test(line)) {
+        return { ref, decision: 'known_key', knownKey: 'salary', answerId: null }
+      }
+    }
+    return { ref, decision: 'custom', knownKey: null, answerId: null }
+  })
+}
+
+if (mode === 'not_authed') {
+  process.stderr.write('Error: not logged in\n')
+  process.exit(1)
+} else if (mode === 'rate_limit') {
+  process.stderr.write('usage limit reached\n')
+  process.exit(1)
+} else if (mode === 'timeout') {
+  // Outlive the host's deadline; the host escalates to SIGKILL.
+  setTimeout(() => process.exit(0), 130_000)
+} else {
+  import('node:fs').then((fs) => {
+    fs.writeFileSync(outFile, JSON.stringify(body()), 'utf8')
+    process.exit(0)
+  })
+}
