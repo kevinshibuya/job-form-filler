@@ -405,10 +405,10 @@ Record unit and e2e counts, the grep result, and the three CLI replies under `##
 
 **Boundaries:** No code edits. A red here is reported with its output, not patched around; a fix goes back to the owning task. If an id is rejected by its CLI, stop and report `blocked: <cli> rejects <id>`.
 
-- [ ] `npm run verify` on an idle machine, counts recorded
-- [ ] `npm run build`, grep proof recorded
-- [ ] Three live CLI calls recorded
-- [ ] Commit `docs(plan): task 12 verify evidence`
+- [x] `npm run verify` on an idle machine, counts recorded
+- [x] `npm run build`, grep proof recorded
+- [x] Three live CLI calls recorded
+- [x] Commit `docs(plan): task 12 verify evidence`
 
 ### Task 13: Harness repo edits
 
@@ -427,10 +427,10 @@ Record unit and e2e counts, the grep result, and the three CLI replies under `##
 
 **Boundaries:** Nothing else in `~/.claude` changes. The trusted-repo setting is not touched. Nothing is deleted.
 
-- [ ] Table, legend and cost sentence
-- [ ] Settings key
-- [ ] Archive move
-- [ ] Run the check, commit and push with `git -C ~/.claude`
+- [x] Table, legend and cost sentence
+- [x] Settings key
+- [x] Archive move
+- [x] Run the check, commit and push with `git -C ~/.claude`
 
 ### Task 14: Remote, ai-staging, PR, handoff
 
@@ -473,3 +473,37 @@ Measured on this branch, machine under load (load average 10.11 on 8 cores; unit
 - `npx vitest run` — exit 0, 51 test files, 794 tests, all passing
 
 Identical to the counts recorded at plan authoring. No drift.
+
+### Task 12 verify evidence (2026-09-02)
+
+`npm run verify` on an idle machine, load average 4.26 on 8 cores at start,
+3.83 at finish. Exit 0.
+
+- `npm run typecheck` — exit 0
+- `npm run lint` — exit 0
+- unit — 53 test files, 833 tests, all passing (baseline was 51 / 794; the
+  39 added tests are this plan's own)
+- e2e — 17 of 17 passing, 42.7s
+
+Build proof, both directions:
+
+- after `npm run verify` left the seam dist behind:
+  `grep -rl 'jffFakeHost' extension/dist | wc -l` printed 1
+- after `npm run build`: the same grep printed 0
+
+Live model ids, each answering from the shell:
+
+- `claude -p … --model claude-opus-5 --output-format json` — the envelope's
+  `result` field carried `{"ok":true}`
+- `codex exec -m gpt-5.6-luna …` — printed `{"ok":true}`
+- `codex exec -m gpt-5.6-sol …` — printed `{"ok":true}`, on a second attempt.
+  The first invocation hung: over an hour with no output and near-zero CPU. It
+  was killed and re-run unchanged, and answered in about 20 seconds. The id is
+  good; the hang was one stuck process, not a rejection. Worth remembering,
+  because the product gives this model a 240 s budget on the facts and mapping
+  paths, and a hang there degrades rather than fails.
+
+An earlier attempt at this gate, run while the machine sat at load 43, failed
+25 unit tests across `App.test.tsx` and `fill.test.ts`. The second file holds
+combobox tests this plan never touches, and the idle re-run above is green, so
+that red was load noise of the class the global constraints describe.
