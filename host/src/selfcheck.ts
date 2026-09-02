@@ -47,34 +47,37 @@ export async function selfCheck(deps: SelfCheckDeps): Promise<SelfCheck> {
   const isFresh = (e: AuthCacheEntry | undefined): boolean =>
     e !== undefined && deps.now().getTime() - new Date(e.at).getTime() < AUTH_CACHE_TTL_MS
 
-  // Writing one vendor's entry must keep the other's, so both arms read the
-  // file once and merge into it.
+  // Writing one vendor's entry must keep the other's. `merged` accumulates
+  // across both arms: spreading the ORIGINAL `file` in each arm would make the
+  // second write drop the entry the first one just made, so a cold cache would
+  // re-probe one vendor on every open, forever.
+  let merged: AuthCacheFile = { ...file }
   const cacheOk = (vendor: 'claude' | 'codex', v: { ok: boolean; detail: string }): void => {
-    deps.writeAuthCache({ ...file, [vendor]: { ...v, at: deps.now().toISOString() } })
+    merged = { ...merged, [vendor]: { ...v, at: deps.now().toISOString() } }
+    deps.writeAuthCache(merged)
   }
 
-  let auth = { ok: false, detail: 'not checked (claude CLI missing)' }
-  if (claudeFound) {
-    const cached = file?.claude
-    if (isFresh(cached) && cached !== undefined) {
-      auth = { ok: cached.ok, detail: cached.detail }
-    } else {
-      auth = await deps.probeAuth()
-      // Never cache a failure: the user may log in a second later.
-      if (auth.ok) cacheOk('claude', auth)
-    }
+  // Both probes are real CLI round-trips and the host handles requests
+  // serially, so running them in sequence puts the panel's first scan behind
+  // two of them. They are independent; run them together.
+  const resolveAuth = async (
+    vendor: 'claude' | 'codex',
+    found: boolean,
+    cached: AuthCacheEntry | undefined,
+    probe: () => Promise<{ ok: boolean; detail: string }>,
+  ): Promise<{ ok: boolean; detail: string }> => {
+    if (!found) return { ok: false, detail: `not checked (${vendor} CLI missing)` }
+    if (isFresh(cached) && cached !== undefined) return { ok: cached.ok, detail: cached.detail }
+    const result = await probe()
+    // Never cache a failure: the user may log in a second later.
+    if (result.ok) cacheOk(vendor, result)
+    return result
   }
 
-  let codexAuth = { ok: false, detail: 'not checked (codex CLI missing)' }
-  if (codexFound) {
-    const cached = file?.codex
-    if (isFresh(cached) && cached !== undefined) {
-      codexAuth = { ok: cached.ok, detail: cached.detail }
-    } else {
-      codexAuth = await deps.probeCodexAuth()
-      if (codexAuth.ok) cacheOk('codex', codexAuth)
-    }
-  }
+  const [auth, codexAuth] = await Promise.all([
+    resolveAuth('claude', claudeFound, file?.claude, deps.probeAuth),
+    resolveAuth('codex', codexFound, file?.codex, deps.probeCodexAuth),
+  ])
 
   return { node, claude, auth, codex, codexAuth, db: { ok: deps.dbOk(), path: deps.dbPath } }
 }
@@ -124,7 +127,7 @@ export function realProbeCodexAuth(codexPath: string, model: string): () => Prom
   return async () => {
     const runner = createCodexRunner({ codexPath })
     try {
-      await runner.complete('Reply with exactly {"ok":true}.', z.object({ ok: z.boolean() }), { model })
+      await runner.complete('Reply with exactly {"ok":true}.', z.object({ ok: z.boolean() }), { model, retryTransient: false })
       return { ok: true, detail: 'logged in' }
     } catch (e) {
       if (e instanceof CodexError && e.kind === 'not_authed') return { ok: false, detail: 'codex CLI is not logged in. Run `codex login` in a terminal.' }

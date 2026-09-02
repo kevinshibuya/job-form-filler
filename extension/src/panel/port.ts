@@ -184,5 +184,10 @@ export function createHostPort(search: string = location.search): HostPort {
 export function hostErrorText(error: { kind: HostErrorKind; message?: string }): string {
   const copy = ERROR_COPY[error.kind]
   const detail = (error.message ?? '').trim()
-  return detail === '' || detail === copy ? copy : `${copy} — ${detail}`
+  if (detail === '' || detail === copy) return copy
+  // A newline, not a spaced dash: this file forbids that dash in user copy
+  // (see the note above ERROR_COPY), and the spec asked for a second line.
+  // Long host details are clipped so a zod dump cannot flood the banner.
+  const clipped = detail.length > 200 ? `${detail.slice(0, 200)}…` : detail
+  return `${copy}\n${clipped}`
 }

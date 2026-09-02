@@ -9,7 +9,7 @@ const BANNER_BAD = 'border-red-600/50 bg-red-600/10 dark:border-red-400/50'
 export function SelfCheckBanner({ check, error }: { check: SelfCheck | null; error: string | null }) {
   if (error !== null) {
     return (
-      <div className={`${BANNER_BASE} ${BANNER_BAD}`} role="status" data-jff-banner="error">
+      <div className={`${BANNER_BASE} ${BANNER_BAD} whitespace-pre-line`} role="status" data-jff-banner="error">
         <strong className="font-semibold">Host problem.</strong> {error}
       </div>
     )

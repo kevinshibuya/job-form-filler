@@ -121,6 +121,23 @@ describe('selfCheck', () => {
     expect(r.codexAuth.detail).toMatch(/codex login/)
   })
 
+  it('caching BOTH vendors in one run keeps both — the second write must not drop the first', async () => {
+    // The bug this pins: each arm spreading the ORIGINAL cache file means the
+    // codex write clobbers the claude entry written moments earlier, so a cold
+    // cache re-probes claude on every open forever.
+    const writeAuthCache = vi.fn()
+    await selfCheck({
+      ...base, writeAuthCache,
+      readAuthCache: () => null,
+      probeAuth: async () => ({ ok: true, detail: 'claude in' }),
+      probeCodexAuth: async () => ({ ok: true, detail: 'codex in' }),
+    })
+    expect(writeAuthCache).toHaveBeenCalledTimes(2)
+    const last = writeAuthCache.mock.calls[1][0]
+    expect(last.claude).toMatchObject({ ok: true, detail: 'claude in' })
+    expect(last.codex).toMatchObject({ ok: true, detail: 'codex in' })
+  })
+
   it('caching one vendor keeps the other vendor entry', async () => {
     const writeAuthCache = vi.fn()
     await selfCheck({
