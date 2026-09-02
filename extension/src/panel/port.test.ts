@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createNativeHostPort, createRetryingHostPort, createHostPort, ERROR_COPY } from './port'
+import { createNativeHostPort, createRetryingHostPort, createHostPort, ERROR_COPY, hostErrorText } from './port'
 
 /** Minimal chrome.runtime.Port double. */
 function fakePort() {
@@ -150,3 +150,30 @@ describe('ERROR_COPY', () => {
     for (const msg of Object.values(ERROR_COPY)) expect(msg).not.toMatch(/\s[—–]\s/)
   })
 })
+
+describe('hostErrorText', () => {
+  it('returns the bare copy when the host sent no message', () => {
+    expect(hostErrorText({ kind: 'timeout' })).toBe(ERROR_COPY.timeout)
+    expect(hostErrorText({ kind: 'timeout', message: '  ' })).toBe(ERROR_COPY.timeout)
+  })
+
+  it('puts the host detail on a second line, so the vendor reaches the user', () => {
+    const t = hostErrorText({ kind: 'not_authed', message: 'codex CLI is not logged in' })
+    expect(t.split('\n')).toEqual([ERROR_COPY.not_authed, 'codex CLI is not logged in'])
+  })
+
+  it('never renders a spaced em-dash, the same rule ERROR_COPY is held to', () => {
+    expect(hostErrorText({ kind: 'process', message: 'boom' })).not.toMatch(/\s[—–]\s/)
+  })
+
+  it('does not repeat the copy when the host echoes it back', () => {
+    expect(hostErrorText({ kind: 'db', message: ERROR_COPY.db })).toBe(ERROR_COPY.db)
+  })
+
+  it('clips a flooding host detail', () => {
+    const t = hostErrorText({ kind: 'bad_request', message: 'x'.repeat(500) })
+    expect(t.length).toBeLessThan(300)
+    expect(t.endsWith('…')).toBe(true)
+  })
+})
+

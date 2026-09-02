@@ -31,6 +31,20 @@ if (claudePath === '') {
   process.exit(1)
 }
 
+// 2b) codex: same treatment. The wrapper pins a minimal PATH, so a bare
+// `codex` is not resolvable from the Chrome-spawned host — and facts
+// extraction, mapping and the draft review all run on it now.
+let codexPath = ''
+try {
+  codexPath = execFileSync('/bin/sh', ['-lc', 'command -v codex'], { encoding: 'utf8' }).trim()
+} catch {
+  codexPath = ''
+}
+if (codexPath === '') {
+  console.error('Could not find the `codex` CLI on PATH. Install it, then re-run this script.')
+  process.exit(1)
+}
+
 // 3) the built host entry point must exist
 const entryPath = resolve(hostRoot, 'dist/index.js')
 if (!existsSync(entryPath)) {
@@ -59,8 +73,14 @@ chmodSync(wrapperPath, 0o755)
 // 6) write the host config (claude path + db path)
 const homeDir = resolve(homedir(), '.job-form-filler')
 mkdirSync(homeDir, { recursive: true })
-writeFileSync(resolve(homeDir, 'config.json'), JSON.stringify({
+// Keep any hand-written keys (notably `models`) rather than clobbering them.
+const configPath = resolve(homeDir, 'config.json')
+let existing = {}
+try { existing = JSON.parse(readFileSync(configPath, 'utf8')) } catch { existing = {} }
+writeFileSync(configPath, JSON.stringify({
+  ...existing,
   claudePath,
+  codexPath,
   dbPath: resolve(homeDir, 'db.sqlite'),
 }, null, 2) + '\n')
 
@@ -72,6 +92,7 @@ writeFileSync(manifestPath, buildNativeManifest({ wrapperPath, extensionId }))
 console.log('job-form-filler host installed.')
 console.log(`  node        ${nodePath} (${process.version})`)
 console.log(`  claude      ${claudePath}`)
+console.log(`  codex       ${codexPath}`)
 console.log(`  wrapper     ${wrapperPath}`)
 console.log(`  db          ${resolve(homeDir, 'db.sqlite')}`)
 console.log(`  chrome      ${manifestPath}`)

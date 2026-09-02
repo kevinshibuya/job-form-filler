@@ -126,6 +126,7 @@ export function createCodexRunner(
         // get the one retry.
         const kind = err!.kind
         if (kind !== 'timeout' && kind !== 'process') throw err!
+        if (opts.retryTransient === false) throw err!
         if (transientUsed++ >= 1) throw err!
         await sleep(TRANSIENT_BACKOFF_MS)
       }

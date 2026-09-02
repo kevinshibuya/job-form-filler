@@ -17,7 +17,13 @@ export class ClaudeError extends Error {
 
 export type RunResult = { code: number; stdout: string; stderr: string; timedOut: boolean }
 /** Every call names its model; `timeoutMs` overrides the runner default. */
-export type CallOpts = { model: string; timeoutMs?: number }
+export type CallOpts = {
+  model: string
+  timeoutMs?: number
+  /** Set false where a second attempt costs more than it saves — the draft
+   *  review and the sign-in probes both degrade fine on the first failure. */
+  retryTransient?: boolean
+}
 export type RunFn = (prompt: string, opts: CallOpts) => Promise<RunResult>
 export type SleepFn = (ms: number) => Promise<void>
 

@@ -105,7 +105,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         // degrades to the unreviewed draft — codex never blocks generation.
         let final = draft
         try {
-          final = sanitizeDraft(await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft }))
+          final = sanitizeDraft(await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft, retryTransient: false }))
         } catch (e) {
           const kind = e instanceof CodexError ? e.kind : 'process'
           log('warn', 'codex review failed; returning unreviewed draft', {
