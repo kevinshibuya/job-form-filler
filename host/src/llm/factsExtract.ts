@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { FIELD_KEYS } from '@jff/shared'
-import type { ClaudeRunner } from './claudeCli.js'
+import type { CallOpts, ClaudeRunner } from './claudeCli.js'
 
 const shape: Record<string, z.ZodOptional<z.ZodString>> = {}
 for (const k of FIELD_KEYS) shape[k] = z.string().optional()
@@ -28,8 +28,8 @@ export function buildFactsExtractPrompt(cvText: string): string {
   ].join('\n')
 }
 
-export async function runFactsExtract(runner: ClaudeRunner, cvText: string): Promise<Record<string, string>> {
-  const record = await runner.complete(buildFactsExtractPrompt(cvText), FactsExtractSchema)
+export async function runFactsExtract(runner: ClaudeRunner, cvText: string, opts: CallOpts): Promise<Record<string, string>> {
+  const record = await runner.complete(buildFactsExtractPrompt(cvText), FactsExtractSchema, opts)
   const out: Record<string, string> = {}
   for (const k of FIELD_KEYS) {
     const v = (record as Record<string, string | undefined>)[k]

@@ -7,6 +7,8 @@ import { ClaudeError, type ClaudeRunner } from '../llm/claudeCli.js'
 import type { MappingDecision } from '../llm/mapping.js'
 import { normalizeQuestion } from './normalize.js'
 
+const OPTS = { model: 'gpt-5.6-sol' }
+
 const field = (fid: number, label: string, extra: Partial<EnumField> = {}): EnumField => ({
   frameId: 0, fid, epoch: 5, label, name: null, idAttr: null, kind: 'text',
   options: [], required: false, visible: true, currentValue: null, demographic: false, ...extra,
@@ -50,7 +52,7 @@ describe('tier 0 — EEO', () => {
 
   it('never sends a demographic field to the LLM', async () => {
     const runner = runnerReturning({})
-    await resolveFields({ db, runner }, input([field(1, 'Gender', { demographic: true })]))
+    await resolveFields({ db, runner, mappingOpts: OPTS }, input([field(1, 'Gender', { demographic: true })]))
     expect(runner.complete).not.toHaveBeenCalled()
   })
 })
@@ -106,7 +108,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
     upsertAnswer(db, { questionNormalized: 'why figma', questionRaw: 'Why Figma?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     upsertAnswer(db, { questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6', language: 'en', reusability: 'reusable' })
     const runner = runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } })
-    await resolveFields({ db, runner }, input([field(1, 'Describe a hard bug you fixed.')]))
+    await resolveFields({ db, runner, mappingOpts: OPTS }, input([field(1, 'Describe a hard bug you fixed.')]))
     const prompt = runner.complete.mock.calls[0]![0] as string
     expect(prompt).toContain('Years of React?')
     expect(prompt).not.toContain('Why Figma?')
@@ -125,7 +127,7 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
 
   it('substitutes the DB value, never anything the model said', async () => {
     const runner = { complete: vi.fn(async () => [{ ref: '0:1', decision: 'known_key', knownKey: 'salary', answerId: null, value: 'R$ 999.999' }]) } as unknown as StubRunner
-    const r = await resolveFields({ db, runner }, input([field(1, 'Comp expectations?')]))
+    const r = await resolveFields({ db, runner, mappingOpts: OPTS }, input([field(1, 'Comp expectations?')]))
     expect(r.resolutions[0]!.value).toBe('R$ 18.000/mo')
   })
 
@@ -188,7 +190,7 @@ describe('tier 5 and failure modes', () => {
 
   it('does not call the LLM at all when every field resolved deterministically', async () => {
     const runner = runnerReturning({})
-    await resolveFields({ db, runner }, input([field(1, 'E-mail'), field(2, 'First Name')]))
+    await resolveFields({ db, runner, mappingOpts: OPTS }, input([field(1, 'E-mail'), field(2, 'First Name')]))
     expect(runner.complete).not.toHaveBeenCalled()
   })
 

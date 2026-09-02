@@ -4,6 +4,7 @@ import { openDb, setProfile, getProfile, getSelector, getLearnedMapping, upsertA
 import { handleRequest, type HandlerDeps } from './handlers.js'
 import { ClaudeError } from './llm/claudeCli.js'
 import { CodexError } from './llm/codexCli.js'
+import { resolveModels } from './llm/models.js'
 
 let db: Database.Database
 let deps: HandlerDeps
@@ -30,6 +31,7 @@ beforeEach(() => {
     db,
     runner,
     codex,
+    models: resolveModels({}),
     config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', models: {} },
     selfCheckFn: async () => ({
       node: { ok: true, version: 'v20.0.0' },

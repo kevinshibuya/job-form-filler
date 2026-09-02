@@ -22,6 +22,6 @@ describe('runFactsExtract', () => {
     const runner = {
       complete: vi.fn(async () => ({ email: 'k@x.com', salary: ' R$ 18k ', github: '', ssn: '123' })),
     } as unknown as ClaudeRunner
-    await expect(runFactsExtract(runner, 'CV')).resolves.toEqual({ email: 'k@x.com', salary: 'R$ 18k' })
+    await expect(runFactsExtract(runner, 'CV', { model: 'gpt-5.6-sol' })).resolves.toEqual({ email: 'k@x.com', salary: 'R$ 18k' })
   })
 })

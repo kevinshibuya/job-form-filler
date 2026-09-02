@@ -5,7 +5,7 @@ import {
 import {
   findExactAnswer, getAnswerById, getStoredValue, listReusableAnswers, touchAnswer,
 } from '../db/repos.js'
-import { ClaudeError, type ClaudeRunner } from '../llm/claudeCli.js'
+import { ClaudeError, type CallOpts, type ClaudeRunner } from '../llm/claudeCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
 import { recognize } from './recognizers.js'
@@ -13,6 +13,8 @@ import { recognize } from './recognizers.js'
 export interface WaterfallDeps {
   db: Database.Database
   runner: ClaudeRunner
+  /** The model + budget the mapping call runs under. */
+  mappingOpts: CallOpts
 }
 
 export interface WaterfallInput {
@@ -120,7 +122,7 @@ export async function resolveFields(deps: WaterfallDeps, input: WaterfallInput):
     try {
       decisions = await runMapping(deps.runner, {
         fields: unresolved, jobText: input.jobText, company: input.company, candidates,
-      })
+      }, deps.mappingOpts)
     } catch (e) {
       const err = e instanceof ClaudeError ? e : new ClaudeError('process', String(e))
       llmError = { kind: err.kind, message: err.message }

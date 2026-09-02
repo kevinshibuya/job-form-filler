@@ -256,10 +256,10 @@ The two argv tests: export a pure `buildArgv(prompt: string, opts: CallOpts): st
 
 **Boundaries:** No change to prompts, schemas, retry logic, or which runner a task uses. Task 6's classification stays as landed.
 
-- [ ] `CallOpts`, `buildArgv` and the two argv tests red then green
-- [ ] Thread `opts` through the four task modules and their tests
-- [ ] `WaterfallDeps`, `HandlerDeps`, `index.ts`, `selfcheck.ts` wiring and tests
-- [ ] Run the check, commit `feat(host): every LLM call carries an explicit model id and time budget`
+- [x] `CallOpts`, `buildArgv` and the two argv tests red then green
+- [x] Thread `opts` through the four task modules and their tests
+- [x] `WaterfallDeps`, `HandlerDeps`, `index.ts`, `selfcheck.ts` wiring and tests
+- [x] Run the check, commit `feat(host): every LLM call carries an explicit model id and time budget`
 
 ### Task 8: Fake codex binary for the e2e suite
 

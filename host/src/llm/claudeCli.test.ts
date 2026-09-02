@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createClaudeRunner, ClaudeError, type RunResult } from './claudeCli.js'
+import { buildArgv, createClaudeRunner, ClaudeError, type RunResult } from './claudeCli.js'
 
 const Schema = z.object({ ok: z.boolean() })
 const noSleep = () => Promise.resolve()
@@ -86,5 +86,17 @@ describe('createClaudeRunner', () => {
     const sent = run.mock.calls[0]![0] as string
     expect(sent.startsWith('MY PROMPT')).toBe(true)
     expect(sent).toMatch(/ONLY a single JSON/i)
+  })
+})
+
+
+describe('buildArgv', () => {
+  it('names the model explicitly and asks for the json envelope', () => {
+    expect(buildArgv('hello', { model: 'claude-opus-5' }))
+      .toEqual(['-p', 'hello', '--model', 'claude-opus-5', '--output-format', 'json'])
+  })
+
+  it('carries whatever model the caller names', () => {
+    expect(buildArgv('p', { model: 'claude-fable-5-1' })).toContain('claude-fable-5-1')
   })
 })
