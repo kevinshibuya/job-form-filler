@@ -344,10 +344,10 @@ interface WaterfallDeps { db: Database.Database; codex: CodexRunner; mappingOpts
 
 **Boundaries:** Prompt builders and schemas byte-identical. No panel change (Task 11 owns the copy). If `HostErrorKind` lacks a value the mapping needs, stop and report `blocked: HostErrorKind has no <kind>`.
 
-- [ ] Handler tests red for the routing assertions
-- [ ] Switch types, deps, budgets and error branches
-- [ ] Rewrite the full-loop rate-limit test as a codex story
-- [ ] Run the check, commit `feat(host): resume facts extraction and field mapping run on codex`
+- [x] Handler tests red for the routing assertions
+- [x] Switch types, deps, budgets and error branches
+- [x] Rewrite the full-loop rate-limit test as a codex story
+- [x] Run the check, commit `feat(host): resume facts extraction and field mapping run on codex`
 
 ### Task 11: Vendor-neutral panel copy
 
