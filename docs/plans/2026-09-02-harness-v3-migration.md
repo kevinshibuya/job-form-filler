@@ -211,8 +211,8 @@ export function createCodexRunner(opts: { codexPath?: string; run?: CodexRunFn; 
 
 **Boundaries:** `CODEX_TIMEOUT_MS` value unchanged. No argv change here.
 
-- [ ] Tests red, then classification and retry loop
-- [ ] Run the check, commit `feat(host): codex runner classifies rate limit and sign-in, retries once on transient failure`
+- [x] Tests red, then classification and retry loop
+- [x] Run the check, commit `feat(host): codex runner classifies rate limit and sign-in, retries once on transient failure`
 
 ### Task 7: Runners take a model and a time budget per call
 
