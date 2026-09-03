@@ -21,6 +21,13 @@ The applicant-tracking platform hosting the form, such as Greenhouse, Lever,
 Workday, Gupy or Ashby, or a custom career page.
 _Avoid_: platform, job board
 
+**ATS module**:
+What the tool knows about one ATS, layered over what it knows about every form:
+how to spot the ATS, where its Job posting text sits, which Controls it draws
+its own way, which Fields are noise. An ATS without a module gets the generic
+behaviour. Knowledge reaches a module through code changes, never through use.
+_Avoid_: adapter, plugin, platform profile, learned rule
+
 **Canonical URL**:
 The cleaned address that identifies a Job posting, so the same job reached by
 two links counts once.
@@ -65,6 +72,18 @@ _Avoid_: needs-input, unresolved, unknown
 A Resolution outcome: a Field the tool never fills, such as a demographic or
 EEO question.
 _Avoid_: ignored, excluded
+
+**Ignored field**:
+A Field the user hid in the Side panel for the current Session because the
+Scan should not have offered it. It lasts for that Session only and is recorded
+in a Capture.
+_Avoid_: dismissed, hidden field, blocked field
+
+**Capture**:
+A saved record of one Scan the user judged wrong: the page's form structure
+with every typed Value blanked, what the Scan found, what it decided, and every
+Ignored field. It is the evidence a later code change is built and tested on.
+_Avoid_: snapshot (the Session's page snapshot), export, bug report
 
 **Mapping**:
 The link between a Field's wording and a Known key or a Saved answer. A learned
