@@ -29,3 +29,12 @@ export function isFieldKey(s: string): s is FieldKey {
 export function isProfileKey(s: string): s is ProfileKey {
   return PROFILE_KEY_SET.has(s)
 }
+
+// A fact is a single-line value: a name, a URL, a notice period. Anything that
+// arrives with newlines in it is prose that took a wrong turn, so every write
+// path normalises before storing and refuses what is still too long after.
+export const FACT_MAX_CHARS = 500
+
+export function normalizeFactValue(v: string): string {
+  return v.replace(/\s+/g, ' ').trim()
+}

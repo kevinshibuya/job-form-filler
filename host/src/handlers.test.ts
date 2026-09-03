@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { openDb, setProfile, getProfile, getSelector, getLearnedMapping, upsertAnswer } from './db/repos.js'
+import { openDb, setProfile, getProfile, getAnswerBank, getSelector, getLearnedMapping, upsertAnswer } from './db/repos.js'
 import { handleRequest, type HandlerDeps } from './handlers.js'
+import { HostRequestSchema } from '@jff/shared'
 import { ClaudeError } from './llm/claudeCli.js'
 import { CodexError } from './llm/codexCli.js'
 import { resolveModels } from './llm/models.js'
@@ -241,5 +242,63 @@ describe('applied.* (A1)', () => {
     const r = await handleRequest(deps, { requestId: 'f2', method: 'facts.extract', params: { cvText: 'CV' } })
     expect(r.ok).toBe(false)
     expect(r.ok === false && r.error.kind).toBe('not_authed')
+  })
+})
+
+describe('facts never arrive through save, and stored facts are single-line', () => {
+  const saveParams = (items: unknown[]) => ({
+    url: 'https://x.test/apply', company: 'Acme', jobTitle: null, items, generatedCount: 0,
+  })
+  const item = {
+    handle: { frameId: 0, fid: 1, epoch: 1 },
+    questionRaw: 'GitHub', answer: 'https://github.com/x', reusability: 'reusable' as const,
+  }
+
+  it('rejects a save request whose item carries a factual key', () => {
+    const r = HostRequestSchema.safeParse({
+      requestId: 'k1', method: 'save', params: saveParams([{ ...item, fieldKey: 'github' }]),
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('sends the same row to qa_memory, not to profile, once the key is gone', async () => {
+    const before = getProfile(db)
+    const res = await handleRequest(deps, {
+      requestId: 'k2', method: 'save', params: saveParams([{ ...item, fieldKey: null }]),
+    })
+    expect(res.ok).toBe(true)
+    expect(getProfile(db)).toEqual(before)
+    expect(getAnswerBank(db)).toEqual({})
+    const rows = db.prepare('select question_raw, answer from qa_memory').all()
+    expect(rows).toEqual([{ question_raw: 'GitHub', answer: 'https://github.com/x' }])
+  })
+
+  it('stores a multi-line profile value as one line', async () => {
+    await handleRequest(deps, {
+      requestId: 'n1', method: 'profile.set',
+      params: { values: { location: 'Porto Alegre,\n  RS,\n  Brasil' } },
+    })
+    expect(getProfile(db).location).toBe('Porto Alegre, RS, Brasil')
+  })
+
+  it('refuses a profile value over the cap and leaves the stored one alone', async () => {
+    setProfile(db, { github: 'https://github.com/kevinshibuya' })
+    const r = await handleRequest(deps, {
+      requestId: 'n2', method: 'profile.set', params: { values: { github: 'x'.repeat(501) } },
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.error.kind).toBe('bad_request')
+      expect(r.error.message).toBe('fact value over 500 characters: github')
+    }
+    expect(getProfile(db).github).toBe('https://github.com/kevinshibuya')
+  })
+
+  it('applies the same cap to the answer bank', async () => {
+    const r = await handleRequest(deps, {
+      requestId: 'n3', method: 'answerBank.set', params: { values: { salary: 'R$ '.repeat(300) } },
+    })
+    expect(r.ok).toBe(false)
+    expect(getAnswerBank(db).salary).toBeUndefined()
   })
 })

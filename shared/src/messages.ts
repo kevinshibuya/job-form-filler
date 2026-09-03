@@ -29,7 +29,11 @@ export const SaveItemSchema = z.object({
   questionRaw: z.string(),
   answer: z.string(),
   reusability: z.enum(['reusable', 'company_specific']),
-  fieldKey: z.enum(FIELD_KEYS).nullable(),
+  // Facts never travel through Save answers: they reach profile/answer_bank
+  // only through "Save to profile" and the Profile editor. The property stays
+  // on the wire so an older panel that still sends a key fails validation
+  // loudly instead of being silently ignored.
+  fieldKey: z.null(),
 })
 export type SaveItem = z.infer<typeof SaveItemSchema>
 

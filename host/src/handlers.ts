@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  isFieldKey, isProfileKey,
+  FACT_MAX_CHARS, isFieldKey, isProfileKey, normalizeFactValue,
   type HostErrorKind, type HostRequest, type HostResponse, type SelfCheck,
 } from '@jff/shared'
 import { paginate } from './chunk.js'
@@ -21,6 +21,21 @@ import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFields } from './resolve/waterfall.js'
 import { log } from './log.js'
 import type { ResolvedModels } from './llm/models.js'
+
+
+// A fact is one line. Normalise every incoming value, then refuse anything still
+// over the cap rather than truncating: a value that long is prose that took a
+// wrong turn, and silently storing half of it is worse than saying no.
+// Returns the cleaned map, or the error message when a value is too long.
+function shapeFactValues(values: Record<string, string>): Record<string, string> | string {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(values)) {
+    const n = normalizeFactValue(v)
+    if (n.length > FACT_MAX_CHARS) return `fact value over ${FACT_MAX_CHARS} characters: ${k}`
+    out[k] = n
+  }
+  return out
+}
 
 export interface HandlerDeps {
   db: Database.Database
@@ -70,7 +85,9 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'profile.set': {
         const bad = Object.keys(req.params.values).filter((k) => !isProfileKey(k))
         if (bad.length > 0) return fail(req.requestId, 'bad_request', `unknown profile keys: ${bad.join(', ')}`)
-        setProfile(db, req.params.values)
+        const shaped = shapeFactValues(req.params.values)
+        if (typeof shaped === 'string') return fail(req.requestId, 'bad_request', shaped)
+        setProfile(db, shaped)
         return ok(req.requestId, getProfile(db))
       }
 
@@ -80,7 +97,9 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'answerBank.set': {
         const bad = Object.keys(req.params.values).filter((k) => !isFieldKey(k) || isProfileKey(k))
         if (bad.length > 0) return fail(req.requestId, 'bad_request', `unknown answer-bank keys: ${bad.join(', ')}`)
-        setAnswerBank(db, req.params.values)
+        const shaped = shapeFactValues(req.params.values)
+        if (typeof shaped === 'string') return fail(req.requestId, 'bad_request', shaped)
+        setAnswerBank(db, shaped)
         return ok(req.requestId, getAnswerBank(db))
       }
 
@@ -120,20 +139,17 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         const tx = db.transaction(() => {
           for (const item of req.params.items) {
             if (item.answer.trim() === '') continue
-            if (item.fieldKey !== null) {
-              // A factual key: update the owning store instead of qa_memory.
-              if (isProfileKey(item.fieldKey)) setProfile(db, { [item.fieldKey]: item.answer })
-              else setAnswerBank(db, { [item.fieldKey]: item.answer })
-            } else {
-              upsertAnswer(db, {
-                questionNormalized: normalizeQuestion(item.questionRaw),
-                questionRaw: item.questionRaw,
-                answer: item.answer,
-                language: detectLanguage(item.questionRaw),
-                reusability: item.reusability,
-                sourceUrl: req.params.url,
-              })
-            }
+            // Every item here is keyless: SaveItemSchema pins fieldKey to null,
+            // so a save can only ever reach qa_memory. Facts go through
+            // profile.set / answerBank.set instead.
+            upsertAnswer(db, {
+              questionNormalized: normalizeQuestion(item.questionRaw),
+              questionRaw: item.questionRaw,
+              answer: item.answer,
+              language: detectLanguage(item.questionRaw),
+              reusability: item.reusability,
+              sourceUrl: req.params.url,
+            })
             filled++
           }
           insertApplication(db, {

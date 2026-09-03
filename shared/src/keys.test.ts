@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PROFILE_KEYS, ANSWER_BANK_KEYS, FIELD_KEYS, isFieldKey } from './keys.js'
+import { PROFILE_KEYS, ANSWER_BANK_KEYS, FIELD_KEYS, isFieldKey, normalizeFactValue, FACT_MAX_CHARS } from './keys.js'
 
 describe('field key sets', () => {
   it('FIELD_KEYS is the union of profile and answer-bank keys with no duplicates', () => {
@@ -24,5 +24,18 @@ describe('field key sets', () => {
     expect(isFieldKey('whyInterested')).toBe(false)
     expect(isFieldKey('__proto__')).toBe(false)
     expect(isFieldKey('')).toBe(false)
+  })
+})
+
+describe('normalizeFactValue', () => {
+  it('collapses every run of whitespace, newlines included, into one space and trims', () => {
+    expect(normalizeFactValue('  Porto Alegre,\n  RS,\tBrasil  ')).toBe('Porto Alegre, RS, Brasil')
+    expect(normalizeFactValue('a\r\n\r\nb')).toBe('a b')
+  })
+
+  it('leaves an already-clean value alone and keeps an empty value empty', () => {
+    expect(normalizeFactValue('https://github.com/kevinshibuya')).toBe('https://github.com/kevinshibuya')
+    expect(normalizeFactValue('   ')).toBe('')
+    expect(FACT_MAX_CHARS).toBe(500)
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, SaveItemSchema } from './messages.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -184,5 +184,33 @@ describe('generate cvText + facts.extract (B2b/B6)', () => {
   it('accepts facts.extract with non-empty cvText and rejects empty', () => {
     expect(HostRequestSchema.safeParse({ requestId: 'f1', method: 'facts.extract', params: { cvText: 'CV' } }).success).toBe(true)
     expect(HostRequestSchema.safeParse({ requestId: 'f2', method: 'facts.extract', params: { cvText: '' } }).success).toBe(false)
+  })
+})
+
+describe('SaveItemSchema', () => {
+  const item = {
+    handle, questionRaw: 'Are you authorised to work?', answer: 'Yes',
+    reusability: 'reusable' as const,
+  }
+
+  it('rejects a non-null fieldKey, so a fact can never ride Save answers into a store', () => {
+    expect(SaveItemSchema.safeParse({ ...item, fieldKey: 'github' }).success).toBe(false)
+    expect(SaveItemSchema.safeParse({ ...item, fieldKey: 'workAuth' }).success).toBe(false)
+  })
+
+  it('still requires the property, and accepts it as null', () => {
+    expect(SaveItemSchema.safeParse({ ...item, fieldKey: null }).success).toBe(true)
+    expect(SaveItemSchema.safeParse(item).success).toBe(false)
+  })
+
+  it('rejects a whole save request carrying a keyed item', () => {
+    const r = HostRequestSchema.safeParse({
+      requestId: 's1', method: 'save',
+      params: {
+        url: 'https://x.test/apply', company: null, jobTitle: null,
+        items: [{ ...item, fieldKey: 'github' }], generatedCount: 0,
+      },
+    })
+    expect(r.success).toBe(false)
   })
 })

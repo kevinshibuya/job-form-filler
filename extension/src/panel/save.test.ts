@@ -77,14 +77,41 @@ describe('buildSaveItems', () => {
     })).toEqual([])
   })
 
-  it('routes a corrected factual field to its answer-bank key, not to qa_memory', () => {
+  it('drops a corrected factual field entirely: Save answers writes no fact anywhere', () => {
+    // It used to travel here with fieldKey 'salary' and the host wrote it into
+    // answer_bank. Now the only way a fact is stored is "Save to profile".
     const items = buildSaveItems({
       ...base,
       fields: [field(0, 'Desired salary')],
       resolutions: [res(0, { tier: 'auto', value: 'R$ 18k', source: 'answer_bank', key: 'salary' })],
       snapshot: { '0:0': 'R$ 22k' },
     })
-    expect(items[0]).toMatchObject({ fieldKey: 'salary', answer: 'R$ 22k' })
+    expect(items).toEqual([])
+  })
+
+  it('drops a needs_input row that carries a key, even with a panel edit behind it', () => {
+    expect(buildSaveItems({
+      ...base,
+      fields: [field(0, 'GitHub')],
+      resolutions: [res(0, { tier: 'needs_input', key: 'github' })],
+      panelEdits: { '0:0': 'https://github.com/x' },
+    })).toEqual([])
+  })
+
+  it('still emits a keyless row, with a null fieldKey', () => {
+    const items = buildSaveItems({
+      ...base,
+      fields: [field(0, 'Describe a hard problem you solved')],
+      resolutions: [res(0, { tier: 'needs_input', key: null })],
+      panelEdits: { '0:0': 'Because the work is interesting.' },
+    })
+    expect(items).toEqual([{
+      handle: { frameId: 0, fid: 0, epoch: 1 },
+      questionRaw: 'Describe a hard problem you solved',
+      answer: 'Because the work is interesting.',
+      reusability: 'reusable',
+      fieldKey: null,
+    }])
   })
 
   // The three exclusion rules below are kept DELIBERATELY INDEPENDENT. The obvious
@@ -136,45 +163,38 @@ describe('buildSaveItems', () => {
     // The panel's onAccept promotes the TIER only, never resolution.value. If it
     // overwrote the value, engine would equal final here and this correction — the
     // single most valuable thing the learning loop can capture — would vanish.
+    // Keyless on purpose: a keyed row is a fact and never reaches an item at all,
+    // so the tier-vs-value invariant has to be asserted on a free-text row.
     const items = buildSaveItems({
       ...base,
-      fields: [field(0, 'Desired salary')],
-      resolutions: [res(0, { tier: 'auto', value: 'R$ 18k', source: 'llm_key', key: 'salary' })],
-      panelEdits: { '0:0': 'R$ 22k' },
+      fields: [field(0, 'Describe your ideal team')],
+      resolutions: [res(0, { tier: 'auto', value: 'A small one.', source: 'llm_reuse', key: null })],
+      panelEdits: { '0:0': 'A small one that ships.' },
     })
     expect(items).toHaveLength(1)
-    expect(items[0]).toMatchObject({ answer: 'R$ 22k', fieldKey: 'salary' })
+    expect(items[0]).toMatchObject({ answer: 'A small one that ships.', fieldKey: null })
   })
 
   // B5b: the Ashby resume auto-parse fills Full Name/Email/Phone as page-sourced
   // values. With the recognized key attached they are learnable facts; without a
   // key they stay ATS noise that must never be saved.
-  it('saves a page-sourced row that carries a factual key, routed by fieldKey', () => {
-    const items = buildSaveItems({
+  it('skips a page-sourced row that carries a factual key', () => {
+    // The B5b passthrough that used to route this into profile is gone. An ATS
+    // that autofills a name no longer gets to write it back over the stored one.
+    expect(buildSaveItems({
       ...base,
       fields: [field(0, 'First Name')],
       resolutions: [res(0, { tier: 'auto', value: 'Kevin', source: 'page', key: 'firstName' })],
-    })
-    expect(items).toEqual([{
-      handle: { frameId: 0, fid: 0, epoch: 1 },
-      questionRaw: 'First Name',
-      answer: 'Kevin',
-      reusability: 'reusable',
-      fieldKey: 'firstName',
-    }])
+    })).toEqual([])
   })
 
-  it('saves a page-sourced keyed row even when engine === final (nothing-new rule is waived)', () => {
-    // The whole point: the page value IS the new learning. The host upsert is
-    // idempotent, so re-saving the same fact is harmless.
-    const items = buildSaveItems({
+  it('skips a page-sourced keyed row whose page value the user edited', () => {
+    expect(buildSaveItems({
       ...base,
       fields: [field(0, 'Email')],
       resolutions: [res(0, { tier: 'auto', value: 'k@x.com', source: 'page', key: 'email' })],
-      snapshot: { '0:0': 'k@x.com' },
-    })
-    expect(items).toHaveLength(1)
-    expect(items[0]).toMatchObject({ fieldKey: 'email', answer: 'k@x.com' })
+      snapshot: { '0:0': 'corrected@x.com' },
+    })).toEqual([])
   })
 
   it('still skips a page-sourced row with NO key', () => {
