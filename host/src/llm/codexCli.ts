@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { z } from 'zod'
-import { parseLooseJson, type CallOpts, type SleepFn } from './claudeCli.js'
+import { isTimeoutSignal, parseLooseJson, type CallOpts, type SleepFn } from './claudeCli.js'
 
 /** The runner's default budget. Callers that need longer pass `timeoutMs`
  *  per call; the review pass keeps this default so it never holds generation
@@ -34,15 +34,9 @@ export function buildCodexArgv(prompt: string, opts: CallOpts, outFile: string):
   return ['exec', '-m', opts.model, '-s', 'read-only', '--ephemeral', '--skip-git-repo-check', '--color', 'never', '-o', outFile, prompt]
 }
 
-/**
- * Node's `timeout` option below kills the child with `killSignal` on the
- * deadline; a codex that traps SIGTERM survives unless we escalate to
- * SIGKILL (unblockable), so `close` can now report EITHER signal for the same
- * "we killed it on the deadline" event — both must classify as a timeout.
- */
-export function isTimeoutSignal(code: number | null, signal: NodeJS.Signals | null): boolean {
-  return code === null && (signal === 'SIGTERM' || signal === 'SIGKILL')
-}
+/** Both runners kill a child the same way on the deadline, so they share one
+ *  predicate; it lives in claudeCli, which codexCli already builds on. */
+export { isTimeoutSignal } from './claudeCli.js'
 
 export interface CodexRunner {
   complete<T>(prompt: string, schema: z.ZodType<T>, opts: CallOpts): Promise<T>

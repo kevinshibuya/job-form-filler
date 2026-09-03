@@ -28,6 +28,34 @@ describe('createNativeHostPort', () => {
     await expect(pending).resolves.toEqual({ ok: true, result: { email: 'k@x.com' } })
   })
 
+  it('gives up on a wedged host after the backstop deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const p = fakePort()
+      const port = createNativeHostPort(() => p as unknown as chrome.runtime.Port)
+      const pending = port.request('selfCheck', {})
+      await vi.advanceTimersByTimeAsync(600_000)
+      await expect(pending).resolves.toEqual({ ok: false, error: { kind: 'timeout', message: ERROR_COPY.timeout } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves no deadline running once a response lands', async () => {
+    vi.useFakeTimers()
+    try {
+      const p = fakePort()
+      const port = createNativeHostPort(() => p as unknown as chrome.runtime.Port)
+      const pending = port.request('profile.get', {})
+      const sent = p.sent[0] as { requestId: string }
+      p.emit({ requestId: sent.requestId, ok: true, result: 'done' })
+      await expect(pending).resolves.toEqual({ ok: true, result: 'done' })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('routes concurrent responses to the right callers, out of order', async () => {
     const p = fakePort()
     const port = createNativeHostPort(() => p as unknown as chrome.runtime.Port)

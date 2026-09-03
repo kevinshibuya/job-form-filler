@@ -37,6 +37,17 @@ export function buildArgv(prompt: string, opts: CallOpts): string[] {
 }
 
 /**
+ * Node kills the child with `killSignal` on the deadline. `claude` TRAPS
+ * SIGTERM and exits itself, which arrives as code 143 with no signal — read
+ * naively that is an ordinary non-zero exit, and a deadline kill surfaced as
+ * the useless "claude exited 143". SIGKILL cannot be trapped, so the kill is
+ * unambiguous; 143 stays here for a claude terminated by anything else.
+ */
+export function isTimeoutSignal(code: number | null, signal: NodeJS.Signals | null): boolean {
+  return code === null && (signal === 'SIGTERM' || signal === 'SIGKILL')
+}
+
+/**
  * `stdio: ['ignore', ...]` closes the child's stdin. Without it `claude -p` waits
  * ~3s for stdin on EVERY call and writes a warning to stderr that masks the real
  * failure message. The prompt goes through argv (-p), never stdin.
@@ -46,6 +57,7 @@ export function defaultRun(claudePath: string): RunFn {
     new Promise<RunResult>((resolve, reject) => {
       const child = spawn(claudePath, buildArgv(prompt, opts), {
         timeout: opts.timeoutMs ?? SPAWN_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let stdout = ''
@@ -54,8 +66,7 @@ export function defaultRun(claudePath: string): RunFn {
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8') })
       child.on('error', reject)
       child.on('close', (code, signal) => {
-        // A timeout kill arrives as code=null with signal=SIGTERM.
-        resolve({ code: code ?? 1, stdout, stderr, timedOut: code === null && signal === 'SIGTERM' })
+        resolve({ code: code ?? 1, stdout, stderr, timedOut: isTimeoutSignal(code, signal) })
       })
     })
 }
@@ -131,7 +142,10 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
           if (parseUsed++ >= 1) throw new ClaudeError(kind!, message!)
           continue // immediate retry — a formatting glitch needs no backoff
         }
-        if (transientUsed++ >= 1) throw new ClaudeError(kind!, message!)
+        // Mirrors the codex runner: a caller that asked for one attempt gets
+        // one. Without this the flag `CallOpts` advertises is silently ignored
+        // here, and a sign-in probe costs two full spawn budgets.
+        if (opts.retryTransient === false || transientUsed++ >= 1) throw new ClaudeError(kind!, message!)
         await sleep(TRANSIENT_BACKOFF_MS)
       }
     },

@@ -19,6 +19,11 @@ it from stored answers, and draft the free-text ones under human review.
   `~/.job-form-filler/db.sqlite` and restore it afterwards.
 - After any edit under `shared/src`, run `npm run build -w @jff/shared` before
   host or extension tests, or they exercise the stale build.
+- The host replays any response whose `requestId` it has seen in the last 7
+  days (`request_log`). A diagnostic script with a hardcoded id therefore stops
+  probing after its first run and silently replays a stale answer — a probe that
+  returns in 0s when a real CLI call takes 15s is the tell. Always send
+  `crypto.randomUUID()`.
 - Product model routing lives in `host/src/llm/models.ts` and follows the
   harness model table. Override per task under `models` in
   `~/.job-form-filler/config.json`.

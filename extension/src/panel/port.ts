@@ -32,6 +32,15 @@ export const ERROR_COPY: Record<HostErrorKind, string> = {
 
 type Pending = (r: PortResult<unknown>) => void
 
+/**
+ * A backstop, not a UX deadline. Every host call is bounded well under this
+ * (240s per spawn, at most doubled by one retry, plus backoff), so a request
+ * that passes it means the host process is wedged rather than slow. Without it
+ * a wedged host leaves the panel on "Waiting for the local host…" forever,
+ * with no way back other than closing it.
+ */
+const REQUEST_DEADLINE_MS = 600_000
+
 export function createNativeHostPort(connect: () => chrome.runtime.Port = () => chrome.runtime.connectNative(HOST_NAME)): HostPort {
   const port = connect()
   const pending = new Map<string, Pending>()
@@ -63,7 +72,13 @@ export function createNativeHostPort(connect: () => chrome.runtime.Port = () => 
     request<T>(method: HostRequest['method'], params: unknown, requestId: string = crypto.randomUUID()): Promise<PortResult<T>> {
       if (!alive) return Promise.resolve({ ok: false, error: { kind: 'unreachable', message: ERROR_COPY.unreachable } })
       return new Promise<PortResult<T>>((resolve) => {
-        pending.set(requestId, resolve as Pending)
+        // A late response for a timed-out id finds no pending entry and is
+        // ignored by the message listener, so the deadline needs no other guard.
+        const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+          pending.delete(requestId)
+          resolve({ ok: false, error: { kind: 'timeout', message: ERROR_COPY.timeout } })
+        }, REQUEST_DEADLINE_MS)
+        pending.set(requestId, ((r) => { clearTimeout(timer); resolve(r as PortResult<T>) }) as Pending)
         port.postMessage({ requestId, method, params })
       })
     },
