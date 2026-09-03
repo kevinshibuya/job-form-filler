@@ -25,17 +25,13 @@ function encode(value: unknown): Buffer {
   return Buffer.concat([head, body])
 }
 
-export async function startHost(opts: { mode?: string } = {}): Promise<HostChild> {
+export async function startHost(opts: { mode?: string; codexMode?: string } = {}): Promise<HostChild> {
   const home = await mkdtemp(join(tmpdir(), 'jff-home-'))
   // The host reads config.json out of JFF_HOME; point claudePath at the fake CLI
   // so nothing in this suite can reach a real `claude` (or a real network).
   writeFileSync(join(home, 'config.json'), JSON.stringify({
     claudePath: join(FAKE_BIN, 'claude'),
-    // Nonexistent ON PURPOSE: spawn → ENOENT → not_installed → the generate
-    // pipeline degrades to the claude draft. e2e must never spawn (or pay
-    // for) a real codex, and a real reviewer call would also blow the
-    // per-step budgets. Determinism beats fidelity here.
-    codexPath: join(home, 'no-codex'),
+    codexPath: join(FAKE_BIN, 'codex'),
     dbPath: join(home, 'db.sqlite'),
   }))
 
@@ -46,6 +42,7 @@ export async function startHost(opts: { mode?: string } = {}): Promise<HostChild
       JFF_HOME: home,
       PATH: `${FAKE_BIN}:${process.env.PATH ?? ''}`,
       JFF_FAKE_CLAUDE_MODE: opts.mode ?? 'ok',
+      JFF_FAKE_CODEX_MODE: opts.codexMode ?? 'ok',
     },
   })
 

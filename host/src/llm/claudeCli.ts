@@ -16,11 +16,35 @@ export class ClaudeError extends Error {
 }
 
 export type RunResult = { code: number; stdout: string; stderr: string; timedOut: boolean }
-export type RunFn = (prompt: string) => Promise<RunResult>
+/** Every call names its model; `timeoutMs` overrides the runner default. */
+export type CallOpts = {
+  model: string
+  timeoutMs?: number
+  /** Set false where a second attempt costs more than it saves — the draft
+   *  review and the sign-in probes both degrade fine on the first failure. */
+  retryTransient?: boolean
+}
+export type RunFn = (prompt: string, opts: CallOpts) => Promise<RunResult>
 export type SleepFn = (ms: number) => Promise<void>
 
 export interface ClaudeRunner {
-  complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T>
+  complete<T>(prompt: string, schema: z.ZodType<T>, opts: CallOpts): Promise<T>
+}
+
+/** Pure so the argv can be asserted without spawning anything. */
+export function buildArgv(prompt: string, opts: CallOpts): string[] {
+  return ['-p', prompt, '--model', opts.model, '--output-format', 'json']
+}
+
+/**
+ * Node kills the child with `killSignal` on the deadline. `claude` TRAPS
+ * SIGTERM and exits itself, which arrives as code 143 with no signal — read
+ * naively that is an ordinary non-zero exit, and a deadline kill surfaced as
+ * the useless "claude exited 143". SIGKILL cannot be trapped, so the kill is
+ * unambiguous; 143 stays here for a claude terminated by anything else.
+ */
+export function isTimeoutSignal(code: number | null, signal: NodeJS.Signals | null): boolean {
+  return code === null && (signal === 'SIGTERM' || signal === 'SIGKILL')
 }
 
 /**
@@ -29,10 +53,11 @@ export interface ClaudeRunner {
  * failure message. The prompt goes through argv (-p), never stdin.
  */
 export function defaultRun(claudePath: string): RunFn {
-  return (prompt) =>
+  return (prompt, opts) =>
     new Promise<RunResult>((resolve, reject) => {
-      const child = spawn(claudePath, ['-p', prompt, '--output-format', 'json'], {
-        timeout: SPAWN_TIMEOUT_MS,
+      const child = spawn(claudePath, buildArgv(prompt, opts), {
+        timeout: opts.timeoutMs ?? SPAWN_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let stdout = ''
@@ -41,8 +66,7 @@ export function defaultRun(claudePath: string): RunFn {
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8') })
       child.on('error', reject)
       child.on('close', (code, signal) => {
-        // A timeout kill arrives as code=null with signal=SIGTERM.
-        resolve({ code: code ?? 1, stdout, stderr, timedOut: code === null && signal === 'SIGTERM' })
+        resolve({ code: code ?? 1, stdout, stderr, timedOut: isTimeoutSignal(code, signal) })
       })
     })
 }
@@ -70,7 +94,7 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
 
   return {
-    async complete<T>(prompt: string, schema: z.ZodType<T>): Promise<T> {
+    async complete<T>(prompt: string, schema: z.ZodType<T>, opts: CallOpts): Promise<T> {
       const wrapped = `${prompt}\n\nRespond with ONLY a single JSON value matching the schema described above. No prose, no code fences, no explanation.`
       let transientUsed = 0
       let parseUsed = 0
@@ -82,7 +106,7 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
         let res: RunResult | undefined
 
         try {
-          res = await run(wrapped)
+          res = await run(wrapped, opts)
         } catch (e: unknown) {
           const err = e as NodeJS.ErrnoException
           if (err?.code === 'ENOENT') {
@@ -94,7 +118,7 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
 
         if (res) {
           if (res.timedOut) {
-            kind = 'timeout'; message = `claude -p exceeded ${SPAWN_TIMEOUT_MS}ms`; cls = 'transient'
+            kind = 'timeout'; message = `claude -p exceeded the call's time budget`; cls = 'transient'
           } else if (res.code !== 0) {
             // RATE_LIMIT first: "authentication rate limit exceeded" also matches
             // AUTH_RE and must classify as rate_limit, not not_authed.
@@ -118,7 +142,10 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
           if (parseUsed++ >= 1) throw new ClaudeError(kind!, message!)
           continue // immediate retry — a formatting glitch needs no backoff
         }
-        if (transientUsed++ >= 1) throw new ClaudeError(kind!, message!)
+        // Mirrors the codex runner: a caller that asked for one attempt gets
+        // one. Without this the flag `CallOpts` advertises is silently ignored
+        // here, and a sign-in probe costs two full spawn budgets.
+        if (opts.retryTransient === false || transientUsed++ >= 1) throw new ClaudeError(kind!, message!)
         await sleep(TRANSIENT_BACKOFF_MS)
       }
     },

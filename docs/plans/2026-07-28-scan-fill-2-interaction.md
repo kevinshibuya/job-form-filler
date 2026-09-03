@@ -1,5 +1,8 @@
 # Scan/Fill Correctness — Plan 2 of 3: A-interaction (A6–A9) Implementation Plan
 
+**Status:** completed 2026-07-29
+Progress was tracked in the SDD ledger, which no longer exists. Checkboxes below reflect authoring, not execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the scan INTERACT with the page correctly and scope everything to the real application frame: elect exactly one frame and send only its fields to resolve/auto-fill/resume/harvest (A7), harvest mounted combobox options from the elected frame without mutating page state (A6), target the resume upload by scoring instead of `fields.find` (A8), and rebuild the panel around document-order kind-aware rows with foreign fields demoted to a collapsed group and an honest filled/already-on-page status split (A9).
@@ -8,7 +11,7 @@
 
 **Tech Stack:** TypeScript strict, zod (closed schemas in `shared/src`), vitest (extension=jsdom project), React panel, Playwright e2e with a SECOND static-server origin for the cross-origin iframe fixture. No new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-07-28-scan-fill-correctness-design.md` (approved; sections A6–A9). This plan covers Slice-A TODOs 12–17 and the rendered half of TODO 18. Predecessor: `docs/superpowers/plans/2026-07-28-scan-fill-1-core.md` (A1–A5) — **this plan runs on the tree where plan 1 is fully executed and green**, and consumes its interfaces exactly (`LabelBinding`, `'choice'` kind, `EnumField.description`, `CHOICE_*` + `detectChoice`, `Measure.clipped`, `keepField`/`dropJunk` in `extension/src/panel/junk.ts`, the interim choice auto-fill guard in `scan.ts`). It re-creates none of them.
+**Spec:** `docs/specs/2026-07-28-scan-fill-correctness-design.md` (approved; sections A6–A9). This plan covers Slice-A TODOs 12–17 and the rendered half of TODO 18. Predecessor: `docs/plans/2026-07-28-scan-fill-1-core.md` (A1–A5) — **this plan runs on the tree where plan 1 is fully executed and green**, and consumes its interfaces exactly (`LabelBinding`, `'choice'` kind, `EnumField.description`, `CHOICE_*` + `detectChoice`, `Measure.clipped`, `keepField`/`dropJunk` in `extension/src/panel/junk.ts`, the interim choice auto-fill guard in `scan.ts`). It re-creates none of them.
 
 **Scope guard:** Do NOT implement fillChoice (B1), fillCombobox hardening (B2), or fill-report consumption (B3). Do not remove plan 1's interim choice auto-fill guard. Do not add an election override UI (spec-deferred; the named header is the mitigation). This plan only *produces the interfaces* plan 3 consumes (see "Interfaces produced for plan 3").
 
@@ -2300,7 +2303,7 @@ Expected: foundation, full-loop, panel-port AND the new election spec all green,
 - [ ] **Step 1: Full unit sweep** — Run: `npx vitest run` — all projects green.
 - [ ] **Step 2: Full verify** — Run: `npm run verify` — typecheck + lint + unit + Playwright green. Known-sensitive assertions that must stay green by construction: the greenhouse `#mystery` field still unlabelled; full-loop's snapshot-beats-panel-edit and SQLite assertions (election must not have changed what reaches `save`); the foundation EEO test (the srcdoc frame's demographic flag is computed content-side, election notwithstanding).
 - [ ] **Step 3: Restore the plain dist** — Run: `npm run build`.
-- [ ] **Step 4: Tick spec TODOs 12–17** in `docs/superpowers/specs/2026-07-28-scan-fill-correctness-design.md` (quoted in Verification below). Leave TODO 18 UNTICKED — its "neither count lies when a batch fill fails" clause is B3's (plan 3 ticks it); this slice landed the separation and the state shape.
+- [ ] **Step 4: Tick spec TODOs 12–17** in `docs/specs/2026-07-28-scan-fill-correctness-design.md` (quoted in Verification below). Leave TODO 18 UNTICKED — its "neither count lies when a batch fill fails" clause is B3's (plan 3 ticks it); this slice landed the separation and the state shape.
 - [ ] **Step 5: Commit** — `git commit -am "chore: verify slice A-interaction green, tick spec TODOs 12-17"`
 
 ---

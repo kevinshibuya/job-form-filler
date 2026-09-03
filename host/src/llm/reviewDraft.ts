@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { CodexRunner } from './codexCli.js'
+import type { CallOpts } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 import { buildTrustedContext, type GenerationInput } from './generate.js'
 
@@ -31,7 +32,7 @@ export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): 
   ].join('\n')
 }
 
-export async function reviewDraft(runner: CodexRunner, input: GenerationInput, claudeDraft: string): Promise<string> {
-  const out = await runner.complete(buildReviewPrompt(input, claudeDraft), ReviewResponseSchema)
+export async function reviewDraft(runner: CodexRunner, input: GenerationInput, claudeDraft: string, opts: CallOpts): Promise<string> {
+  const out = await runner.complete(buildReviewPrompt(input, claudeDraft), ReviewResponseSchema, opts)
   return out.draft
 }

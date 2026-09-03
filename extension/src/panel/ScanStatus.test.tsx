@@ -19,7 +19,7 @@ describe('ScanStatus', () => {
     [{ kind: 'injecting' }, 'Reaching into the page…'],
     [{ kind: 'enumerating', frames: 7 }, 'Scanning page (7 frames)…'],
     [{ kind: 'retrying' }, 'No fields yet — looking again…'],
-    [{ kind: 'resolving', fields: 12 }, 'Matching 12 fields… (a Claude call can take a minute)'],
+    [{ kind: 'resolving', fields: 12 }, 'Matching 12 fields… (an AI call can take a minute)'],
     [{ kind: 'done', filled: 8, alreadyOnPage: 2, proposed: 2, needsInput: 3 }, '✓ 8 filled, 2 already on page, 2 proposed, 3 need input'],
     [{ kind: 'empty', frames: 7 }, '⚠ Scanned 7 frames, found no form fields. Open the application form, then Scan again.'],
     [{ kind: 'captcha' }, '⚠ CAPTCHA active — nothing was filled.'],

@@ -20,6 +20,7 @@ import { runFactsExtract } from './llm/factsExtract.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFields } from './resolve/waterfall.js'
 import { log } from './log.js'
+import type { ResolvedModels } from './llm/models.js'
 
 export interface HandlerDeps {
   db: Database.Database
@@ -27,6 +28,8 @@ export interface HandlerDeps {
   /** B2d: the codex reviewer. Failures degrade; it never blocks generation. */
   codex: CodexRunner
   config: HostConfig
+  /** Resolved per-task model ids; every LLM call names one. */
+  models: ResolvedModels
   selfCheckFn: () => Promise<SelfCheck>
 }
 
@@ -82,7 +85,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       }
 
       case 'resolve':
-        return ok(req.requestId, await resolveFields({ db, runner: deps.runner }, req.params))
+        return ok(req.requestId, await resolveFields({ db, codex: deps.codex, mappingOpts: { model: deps.models.mapping, timeoutMs: 240_000 } }, req.params))
 
       case 'generate': {
         const lang = detectLanguage(req.params.questionRaw)
@@ -97,12 +100,12 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           projectNotes: readProjectNotes(deps.config.projectsPaths),
           references,
         }
-        const draft = await runGeneration(deps.runner, input)
+        const draft = await runGeneration(deps.runner, input, { model: deps.models.generate })
         // B2d: claude draft → codex review → final. ANY reviewer failure
         // degrades to the unreviewed draft — codex never blocks generation.
         let final = draft
         try {
-          final = sanitizeDraft(await reviewDraft(deps.codex, input, draft))
+          final = sanitizeDraft(await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft, retryTransient: false }))
         } catch (e) {
           const kind = e instanceof CodexError ? e.kind : 'process'
           log('warn', 'codex review failed; returning unreviewed draft', {
@@ -170,13 +173,15 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         return ok(req.requestId, { jobs: listApplied(db) })
 
       case 'facts.extract':
-        return ok(req.requestId, await runFactsExtract(deps.runner, req.params.cvText))
+        return ok(req.requestId, await runFactsExtract(deps.codex, req.params.cvText, { model: deps.models.factsExtract, timeoutMs: 240_000 }))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req
     return fail((never as HostRequest).requestId, 'bad_request', 'unknown method')
   } catch (e) {
     if (e instanceof ClaudeError) return fail(req.requestId, e.kind, e.message)
+    // Every CodexError kind exists in HOST_ERROR_KINDS, so the mapping is 1:1.
+    if (e instanceof CodexError) return fail(req.requestId, e.kind, e.message)
     const message = e instanceof Error ? e.message : String(e)
     log('error', 'handler failed', { method: req.method, message })
     return fail(req.requestId, 'db', message)

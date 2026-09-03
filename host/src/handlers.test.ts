@@ -4,6 +4,7 @@ import { openDb, setProfile, getProfile, getSelector, getLearnedMapping, upsertA
 import { handleRequest, type HandlerDeps } from './handlers.js'
 import { ClaudeError } from './llm/claudeCli.js'
 import { CodexError } from './llm/codexCli.js'
+import { resolveModels } from './llm/models.js'
 
 let db: Database.Database
 let deps: HandlerDeps
@@ -30,11 +31,14 @@ beforeEach(() => {
     db,
     runner,
     codex,
-    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json' },
+    models: resolveModels({}),
+    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', models: {} },
     selfCheckFn: async () => ({
       node: { ok: true, version: 'v20.0.0' },
       claude: { ok: true, path: '/bin/true', detail: 'found' },
       auth: { ok: true, detail: 'logged in' },
+      codex: { ok: true, path: '/bin/true', detail: 'found' },
+      codexAuth: { ok: true, detail: 'logged in' },
       db: { ok: true, path: ':memory:' },
     }),
   }
@@ -152,12 +156,12 @@ describe('handleRequest', () => {
   })
 
   it('facts.extract maps CV text onto the closed key set, stripping unknown keys', async () => {
-    complete.mockResolvedValueOnce({ email: 'k@x.com', ssn: '123', salary: ' R$ 18k ' })
+    codexComplete.mockResolvedValueOnce({ email: 'k@x.com', ssn: '123', salary: ' R$ 18k ' })
     const r = await handleRequest(deps, { requestId: 'fx1', method: 'facts.extract', params: { cvText: 'CV BODY' } })
     expect(r).toMatchObject({ ok: true, result: { email: 'k@x.com', salary: 'R$ 18k' } })
     const result = (r as { result: Record<string, string> }).result
     expect('ssn' in result).toBe(false)
-    expect(complete.mock.calls[0]![0] as string).toContain('CV BODY')
+    expect(codexComplete.mock.calls[0]![0] as string).toContain('CV BODY')
   })
 })
 
@@ -201,5 +205,41 @@ describe('applied.* (A1)', () => {
     const r = await handleRequest(deps, { requestId: 'am-8', method: 'applied.list', params: {} })
     const jobs = (r as { result: { jobs: { jobTitle: string }[] } }).result.jobs
     expect(jobs.map((j) => j.jobTitle)).toEqual(['B', 'A'])
+  })
+
+  it('facts.extract runs on codex with the 240s budget and never touches claude', async () => {
+    codexComplete.mockResolvedValueOnce({ email: 'k@x.com' })
+    const r = await handleRequest(deps, { requestId: 'f1', method: 'facts.extract', params: { cvText: 'CV text' } })
+    expect(r.ok).toBe(true)
+    expect(codexComplete).toHaveBeenCalledTimes(1)
+    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-5.6-sol', timeoutMs: 240_000 })
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  it('resolve maps through codex with the 240s budget, not claude', async () => {
+    codexComplete.mockResolvedValueOnce([{ ref: '0:1', decision: 'custom', knownKey: null, answerId: null }])
+    const r = await handleRequest(deps, {
+      requestId: 'r1', method: 'resolve',
+      params: {
+        epoch: 5, url: 'https://boards.greenhouse.io/acme/jobs/1', hostname: 'boards.greenhouse.io',
+        company: 'Acme', jobText: 'Senior engineer wanted.',
+        fields: [{
+          frameId: 0, fid: 1, epoch: 5, label: 'Describe a hard bug you fixed.', name: null,
+          idAttr: null, kind: 'text', options: [], required: false, visible: true,
+          currentValue: null, demographic: false,
+        }],
+      },
+    })
+    expect(r.ok).toBe(true)
+    expect(codexComplete).toHaveBeenCalledTimes(1)
+    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-5.6-sol', timeoutMs: 240_000 })
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  it('a codex not_authed on facts.extract surfaces as the not_authed host error', async () => {
+    codexComplete.mockRejectedValueOnce(new CodexError('not_authed', 'codex CLI is not logged in'))
+    const r = await handleRequest(deps, { requestId: 'f2', method: 'facts.extract', params: { cvText: 'CV' } })
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.error.kind).toBe('not_authed')
   })
 })
