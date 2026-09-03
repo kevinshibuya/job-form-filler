@@ -22,7 +22,7 @@ function copyFor(s: ScanUiState): string {
     case 'injecting': return 'Reaching into the page…'
     case 'enumerating': return `Scanning page (${s.frames} frames)…`
     case 'retrying': return 'No fields yet — looking again…'
-    case 'resolving': return `Matching ${s.fields} fields… (a Claude call can take a minute)`
+    case 'resolving': return `Matching ${s.fields} fields… (an AI call can take a minute)`
     case 'done': return `✓ ${s.filled} filled, ${s.alreadyOnPage} already on page, ${s.proposed} proposed, ${s.needsInput} need input`
     case 'empty': return `⚠ Scanned ${s.frames} frames, found no form fields. Open the application form, then Scan again.`
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'

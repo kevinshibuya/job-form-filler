@@ -14,6 +14,26 @@ describe('buildWrapperScript', () => {
     expect(sh).toContain('/usr/local/bin')
   })
 
+  it("puts node's own directory first, so a CLI with a `#!/usr/bin/env node` shebang resolves", () => {
+    // codex is such a script. Under a PATH without node's dir it dies with
+    // `env: node: No such file or directory`, which surfaces as a codex
+    // sign-in failure and takes facts extraction and mapping down with it.
+    const nvm = buildWrapperScript({
+      nodePath: '/Users/x/.nvm/versions/node/v22.18.0/bin/node',
+      entryPath: '/repo/host/dist/index.js',
+    })
+    const line = nvm.split('\n').find((l) => l.startsWith('export PATH='))
+    expect(line).toBeDefined()
+    expect(line).toContain('/Users/x/.nvm/versions/node/v22.18.0/bin')
+    expect(line!.indexOf('/Users/x/.nvm/versions/node/v22.18.0/bin'))
+      .toBeLessThan(line!.indexOf('/usr/bin'))
+  })
+
+  it('does not duplicate a node directory that is already on the fallback PATH', () => {
+    const line = sh.split('\n').find((l) => l.startsWith('export PATH='))!
+    expect(line.match(/\/opt\/homebrew\/bin/g)).toHaveLength(1)
+  })
+
   it('execs node and the entry point by ABSOLUTE path', () => {
     expect(sh).toContain('exec "/opt/homebrew/bin/node" "/repo/host/dist/index.js"')
   })

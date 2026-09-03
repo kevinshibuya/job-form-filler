@@ -4,7 +4,7 @@ import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
 import { buildRows, refOf, type Row } from './group'
-import { createHostPort, ERROR_COPY, type HostPort } from './port'
+import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
@@ -76,6 +76,16 @@ interface SessionRuntime {
   pendingRescan: boolean
   /** A4: "Scan anyway" belongs to ONE session. */
   appliedOverride: boolean
+  /** B4: the running batch's progress, kept PER SESSION because `display`
+   *  blanks the in-flight React state on every swap — including a swap back to
+   *  the same session, which left the button reading "Generate all remaining"
+   *  while the batch was mid-await. */
+  generateAll: { done: number; total: number } | null
+  /** B4: set when a batch stopped because its session left the screen. The
+   *  batch is bound to the DISPLAYED session (generateOne reads `main` and
+   *  `scopeNow`), so a tab switch ends it — that must be SAID, not silently
+   *  reverted to a button that looks like nothing ever ran. */
+  generatePaused: { done: number; total: number } | null
   /** A3: the generation a submit prompt was dismissed against — only a NEW
    *  navigation may re-arm it. */
   promptDismissedGen: number
@@ -86,6 +96,7 @@ interface SessionRuntime {
 
 const newRuntime = (gen: number): SessionRuntime => ({
   gen, epoch: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
+  generateAll: null, generatePaused: null,
 })
 
 /**
@@ -209,6 +220,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // independent host requests, and completing one must not touch the others.
   const [generatingRefs, setGeneratingRefs] = useState<ReadonlySet<string>>(new Set())
   const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
+  const [generatePaused, setGeneratePaused] = useState<{ done: number; total: number } | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
@@ -400,7 +412,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setMarking(false)
     setSaving(false)
     setGeneratingRefs(new Set())
-    setGenerateAll(null)
+    // NOT blanked: the batch belongs to the session, not to the screen. Blanking
+    // here is what made a tab round-trip report "Generate all remaining" while
+    // the batch was still running.
+    setGenerateAll(s === null ? null : runtimeOf(s.tabId).generateAll)
+    setGeneratePaused(s === null ? null : runtimeOf(s.tabId).generatePaused)
     setMarkedMsg(null)
   }
 
@@ -431,7 +447,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const port = portRef.current
     if (port === null) return null
     const r = await port.request<Record<string, string>>('facts.extract', { cvText })
-    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return null }
     return r.result
   }
 
@@ -443,7 +459,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     port.onDisconnect(() => setHostError(ERROR_COPY.unreachable))
     void port.request<SelfCheck>('selfCheck', {}).then((r) => {
       if (r.ok) setCheck(r.result)
-      else setHostError(ERROR_COPY[r.error.kind])
+      else setHostError(hostErrorText(r.error))
     })
     return () => port.disconnect()
   }, [])
@@ -1036,7 +1052,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // DISTINCT frames: a frame that errored first-pass and replied on the retry
         // contributes two reports but is still one frame on the page.
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
-        : out.llmError !== null ? { kind: 'failed', reason: ERROR_COPY[out.llmError.kind] }
+        : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
         : { kind: 'done', filled, alreadyOnPage, proposed, needsInput }
       if (inScope(sc)) { lastOutcomeRef.current = outcome; setScanStatus(outcome) }
       // S4: the ONE projection. Everything ref-keyed dies with the page the scan
@@ -1053,7 +1069,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         jobText: out.jobText !== '' ? out.jobText : s.jobText,
         lastOutcome: outcome,
       }))
-      if (out.llmError !== null) setHostError(ERROR_COPY[out.llmError.kind])
+      if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
       // A3: detection is only ever a PROMPT, and only for the session ON SCREEN
       // — a background tab has no panel to prompt in. Best-effort page text; a
       // dead relay just means the field-count heuristic decides alone.
@@ -1319,7 +1335,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         }, ref, draft, 'generated'))
         return 'ok'
       }
-      setHostError(ERROR_COPY[r.error.kind])
+      setHostError(hostErrorText(r.error))
       return r.error.kind
     } finally {
       setGeneratingRefs((s) => { const next = new Set(s); next.delete(ref); return next })
@@ -1339,25 +1355,47 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const TERMINAL_GENERATE_KINDS: ReadonlySet<string> = new Set(['not_installed', 'not_authed', 'rate_limit'])
 
+  /** Mirror per-session batch state into the runtime, and onto the screen only
+   *  while that session is the one being displayed. */
+  const showGenerateAll = (target: number, v: { done: number; total: number } | null): void => {
+    runtimeOf(target).generateAll = v
+    if (tabIdRef.current === target) setGenerateAll(v)
+  }
+  const showGeneratePaused = (target: number, v: { done: number; total: number } | null): void => {
+    runtimeOf(target).generatePaused = v
+    if (tabIdRef.current === target) setGeneratePaused(v)
+  }
+
   const onGenerateAll = async (): Promise<void> => {
     if (generateAll !== null) return
     const refs = generateEligible.map((r) => r.ref)
     const sc = scopeNow()
     if (refs.length === 0 || sc === null) return
+    showGeneratePaused(sc.target, null)
+    let done = 0
     try {
       for (let i = 0; i < refs.length; i++) {
-        // A re-scan means these refs describe a dead page: abort silently.
-        if (!inScope(sc)) return
-        setGenerateAll({ done: i, total: refs.length })
+        // The batch is bound to the DISPLAYED session: generateOne resolves its
+        // row out of `main` and its scope out of `scopeNow`, both of which
+        // follow the screen. So leaving the session ENDS the batch — say where
+        // it stopped, so the user can resume instead of guessing. A dead page
+        // (re-scan, navigation) is different: those refs describe nothing, and
+        // `alive` below distinguishes it from a mere tab switch.
+        if (!inScope(sc)) {
+          if (alive(sc)) showGeneratePaused(sc.target, { done, total: refs.length })
+          return
+        }
+        showGenerateAll(sc.target, { done: i, total: refs.length })
         const out = await generateOne(refs[i]!)
         if (out === 'aborted') return
         // Terminal host problems affect every remaining row identically; the
         // banner is already up (generateOne set it). Transient per-row failures
         // ('timeout', 'process', …) skip the row and continue.
         if (TERMINAL_GENERATE_KINDS.has(out)) return
+        done = i + 1
       }
     } finally {
-      setGenerateAll(null)
+      showGenerateAll(sc.target, null)
     }
   }
 
@@ -1425,7 +1463,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const port = portRef.current
     if (port === null) return null
     const r = await port.request<Record<string, string>>('facts.extract', { cvText: cv })
-    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return null }
     return r.result
   }
 
@@ -1436,9 +1474,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // 'complete' verdict here would be a lie the next panel open disproves.
     // Surface the banner and stay in onboarding — Finish is retryable.
     const p = await port.request('profile.set', { values: profile })
-    if (!p.ok) { setHostError(ERROR_COPY[p.error.kind]); return }
+    if (!p.ok) { setHostError(hostErrorText(p.error)); return }
     const b = await port.request('answerBank.set', { values: bank })
-    if (!b.ok) { setHostError(ERROR_COPY[b.error.kind]); return }
+    if (!b.ok) { setHostError(hostErrorText(b.error)); return }
     setFacts((f) => ({ ...f, ...profile, ...bank }))
     // The gate's one sanctioned exit; the nonce re-fires the (blocked) auto-scan
     // effect exactly once.
@@ -1495,7 +1533,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         company: markCompany,
         jobTitle: title === '' ? null : title,
       })
-      if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return }
+      if (!r.ok) { setHostError(hostErrorText(r.error)); return }
       await endSession(target)
       // B8: the session it would have ridden on no longer exists, so the
       // confirmation is panel-global — and it WINS over any applied badge while
@@ -1559,7 +1597,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         items,
         generatedCount: generatedRefs.length,
       })
-      setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : ERROR_COPY[r.error.kind])
+      setSaveMsg(r.ok ? `Saved ${r.result.saved} answer(s).` : hostErrorText(r.error))
     } catch (e) {
       setSaveMsg(`Save failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
@@ -1571,7 +1609,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const port = portRef.current
     if (port === null) return null
     const r = await port.request<{ jobs: AppliedJobRow[] }>('applied.list', {})
-    if (!r.ok) { setHostError(ERROR_COPY[r.error.kind]); return null }
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return null }
     // `?? []`: a fake/stale host answering {} must render the empty state,
     // never crash the view on `jobs.map`.
     return r.result.jobs ?? []
@@ -1769,6 +1807,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                           ? `Generate all remaining (${generateEligible.length})`
                           : `Generating ${generateAll.done + 1}/${generateAll.total}…`}
                       </button>
+                      {generatePaused !== null && generateAll === null && (
+                        <p className="mt-1.5 text-neutral-500 dark:text-neutral-400" data-jff-generate-paused="1">
+                          Stopped at {generatePaused.done} of {generatePaused.total} — the batch runs
+                          only while this tab is on screen. Press the button to carry on.
+                        </p>
+                      )}
                     </div>
                   )}
                   <ul className="m-0 grid list-none gap-2 p-0">

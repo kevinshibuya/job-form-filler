@@ -19,18 +19,27 @@ export interface HostPort {
 
 /** The spec's error table, rendered for a human. No spaced em-dashes. */
 export const ERROR_COPY: Record<HostErrorKind, string> = {
-  not_installed: 'claude CLI not found. Check the host config path.',
-  not_authed: 'claude CLI not logged in. Run `claude` once in a terminal.',
+  not_installed: 'AI helper not found. Check the host config path.',
+  not_authed: 'AI helper not signed in. Run `claude` or `codex login` in a terminal, then retry.',
   rate_limit: 'Subscription rate limit. Retry later; fields are left as needs-input.',
-  timeout: 'claude call failed. Retry or fill manually.',
-  process: 'claude call failed. Retry or fill manually.',
-  invalid_output: 'claude returned unusable output. Fields are left as needs-input.',
+  timeout: 'AI call failed. Retry or fill manually.',
+  process: 'AI call failed. Retry or fill manually.',
+  invalid_output: 'AI returned unusable output. Fields are left as needs-input.',
   db: 'Local database error. See ~/.job-form-filler/host.log.',
   bad_request: 'The panel sent something the host did not understand. Re-scan.',
   unreachable: 'Local host unreachable. Re-run the install script, then reopen Chrome.',
 }
 
 type Pending = (r: PortResult<unknown>) => void
+
+/**
+ * A backstop, not a UX deadline. Every host call is bounded well under this
+ * (240s per spawn, at most doubled by one retry, plus backoff), so a request
+ * that passes it means the host process is wedged rather than slow. Without it
+ * a wedged host leaves the panel on "Waiting for the local host…" forever,
+ * with no way back other than closing it.
+ */
+const REQUEST_DEADLINE_MS = 600_000
 
 export function createNativeHostPort(connect: () => chrome.runtime.Port = () => chrome.runtime.connectNative(HOST_NAME)): HostPort {
   const port = connect()
@@ -63,7 +72,13 @@ export function createNativeHostPort(connect: () => chrome.runtime.Port = () => 
     request<T>(method: HostRequest['method'], params: unknown, requestId: string = crypto.randomUUID()): Promise<PortResult<T>> {
       if (!alive) return Promise.resolve({ ok: false, error: { kind: 'unreachable', message: ERROR_COPY.unreachable } })
       return new Promise<PortResult<T>>((resolve) => {
-        pending.set(requestId, resolve as Pending)
+        // A late response for a timed-out id finds no pending entry and is
+        // ignored by the message listener, so the deadline needs no other guard.
+        const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+          pending.delete(requestId)
+          resolve({ ok: false, error: { kind: 'timeout', message: ERROR_COPY.timeout } })
+        }, REQUEST_DEADLINE_MS)
+        pending.set(requestId, ((r) => { clearTimeout(timer); resolve(r as PortResult<T>) }) as Pending)
         port.postMessage({ requestId, method, params })
       })
     },
@@ -122,6 +137,8 @@ const FAKE_SELF_CHECK: SelfCheck = {
   node: { ok: true, version: 'v20.0.0' },
   claude: { ok: true, path: '(fake)', detail: 'found' },
   auth: { ok: true, detail: 'logged in' },
+  codex: { ok: true, path: '(fake)', detail: 'found' },
+  codexAuth: { ok: true, detail: 'logged in' },
   db: { ok: true, path: '(fake)' },
 }
 
@@ -174,4 +191,18 @@ export function createHostPort(search: string = location.search): HostPort {
     return createFakeHostPort()
   }
   return createRetryingHostPort()
+}
+
+/** The copy for a host error, followed by the host's own message when it adds
+ *  something — that message is what names the vendor ("codex CLI is not logged
+ *  in"), which the vendor-neutral copy above deliberately does not. */
+export function hostErrorText(error: { kind: HostErrorKind; message?: string }): string {
+  const copy = ERROR_COPY[error.kind]
+  const detail = (error.message ?? '').trim()
+  if (detail === '' || detail === copy) return copy
+  // A newline, not a spaced dash: this file forbids that dash in user copy
+  // (see the note above ERROR_COPY), and the spec asked for a second line.
+  // Long host details are clipped so a zod dump cannot flood the banner.
+  const clipped = detail.length > 200 ? `${detail.slice(0, 200)}…` : detail
+  return `${copy}\n${clipped}`
 }

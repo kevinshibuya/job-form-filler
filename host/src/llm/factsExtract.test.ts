@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { ClaudeRunner } from './claudeCli.js'
+import type { CodexRunner } from './codexCli.js'
 import { buildFactsExtractPrompt, runFactsExtract } from './factsExtract.js'
 
 describe('buildFactsExtractPrompt', () => {
@@ -21,7 +21,7 @@ describe('runFactsExtract', () => {
   it('returns only known keys with non-empty trimmed values', async () => {
     const runner = {
       complete: vi.fn(async () => ({ email: 'k@x.com', salary: ' R$ 18k ', github: '', ssn: '123' })),
-    } as unknown as ClaudeRunner
-    await expect(runFactsExtract(runner, 'CV')).resolves.toEqual({ email: 'k@x.com', salary: 'R$ 18k' })
+    } as unknown as CodexRunner
+    await expect(runFactsExtract(runner, 'CV', { model: 'gpt-5.6-sol' })).resolves.toEqual({ email: 'k@x.com', salary: 'R$ 18k' })
   })
 })

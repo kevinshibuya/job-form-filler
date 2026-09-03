@@ -1,5 +1,8 @@
 # Scan/Fill Correctness — Plan 3 of 3: B (B1–B3) Implementation Plan
 
+**Status:** completed 2026-07-29
+Progress was tracked in the SDD ledger, which no longer exists. Checkboxes below reflect authoring, not execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the fill path write choice widgets, comboboxes and batched auto-fills correctly and VERIFIABLY: a `fillChoice` that reaches Ashby's hidden-input-plus-buttons pattern through the safest working step and never reports success without an observable state change (B1); a `fillCombobox` that only ever touches a listbox attributable to its control, types to filter, accepts exact matches only and restores the pre-fill value on failure (B2); and a scan-time batch-fill path whose `JFF_FILL` reports are finally consumed — the status line's `filled` becomes the page-accepted count and failed rows surface their reason (B3). The interim choice auto-fill guard from plan 1 is deleted.
@@ -8,7 +11,7 @@
 
 **Tech Stack:** TypeScript strict, zod (closed schemas in `shared/src` — untouched this slice), vitest (extension=jsdom project), React panel, Playwright e2e on plan 2's two-origin harness. No new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-07-28-scan-fill-correctness-design.md` (approved; sections B1–B3). This plan covers the 7 Slice-B TODOs plus the completion of Slice-A TODO 18 ("neither count lies"). Predecessors: `docs/superpowers/plans/2026-07-28-scan-fill-1-core.md` (A1–A5) and `docs/superpowers/plans/2026-07-28-scan-fill-2-interaction.md` (A6–A9) — **this plan runs on the tree where BOTH predecessor plans are fully executed and green**, and consumes their interfaces exactly (see "Interfaces consumed"). It re-creates none of them.
+**Spec:** `docs/specs/2026-07-28-scan-fill-correctness-design.md` (approved; sections B1–B3). This plan covers the 7 Slice-B TODOs plus the completion of Slice-A TODO 18 ("neither count lies"). Predecessors: `docs/plans/2026-07-28-scan-fill-1-core.md` (A1–A5) and `docs/plans/2026-07-28-scan-fill-2-interaction.md` (A6–A9) — **this plan runs on the tree where BOTH predecessor plans are fully executed and green**, and consumes their interfaces exactly (see "Interfaces consumed"). It re-creates none of them.
 
 **Scope guard:** Do NOT touch shared schemas, host code, harvest, election, resume targeting, or the panel's row/editor composition beyond the B3 count/demotion edits. Do not change `attributableListbox` (B2 consumes it as-is). Do not add an epoch/generation mechanism — the existing discipline already covers every new await. The general BUTTON rail in `fillOne` (`fill.ts:103-105`) stays byte-identical.
 
@@ -1117,7 +1120,7 @@ Expected: foundation, full-loop, panel-port and the extended election spec all g
 - [ ] **Step 1: Full unit sweep** — Run: `npx vitest run` — all projects green (host + shared + extension).
 - [ ] **Step 2: Full verify** — Run: `npm run verify` — typecheck + lint + unit + Playwright green. Known-sensitive assertions that must stay green by construction: `'toggles a checkbox by clicking, only when the state must change'` (plain-checkbox no-op rail), `'never clicks a submit control'` (BUTTON rail), plan 2's election/harvest describes, `save.test.ts` untouched-and-green.
 - [ ] **Step 3: Restore the plain dist** — Run: `npm run build`.
-- [ ] **Step 4: Tick spec TODOs** in `docs/superpowers/specs/2026-07-28-scan-fill-correctness-design.md`: all 7 Slice-B items AND Slice-A TODO 18 (its "neither count lies" clause is now proven end-to-end; plan 2 deliberately left it unticked).
+- [ ] **Step 4: Tick spec TODOs** in `docs/specs/2026-07-28-scan-fill-correctness-design.md`: all 7 Slice-B items AND Slice-A TODO 18 (its "neither count lies" clause is now proven end-to-end; plan 2 deliberately left it unticked).
 - [ ] **Step 5: Commit** — `git commit -am "chore: verify slice B green, tick spec Slice-B TODOs and TODO 18"`
 
 ---

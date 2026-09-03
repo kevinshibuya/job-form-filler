@@ -1,8 +1,11 @@
 # Generation Quality + Recall + Combobox Fill Implementation Plan (session-7 batch)
 
+**Status:** completed 2026-07-29
+Progress was tracked in the SDD ledger, which no longer exists. Checkboxes below reflect authoring, not execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix the six defects/features from the 2026-07-29 manual round: combobox fills that no-op, refusal-shaped AI drafts, spinner steals, no generate-all, values not remembered after refresh, and no facts-from-CV — per the authoritative spec `docs/superpowers/specs/2026-07-29-generation-recall-combobox-design.md`.
+**Goal:** Fix the six defects/features from the 2026-07-29 manual round: combobox fills that no-op, refusal-shaped AI drafts, spinner steals, no generate-all, values not remembered after refresh, and no facts-from-CV — per the authoritative spec `docs/specs/2026-07-29-generation-recall-combobox-design.md`.
 
 **Architecture:** Three slices in one plan. Slice A (Tasks 1–6) is fill-side: the FillReport protocol change lands first because it is the cross-cutting compile gate, then fillCombobox typeahead+ladder, fillChoice step-0 idempotency, panel hints/highlight, and host recall (waterfall + save). Slice B (Tasks 7–10) is the generation pipeline: CV text extraction in the panel, prompt/protocol/config, the codex reviewer pass, facts-from-CV. Slice C (Tasks 11–13) is panel concurrency/batch UI plus the e2e batch. Tasks 14–15 are the verify gate and the user manual gate.
 
@@ -3137,12 +3140,12 @@ Expected: `0`.
 
 - [ ] **Step 4: Tick the spec**
 
-In `docs/superpowers/specs/2026-07-29-generation-recall-combobox-design.md`, tick every TODO checkbox EXCEPT the final one (`Manual browser gate…` — Task 15 owns it). Verify: `grep -c '^- \[ \]' docs/superpowers/specs/2026-07-29-generation-recall-combobox-design.md` → `1`.
+In `docs/specs/2026-07-29-generation-recall-combobox-design.md`, tick every TODO checkbox EXCEPT the final one (`Manual browser gate…` — Task 15 owns it). Verify: `grep -c '^- \[ \]' docs/specs/2026-07-29-generation-recall-combobox-design.md` → `1`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-07-29-generation-recall-combobox-design.md
+git add docs/specs/2026-07-29-generation-recall-combobox-design.md
 git commit -m "chore: verify session-7 batch green, restore plain dist, tick spec TODOs"
 ```
 
@@ -3160,7 +3163,7 @@ Requires the user at a real browser. Print every workflow step as it is performe
 - [ ] **Step 6:** "Generate all remaining (N)" → sequential spinners, progress label, drafts land.
 - [ ] **Step 7:** Save answers → refresh the page → re-scan: Full Name/Email/Phone recall (no `…:no-stored-value`), choice highlight matches the saved answer, and a SECOND scan does not demote correct choices.
 - [ ] **Step 8:** Facts editor → "Generate from CV" → extracted facts fill only empty fields; Save facts persists.
-- [ ] **Step 9:** Log the outcome in `docs/superpowers/plans/2026-07-27-job-form-filler-v1.md` under `## Manual handshake log`, then tick the spec's final TODO.
+- [ ] **Step 9:** Log the outcome in `docs/plans/2026-07-27-job-form-filler-v1.md` under `## Manual handshake log`, then tick the spec's final TODO.
 
 ---
 
@@ -3178,7 +3181,7 @@ Requires the user at a real browser. Print every workflow step as it is performe
 
 ## Execution handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-07-29-generation-recall-combobox.md`. Standing pre-execution gates (NOT tasks): fresh-context Opus 5 plan review + codex cross-vendor review over this plan's mandated code; per-batch pre-dispatch greps of load-bearing claims; baseline verify of the FULL suite (including e2e) before Task 1. Two execution options: **1. Subagent-Driven** (superpowers:subagent-driven-development — fresh subagent per task, review between tasks) or **2. Inline** (superpowers:executing-plans — batch execution with checkpoints).
+Plan complete and saved to `docs/plans/2026-07-29-generation-recall-combobox.md`. Standing pre-execution gates (NOT tasks): fresh-context Opus 5 plan review + codex cross-vendor review over this plan's mandated code; per-batch pre-dispatch greps of load-bearing claims; baseline verify of the FULL suite (including e2e) before Task 1. Two execution options: **1. Subagent-Driven** (superpowers:subagent-driven-development — fresh subagent per task, review between tasks) or **2. Inline** (superpowers:executing-plans — batch execution with checkpoints).
 
 
 

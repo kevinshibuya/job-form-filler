@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test)",
+      "Bash(npm run test)",
+      "Bash(npm run smoke)",
+      "Bash(npm run verify)",
+      "Bash(npm run build)",
+      "Bash(npm run build -w @jff/shared)",
+      "Bash(npx playwright test:*)"
+    ]
+  }
+}

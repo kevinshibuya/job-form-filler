@@ -3,9 +3,11 @@ import type Database from 'better-sqlite3'
 import type { EnumField } from '@jff/shared'
 import { openDb, setProfile, setAnswerBank, upsertAnswer, getAnswerById } from '../db/repos.js'
 import { resolveFields } from './waterfall.js'
-import { ClaudeError, type ClaudeRunner } from '../llm/claudeCli.js'
+import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import type { MappingDecision } from '../llm/mapping.js'
 import { normalizeQuestion } from './normalize.js'
+
+const OPTS = { model: 'gpt-5.6-sol' }
 
 const field = (fid: number, label: string, extra: Partial<EnumField> = {}): EnumField => ({
   frameId: 0, fid, epoch: 5, label, name: null, idAttr: null, kind: 'text',
@@ -18,12 +20,12 @@ const input = (fields: EnumField[]) => ({
 })
 
 /**
- * ClaudeRunner stubs whose mapping decisions are dictated by the test.
- * `complete` is GENERIC on ClaudeRunner and a plain `vi.fn` is not assignable to a
+ * CodexRunner stubs whose mapping decisions are dictated by the test.
+ * `complete` is GENERIC on CodexRunner and a plain `vi.fn` is not assignable to a
  * generic signature, so the stubs are cast once here and keep the `Mock` type for
- * call assertions. Do NOT "fix" this by making ClaudeRunner non-generic.
+ * call assertions. Do NOT "fix" this by making CodexRunner non-generic.
  */
-type StubRunner = ClaudeRunner & { complete: Mock }
+type StubRunner = CodexRunner & { complete: Mock }
 
 const runnerReturning = (decisions: Record<string, MappingDecision>): StubRunner => ({
   complete: vi.fn(async () =>
@@ -32,7 +34,7 @@ const runnerReturning = (decisions: Record<string, MappingDecision>): StubRunner
 } as unknown as StubRunner)
 
 const runnerThatThrows = (kind: 'rate_limit'): StubRunner => ({
-  complete: vi.fn(async () => { throw new ClaudeError(kind, 'limit') }),
+  complete: vi.fn(async () => { throw new CodexError(kind, 'limit') }),
 } as unknown as StubRunner)
 
 let db: Database.Database
@@ -44,20 +46,20 @@ beforeEach(() => {
 
 describe('tier 0 — EEO', () => {
   it('skips a demographic field and never gives it a value', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) }, input([field(1, 'Gender', { demographic: true })]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'Gender', { demographic: true })]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'skipped', value: null, source: null, reason: 'eeo' })
   })
 
   it('never sends a demographic field to the LLM', async () => {
     const runner = runnerReturning({})
-    await resolveFields({ db, runner }, input([field(1, 'Gender', { demographic: true })]))
+    await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'Gender', { demographic: true })]))
     expect(runner.complete).not.toHaveBeenCalled()
   })
 })
 
 describe('tier 1 — values already on the page', () => {
   it('treats an ATS-populated value as filled, sourced from the page', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) },
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
       input([field(1, 'First Name', { currentValue: 'Kevin' })]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'page', value: 'Kevin', reason: 'already-on-page' })
   })
@@ -65,17 +67,17 @@ describe('tier 1 — values already on the page', () => {
 
 describe('tier 2 — deterministic recognizers', () => {
   it('auto-fills a recognized key that has a stored value', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) }, input([field(1, 'E-mail *')]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'E-mail *')]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'profile', key: 'email', value: 'kevin@example.com', reason: 'recognizer:email' })
   })
 
   it('routes a recognized key with NO stored value to needs-input', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'recognizer:github:no-stored-value' })
   })
 
   it('reads an answer-bank key from the answer bank, not the profile', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) }, input([field(1, 'Desired salary')]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'Desired salary')]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'answer_bank', key: 'salary', value: 'R$ 18.000/mo' })
   })
 })
@@ -86,7 +88,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
       questionNormalized: 'how many years of react do you have', questionRaw: 'How many years of React do you have?',
       answer: '6 years', language: 'en', reusability: 'reusable',
     })
-    const r = await resolveFields({ db, runner: runnerReturning({}) },
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
       input([field(1, 'How many years of React do you have?')]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'saved_answer', value: '6 years', answerId: id, reason: 'exact-match' })
     expect(getAnswerById(db, id)!.timesUsed).toBe(1)
@@ -97,7 +99,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
       questionNormalized: 'why do you want to work here', questionRaw: 'Why do you want to work here?',
       answer: 'Because I love Figma', language: 'en', reusability: 'company_specific',
     })
-    const r = await resolveFields({ db, runner: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
       input([field(1, 'Why do you want to work here?')]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'custom' })
   })
@@ -106,7 +108,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
     upsertAnswer(db, { questionNormalized: 'why figma', questionRaw: 'Why Figma?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     upsertAnswer(db, { questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6', language: 'en', reusability: 'reusable' })
     const runner = runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } })
-    await resolveFields({ db, runner }, input([field(1, 'Describe a hard bug you fixed.')]))
+    await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'Describe a hard bug you fixed.')]))
     const prompt = runner.complete.mock.calls[0]![0] as string
     expect(prompt).toContain('Years of React?')
     expect(prompt).not.toContain('Why Figma?')
@@ -117,7 +119,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
 describe('tier 4 — LLM results are PROPOSED, never auto', () => {
   it('proposes a value for an LLM known_key with a stored value', async () => {
     const r = await resolveFields(
-      { db, runner: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'salary', answerId: null } }) },
+      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'salary', answerId: null } }) },
       input([field(1, 'What are your comp expectations for this role?')]),
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'proposed', source: 'llm_key', key: 'salary', value: 'R$ 18.000/mo' })
@@ -125,13 +127,13 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
 
   it('substitutes the DB value, never anything the model said', async () => {
     const runner = { complete: vi.fn(async () => [{ ref: '0:1', decision: 'known_key', knownKey: 'salary', answerId: null, value: 'R$ 999.999' }]) } as unknown as StubRunner
-    const r = await resolveFields({ db, runner }, input([field(1, 'Comp expectations?')]))
+    const r = await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'Comp expectations?')]))
     expect(r.resolutions[0]!.value).toBe('R$ 18.000/mo')
   })
 
   it('routes an LLM known_key with no stored value to needs-input', async () => {
     const r = await resolveFields(
-      { db, runner: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }) },
+      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }) },
       input([field(1, 'How soon could you join?')]),
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'llm-key:notice:no-stored-value' })
@@ -140,7 +142,7 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
   it('proposes a reused reusable answer', async () => {
     const id = upsertAnswer(db, { questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6 years', language: 'en', reusability: 'reusable' })
     const r = await resolveFields(
-      { db, runner: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
+      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
       input([field(1, 'React experience in years?')]),
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'proposed', source: 'llm_reuse', value: '6 years', answerId: id })
@@ -149,7 +151,7 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
   it('refuses to reuse a company_specific answer even when the model points at it', async () => {
     const id = upsertAnswer(db, { questionNormalized: 'why figma', questionRaw: 'Why Figma?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     const r = await resolveFields(
-      { db, runner: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
+      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
       input([field(1, 'Why do you want to join Acme?')]),
     )
     // The refusal happens one layer UP, in validateMappingResponse: company_specific rows are
@@ -163,7 +165,7 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
 describe('tier 5 and failure modes', () => {
   it('resolves an LLM custom decision to needs-input with reason custom', async () => {
     const r = await resolveFields(
-      { db, runner: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
+      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
       input([field(1, 'Tell us about a hard technical decision.')]),
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'custom', value: null })
@@ -171,7 +173,7 @@ describe('tier 5 and failure modes', () => {
 
   it('fails every unresolved field closed when the mapping response does not round-trip', async () => {
     const r = await resolveFields(
-      { db, runner: runnerReturning({ '9:9': { decision: 'custom', knownKey: null, answerId: null } }) },
+      { db, mappingOpts: OPTS, codex: runnerReturning({ '9:9': { decision: 'custom', knownKey: null, answerId: null } }) },
       // Both labels must miss every baseline recognizer, or the field resolves at tier 2 and
       // never enters the LLM batch this test is exercising.
       input([field(1, 'Anything else?'), field(2, 'What should we know about you?')]),
@@ -181,26 +183,26 @@ describe('tier 5 and failure modes', () => {
   })
 
   it('reports a rate limit without throwing and leaves fields as needs-input', async () => {
-    const r = await resolveFields({ db, runner: runnerThatThrows('rate_limit') }, input([field(1, 'Anything else?')]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerThatThrows('rate_limit') }, input([field(1, 'Anything else?')]))
     expect(r.llmError).toEqual({ kind: 'rate_limit', message: 'limit' })
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'llm-error:rate_limit' })
   })
 
   it('does not call the LLM at all when every field resolved deterministically', async () => {
     const runner = runnerReturning({})
-    await resolveFields({ db, runner }, input([field(1, 'E-mail'), field(2, 'First Name')]))
+    await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'E-mail'), field(2, 'First Name')]))
     expect(runner.complete).not.toHaveBeenCalled()
   })
 
   it('echoes the request epoch so the panel can reject a stale reply', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) }, input([field(1, 'E-mail')]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'E-mail')]))
     expect(r.epoch).toBe(5)
   })
 })
 
 describe('B5a/B5c — recall correctness', () => {
   it('tier 1 attaches the recognized key to an already-on-page value', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) },
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
       input([field(1, 'First Name', { currentValue: 'Kevin' })]))
     expect(r.resolutions[0]).toMatchObject({
       tier: 'auto', source: 'page', value: 'Kevin', key: 'firstName', reason: 'already-on-page',
@@ -208,7 +210,7 @@ describe('B5a/B5c — recall correctness', () => {
   })
 
   it('tier 1 with an unrecognizable label keeps key null', async () => {
-    const r = await resolveFields({ db, runner: runnerReturning({}) },
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
       input([field(1, 'Tell us anything', { currentValue: 'prefilled' })]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'page', key: null })
   })
@@ -218,7 +220,7 @@ describe('B5a/B5c — recall correctness', () => {
       questionNormalized: normalizeQuestion('GitHub URL'), questionRaw: 'GitHub URL',
       answer: 'https://github.com/kevin', language: 'en', reusability: 'reusable',
     })
-    const r = await resolveFields({ db, runner: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
     expect(r.resolutions[0]).toMatchObject({
       tier: 'auto', source: 'saved_answer', key: 'github', answerId: id,
       value: 'https://github.com/kevin', reason: 'exact-match:key-fallback',
@@ -231,7 +233,7 @@ describe('B5a/B5c — recall correctness', () => {
       questionNormalized: normalizeQuestion('GitHub URL'), questionRaw: 'GitHub URL',
       answer: 'secret', language: 'en', reusability: 'company_specific',
     })
-    const r = await resolveFields({ db, runner: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
+    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'recognizer:github:no-stored-value' })
   })
 
@@ -246,7 +248,7 @@ describe('B5a/B5c — recall correctness', () => {
       answer: 'two weeks, but only for Acme', language: 'en', reusability: 'company_specific',
     })
     const r = await resolveFields(
-      { db, runner: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }) },
+      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }) },
       input([field(1, 'How soon could you join?')]),
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', key: 'notice', reason: 'llm-key:notice:no-stored-value' })

@@ -1,5 +1,8 @@
 # Scan Observability + Async Busy States Implementation Plan
 
+**Status:** completed 2026-07-28
+Progress was tracked in the SDD ledger, which no longer exists. Checkboxes below reflect authoring, not execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every silent failure and every in-flight async action in the panel visible: a scan status line with phase/outcome states and a diagnostics disclosure, loud relay errors, a one-shot 0-field retry, and busy states on all async buttons.
@@ -8,7 +11,7 @@
 
 **Tech Stack:** TypeScript, React, Tailwind, vitest (+ @testing-library/react), Playwright (existing e2e harness).
 
-**Spec:** `docs/superpowers/specs/2026-07-28-scan-observability-design.md` (approved).
+**Spec:** `docs/specs/2026-07-28-scan-observability-design.md` (approved).
 
 ## Global Constraints
 
@@ -1561,5 +1564,5 @@ git commit -m "test(e2e): panel scan-status smoke (captcha and empty outcomes in
 
 ## Post-plan
 
-- Re-run the Task 23 manual handshake from `docs/superpowers/plans/2026-07-27-job-form-filler-v1.md` line 10479 on the real TRM/Ashby page. The status line + diagnostics now report exactly which layer fails on the user's machine; record the outcome under `## Manual handshake log`.
+- Re-run the Task 23 manual handshake from `docs/plans/2026-07-27-job-form-filler-v1.md` line 10479 on the real TRM/Ashby page. The status line + diagnostics now report exactly which layer fails on the user's machine; record the outcome under `## Manual handshake log`.
 - The environment-specific 0-field cause is DIAGNOSED by this plan, not fixed. File whatever the diagnostics reveal as the next slice.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createNativeHostPort, createRetryingHostPort, createHostPort, ERROR_COPY } from './port'
+import { createNativeHostPort, createRetryingHostPort, createHostPort, ERROR_COPY, hostErrorText } from './port'
 
 /** Minimal chrome.runtime.Port double. */
 function fakePort() {
@@ -26,6 +26,34 @@ describe('createNativeHostPort', () => {
     expect(sent.requestId).toMatch(/\S/)
     p.emit({ requestId: sent.requestId, ok: true, result: { email: 'k@x.com' } })
     await expect(pending).resolves.toEqual({ ok: true, result: { email: 'k@x.com' } })
+  })
+
+  it('gives up on a wedged host after the backstop deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const p = fakePort()
+      const port = createNativeHostPort(() => p as unknown as chrome.runtime.Port)
+      const pending = port.request('selfCheck', {})
+      await vi.advanceTimersByTimeAsync(600_000)
+      await expect(pending).resolves.toEqual({ ok: false, error: { kind: 'timeout', message: ERROR_COPY.timeout } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves no deadline running once a response lands', async () => {
+    vi.useFakeTimers()
+    try {
+      const p = fakePort()
+      const port = createNativeHostPort(() => p as unknown as chrome.runtime.Port)
+      const pending = port.request('profile.get', {})
+      const sent = p.sent[0] as { requestId: string }
+      p.emit({ requestId: sent.requestId, ok: true, result: 'done' })
+      await expect(pending).resolves.toEqual({ ok: true, result: 'done' })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('routes concurrent responses to the right callers, out of order', async () => {
@@ -137,12 +165,12 @@ describe('createHostPort', () => {
 
 describe('ERROR_COPY', () => {
   it('has one message per taxonomy kind, matching the spec', () => {
-    expect(ERROR_COPY.not_installed).toBe('claude CLI not found. Check the host config path.')
-    expect(ERROR_COPY.not_authed).toBe('claude CLI not logged in. Run `claude` once in a terminal.')
+    expect(ERROR_COPY.not_installed).toBe('AI helper not found. Check the host config path.')
+    expect(ERROR_COPY.not_authed).toBe('AI helper not signed in. Run `claude` or `codex login` in a terminal, then retry.')
     expect(ERROR_COPY.rate_limit).toBe('Subscription rate limit. Retry later; fields are left as needs-input.')
-    expect(ERROR_COPY.timeout).toBe('claude call failed. Retry or fill manually.')
-    expect(ERROR_COPY.process).toBe('claude call failed. Retry or fill manually.')
-    expect(ERROR_COPY.invalid_output).toBe('claude returned unusable output. Fields are left as needs-input.')
+    expect(ERROR_COPY.timeout).toBe('AI call failed. Retry or fill manually.')
+    expect(ERROR_COPY.process).toBe('AI call failed. Retry or fill manually.')
+    expect(ERROR_COPY.invalid_output).toBe('AI returned unusable output. Fields are left as needs-input.')
     expect(ERROR_COPY.unreachable).toBe('Local host unreachable. Re-run the install script, then reopen Chrome.')
   })
 
@@ -150,3 +178,30 @@ describe('ERROR_COPY', () => {
     for (const msg of Object.values(ERROR_COPY)) expect(msg).not.toMatch(/\s[—–]\s/)
   })
 })
+
+describe('hostErrorText', () => {
+  it('returns the bare copy when the host sent no message', () => {
+    expect(hostErrorText({ kind: 'timeout' })).toBe(ERROR_COPY.timeout)
+    expect(hostErrorText({ kind: 'timeout', message: '  ' })).toBe(ERROR_COPY.timeout)
+  })
+
+  it('puts the host detail on a second line, so the vendor reaches the user', () => {
+    const t = hostErrorText({ kind: 'not_authed', message: 'codex CLI is not logged in' })
+    expect(t.split('\n')).toEqual([ERROR_COPY.not_authed, 'codex CLI is not logged in'])
+  })
+
+  it('never renders a spaced em-dash, the same rule ERROR_COPY is held to', () => {
+    expect(hostErrorText({ kind: 'process', message: 'boom' })).not.toMatch(/\s[—–]\s/)
+  })
+
+  it('does not repeat the copy when the host echoes it back', () => {
+    expect(hostErrorText({ kind: 'db', message: ERROR_COPY.db })).toBe(ERROR_COPY.db)
+  })
+
+  it('clips a flooding host detail', () => {
+    const t = hostErrorText({ kind: 'bad_request', message: 'x'.repeat(500) })
+    expect(t.length).toBeLessThan(300)
+    expect(t.endsWith('…')).toBe(true)
+  })
+})
+

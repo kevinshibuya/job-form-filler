@@ -1,12 +1,11 @@
 # Onboarding Gate + Per-Tab Sessions + Applied Jobs + Greenhouse Combobox Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Land the four items from the 2026-07-29 user review per the authoritative spec `docs/superpowers/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md` (spec tip `563113b`): (1) a hard onboarding gate before any scanning, (2) per-tab application sessions that survive tab switching and multi-page wizards, (3) an applied-jobs record with revisit badge, detection prompt and list view, and (4) the Greenhouse react-select combobox fill fix proven by the C1 spike.
+**Goal:** Land the four items from the 2026-07-29 user review per the authoritative spec `docs/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md` (spec tip `563113b`): (1) a hard onboarding gate before any scanning, (2) per-tab application sessions that survive tab switching and multi-page wizards, (3) an applied-jobs record with revisit badge, detection prompt and list view, and (4) the Greenhouse react-select combobox fill fix proven by the C1 spike.
 
 **Architecture:** Four slices, executed O → A → C → S (spec §Execution, binding). O (Tasks 1–3) composes existing profile blocks behind a tri-state completeness gate. A (Tasks 4–8) adds the host `applied_jobs` table + `applied.*` methods, then panel mark/detect/badge/list; the A slices deliberately land BEFORE sessions exist, carrying a small `startUrl` state that Task 14 folds into the Session shape. C (Tasks 9–10) implements the C1 spike recipe verbatim (pointer+mouse open gesture; committed-text fallback to the widget's visible value) plus a Greenhouse-shaped e2e fixture. S (Tasks 11–16) retires the clear-on-activate era in one test batch, builds the sessions + navigation-signal modules pure-first, then rewires App.tsx in three integrator slices ordered by risk surface: session lifecycle (S2/S5/S6), label-keyed answer carry (S4), concurrency + routing (S7). Task 17 is the e2e batch (all e2e adaptation to the onboarding/session era happens HERE, in one batch); Tasks 18–19 are the verify gate and the live manual gate on <https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002>.
 
-**Tech Stack:** TypeScript workspaces (shared/host/extension), zod, vitest (baseline 626 tests / 43 files), Playwright e2e (baseline 13/13), React 18 MV3 side panel (vite 7 + @crxjs), better-sqlite3 host, `chrome.storage.session`, `chrome.webNavigation` (permission already granted — `extension/manifest.config.ts:22`).
+**Spec:** `docs/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md`
+**Execution model:** opus
 
 ## Worker preamble (read before every task)
 
@@ -17,7 +16,7 @@
 - Run tests from the repo root: `npx vitest run <path>` (the root config fans out to the host/extension projects).
 - **Do NOT run the full Playwright suite in Tasks 3–16.** Task 3 makes the panel gate on onboarding, and the e2e specs that mount the panel against an empty host DB go red by design until Task 17 adapts them in one batch (standing rule: stale tests are a batch, not serial surprises). Within that range, per-task Verify commands are unit + typecheck + lint only — with ONE exception: Task 10 runs ONLY its scoped `npx playwright test e2e/foundation.spec.ts -g 'react-select'` filter (the rest of foundation.spec.ts's panel-mount tests are knowingly red until Task 17 seeds the onboarded persona). Task 17 then runs the full Playwright suite.
 
-## Global Constraints
+## Global constraints
 
 - TypeScript: never `any`. Typed test fakes included.
 - **NEVER merge or push to main without explicit per-action user permission** (hook-enforced). Plain local commits on `main` are what this plan's commit steps do — that is allowed; landing/pushing is not.
@@ -84,6 +83,7 @@
 ---
 
 ### Task 0: Baseline verify (BEFORE any change)
+Done: no commits (baseline), see progress notes.
 
 **Model:** verifier-opus-low (dispatched by the orchestrator).
 
@@ -98,6 +98,7 @@ Standing rule: the baseline runs the plan's FULL verification suite — includin
 ---
 
 ### Task 1: O1 — `profileCompleteness` tri-state module
+Done: `7c6f917..70209a1`, see progress notes.
 
 **Files:**
 - Create: `extension/src/panel/completeness.ts`
@@ -111,7 +112,7 @@ Standing rule: the baseline runs the plan's FULL verification suite — includin
 
 **Verify:** `npx vitest run extension/src/panel/completeness.test.ts && npm run typecheck`
 
-- [ ] **Step 1: Write the failing test** — create `extension/src/panel/completeness.test.ts`:
+- [x] **Step 1: Write the failing test** — create `extension/src/panel/completeness.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -162,9 +163,9 @@ describe('profileCompleteness (O1)', () => {
 })
 ```
 
-- [ ] **Step 2: Run to see it fail** — `npx vitest run extension/src/panel/completeness.test.ts` — FAILS (module does not exist).
+- [x] **Step 2: Run to see it fail** — `npx vitest run extension/src/panel/completeness.test.ts` — FAILS (module does not exist).
 
-- [ ] **Step 3: Create `extension/src/panel/completeness.ts`:**
+- [x] **Step 3: Create `extension/src/panel/completeness.ts`:**
 
 ```ts
 import type { FieldKey } from '@jff/shared'
@@ -205,9 +206,9 @@ export function profileCompleteness(
 }
 ```
 
-- [ ] **Step 4: Run to see it pass** — `npx vitest run extension/src/panel/completeness.test.ts && npm run typecheck` — PASS / clean.
+- [x] **Step 4: Run to see it pass** — `npx vitest run extension/src/panel/completeness.test.ts && npm run typecheck` — PASS / clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add extension/src/panel/completeness.ts extension/src/panel/completeness.test.ts
@@ -217,6 +218,7 @@ git commit -m "feat(onboarding): profileCompleteness tri-state with extensible r
 ---
 
 ### Task 2: O2 — shared `FactFields` + `OnboardingView`
+Done: `70209a1..f212e1f`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/panel/ProfileEditor.tsx` (extract `FACT_LABELS` + `FactFields`; ProfileEditor renders through them — no behavior change)
@@ -239,7 +241,7 @@ git commit -m "feat(onboarding): profileCompleteness tri-state with extensible r
 
 **Boundaries:** No App.tsx changes (Task 3). ProfileEditor's observable behavior (labels, ids `p-<key>`, empty-only extract merge, collect-omits-unloaded-keys) is regression surface: `ProfileEditor.test.tsx` must pass UNCHANGED.
 
-- [ ] **Step 1: Write the failing tests** — create `extension/src/panel/OnboardingView.test.tsx`:
+- [x] **Step 1: Write the failing tests** — create `extension/src/panel/OnboardingView.test.tsx`:
 
 ```tsx
 import { describe, expect, it, vi } from 'vitest'
@@ -329,9 +331,9 @@ describe('OnboardingView (O2)', () => {
 })
 ```
 
-- [ ] **Step 2: Run to see it fail** — `npx vitest run extension/src/panel/OnboardingView.test.tsx` — FAILS (no module).
+- [x] **Step 2: Run to see it fail** — `npx vitest run extension/src/panel/OnboardingView.test.tsx` — FAILS (no module).
 
-- [ ] **Step 3: Refactor `ProfileEditor.tsx`** — rename the private `LABELS` const to `FACT_LABELS` (same content, STILL module-private — only `FactFields` is exported; no other module needs the label map), and extract the field-rendering `.map` (currently lines 74–79) into:
+- [x] **Step 3: Refactor `ProfileEditor.tsx`** — rename the private `LABELS` const to `FACT_LABELS` (same content, STILL module-private — only `FactFields` is exported; no other module needs the label map), and extract the field-rendering `.map` (currently lines 74–79) into:
 
 ```tsx
 /** O2: the one fact-grid renderer OnboardingView and ProfileEditor share.
@@ -360,7 +362,7 @@ export function FactFields({ draft, onChange, required = null, idPrefix = 'p' }:
 
 ProfileEditor's body replaces its inline `.map` with `<FactFields draft={draft} onChange={set} />`. Nothing else in ProfileEditor changes.
 
-- [ ] **Step 4: Create `extension/src/panel/OnboardingView.tsx`:**
+- [x] **Step 4: Create `extension/src/panel/OnboardingView.tsx`:**
 
 ```tsx
 import { useState, type ChangeEvent } from 'react'
@@ -464,9 +466,9 @@ export function OnboardingView({ values, loaded, resumeName, onUpload, onExtract
 }
 ```
 
-- [ ] **Step 5: Run to see it pass** — `npx vitest run extension/src/panel/OnboardingView.test.tsx extension/src/panel/ProfileEditor.test.tsx && npm run typecheck && npm run lint` — PASS / clean. ProfileEditor tests must pass WITHOUT edits.
+- [x] **Step 5: Run to see it pass** — `npx vitest run extension/src/panel/OnboardingView.test.tsx extension/src/panel/ProfileEditor.test.tsx && npm run typecheck && npm run lint` — PASS / clean. ProfileEditor tests must pass WITHOUT edits.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add extension/src/panel/OnboardingView.tsx extension/src/panel/OnboardingView.test.tsx extension/src/panel/ProfileEditor.tsx
@@ -476,6 +478,7 @@ git commit -m "feat(onboarding): OnboardingView over shared FactFields; CV uploa
 ---
 
 ### Task 3: O3 — gate wiring in App + the onboarded default persona
+Done: `f212e1f..092c3a7`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/panel/App.tsx`
@@ -493,7 +496,7 @@ git commit -m "feat(onboarding): OnboardingView over shared FactFields; CV uploa
 
 **Boundaries:** Do not touch `onScan`'s internals (only its trigger effect). Do not run Playwright (Task 17 owns e2e adaptation). `showEditor` stays as-is (Task 8 generalizes it).
 
-- [ ] **Step 1: Update the canned fake persona in `port.ts`.** In `createFakeHostPort` the canned map has `'profile.get': {},`. Replace with:
+- [x] **Step 1: Update the canned fake persona in `port.ts`.** In `createFakeHostPort` the canned map has `'profile.get': {},`. Replace with:
 
 ```ts
         // O3: the canned persona is ONBOARDED — a complete profile — so the
@@ -503,7 +506,7 @@ git commit -m "feat(onboarding): OnboardingView over shared FactFields; CV uploa
         'profile.get': { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User' },
 ```
 
-- [ ] **Step 2: Make the App.test harness persona onboarded.**
+- [x] **Step 2: Make the App.test harness persona onboarded.**
   - At module scope (near `SELF_CHECK`) add:
 
 ```ts
@@ -537,7 +540,7 @@ function installHostBridge(answer: (method: string) => Promise<unknown>): void {
 
   (every inline bridge destructures at least `requestId` and `method`). If a specific test's bridge already answers `profile.get` deliberately (none known at plan time), leave it and report.
 
-- [ ] **Step 3: Write the failing gate tests** — append to `App.test.tsx`:
+- [x] **Step 3: Write the failing gate tests** — append to `App.test.tsx`:
 
 ```tsx
 describe('App — onboarding gate (O1/O3)', () => {
@@ -652,9 +655,9 @@ describe('App — onboarding gate (O1/O3)', () => {
 })
 ```
 
-- [ ] **Step 4: Run to see the new tests fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'onboarding gate'` — the fresh-install, race, timeout and Finish tests FAIL (no gate exists yet).
+- [x] **Step 4: Run to see the new tests fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'onboarding gate'` — the fresh-install, race, timeout and Finish tests FAIL (no gate exists yet).
 
-- [ ] **Step 5: Implement the gate in `App.tsx`.**
+- [x] **Step 5: Implement the gate in `App.tsx`.**
   - Imports: add `OnboardingView` and `import { profileCompleteness, type Completeness } from './completeness'`.
   - New state (below `gateOpen`):
 
@@ -775,11 +778,11 @@ describe('App — onboarding gate (O1/O3)', () => {
           )}
 ```
 
-- [ ] **Step 6: Run the panel suite** — `npx vitest run extension/src/panel` — ALL PASS. Sweep fallout rule: any pre-existing test failing on the persona change (e.g. one asserting `(none stored)` resume copy) gets `await clearResume()` at its start — FIX-AND-REPORT each.
+- [x] **Step 6: Run the panel suite** — `npx vitest run extension/src/panel` — ALL PASS. Sweep fallout rule: any pre-existing test failing on the persona change (e.g. one asserting `(none stored)` resume copy) gets `await clearResume()` at its start — FIX-AND-REPORT each.
 
-- [ ] **Step 7: Typecheck + lint** — `npm run typecheck && npm run lint` — clean.
+- [x] **Step 7: Typecheck + lint** — `npm run typecheck && npm run lint` — clean.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add extension/src/panel/App.tsx extension/src/panel/App.test.tsx extension/src/panel/port.ts
@@ -789,6 +792,7 @@ git commit -m "feat(onboarding): hard gate wired — settled tri-state decision 
 ---
 
 ### Task 4: A1 — host `applied_jobs` table, `canonicalUrl`, `applied.*` methods
+Done: `092c3a7..455d3bf`, see progress notes.
 
 **Files:**
 - Create: `host/src/canonicalUrl.ts`, `host/src/canonicalUrl.test.ts`
@@ -814,7 +818,7 @@ git commit -m "feat(onboarding): hard gate wired — settled tri-state decision 
 
 **Boundaries:** The existing `applications` save-log table is UNTOUCHED (different semantics — one insert per save event). Column is `marked_at`, never `applied_at`.
 
-- [ ] **Step 1: Write the failing canonicalUrl tests** — create `host/src/canonicalUrl.test.ts`:
+- [x] **Step 1: Write the failing canonicalUrl tests** — create `host/src/canonicalUrl.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -850,9 +854,9 @@ describe('canonicalUrl (A1)', () => {
 })
 ```
 
-- [ ] **Step 2: Run to see it fail** — `npx vitest run host/src/canonicalUrl.test.ts` — FAILS (no module).
+- [x] **Step 2: Run to see it fail** — `npx vitest run host/src/canonicalUrl.test.ts` — FAILS (no module).
 
-- [ ] **Step 3: Create `host/src/canonicalUrl.ts`:**
+- [x] **Step 3: Create `host/src/canonicalUrl.ts`:**
 
 ```ts
 /**
@@ -886,9 +890,9 @@ export function canonicalUrl(raw: string): string {
 }
 ```
 
-- [ ] **Step 4: Run to see it pass** — `npx vitest run host/src/canonicalUrl.test.ts` — PASS.
+- [x] **Step 4: Run to see it pass** — `npx vitest run host/src/canonicalUrl.test.ts` — PASS.
 
-- [ ] **Step 5: Schema.** In `host/src/db/schema.ts`, append to `SCHEMA_SQL` (before the closing backtick, after the `request_log` block):
+- [x] **Step 5: Schema.** In `host/src/db/schema.ts`, append to `SCHEMA_SQL` (before the closing backtick, after the `request_log` block):
 
 ```sql
 -- A1: one row per job actually SUBMITTED (the applications table above is a
@@ -903,7 +907,7 @@ CREATE TABLE IF NOT EXISTS applied_jobs (
 );
 ```
 
-- [ ] **Step 6: Repos.** In `host/src/db/repos.ts` add `import { canonicalUrl } from '../canonicalUrl.js'` and append:
+- [x] **Step 6: Repos.** In `host/src/db/repos.ts` add `import { canonicalUrl } from '../canonicalUrl.js'` and append:
 
 ```ts
 /* ------------------------------------------------------------- applied (A1) */
@@ -954,7 +958,7 @@ export function listApplied(db: Database.Database): AppliedJob[] {
 }
 ```
 
-- [ ] **Step 7: Protocol.** In `shared/src/messages.ts`, append to the `HostRequestSchema` `discriminatedUnion('method', …)` entries (after the `qa.list` entry):
+- [x] **Step 7: Protocol.** In `shared/src/messages.ts`, append to the `HostRequestSchema` `discriminatedUnion('method', …)` entries (after the `qa.list` entry):
 
 ```ts
   z.object({
@@ -981,7 +985,7 @@ describe('HostRequestSchema — applied.* (A1)', () => {
 })
 ```
 
-- [ ] **Step 8: Handlers.** In `host/src/handlers.ts`, extend the repos import with `checkApplied, listApplied, markApplied` and add arms to `compute()`'s switch (before the `facts.extract` case):
+- [x] **Step 8: Handlers.** In `host/src/handlers.ts`, extend the repos import with `checkApplied, listApplied, markApplied` and add arms to `compute()`'s switch (before the `facts.extract` case):
 
 ```ts
       case 'applied.mark':
@@ -996,7 +1000,7 @@ describe('HostRequestSchema — applied.* (A1)', () => {
         return ok(req.requestId, { jobs: listApplied(db) })
 ```
 
-- [ ] **Step 8b: Canned fake entries.** In `extension/src/panel/port.ts`, add to `createFakeHostPort`'s canned map (beside the Task-3 `profile.get` persona entry):
+- [x] **Step 8b: Canned fake entries.** In `extension/src/panel/port.ts`, add to `createFakeHostPort`'s canned map (beside the Task-3 `profile.get` persona entry):
 
 ```ts
         // A1: the canned persona has applied to NOTHING — the revisit badge
@@ -1007,7 +1011,7 @@ describe('HostRequestSchema — applied.* (A1)', () => {
         'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString() },
 ```
 
-- [ ] **Step 9: Handler tests.** Append to `host/src/handlers.test.ts`. That file has NO deps factory — it uses a module-scope `let deps: HandlerDeps` assigned in `beforeEach` (fresh in-memory db per test); the snippets below use `deps` directly. Use a DISTINCT requestId per call — the idempotency ledger replays repeats. (If the file's harness shape differs from this description, adapt and FIX-AND-REPORT.)
+- [x] **Step 9: Handler tests.** Append to `host/src/handlers.test.ts`. That file has NO deps factory — it uses a module-scope `let deps: HandlerDeps` assigned in `beforeEach` (fresh in-memory db per test); the snippets below use `deps` directly. Use a DISTINCT requestId per call — the idempotency ledger replays repeats. (If the file's harness shape differs from this description, adapt and FIX-AND-REPORT.)
 
 ```ts
 describe('applied.* (A1)', () => {
@@ -1043,9 +1047,9 @@ describe('applied.* (A1)', () => {
 
 (If `marked_at DESC` ties within the same millisecond, the `id DESC` tiebreaker keeps `['B','A']` deterministic.)
 
-- [ ] **Step 10: Run everything** — `npm run build -w @jff/shared && npx vitest run host shared && npm run typecheck && npm run lint` — PASS / clean.
+- [x] **Step 10: Run everything** — `npm run build -w @jff/shared && npx vitest run host shared && npm run typecheck && npm run lint` — PASS / clean.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add host/src shared/src extension/src/panel/port.ts
@@ -1055,6 +1059,7 @@ git commit -m "feat(host): applied_jobs table, canonicalUrl, applied.mark/check/
 ---
 
 ### Task 5: A2 — "Mark applied" button + start-url capture
+Done: `455d3bf..de757e9`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/panel/App.tsx`
@@ -1071,7 +1076,7 @@ git commit -m "feat(host): applied_jobs table, canonicalUrl, applied.mark/check/
 
 **Boundaries:** No applied.check yet (Task 7). Do not touch `onScan`'s scan pipeline beyond the two capture lines specified.
 
-- [ ] **Step 1: Write the failing tests** — append to `App.test.tsx`:
+- [x] **Step 1: Write the failing tests** — append to `App.test.tsx`:
 
 ```tsx
 describe('App — mark applied (A2)', () => {
@@ -1125,9 +1130,9 @@ describe('App — mark applied (A2)', () => {
 })
 ```
 
-- [ ] **Step 2: Run to see them fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'mark applied'` — FAILS (no button).
+- [x] **Step 2: Run to see them fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'mark applied'` — FAILS (no button).
 
-- [ ] **Step 3: Implement in `App.tsx`.**
+- [x] **Step 3: Implement in `App.tsx`.**
   - State (near the other useStates):
 
 ```ts
@@ -1210,9 +1215,9 @@ describe('App — mark applied (A2)', () => {
 
   (`BANNER_BASE` is already imported in App.tsx.)
 
-- [ ] **Step 4: Run to see them pass** — `npx vitest run extension/src/panel/App.test.tsx && npm run typecheck && npm run lint` — PASS / clean.
+- [x] **Step 4: Run to see them pass** — `npx vitest run extension/src/panel/App.test.tsx && npm run typecheck && npm run lint` — PASS / clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add extension/src/panel/App.tsx extension/src/panel/App.test.tsx
@@ -1222,6 +1227,7 @@ git commit -m "feat(applied): Mark applied button records the start url and ends
 ---
 
 ### Task 6: A3 — submission detection prompt (never a silent write)
+Done: `de757e9..d19e217`, see progress notes.
 
 **Files:**
 - Create: `extension/src/panel/submission.ts`, `extension/src/panel/submission.test.ts`
@@ -1243,7 +1249,7 @@ git commit -m "feat(applied): Mark applied button records the start url and ends
 
 **Boundaries:** Detection NEVER writes — it only shows the prompt; `Mark applied` inside it calls the Task-5 handler. Pre-sessions, "same-site navigation" is approximated as "same hostname as the previous scan" — Task 14 upgrades the trigger to registrable-domain classification (approximation noted in a code comment).
 
-- [ ] **Step 1: Write the failing detector tests** — create `extension/src/panel/submission.test.ts`:
+- [x] **Step 1: Write the failing detector tests** — create `extension/src/panel/submission.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -1279,9 +1285,9 @@ describe('detectSubmission (A3)', () => {
 })
 ```
 
-- [ ] **Step 2: Run to see it fail** — `npx vitest run extension/src/panel/submission.test.ts` — FAILS (no module).
+- [x] **Step 2: Run to see it fail** — `npx vitest run extension/src/panel/submission.test.ts` — FAILS (no module).
 
-- [ ] **Step 3: Create `extension/src/panel/submission.ts`:**
+- [x] **Step 3: Create `extension/src/panel/submission.ts`:**
 
 ```ts
 /** A3: bilingual confirmation-page vocabulary (spec-fixed, en + pt). Matched
@@ -1307,9 +1313,9 @@ export function detectSubmission(input: { prevFields: number; newFields: number;
 }
 ```
 
-- [ ] **Step 4: Run to see it pass** — `npx vitest run extension/src/panel/submission.test.ts` — PASS.
+- [x] **Step 4: Run to see it pass** — `npx vitest run extension/src/panel/submission.test.ts` — PASS.
 
-- [ ] **Step 5: Protocol + content handler.**
+- [x] **Step 5: Protocol + content handler.**
   - In `shared/src/messages.ts`, append to `ContentMessageSchema`:
 
 ```ts
@@ -1328,7 +1334,7 @@ export function detectSubmission(input: { prevFields: number; newFields: number;
 
   - `npm run build -w @jff/shared`.
 
-- [ ] **Step 6: Write the failing App tests** — append to `App.test.tsx`:
+- [x] **Step 6: Write the failing App tests** — append to `App.test.tsx`:
 
 ```tsx
 describe('App — submission detection prompt (A3)', () => {
@@ -1405,9 +1411,9 @@ describe('App — submission detection prompt (A3)', () => {
 })
 ```
 
-- [ ] **Step 7: Run to see them fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'submission detection'` — FAILS.
+- [x] **Step 7: Run to see them fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'submission detection'` — FAILS.
 
-- [ ] **Step 8: Implement the App wiring.**
+- [x] **Step 8: Implement the App wiring.**
   - Refs/state:
 
 ```ts
@@ -1482,9 +1488,9 @@ describe('App — submission detection prompt (A3)', () => {
 
   - Import `detectSubmission` in App.tsx.
 
-- [ ] **Step 9: Run everything** — `npm run build -w @jff/shared && npx vitest run extension/src/panel shared && npm run typecheck && npm run lint` — PASS / clean.
+- [x] **Step 9: Run everything** — `npm run build -w @jff/shared && npx vitest run extension/src/panel shared && npm run typecheck && npm run lint` — PASS / clean.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add shared/src extension/src/content/index.ts extension/src/panel
@@ -1494,6 +1500,7 @@ git commit -m "feat(applied): submission detection prompt — fields-vanished + 
 ---
 
 ### Task 7: A4 — revisit badge with "Scan anyway"
+Done: `d19e217..cbbcd6f`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/panel/App.tsx`
@@ -1508,7 +1515,7 @@ git commit -m "feat(applied): submission detection prompt — fields-vanished + 
 
 **Verify:** `npx vitest run extension/src/panel/App.test.tsx && npm run typecheck && npm run lint`
 
-- [ ] **Step 1: Write the failing tests** — append to `App.test.tsx`:
+- [x] **Step 1: Write the failing tests** — append to `App.test.tsx`:
 
 ```tsx
 describe('App — revisit badge (A4)', () => {
@@ -1555,9 +1562,9 @@ describe('App — revisit badge (A4)', () => {
 })
 ```
 
-- [ ] **Step 2: Run to see them fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'revisit badge'` — the first two FAIL (scan runs today); the third may already pass and must STAY green.
+- [x] **Step 2: Run to see them fail** — `npx vitest run extension/src/panel/App.test.tsx -t 'revisit badge'` — the first two FAIL (scan runs today); the third may already pass and must STAY green.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - Ref: `const appliedOverrideRef = useRef(false)` — reset to `false` in `resetScanState` on EVERY reason (a new page load re-arms the badge; "Scan anyway" is exactly one page's escape hatch). Add `appliedOverrideRef.current = false` beside the other reset lines.
   - In `onScan`, immediately after the Task-5 start-url capture line:
 
@@ -1598,9 +1605,9 @@ describe('App — revisit badge (A4)', () => {
       )}
 ```
 
-- [ ] **Step 4: Run everything** — `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — PASS / clean. (Task 5/6 tests must stay green: their bridges answer `applied.check` via the `result: {}` fallback → `applied` is `undefined` → the Step-3 `?? null` guard reads that as a MISS and the scan proceeds. If any still break on the check call, fix the FIXTURE to answer `applied.check` with `{ applied: null }` and report.)
+- [x] **Step 4: Run everything** — `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — PASS / clean. (Task 5/6 tests must stay green: their bridges answer `applied.check` via the `result: {}` fallback → `applied` is `undefined` → the Step-3 `?? null` guard reads that as a MISS and the scan proceeds. If any still break on the check call, fix the FIXTURE to answer `applied.check` with `{ applied: null }` and report.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add extension/src/panel/App.tsx extension/src/panel/App.test.tsx
@@ -1610,6 +1617,7 @@ git commit -m "feat(applied): revisit badge checks applied.check before scanning
 ---
 
 ### Task 8: A5 — Applications list + three-view navigation
+Done: `cbbcd6f..bc96ce3`, see progress notes.
 
 **Files:**
 - Create: `extension/src/panel/ApplicationsView.tsx`, `extension/src/panel/ApplicationsView.test.tsx`
@@ -1624,7 +1632,7 @@ git commit -m "feat(applied): revisit badge checks applied.check before scanning
 
 **Verify:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint`
 
-- [ ] **Step 1: Write the failing view tests** — create `extension/src/panel/ApplicationsView.test.tsx`:
+- [x] **Step 1: Write the failing view tests** — create `extension/src/panel/ApplicationsView.test.tsx`:
 
 ```tsx
 import { describe, expect, it } from 'vitest'
@@ -1664,9 +1672,9 @@ describe('ApplicationsView (A5)', () => {
 })
 ```
 
-- [ ] **Step 2: Run to see them fail** — `npx vitest run extension/src/panel/ApplicationsView.test.tsx` — FAILS (no module).
+- [x] **Step 2: Run to see them fail** — `npx vitest run extension/src/panel/ApplicationsView.test.tsx` — FAILS (no module).
 
-- [ ] **Step 3: Create `extension/src/panel/ApplicationsView.tsx`:**
+- [x] **Step 3: Create `extension/src/panel/ApplicationsView.tsx`:**
 
 ```tsx
 import { useEffect, useState } from 'react'
@@ -1711,7 +1719,7 @@ export function ApplicationsView({ load }: { load: () => Promise<AppliedJobRow[]
 }
 ```
 
-- [ ] **Step 4: Wire the three-view model in `App.tsx`.**
+- [x] **Step 4: Wire the three-view model in `App.tsx`.**
   - Replace `const [showEditor, setShowEditor] = useState(false)` with `const [view, setView] = useState<'session' | 'editor' | 'applications'>('session')`.
   - Replace every `setShowEditor(false)` with `setView('session')` and the actions-row toggle (inside `div[data-jff-actions]`) with:
 
@@ -1741,7 +1749,7 @@ export function ApplicationsView({ load }: { load: () => Promise<AppliedJobRow[]
   - Render: the `{showEditor ? <ProfileEditor…> : (<>…rows…</>)}` ternary becomes a three-way switch — `view === 'editor'` → ProfileEditor, `view === 'applications'` → `<ApplicationsView load={loadApplications} />`, else the session markup. The Save-answers row and save-preview stay inside the SESSION arm only (they describe session state).
   - Add a `data-jff-view={view}` attribute on the root `<main>`.
 
-- [ ] **Step 5: Write + run the mutual-exclusion test** — append to `App.test.tsx`:
+- [x] **Step 5: Write + run the mutual-exclusion test** — append to `App.test.tsx`:
 
 ```tsx
 describe('App — three-view navigation (A5)', () => {
@@ -1763,9 +1771,9 @@ describe('App — three-view navigation (A5)', () => {
 
 Run: `npx vitest run extension/src/panel` — ALL PASS (pre-existing `showEditor` tests: any referencing the old toggle get the mechanical rename — FIX-AND-REPORT).
 
-- [ ] **Step 6:** `npm run typecheck && npm run lint` — clean.
+- [x] **Step 6:** `npm run typecheck && npm run lint` — clean.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add extension/src/panel
@@ -1775,6 +1783,7 @@ git commit -m "feat(applied): applications list view + three-view header navigat
 ---
 
 ### Task 9: C2 — Greenhouse react-select: pointer open gesture + committed-text fallback
+Done: `fcb1b3a`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/content/fill.ts` (open step + verification tail of `fillCombobox`, two new helpers — locate by content)
@@ -1791,7 +1800,7 @@ git commit -m "feat(applied): applications list view + three-view header navigat
 
 **Boundaries:** B1a–B1d invariants untouched: typeahead always driven, unique-substring min-3-chars + two-poll settling, exact-equality verification against the CLICKED option, fail-closed restore order. Every EXISTING fill.test.ts test stays green (the gesture ends with a `click` event, so click-opened Ashby fixtures see exactly what they saw before). `fillChoice`, `fillSelect`, the BUTTON rail: byte-identical. Harvest's own open recipe is OUT of scope (harvest already degrades; the panel hints cover it).
 
-- [ ] **Step 1: Write the failing tests** — append to `extension/src/content/fill.test.ts` (module scope already imports `fillOne`, `setNativeValue`):
+- [x] **Step 1: Write the failing tests** — append to `extension/src/content/fill.test.ts` (module scope already imports `fillOne`, `setNativeValue`):
 
 ```ts
 describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
@@ -1902,9 +1911,9 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
 
 (A "non-empty input.value stays authoritative" test is deliberately NOT added: the existing session-7 test `'selects a UNIQUE substring match and reports the committed canonical text'` already pins exactly that path — the commit writes the input back and the verdict reads it. It must stay green through this task; a near-identical duplicate would be pure noise.)
 
-- [ ] **Step 2: Run to see the RED** — `npx vitest run extension/src/content/fill.test.ts -t 'react-select'` — all five FAIL today (the widget never opens on the click-only gesture → `combobox-no-listbox`; the stale-text and hidden-holder tests additionally pin rules a naive fallback would get wrong once the gesture lands).
+- [x] **Step 2: Run to see the RED** — `npx vitest run extension/src/content/fill.test.ts -t 'react-select'` — all five FAIL today (the widget never opens on the click-only gesture → `combobox-no-listbox`; the stale-text and hidden-holder tests additionally pin rules a naive fallback would get wrong once the gesture lands).
 
-- [ ] **Step 3: Implement in `fill.ts`.**
+- [x] **Step 3: Implement in `fill.ts`.**
   - Add the helpers directly ABOVE `fillCombobox`:
 
 ```ts
@@ -2026,13 +2035,13 @@ function visibleCommittedText(
   return { ok: true, committed: committed === value ? null : committed }
 ```
 
-- [ ] **Step 4: Run the fill tests, then the whole suite** — `npx vitest run extension/src/content/fill.test.ts && npx vitest run` — ALL PASS, including every session-7 combobox test.
+- [x] **Step 4: Run the fill tests, then the whole suite** — `npx vitest run extension/src/content/fill.test.ts && npx vitest run` — ALL PASS, including every session-7 combobox test.
 
-- [ ] **Step 5: Verify the BUTTON rail is byte-identical** — `git diff -U0 extension/src/content/fill.ts | grep '^[+-].*unsupported-widget'` — EMPTY output.
+- [x] **Step 5: Verify the BUTTON rail is byte-identical** — `git diff -U0 extension/src/content/fill.ts | grep '^[+-].*unsupported-widget'` — EMPTY output.
 
-- [ ] **Step 6:** `npm run typecheck && npm run lint` — clean.
+- [x] **Step 6:** `npm run typecheck && npm run lint` — clean.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add extension/src/content/fill.ts extension/src/content/fill.test.ts
@@ -2042,6 +2051,7 @@ git commit -m "fix(fill): react-select open gesture + committed-text fallback to
 ---
 
 ### Task 10: C3 — Greenhouse-shaped e2e fixture + regression spec
+Done: `6a7c2b8` and `fe0c339`, see progress notes.
 
 **Files:**
 - Create: `e2e/fixtures/greenhouse-apply/react-select-form.html`
@@ -2055,7 +2065,7 @@ git commit -m "fix(fill): react-select open gesture + committed-text fallback to
 
 **Verify:** `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts -g 'react-select'` — the SCOPED filter only. After Task 3 the seam-built panel gates on onboarding (no stored resume exists in the extension-origin IndexedDB until Task 17's `seedResume`), so foundation's panel-mount tests (`:164-207`) render OnboardingView and are knowingly red until Task 17 — the full file CANNOT go green here. Then `npm run build` (plain dist back).
 
-- [ ] **Step 1: Create the fixture** — `e2e/fixtures/greenhouse-apply/react-select-form.html`:
+- [x] **Step 1: Create the fixture** — `e2e/fixtures/greenhouse-apply/react-select-form.html`:
 
 ```html
 <!doctype html>
@@ -2126,7 +2136,7 @@ git commit -m "fix(fill): react-select open gesture + committed-text fallback to
 </body>
 ```
 
-- [ ] **Step 2: Write the failing spec test** — append to `e2e/foundation.spec.ts`, following the file's existing launch + fixture-server + extension-origin relay pattern. Parameterize the file's fixture-opening helper as `openFixtureTab(file = 'fixture-form.html')` — thread the parameter through both the `goto` and the `chrome.tabs.query` URL glob — so the five existing callers stay unchanged and this test opens `react-select-form.html` through the same path:
+- [x] **Step 2: Write the failing spec test** — append to `e2e/foundation.spec.ts`, following the file's existing launch + fixture-server + extension-origin relay pattern. Parameterize the file's fixture-opening helper as `openFixtureTab(file = 'fixture-form.html')` — thread the parameter through both the `goto` and the `chrome.tabs.query` URL glob — so the five existing callers stay unchanged and this test opens `react-select-form.html` through the same path:
 
 ```ts
 test('the Greenhouse react-select shape fills through the gesture + value-container recipe (C2/C3)', async () => {
@@ -2141,17 +2151,17 @@ test('the Greenhouse react-select shape fills through the gesture + value-contai
 
 (The body is the integrator's to write against the real harness; the four assertions are binding.)
 
-- [ ] **Step 3: Prove the fixture catches the ORIGINAL bug (RED-proof).** Task 9's fix is already committed, so the new spec cannot demonstrate RED against the current tree — without this step it never proves it would have caught the C1 bug. Temporarily restore the pre-Task-9 `fill.ts`:
+- [x] **Step 3: Prove the fixture catches the ORIGINAL bug (RED-proof).** Task 9's fix is already committed, so the new spec cannot demonstrate RED against the current tree — without this step it never proves it would have caught the C1 bug. Temporarily restore the pre-Task-9 `fill.ts`:
   1. `git log --oneline -- extension/src/content/fill.ts` — identify Task 9's commit (message `fix(fill): react-select open gesture…`); call its sha `<task9>`.
   2. `git show <task9>^:extension/src/content/fill.ts > extension/src/content/fill.ts`
   3. `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts -g 'react-select'` — expected: **FAIL** (the widget never opens on the old click-only gesture; the fill reports `combobox-no-listbox` — the fixture catches the original bug).
   4. `git checkout HEAD -- extension/src/content/fill.ts` — `git status` must show `fill.ts` clean again.
 
-- [ ] **Step 4: Run GREEN, scoped** — `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts -g 'react-select'` — expected: **PASS**. Do NOT run the unfiltered file: its panel-mount tests are knowingly red until Task 17 (see Verify above); an unrelated failure there is not this task's signal.
+- [x] **Step 4: Run GREEN, scoped** — `JFF_TEST_SEAM=1 npm run build && npx playwright test e2e/foundation.spec.ts -g 'react-select'` — expected: **PASS**. Do NOT run the unfiltered file: its panel-mount tests are knowingly red until Task 17 (see Verify above); an unrelated failure there is not this task's signal.
 
-- [ ] **Step 5: Restore the plain dist** — `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` → `0`.
+- [x] **Step 5: Restore the plain dist** — `npm run build && grep -rl 'JFF_TEST_SEAM' extension/dist | wc -l` → `0`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add e2e/fixtures/greenhouse-apply/react-select-form.html e2e/foundation.spec.ts
@@ -2161,6 +2171,7 @@ git commit -m "test(e2e): Greenhouse react-select fixture — gesture-gated open
 ---
 
 ### Task 11: S8 — retire the clear-on-activate era tests (ONE batch)
+Done: `073e376`, see progress notes.
 
 **Files:**
 - Delete: `extension/src/panel/tabScope.test.ts`
@@ -2172,13 +2183,13 @@ git commit -m "test(e2e): Greenhouse react-select fixture — gesture-gated open
 
 **Verify:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint`
 
-- [ ] **Step 1:** `git rm extension/src/panel/tabScope.test.ts` — the module it tests is deleted in Task 14; its behavior contract (clear on activate/navigate/remove) is the exact behavior S2/S4/S5 replace.
-- [ ] **Step 2:** In `App.test.tsx`, DELETE these two tests (locate by title, remove the full `it(...)` blocks):
+- [x] **Step 1:** `git rm extension/src/panel/tabScope.test.ts` — the module it tests is deleted in Task 14; its behavior contract (clear on activate/navigate/remove) is the exact behavior S2/S4/S5 replace.
+- [x] **Step 2:** In `App.test.tsx`, DELETE these two tests (locate by title, remove the full `it(...)` blocks):
   - `'leaves the status line blank after a tab switch mid-scan, never superseded'` — asserts the activated-tab CLEAR (its comment: "'activated' never replays a scan (the tab that scanned is not the one that…"); Task 14/16 replace it with session-swap + settling-write routing tests.
   - `'clears a GUESSED company on navigation so the next employer is guessed fresh'` — S4 inverts this: within a session, a same-site wizard step KEEPS the company; cross-site parking (not clearing) handles the employer boundary. Task 15's acceptance suite covers the replacement.
-- [ ] **Step 3:** Do NOT touch: `'keeps a company the user typed across a navigation'`, `'never lets a dead scan company guess name the live page employer'`, `'replays a navigation trigger the scan guard swallowed'`, `'drops the results of a scan whose page navigated away mid-flight'`, and every other generation-discipline test — those assert invariants that survive into the session era (Tasks 14–16 adapt their harnesses if needed, FIX-AND-REPORT).
-- [ ] **Step 4:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — green (fewer tests, zero failures). Record the new test count.
-- [ ] **Step 5: Commit**
+- [x] **Step 3:** Do NOT touch: `'keeps a company the user typed across a navigation'`, `'never lets a dead scan company guess name the live page employer'`, `'replays a navigation trigger the scan guard swallowed'`, `'drops the results of a scan whose page navigated away mid-flight'`, and every other generation-discipline test — those assert invariants that survive into the session era (Tasks 14–16 adapt their harnesses if needed, FIX-AND-REPORT).
+- [x] **Step 4:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — green (fewer tests, zero failures). Record the new test count.
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -2188,6 +2199,7 @@ git commit -m "test(panel): retire clear-on-activate era tests in one batch befo
 ---
 
 ### Task 12: S1/S5/S6 — the `sessions` module family (pure, App-free)
+Done: `4068c0a`, see progress notes.
 
 **Files:**
 - Modify: `shared/src/norm.ts` (gains `normalizeQuestion` — folded into the EXISTING normalization module, no new file), `host/src/resolve/normalize.ts`
@@ -2298,7 +2310,7 @@ export interface SessionStore {
 
 **Boundaries:** NO App.tsx changes (Task 14 wires). NO chrome globals inside `sessions.ts` except the default parameter (`area = chrome.storage.session`) — every function takes its dependencies, tests pass a fake area.
 
-- [ ] **Step 1: Move `normalizeQuestion` to shared.** Append to `shared/src/norm.ts` the EXACT block currently at `host/src/resolve/normalize.ts:1-21` (`MAX_NORMALIZED` + `normalizeQuestion`, comments included) — `norm.ts` is the existing one-normalization-module and is already `export * from './norm.js'`-ed by `shared/src/index.ts`, so no index change. Rewrite `host/src/resolve/normalize.ts` to:
+- [x] **Step 1: Move `normalizeQuestion` to shared.** Append to `shared/src/norm.ts` the EXACT block currently at `host/src/resolve/normalize.ts:1-21` (`MAX_NORMALIZED` + `normalizeQuestion`, comments included) — `norm.ts` is the existing one-normalization-module and is already `export * from './norm.js'`-ed by `shared/src/index.ts`, so no index change. Rewrite `host/src/resolve/normalize.ts` to:
 
 ```ts
 import { normalizeQuestion } from '@jff/shared'
@@ -2319,7 +2331,7 @@ export function detectLanguage(s: string): 'en' | 'pt' {
 
 Run `npm run build -w @jff/shared && npx vitest run host` — every existing host test green, UNCHANGED.
 
-- [ ] **Step 2: Write the failing key/site tests.**
+- [x] **Step 2: Write the failing key/site tests.**
 
 `extension/src/sessionKey.test.ts`:
 
@@ -2369,7 +2381,7 @@ describe('registrableDomain / sameSite (S5)', () => {
 
 Run both — FAIL (no modules).
 
-- [ ] **Step 3: Create `extension/src/sessionKey.ts`:**
+- [x] **Step 3: Create `extension/src/sessionKey.ts`:**
 
 ```ts
 /** storage.session key for the per-tab application session (S1). Lives beside
@@ -2380,7 +2392,7 @@ export const sessionKey = (tabId: number): string => `jff:session:${tabId}`
 export const SESSION_KEY_RE = /^jff:session:(\d+)$/
 ```
 
-- [ ] **Step 4: Create `extension/src/panel/site.ts`:**
+- [x] **Step 4: Create `extension/src/panel/site.ts`:**
 
 ```ts
 /** Country-code second-level labels under which the registrable domain is one
@@ -2409,7 +2421,7 @@ export function sameSite(a: string, b: string): boolean {
 
 Run Step-2 tests — PASS.
 
-- [ ] **Step 5: Write the failing sessions tests** — create `extension/src/panel/sessions.test.ts`:
+- [x] **Step 5: Write the failing sessions tests** — create `extension/src/panel/sessions.test.ts`:
 
 ```ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -2777,11 +2789,11 @@ describe('sessions module (S1/S6)', () => {
 
 Run — FAIL (no module).
 
-- [ ] **Step 6: Create `extension/src/panel/sessions.ts`** implementing the Interfaces contract above verbatim (types and the `SessionStore` interface as quoted, `newSession`'s `startUrl` defaulting to `''`; `answerKey` delegates to `normalizeQuestion` from `@jff/shared`; store internals — pending `Map<number, Session>`, one shared debounce timer, the single global FIFO storage-operation lock that `load`/`loadAll`/save-flush/`mutate`/`remove`/`prune`/eviction all enqueue on, the tombstone `Set<number>`, the `onWrite` subscriber list, the quota-eviction/deferral path — are the implementer's local choices as long as every Step-5 test passes; `newSession` seeds `epoch: Date.now()` and `createdAt: Date.now()`, both for the reason App's old `epochRef` was clock-seeded).
+- [x] **Step 6: Create `extension/src/panel/sessions.ts`** implementing the Interfaces contract above verbatim (types and the `SessionStore` interface as quoted, `newSession`'s `startUrl` defaulting to `''`; `answerKey` delegates to `normalizeQuestion` from `@jff/shared`; store internals — pending `Map<number, Session>`, one shared debounce timer, the single global FIFO storage-operation lock that `load`/`loadAll`/save-flush/`mutate`/`remove`/`prune`/eviction all enqueue on, the tombstone `Set<number>`, the `onWrite` subscriber list, the quota-eviction/deferral path — are the implementer's local choices as long as every Step-5 test passes; `newSession` seeds `epoch: Date.now()` and `createdAt: Date.now()`, both for the reason App's old `epochRef` was clock-seeded).
 
-- [ ] **Step 7: Run everything** — `npm run build -w @jff/shared && npx vitest run extension/src shared host && npm run typecheck && npm run lint` — PASS / clean.
+- [x] **Step 7: Run everything** — `npm run build -w @jff/shared && npx vitest run extension/src shared host && npm run typecheck && npm run lint` — PASS / clean.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add shared/src host/src/resolve/normalize.ts extension/src/sessionKey.ts extension/src/sessionKey.test.ts extension/src/panel/site.ts extension/src/panel/site.test.ts extension/src/panel/sessions.ts extension/src/panel/sessions.test.ts
@@ -2791,6 +2803,7 @@ git commit -m "feat(sessions): Session v1 shape, debounced+flushable store, key-
 ---
 
 ### Task 13: S3 — `navSignals` module
+Done: `c0718bd`, see progress notes.
 
 **Files:**
 - Create: `extension/src/panel/navSignals.ts`, `extension/src/panel/navSignals.test.ts`
@@ -2815,7 +2828,7 @@ export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => voi
 
 **Boundaries:** No App changes; `tabScope.ts` still exists until Task 14. The module reports RAW events for ALL tabs (the panel routes them to sessions); only `activated` is window-filtered here — a tab lives in exactly one window, so tabId-keyed state keeps a single writer.
 
-- [ ] **Step 1: Write the failing tests** — create `extension/src/panel/navSignals.test.ts`:
+- [x] **Step 1: Write the failing tests** — create `extension/src/panel/navSignals.test.ts`:
 
 ```ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -2899,7 +2912,7 @@ describe('createNavSignals (S3)', () => {
 })
 ```
 
-- [ ] **Step 2: Run RED**, then **Step 3: create `extension/src/panel/navSignals.ts`:**
+- [x] **Step 2: Run RED**, then **Step 3: create `extension/src/panel/navSignals.ts`:**
 
 ```ts
 /** How long after a webNavigation-sourced event a tabs.onUpdated 'loading' for
@@ -2962,9 +2975,9 @@ export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => voi
 
 (If the chrome typings reject the narrowed webNavigation listener params, widen to the official callback detail types and read only `tabId`/`frameId`/`url` — FIX-AND-REPORT.)
 
-- [ ] **Step 4: Run GREEN** — `npx vitest run extension/src/panel/navSignals.test.ts && npm run typecheck && npm run lint`.
+- [x] **Step 4: Run GREEN** — `npx vitest run extension/src/panel/navSignals.test.ts && npm run typecheck && npm run lint`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add extension/src/panel/navSignals.ts extension/src/panel/navSignals.test.ts
@@ -2974,6 +2987,7 @@ git commit -m "feat(sessions): webNavigation-first navigation signals with windo
 ---
 
 ### Task 14: S2/S5/S6 — App session lifecycle integration
+Done: `b46b633`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/panel/App.tsx` (the core rewrite)
@@ -3072,12 +3086,12 @@ Each `it` body above is a behavioral contract: the integrator writes the plumbin
 
 #### Steps
 
-- [ ] **Step 1:** Upgrade the App.test harness (constraint 9) — commit nothing yet; run the suite to catalog what breaks (expect: nothing yet, the harness is additive).
-- [ ] **Step 2:** Write the acceptance suite above; run it — RED.
-- [ ] **Step 3:** Implement the integration in App.tsx (delete `tabScope.ts`; `git rm extension/src/panel/tabScope.ts`).
-- [ ] **Step 4:** `npx vitest run extension/src/panel` — acceptance suite green AND every kept invariant test green (harness adaptations reported).
-- [ ] **Step 5:** `npm run typecheck && npm run lint` — clean.
-- [ ] **Step 6: Commit**
+- [x] **Step 1:** Upgrade the App.test harness (constraint 9) — commit nothing yet; run the suite to catalog what breaks (expect: nothing yet, the harness is additive).
+- [x] **Step 2:** Write the acceptance suite above; run it — RED.
+- [x] **Step 3:** Implement the integration in App.tsx (delete `tabScope.ts`; `git rm extension/src/panel/tabScope.ts`).
+- [x] **Step 4:** `npx vitest run extension/src/panel` — acceptance suite green AND every kept invariant test green (harness adaptations reported).
+- [x] **Step 5:** `npm run typecheck && npm run lint` — clean.
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -3087,6 +3101,7 @@ git commit -m "feat(sessions): per-tab sessions replace tab-scope clearing — s
 ---
 
 ### Task 15: S4 — label-keyed answer carry + re-projection
+Done: `fa485ce`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/panel/sessions.ts` (adds the exported pure `projectAnswers`; unit-testable there if the integrator wants module-level coverage beyond the App acceptance suite)
@@ -3159,10 +3174,10 @@ describe('App — label-keyed answer carry (S4)', () => {
 
 #### Steps
 
-- [ ] **Step 1:** Write the acceptance suite — RED (`npx vitest run extension/src/panel/App.test.tsx -t 'label-keyed'`).
-- [ ] **Step 2:** Implement per the constraints.
-- [ ] **Step 3:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — green/clean.
-- [ ] **Step 4: Commit**
+- [x] **Step 1:** Write the acceptance suite — RED (`npx vitest run extension/src/panel/App.test.tsx -t 'label-keyed'`).
+- [x] **Step 2:** Implement per the constraints.
+- [x] **Step 3:** `npx vitest run extension/src/panel && npm run typecheck && npm run lint` — green/clean.
+- [x] **Step 4: Commit**
 
 ```bash
 git add extension/src/panel
@@ -3172,6 +3187,7 @@ git commit -m "feat(sessions): label-keyed answer carry re-projects drafts acros
 ---
 
 ### Task 16: S7 — global single-flight, per-session epochs, routed settling writes
+Done: `e4d1ac1`, see progress notes.
 
 **Files:**
 - Modify: `extension/src/panel/App.tsx`
@@ -3246,10 +3262,10 @@ describe('App — session concurrency (S7)', () => {
 
 #### Steps
 
-- [ ] **Step 1:** Write the acceptance suite — RED.
-- [ ] **Step 2:** Implement per the constraints.
-- [ ] **Step 3:** Full panel suite + `npm run typecheck && npm run lint` — green/clean (every S4/S14 acceptance and kept-invariant test still green).
-- [ ] **Step 4: Commit**
+- [x] **Step 1:** Write the acceptance suite — RED.
+- [x] **Step 2:** Implement per the constraints.
+- [x] **Step 3:** Full panel suite + `npm run typecheck && npm run lint` — green/clean (every S4/S14 acceptance and kept-invariant test still green).
+- [x] **Step 4: Commit**
 
 ```bash
 git add extension/src/panel
@@ -3259,6 +3275,7 @@ git commit -m "feat(sessions): global single-flight scan latch, per-session epoc
 ---
 
 ### Task 17: E2E batch — era adaptation + the cross-cutting flows
+Done: `8f7de95`, see progress notes.
 
 **Files:**
 - Create: `e2e/seed.ts` (onboarded-persona seeding helper)
@@ -3287,10 +3304,10 @@ git commit -m "feat(sessions): global single-flight scan latch, per-session epoc
 
 #### Steps
 
-- [ ] **Step 1:** Write `seed.ts` + the wizard fixtures + `sessions.spec.ts` (three tests, RED where the code path is new).
-- [ ] **Step 2:** `JFF_TEST_SEAM=1 npm run build && npx playwright test` — triage every failure: new-spec RED→green by finishing the harness; old-spec failures are era adaptations (fix + enumerate) unless they reveal a REAL regression — a real regression STOPS the task and is reported, not patched around.
-- [ ] **Step 3:** Full `npx playwright test` green (isolated re-run for the foundation flake pair if needed). `npm run build` → plain dist, seam grep 0.
-- [ ] **Step 4: Commit**
+- [x] **Step 1:** Write `seed.ts` + the wizard fixtures + `sessions.spec.ts` (three tests, RED where the code path is new).
+- [x] **Step 2:** `JFF_TEST_SEAM=1 npm run build && npx playwright test` — triage every failure: new-spec RED→green by finishing the harness; old-spec failures are era adaptations (fix + enumerate) unless they reveal a REAL regression — a real regression STOPS the task and is reported, not patched around.
+- [x] **Step 3:** Full `npx playwright test` green (isolated re-run for the foundation flake pair if needed). `npm run build` → plain dist, seam grep 0.
+- [x] **Step 4: Commit**
 
 ```bash
 git add e2e
@@ -3300,13 +3317,14 @@ git commit -m "test(e2e): onboarding/session era batch — seeding helper, wizar
 ---
 
 ### Task 18: Full verify, plain dist, A6 seed, spec ticks
+Done: `cfdddba`, see progress notes.
 
 **Model:** orchestrator + verifier-opus-low (the verifier runs the commands and returns raw evidence; the orchestrator judges).
 
-- [ ] **Step 1:** `npx vitest run` — all green (record count; expect ≳ 626 + this plan's additions).
-- [ ] **Step 2:** `npm run verify` on an IDLE machine (`pkill -f legacyScreenSaver` first). Foundation flake caveat: isolated re-run before judging the pair (cite by FILE — the old `:128`/`:149` refs are stale, see Global Constraint 15).
+- [x] **Step 1:** `npx vitest run` — all green (record count; expect ≳ 626 + this plan's additions).
+- [x] **Step 2:** `npm run verify` on an IDLE machine (`pkill -f legacyScreenSaver` first). Foundation flake caveat: isolated re-run before judging the pair (cite by FILE — the old `:128`/`:149` refs are stale, see Global Constraint 15).
 - [x] **Step 3:** `npm run build && grep -rl 'jffFakeHost' extension/dist | wc -l` → `0` (plain dist restored — the user's Chrome loads this directory). **Marker corrected** — see Global Constraint 14; `JFF_TEST_SEAM` is a vacuous grep and never proved anything.
-- [ ] **Step 4 (A6): seed the session-7 job as applied** — against the REAL host DB (this machine's `~/.job-form-filler`, honoring a custom `dbPath` in config). **First quit Chrome (or at least close the side panel)** so the native host child releases the WAL-mode DB — this script is a second writer on the user's live database. Note this run is also the live DB's `applied_jobs` MIGRATION: `openDb` runs `migrate()` (`CREATE TABLE IF NOT EXISTS`), creating the table on the real DB for the first time.
+- [x] **Step 4 (A6): seed the session-7 job as applied** — against the REAL host DB (this machine's `~/.job-form-filler`, honoring a custom `dbPath` in config). **First quit Chrome (or at least close the side panel)** so the native host child releases the WAL-mode DB — this script is a second writer on the user's live database. Note this run is also the live DB's `applied_jobs` MIGRATION: `openDb` runs `migrate()` (`CREATE TABLE IF NOT EXISTS`), creating the table on the real DB for the first time.
 
 ```bash
 npm run build -w @jff/shared && npm run build -w @jff/host
@@ -3325,8 +3343,8 @@ db.close()
 ```
 
 Idempotent by design (re-running keeps the original `marked_at`). Record the printed canonical url + date as the A6 evidence.
-- [ ] **Step 5:** Tick every landed TODO checkbox in the SPEC file (`docs/superpowers/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md`) except the final manual-gate item; `grep -c '^- \[ \]' <spec>` should print `1`.
-- [ ] **Step 6: Commit**
+- [x] **Step 5:** Tick every landed TODO checkbox in the SPEC file (`docs/specs/2026-07-29-onboarding-sessions-applied-combobox-design.md`) except the final manual-gate item; `grep -c '^- \[ \]' <spec>` should print `1`.
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -3337,7 +3355,7 @@ git commit -m "chore: full verify green, plain dist restored, TRM/Ashby job seed
 
 ### Task 19: Manual browser gate on the real Greenhouse page
 
-**Model:** orchestrator (agent-driven browser verification per the project's proven pattern) + USER for anything requiring their judgment/session. Target: <https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002>. Reload the unpacked extension first (chrome://extensions → Reload).
+**Routing:** steps 2 to 8 run through Claude Code's Chrome browser tools, with the user watching. Step 1 (the profile DB wipe and its restore) runs only after the user says so in that session. The user's own pass over the page is the final acceptance, not the agent's. Then the `retro` skill. Target: <https://job-boards.greenhouse.io/deliveryassociates/jobs/8517393002>. Reload the unpacked extension first (chrome://extensions -> Reload).
 
 Checklist (spec's final TODO, all six live):
 
@@ -3387,3 +3405,56 @@ Decisions this plan made where the spec was silent or approximate (flagged for t
 ## Manual handshake log
 
 (Task 19 appends dated entries here.)
+
+
+## Progress notes
+
+Rulings carried over from the SDD ledger, which no longer exists. Each bullet is one ruling
+recorded during execution; the ledger's own wording is kept where compressing it would lose the
+reasoning.
+
+- Task 0, reconciled: the plan's baseline said 618 tests / 43 files, the tree had 626 / 43. `563113b..edd492d` is docs-only, so 618 was a mis-transcription at authoring time rather than a regression, and the plan's baseline was corrected to 626.
+- Task 1, deviation: the Claude-side task review could not run (sustained API 529), so the cross-vendor codex review stood in as the interim gate. Task 1 is pure transcription of plan-shipped code, but its diff reached the Task 18 branch review flagged as not yet Claude-reviewed.
+- Task 2, adjudicated: an Important finding claimed `OnboardingView` seeds state from the `values` prop on mount only, so late-arriving facts stay blank and `collect()` overwrites stored facts with empty strings. Hand-verified closed twice over — Task 3 mounts it keyed on `factsLoaded`, and the view only renders when the decision is `incomplete`, which requires facts to have settled — so the key is load-bearing for a real data-loss risk, not cosmetic.
+- Task 3, process deviation (resolved): the implementer disclosed it had missed the pre-implementation red run and refused to fabricate one. The orchestrator reconstructed it by reverting `App.tsx` alone and re-running: 4 of the 7 new gate tests fail without the implementation, 3 pass.
+- Task 4, parked: `canonicalUrl` drops `ref` and `source` for every host, so if an ATS used either as posting identity two jobs would collide on `UNIQUE(canonical_url)` and the second mark would overwrite the first. Parked rather than fixed because the plan mandates that exact tracking set and had already reasoned about the trade; for the ATSes in scope identity lives in the path or in a kept id param.
+- Task 5, parked: two interim-state findings, both resolved by design in later tasks — `startUrl` cannot tell "page 1 to page 2 of one application" from "job A to job B in the same tab" (Task 14 supplies the real boundary), and `onMarkApplied` reads rendered state across an await so a mid-flight navigation can pair job A's url with job B's title (Task 16's `applyToSession` choke point). Both were carried forward as hard requirements on those tasks.
+- Task 5, deviation (sanctioned): the failed-mark test replaced the brief's fixture-incompatible "rows" assertion with a retryability assertion, judged a reasonable test correction rather than scope creep.
+- Task 7, parked: the precedence chain is enforced for the auto-scan effect but not inside `onScan`, so a manual click can reach `applied.check` before the gate opens. Hand-verified as pre-existing rather than a Task 7 regression — `onScan`'s entry guards are byte-identical before and after — and the onboarding half is enforced by rendering, since the scan UI does not exist while the decision is `incomplete`.
+- Task 8, parked (two findings): `ApplicationsView` renders a stored url straight into an anchor href with no scheme validation, and a rejected `load()` never reaches the failure state, leaving a permanently stuck spinner. Both are verbatim plan-supplied code, so fixing them meant editing plan text — the user's call, not the orchestrator's; both were raised with the user.
+- Task 9, orchestrator fix (comment-only, amended into `fcb1b3a`): the brief's insertion point orphaned `fillCombobox`'s 30-line B1 doc comment, leaving the canonical record of the B1a-B1d invariants reading as documentation for a different function. The helpers were moved above the comment and one now-stale phrase corrected; verified comment-only by an empty non-comment-line grep over the reorder diff.
+- Task 9, deviation (judged correct): the brief's tail-replacement block silently omitted a pre-existing 5-line "B1c exact normalized equality" rationale comment. The implementer kept the comment and applied the brief's executable lines around it, on the grounds that B1c is named protected regression surface; the executable lines are byte-for-byte the brief's.
+- Task 12, deviation (judged correct): the plan-authored `drain()` helper spins 10 microtask turns, not the plan's 2. The implementer did not assume the plan was wrong — it instrumented the real store with a throwaway probe, which printed `ARMED after 3 turns`, the extra turn being `withLock`'s own scheduling tick; the plan's 2-turn drain released a hold that was not yet armed and wedged the test forever.
+- Task 13, parked finding (ruled down to minor, code unchanged): codex reported that the navigation-signal fallback dedupe only works when `webNavigation` fires first. The mechanism was confirmed but the premise refuted — the module requires both `status==='loading'` and a defined url, and Chrome's pre-commit tick carries no url. The residual real case is one duplicate `navigated` per combined event, costing a redundant re-scan and not wrong data; the proposed timer-based fix was rejected as the same class as a leak that had already cost this plan a day.
+- Task 15, deviation 1 (sanctioned): the plan asserts a generated/draft badge that does not exist anywhere in `FieldRow.tsx`. The implementer asserted the plan's actual intent against the persisted row instead; a visible badge would have been a new UI slice, not this one.
+- Task 15, deviation 2 (sanctioned): the fieldKey-ambiguity test plants its second entry through the product's own write path rather than directly as the plan's comment suggested — the same rule, stronger evidence, and no second mount needed.
+- Task 16, deviations (five, all disclosed): `ScanDeps.tabId` deleted as a second disagreeing source of truth (the brief's Interfaces section authorised it); `endSession`'s `bumpSwap` made targeted; `runScan`'s retry made abortable through the injected `sleep`, closing a Task 12 flake-hunt item with no `scan.ts` change; `swallow` catches added on four floating routed writes; and the implementer found and fixed its own test-harness slip — a count used as a call index — rather than working around it.
+- Task 17, deviations (four, all disclosed): `panel-port.spec.ts` left unmodified because its assertions render above the onboarding branch, so seeding it would add flake surface for zero coverage; the wizard fixtures keep the same field count with different composition, following the plan's binding enumeration over its prose; `seedOnboardedProfile` takes an extra param so full-loop can layer names on the shared persona; and flows 2 and 3 script the host bridge directly, because the canned seam host returns zero resolutions and no rows would render.
+
+Deferred minor items, by task. Each was recorded as minor at the time and left for the branch review:
+
+- Task 0, deferred minors: 1, see git history.
+- Task 1, deferred minors: 1, see git history.
+- Task 2, deferred minors: 3, see git history.
+- Task 3, deferred minors: 3, see git history.
+- Task 4, deferred minors: 1, see git history.
+- Task 5, deferred minors: 2, see git history.
+- Task 6, deferred minors: 4, see git history.
+- Task 7, deferred minors: 1, see git history.
+- Task 8, deferred minors: 3, see git history.
+- Task 9, deferred minors: 3, see git history.
+- Task 12, deferred minors: 3, see git history.
+- Task 13, deferred minors: 1, see git history.
+
+Branch review and the two fix passes:
+
+- Consolidated branch review after Task 18, two legs. Leg 1 was a fresh-context Opus review at effort xhigh over `b5f8d65..HEAD` (15 commits, 33 files, +4694/-660): spec conformance passed with one named gap, quality failed on a single live defect (F1), the reviewer's own framing being that the failure was on one defect and not on the body of work. Leg 2 was a codex `gpt-5.6-sol` cross-vendor pass returning 2 P1 and 2 P2. The review ran nothing — every finding came from reading, and it said so.
+- Fix pass A (`ffb9d51`), one integrator dispatch over 7 findings. F1 was reproduced by the orchestrator before any fix was dispatched: `swapTo`'s fast return neither bumps nor cancels, so returning to the original tab mid-swap strands the panel on the other one and a later scan writes into the wrong page. Suite 774 to 782; the fix was mutation-verified by collapsing the guard and watching exactly the F1 test fail.
+- Fix pass B (`4d1b28e`), one integrator dispatch over the O3 pending hole, the durable e2e flake fix, F10 to F13 and four test-debt items. Suite 782 to 794 / 51 files, e2e 17/17, plain dist clean. The gate guard reads a ref rather than state, because the nav listeners are registered once in an empty-dependency effect and a state-reading closure would freeze on the mount-time value and refuse every background re-scan for the life of the panel.
+
+Still open, deliberately, each with a ruling in the ledger:
+
+- OPEN — codex's `startUrl` staleness claim: the session is created from the nav event but `startUrl` is captured from `chrome.tabs.get()`, which may still report the pre-navigation URL, and capture is first-wins so a stale value sticks. Plausible mechanism, unproven premise; the xhigh leg did not corroborate it and it cannot be settled by reading. Task 19 step 8 observes it live.
+- OPEN — `drainRescans` stall: it dispatches one entry and returns, and the only lossy refusal is `port === null`, which implies the host is down and no scans would run anyway. Impact judged nil by both the orchestrator and the xhigh reviewer; a port-reconnect re-drain is the fix if it is ever wanted.
+- OPEN — F5's adjacent narrowness: the displayed-session drain bumps `scanNonce`, and if a `swapTo` completes between the bump and React flushing, the effect targets the newly displayed tab. Reaching it needs two storage round-trips to beat an effect flush. Not fixed.
+- OPEN — F9: a batch fill silently overrides a carried generated draft. Page-wins is the right rule, but "paid drafts survive" is the headline feature and `answers[key]` still holds the draft, so this is worth watching at the manual gate.
