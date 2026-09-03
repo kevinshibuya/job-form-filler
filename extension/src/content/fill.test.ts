@@ -78,6 +78,41 @@ describe('fillOne', () => {
     expect((document.getElementById('x') as HTMLInputElement).value).toBe('Kevin')
   })
 
+  it('reports value-rejected when a typed input DISCARDS the value', async () => {
+    // Live Greenhouse: 'Imediato' written into a numeric date-year input. The
+    // browser keeps '' and only warns, so without a read-back the row was
+    // marked filled while the page held nothing.
+    document.body.innerHTML = '<input id="y" type="number">'
+    await expect(fillOne(document.getElementById('y')!, 'Imediato'))
+      .resolves.toEqual({ ok: false, reason: 'value-rejected' })
+    expect((document.getElementById('y') as HTMLInputElement).value).toBe('')
+  })
+
+  it('still fills a typed input the page ACCEPTS', async () => {
+    document.body.innerHTML = '<input id="y" type="number">'
+    await expect(fillOne(document.getElementById('y')!, '2024')).resolves.toEqual({ ok: true })
+    expect((document.getElementById('y') as HTMLInputElement).value).toBe('2024')
+  })
+
+  it('treats a malformed date the same way — the page keeps nothing', async () => {
+    document.body.innerHTML = '<input id="d" type="date">'
+    await expect(fillOne(document.getElementById('d')!, '2024-1-2'))
+      .resolves.toEqual({ ok: false, reason: 'value-rejected' })
+  })
+
+  it('reports a page NORMALISATION as committed rather than failing', async () => {
+    // An email input strips surrounding whitespace: the page took the value,
+    // it just canonicalised it. That is a success carrying `committed`.
+    document.body.innerHTML = '<input id="e" type="email">'
+    await expect(fillOne(document.getElementById('e')!, ' a@b.com '))
+      .resolves.toEqual({ ok: true, committed: 'a@b.com' })
+  })
+
+  it('does not call an empty fill a rejection', async () => {
+    document.body.innerHTML = '<input id="x">'
+    await expect(fillOne(document.getElementById('x')!, '')).resolves.toEqual({ ok: true })
+  })
+
   it('fills a textarea', async () => {
     document.body.innerHTML = '<textarea id="x"></textarea>'
     await fillOne(document.getElementById('x')!, 'long answer')
