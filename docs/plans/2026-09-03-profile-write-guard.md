@@ -60,9 +60,9 @@
 
 **Boundaries:** Do not touch `waterfall.ts`; the `key` on a Resolution stays, Task 2 consumes it. No SQLite schema change. `e2e/full-loop.spec.ts` is Task 3's.
 
-- [ ] Schema, `keys.ts` helpers with tests; rebuild shared
-- [ ] `save.ts` and its tests
-- [ ] Host branch removal and shape rule with tests; `npm run typecheck`; commit `fix: facts never travel through Save answers; fact values are single-line`
+- [x] Schema, `keys.ts` helpers with tests; rebuild shared
+- [x] `save.ts` and its tests
+- [x] Host branch removal and shape rule with tests; `npm run typecheck`; commit `fix: facts never travel through Save answers; fact values are single-line`
 
 ### Task 2: "Save to profile" replaces Generate on fact rows; the editor reports a refused save
 
@@ -164,3 +164,38 @@ printing 0 after a plain rebuild.
 Profile gate from Global constraints: 10 clean keys, `github` holds
 `https://github.com/kevinshibuya`. Not prose, so the stop condition does not
 fire.
+
+### Task 1 (done)
+
+Two corrections to the plan's file list, both found by a red test rather than by
+reading:
+
+**The delete range was one line too greedy.** The plan says to delete
+`save.ts:66-70`, but `:70` is `if (resolution.source === 'page' && !pageKeyed)
+continue`, the guard that keeps keyless ATS page text out of `qa_memory`.
+Deleting it turns two tests red that the plan does not list, `:112` and `:180`
+(`still skips a page-sourced row with NO key`), and reopens the B5b hole from
+the other side. Once every keyed row stops above, `pageKeyed` is constantly
+false, so `:70` reduces exactly to `if (resolution.source === 'page') continue`
+and `:82`'s `&& !pageKeyed` reduces to nothing. Both were rewritten to their
+reduced forms, so the guard survives and the plan's intent is unchanged.
+
+**A fourth test asserts a non-null `fieldKey`.** The plan names three (`:80`,
+`:152`, `:167`) and says a search for "page-keyed" will not find `:80`. It also
+does not find `saves a proposed answer the user corrected in the panel and then
+accepted` at `:135`, whose fixture is `source: 'llm_key', key: 'salary'`. Its
+invariant is about `onAccept` promoting the tier and never the value, which is
+still worth holding, so it was re-expressed on a keyless `llm_reuse` row instead
+of being deleted.
+
+`save.ts:65`, the demographic guard, is untouched, and `save.test.ts:94` and
+`:103` still pass.
+
+| check | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 878 passed (878)` |
+
+878 is 866 plus the twelve cases this task added across `keys.test.ts`,
+`messages.test.ts`, `save.test.ts` and `handlers.test.ts`.
