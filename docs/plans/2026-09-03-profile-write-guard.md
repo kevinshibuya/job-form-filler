@@ -8,7 +8,7 @@
 ## Global constraints
 
 - TypeScript: never `any`. Typed test fakes included.
-- Branch `profile-write-guard`, created in Task 0 from `harness-v3-migration` (PR #1 is not merged; stack this PR on it, target `ai-staging`). Never commit on `main`.
+- Branch `profile-write-guard`, created in Task 0 from `harness-v3-migration`. This plan is the first of five in a linear stack: `profile-write-guard` → `panel-state` → `serial-choice-fill` → `ats-identity-and-modules` → `ignore-and-captures`. Every plan in the stack edits `App.tsx`, so the stack is what keeps them from colliding. PR #1 (`harness-v3-migration` into `ai-staging`) is open and not merged, so open this PR against `harness-v3-migration` and retarget it to `ai-staging` once PR #1 merges. Never commit on `main`.
 - Run tests from the repo root: `npx vitest run <path>`. After any edit under `shared/src`, run `npm run build -w @jff/shared` before host or extension tests, or they exercise the stale build.
 - Every task ends with `npm run typecheck` green before its commit; the schema narrowing in Task 1 touches producer and consumer in the same commit for that reason.
 - `npm run smoke` and `npm run verify` only on an idle machine (`uptime` load under the core count). They leave a seam dist behind; the last task restores the plain dist and proves it with `grep -rl 'jffFakeHost' extension/dist | wc -l` printing 0.
@@ -40,11 +40,11 @@
 
 **Files:**
 - `shared/src/messages.ts` — modify: `SaveItemSchema.fieldKey` becomes `z.null()`
-- `shared/src/messages.test.ts` — modify: the schema case for `fieldKey`
+- `shared/src/messages.test.ts` — **create** the case: `grep -n fieldKey shared/src/messages.test.ts` returns nothing today, so there is no `fieldKey` case to modify; write one that asserts `SaveItemSchema` rejects a non-null `fieldKey`
 - `shared/src/keys.ts` — modify: export `FACT_MAX_CHARS = 500` and `normalizeFactValue(v: string): string` (collapse every run of whitespace, newlines included, into one space; trim)
 - `shared/src/keys.test.ts` — create if absent, else modify: two cases for `normalizeFactValue`
-- `extension/src/panel/save.ts` — modify: `buildSaveItems` excludes every row whose resolution has a non-null `key`; delete the page-keyed passthrough (`save.ts:65-69`, the "B5b" block, and the `!pageKeyed` waiver at `:81`); every item is built with `fieldKey: null`
-- `extension/src/panel/save.test.ts` — modify: replace the page-keyed case; add the two cases below
+- `extension/src/panel/save.ts` — modify: `buildSaveItems` excludes every row whose resolution has a non-null `key`; delete the page-keyed passthrough, which is **`save.ts:66-70`** (the three-line `B5b` comment plus the `pageKeyed` const and the `continue`), and the `!pageKeyed` waiver at **`:82`**; every item is built with `fieldKey: null`. **Do not delete `save.ts:65`.** That line is `if (field.demographic || resolution.tier === 'skipped') continue`, a separate privacy guard that `save.test.ts:94` and `:103` describe as deliberately independent, and it must survive this task untouched. Typecheck catches a stray reference to a deleted `pageKeyed`; nothing catches a silently deleted demographic guard.
+- `extension/src/panel/save.test.ts` — modify **three** existing cases, not one: `:152` and `:167` are the page-keyed pair, and `:80` (`routes a corrected factual field to its answer-bank key, not to qa_memory`) also asserts a non-null `fieldKey` while being `source: 'answer_bank'`, so a search for "page-keyed" will not find it. Under the new rule it yields zero items and fails on `items[0]` being undefined. Add the two cases below
 - `host/src/handlers.ts` — modify: delete the `if (item.fieldKey !== null)` branch in the `save` transaction; `profile.set` and `answerBank.set` normalise every value with `normalizeFactValue` and reject any normalised value longer than `FACT_MAX_CHARS`
 - `host/src/handlers.test.ts` — modify: add the three cases below
 
@@ -67,16 +67,22 @@
 **Files:**
 - `extension/src/panel/FieldRow.tsx` — modify: button logic for keyed rows; new prop `onSaveFact`; `acting` union gains `'save_fact'`
 - `extension/src/panel/FieldRow.test.tsx` — modify: add the four cases below
-- `extension/src/panel/App.tsx` — modify: `onSaveFact` handler; `acting` state union gains `'save_fact'`; `generateEligible` excludes keyed rows; pass the prop at both `<FieldRow` sites (`App.tsx:1820`, `:1845`); `onSaveFacts` (`:1444`) and `onOnboardingFinish` (`:1476`) check `r.ok` on both requests and surface `hostErrorText(r.error)` through `setHostError` instead of merging and leaving the view
+- `extension/src/panel/App.tsx` — modify: `onSaveFact` handler; `acting` state union gains `'save_fact'`; `generateEligible` excludes keyed rows; pass the prop at both `<FieldRow` sites (`App.tsx:1820`, `:1845`); **`onSaveFacts` (`:1444-1451`) alone** gains the `r.ok` checks on both requests, surfacing `hostErrorText(r.error)` through `setHostError` instead of merging and leaving the view. `onOnboardingFinish` (`App.tsx:1470`) already does exactly this, with a comment explaining why — leave it alone and treat it as the regression check that the new code matches
 - `extension/src/panel/App.test.tsx` — modify: add the two cases below
 
 **Interfaces:**
 - Consumes: `Row` (`extension/src/panel/group.ts:3`), `isProfileKey` from `@jff/shared`, `portRef.current.request('profile.set' | 'answerBank.set', { values })`, `setFacts`, `edits`, `session.snapshot`
 - Produces: `FieldRowProps.onSaveFact: (ref: string) => void`; a `data-jff-save-fact="1"` button with text `Save to profile` (busy label `Saving…`); `generateEligible` filters `r.resolution.key === null`
 
-**Work:** A row with `resolution.key !== null` never renders "Generate with AI". It renders `Save to profile` before the Fill button when the key has no stored value behind it, which is `source` not in `profile`, `answer_bank`, `llm_key` (that is: `needs_input`, `page`-sourced, and the `saved_answer` key-fallback rows from `waterfall.ts:83-86,160-163`). Disabled when the current value is blank, while `locked`, or while `acting !== null`. Rows sourced from `profile`, `answer_bank` or `llm_key` render neither Generate nor Save to profile; Accept and Fill are unchanged. In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ?? edits[ref] ?? row.resolution.value` (the same precedence Save answers uses at `App.tsx:1576-1587`, so a fact corrected on the page saves the page's value), calls `profile.set` when `isProfileKey(key)` else `answerBank.set` with `{ values: { [key]: value } }`, merges the result into `facts` on success, and on failure writes an `action_failed` status `Save to profile failed: …` like Accept does. `setActing({ ref, action: 'save_fact' })` for the in-flight lock. Then filter `generateEligible`.
+**Work:** A row with `resolution.key !== null` never renders "Generate with AI". It renders `Save to profile` when the key has no stored value behind it, which is `source` not in `profile`, `answer_bank`, `llm_key` (that is: `needs_input`, `page`-sourced, and the `saved_answer` key-fallback rows from `waterfall.ts:83-86,160-163`). Disabled when the current value is blank, while `locked`, or while `acting !== null`. Rows sourced from `profile`, `answer_bank` or `llm_key` render neither Generate nor Save to profile; Accept and Fill are unchanged.
 
-**Acceptance check:** `npx vitest run extension/src/panel/FieldRow.test.tsx extension/src/panel/App.test.tsx` exits 0 and `npm run typecheck` exits 0, with, in FieldRow: a keyed `needs_input` row shows `Save to profile` and no `Generate with AI`; a keyed `saved_answer` row shows `Save to profile`; a keyed `profile`-sourced row shows neither; a keyless `needs_input` row still shows `Generate with AI`. In App: with a fake port, clicking `Save to profile` on a `github` row with the edit `https://github.com/x` sends exactly one `profile.set` with `{ values: { github: 'https://github.com/x' } }` and no `save`; a fake port answering `profile.set` with `ok: false` from the Profile editor leaves the editor view open and shows the host error banner. Red state: the first FieldRow case currently renders `Generate with AI`; the editor case currently returns to the session view.
+**Where the button goes.** "Before the Fill button" only describes one of the three target row kinds. `FieldRow.tsx:188-211` renders Accept only under `tier === 'proposed'` and Generate plus Fill only under `tier === 'needs_input'`; a `page`-sourced or `saved_answer` row is `tier: 'auto'` and today renders the flex container and the reason span and nothing else. So for `needs_input` the button goes before Fill, and for the two `auto` kinds it is the first control that row has ever had. Put it in the same flex container, and add a FieldRow case for an `auto` row so the new branch is covered.
+
+**Overwrites.** A `page`-sourced row can carry a key whose profile value already exists (email and phone after an ATS autofills them). Saving then replaces a good stored fact with whatever the page happened to hold. Render `Save to profile` only when `facts[key]` is absent or blank; when a value is already stored, render nothing and leave the Profile editor as the way to change it.
+
+In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ?? edits[ref] ?? row.resolution.value` (the same precedence `buildSaveItems` uses at `save.ts:76`, so a fact corrected on the page saves the page's value), calls `profile.set` when `isProfileKey(key)` else `answerBank.set` with `{ values: { [key]: value } }`, merges the result into `facts` on success, and on failure writes an `action_failed` status `Save to profile failed: …` like Accept does. `setActing({ ref, action: 'save_fact' })` for the in-flight lock. Then filter `generateEligible`.
+
+**Acceptance check:** `npx vitest run extension/src/panel/FieldRow.test.tsx extension/src/panel/App.test.tsx` exits 0 and `npm run typecheck` exits 0, with, in FieldRow: a keyed `needs_input` row shows `Save to profile` and no `Generate with AI`; a keyed `saved_answer` row (`tier: 'auto'`, the kind with no controls today) shows `Save to profile`; a keyed `profile`-sourced row shows neither; a keyed `page`-sourced row whose key already has a stored fact shows neither; a keyless `needs_input` row still shows `Generate with AI`. In App: with a fake port, clicking `Save to profile` on a `github` row with the edit `https://github.com/x` sends exactly one `profile.set` with `{ values: { github: 'https://github.com/x' } }` and no `save`; a fake port answering `profile.set` with `ok: false` from the Profile editor leaves the editor view open and shows the host error banner. Red state: the first FieldRow case currently renders `Generate with AI`; the editor case currently returns to the session view.
 
 **Boundaries:** `generateOne` is unchanged: the batch filter and the missing button keep keyed rows out. `ProfileEditor.tsx` itself is not touched.
 
@@ -86,7 +92,7 @@
 ### Task 3: The e2e loop learns the new path
 
 **Files:**
-- `e2e/full-loop.spec.ts` — modify: the assertion that `answer_bank` gained `workAuth` through Save answers (around `:163-164`) becomes its inverse, and a new step drives `Save to profile` on that row and asserts the `answer_bank` write
+- `e2e/full-loop.spec.ts` — modify: the assertion that `answer_bank` gained `workAuth` through Save answers, which is at **`:157-158`** (`:163-164` is the unrelated applied-url assertion; do not invert that one), becomes its inverse, and a new step drives `Save to profile` on that row and asserts the `answer_bank` write
 
 **Interfaces:**
 - Consumes: the `data-jff-save-fact` button; the SQLite handle the spec already opens
@@ -107,17 +113,17 @@
 
 **Interfaces:**
 - Consumes: everything above
-- Produces: PR `profile-write-guard` into `ai-staging`, a rundown for the user
+- Produces: PR `profile-write-guard` into `harness-v3-migration`, a rundown for the user
 
 **Work:** At idle, run `npm run verify`, then `npm run build` and the plain-dist grep. Reload the unpacked extension. Write the manual rundown for the user in the PR body: open the Greenhouse page, scan, confirm the `github` row shows `Save to profile` and no Generate; type a URL, click it, open the Profile editor and see it; generate-all, Save answers, then `sqlite3 ~/.job-form-filler/db.sqlite "select key, substr(value,1,40) from profile"` shows no prose. Stop after opening the PR: the review is the user's to trigger.
 
-**Acceptance check:** `npm run verify` exits 0; `grep -rl 'jffFakeHost' extension/dist | wc -l` prints 0; `gh pr view --json baseRefName` prints `ai-staging`. Red state: no PR exists.
+**Acceptance check:** `npm run verify` exits 0; `grep -rl 'jffFakeHost' extension/dist | wc -l` prints 0; `gh pr view --json baseRefName` prints `harness-v3-migration`. Red state: no PR exists.
 
 **Boundaries:** No merge. No changes outside the Progress section.
 
 - [ ] `uptime`, then `npm run verify`; record counts under `## Progress`
 - [ ] `npm run build`; plain-dist grep prints 0
-- [ ] Push, open the PR against `ai-staging` with the rundown; commit `docs(plan): profile write guard, task 4 gate`
+- [ ] Push, open the PR against `harness-v3-migration` with the rundown; commit `docs(plan): profile write guard, task 4 gate`
 
 ## Progress
 

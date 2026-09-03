@@ -1,19 +1,21 @@
 # Serial choice fill implementation plan
 
 **Goal:** A combobox fill reports success only when the page really committed the option and closed its menu, and no fill ever starts while another widget's menu is still open.
-**Architecture:** Changes inside `extension/src/content/fill.ts` only. The commit verdict in `fillCombobox` needs a closed listbox plus one of three kinds of commit evidence, so a typed value equal to the option text can no longer pass on its own, whether the menu stays open or closes without selecting. The commit gesture on the option becomes the same pointer sequence the open gesture uses. Before any open gesture the filler closes whatever listbox is visible and verifies it closed, and `fillFields` settles between consecutive choice-type fills. Five jsdom fixtures pin the verdict; five existing fixtures are corrected to close their listbox on commit, as real widgets do.
+
+**What this plan does not claim.** Defect 9 (the Greenhouse Degree dropdown that did not commit while the panel said it had) was never deliberately reproduced, and the same widget on the same page committed correctly earlier in the same session. This plan is **containment**, not a root-cause fix: it makes a false success impossible and stops overlapping open gestures. If Degree still fails to commit after it, the plan succeeded — the failure is now honest and visible — and the root cause is a separate diagnosing session, fed by a Capture of the page in its failing state. Do not read a green gate here as proof that the commit race is gone.
+**Architecture:** Changes inside `extension/src/content/fill.ts` only. The commit verdict in `fillCombobox` needs a closed listbox plus one of three kinds of commit evidence, so a typed value equal to the option text can no longer pass on its own, whether the menu stays open or closes without selecting. The commit gesture on the option becomes the same pointer sequence the open gesture uses. Before any open gesture the filler closes whatever listbox is visible and verifies it closed, and `fillFields` settles between consecutive choice-type fills. Five jsdom fixtures pin the verdict; the existing fixtures are corrected to close their listbox on commit, as real widgets do; and one two-widget fixture pins the sequencing itself.
 **Spec:** `docs/specs/2026-09-03-per-ats-architecture-design.md`, section D and "Defect 9: the false commit"
 **Execution model:** opus
 
 ## Global constraints
 
 - TypeScript: never `any`. Typed test fakes included.
-- Branch `serial-choice-fill`, created in Task 0 from `harness-v3-migration` (stacked on PR #1, target `ai-staging`). Never commit on `main`.
+- Branch `serial-choice-fill`, created in Task 0 from `panel-state`. This plan is the third of five in a linear stack: `profile-write-guard` → `panel-state` → `serial-choice-fill` → `ats-identity-and-modules` → `ignore-and-captures`. Open the PR against the parent branch `panel-state`, and retarget it to `ai-staging` once the parent merges. Never commit on `main`.
 - Run tests from the repo root: `npx vitest run <path>`.
 - `npm run smoke` and `npm run verify` only on an idle machine; the last task restores the plain dist and proves it with `grep -rl 'jffFakeHost' extension/dist | wc -l` printing 0.
 - Every `.md` written here passes the design-tells hook. Do not add a `design-tells: acknowledged` marker.
 - Timings are exact: `COMMIT_SETTLE_MS = 500`, `CLOSE_WAIT_MS = 500`, `CHOICE_GAP_SETTLE_MS = 300`, poll at the existing `COMBOBOX_POLL_MS = 50`.
-- Helper provenance in `fill.ts`: `attributableListbox` and `mountedListboxes` are imported from `./harvest`; `nextFrame` (`fill.ts:94`), `wait` (`:229`), `isDisplayHidden` (`:284`), `visibleCommittedText` (`:302`), `dispatchOpenGesture` (`:249`) and `norm` are file-local; `waitForSettle` is a new import from `./settle` (`settle.ts:6`, signature `waitForSettle(root, { quietMs?, maxMs? })`).
+- Helper provenance in `fill.ts`: `attributableListbox` and `mountedListboxes` are imported from `./harvest`; `nextFrame` (`fill.ts:94`), `wait` (`:229`), `isDisplayHidden` (`:284`), `visibleCommittedText` (`:302`), `dispatchOpenGesture` (`:249`) are file-local; `norm` is imported from `@jff/shared` at `fill.ts:1`, so do not redeclare it; `waitForSettle` is a new import from `./settle` (`settle.ts:6`, signature `waitForSettle(root, { quietMs?, maxMs? })`).
 - "Closed" means, for the attributable listbox: unmounted, or `isDisplayHidden`, or the control (the element or its closest `[role=combobox]`) has `aria-expanded="false"`. A hidden-but-mounted menu is closed.
 - Baseline at plan authoring, re-measured in Task 0: unit 866 tests / 53 files, typecheck 0, lint 0.
 
@@ -26,7 +28,7 @@
 - Consumes: nothing
 - Produces: branch `serial-choice-fill`, a recorded baseline under `## Progress`
 
-**Work:** `git status` must be clean. Create the branch from `harness-v3-migration`. Run typecheck, lint and unit tests; record the counts.
+**Work:** `git status` must be clean. Create the branch from `panel-state`. Run typecheck, lint and unit tests; record the counts.
 
 **Acceptance check:** `git branch --show-current` prints `serial-choice-fill`; `npm run typecheck && npm run lint && npx vitest run` exit 0. Red state: the branch does not exist.
 
@@ -48,7 +50,7 @@
 
 1. **stubborn**: the option does nothing; the menu stays; input keeps the typed text. Expected: `{ ok: false, reason: 'no-commit' }`, and afterwards no `[role=listbox]` in the document and `input.value` equal to its pre-fill snapshot (`''`).
 2. **close-without-commit**: the option removes the listbox and leaves the input text; a later `blur` on the input clears it (what a discarded typeahead does). Expected: `{ ok: false, reason: 'no-commit' }`, input restored to `''`.
-3. **honest react-select**: the option empties the input, renders a sibling `<div class="single-value">Bachelor's Degree</div>` (no extra whitespace: the `committed: null` expectation depends on raw string equality at `fill.ts:455`), and removes the listbox. Expected: `{ ok: true, committed: null }`.
+3. **honest react-select**: filled with `Bachelor's Degree`; the option empties the input, renders a sibling `<div class="single-value">Bachelor's Degree</div>` (no extra whitespace: the `committed: null` expectation depends on the raw string equality at `fill.ts:456`, not the normalised comparison at `:455`), and removes the listbox. Expected: `{ ok: true, committed: null }`.
 4. **honest rewrite**: filled with `bachelor`; the option sets `input.value = "Bachelor's Degree"` and removes the listbox. Expected: `{ ok: true, committed: "Bachelor's Degree" }`.
 5. **honest exact**: filled with `Bachelor's Degree`; the option removes the listbox and leaves the input text; `blur` leaves it in place. Expected: `{ ok: true, committed: null }`.
 
@@ -64,7 +66,7 @@ Real timers, 10 s test timeout per case.
 
 **Files:**
 - `extension/src/content/fill.ts` — modify: `fillCombobox` verdict and commit gesture, a `closeOpenListboxes` step before `dispatchOpenGesture`, the settle in `fillFields`
-- `extension/src/content/fill.test.ts` — modify: the existing combobox success fixtures (the cases starting at `fill.test.ts:165`, `:362`, `:381`, `:402`, `:430`) so the option's commit removes `#lb` from the document, which is what the widgets they model do; no expectation changes
+- `extension/src/content/fill.test.ts` — modify: the existing combobox success fixtures (the cases starting at `fill.test.ts:165`, `:362`, `:381`, `:402`, `:430`) so the option's commit removes `#lb` from the document, which is what the widgets they model do; no expectation changes. **Also the whole `describe('fillCombobox — Greenhouse react-select shape (C2)')` block at `:622`**, whose shared `mountReactSelect` builder re-opens the menu it just closed: the option's own listener (`:661-668`) sets `open = false` and re-renders, then the same click bubbles to the control listener (`:672-681`), which sees `!open` with all four gesture types already in `seen` and sets `open = true`. At verdict time the listbox is mounted, so under step 1 below every success case in that block goes red. Fix the builder, not the cases: the control's re-open branch must ignore a click that originated inside the listbox. Note also that `:381` and `:430` re-render their listbox from their own `input` listener, which the commit's `setNativeValue` fires, so "commit removes `#lb`" is not by itself enough for those two
 
 **Interfaces:**
 - Consumes: the helpers named in Global constraints
@@ -89,13 +91,18 @@ Close-before-open: before `dispatchOpenGesture(el)`, collect every `[role=listbo
 
 Settle in `fillFields`: track the previous element's choice-type flag and await the settle when both previous and current are choice-type.
 
-**Acceptance check:** `npx vitest run extension/src/content/fill.test.ts` exits 0: Task 1's five cases, every existing combobox case with its fixture corrected (expectations unchanged: `'bra'` still commits `'Brazil'` with the canonical text, the fail-closed restore cases still restore), plus one new case: with a visible foreign listbox on the page whose owner ignores Escape, `fillOne` on a combobox returns `listbox-left-open` and never dispatches the open gesture (spy on `mousedown` on the control). Red state: Task 1's cases 1 and 2 report `ok: true`.
+**Acceptance check:** `npx vitest run extension/src/content/fill.test.ts` exits 0: Task 1's five cases, every existing combobox case with its fixture corrected (expectations unchanged: `'bra'` still commits `'Brazil'` with the canonical text, the fail-closed restore cases still restore), plus two new cases:
+
+- **foreign listbox**: with a visible foreign listbox on the page whose owner ignores Escape, `fillOne` on a combobox returns `listbox-left-open` and never dispatches the open gesture (spy on `mousedown` on the control).
+- **two consecutive choice fills**, which is the case that tests the sequencing this plan exists for. Every other case here drives one widget at a time and so can only prove the stricter verdict, not the ordering. Build two combobox controls whose menus mount and unmount **asynchronously** (a `setTimeout` of 80 ms on both open and close, so the first widget's menu is still up when a naive `fillFields` would open the second), and drive them through `fillFields` in one call. Assert: both report `ok: true`; the second control's first open-gesture event timestamp is after the first control's listbox left the document; and at no point were two `[role=listbox]` elements visible at once (record a count on every mutation with a `MutationObserver` and assert the maximum is 1). Without the close-before-open step and the settle, this case fails — confirm that by running it against the pre-change `fill.ts` before implementing.
+
+Red state: Task 1's cases 1 and 2 report `ok: true`, and the two-widget case shows a maximum of 2 open listboxes.
 
 **Boundaries:** No change to `harvest.ts`, `enumerate.ts` or the panel. No new timing constants beyond the three named. Existing expectations are not loosened; only fixture behaviour on commit changes. If an existing case cannot be made to pass by closing its listbox on commit, report `blocked: <case name>: <what else it needs>`.
 
 - [ ] Correct the five existing fixtures (commit removes `#lb`); run the suite, still green
 - [ ] Commit gesture and the three-step verdict; Task 1's cases go green
-- [ ] Close-before-open with its new case; settle in `fillFields`; run the suite; commit `fix(content): combobox commit needs a closed listbox and commit evidence; close before open; settle between choices`
+- [ ] Close-before-open and the two-widget sequencing case; settle in `fillFields`; run the suite; commit `fix(content): combobox commit needs a closed listbox and commit evidence; close before open; settle between choices`
 
 ### Task 3: Live gate and PR
 
@@ -104,13 +111,13 @@ Settle in `fillFields`: track the previous element's choice-type flag and await 
 
 **Interfaces:**
 - Consumes: everything above
-- Produces: PR `serial-choice-fill` into `ai-staging`, a rundown for the user
+- Produces: PR `serial-choice-fill` into `panel-state`, a rundown for the user
 
-**Work:** At idle, `npm run verify`, then `npm run build` and the plain-dist grep. Reload the unpacked extension. The rundown for the PR body: on the Greenhouse page, scan, let the batch fill run, then confirm on the page that at most one menu is open at any time and that the Degree row is either committed on the page or listed under "need input" with the reason `no-commit`, never reported filled while showing `Select…`. On the Ashby Application tab, fill a combobox with a value that equals an option label exactly (evidence tier (c)) and one that is a prefix (tier (b)); both must commit or fail honestly. The user's earlier observation (three menus open, Degree on `Select…`, panel says 16 filled) is the red state. If Degree now fails honestly with `no-commit` on every run, the commit gesture is the next suspect: record it under Progress for a diagnosing session rather than widening this plan.
+**Work:** At idle, `npm run verify`, then `npm run build` and the plain-dist grep. Reload the unpacked extension. The rundown for the PR body: on the Greenhouse page, scan, let the batch fill run, then confirm on the page that at most one menu is open at any time and that the Degree row is either committed on the page or listed under "need input" with the reason `no-commit`, never reported filled while showing `Select…`. On the Ashby Application tab, fill a combobox with a value that equals an option label exactly (evidence tier (c)) and one that is a prefix (tier (b)); both must commit or fail honestly. The user's earlier observation (three menus open, Degree on `Select…`, panel says 16 filled) is the red state, and only its two containment halves are gated here: no menu overlap, and no row reported filled that the page did not keep. **Degree failing with `no-commit` on every run passes this gate.** If it does, save a Capture of the page in that state, record it under Progress, and open a diagnosing session for the commit gesture rather than widening this plan.
 
-**Acceptance check:** `npm run verify` exits 0; plain-dist grep prints 0; `gh pr view --json baseRefName` prints `ai-staging`. Red state: no PR exists.
+**Acceptance check:** `npm run verify` exits 0; plain-dist grep prints 0; `gh pr view --json baseRefName` prints `panel-state`. Red state: no PR exists.
 
-**Boundaries:** No merge. No changes outside the Progress section.
+**Boundaries:** No merge. No changes outside the Progress section. Stop after opening the PR: the review is the user's to trigger.
 
 - [ ] `uptime`, then `npm run verify`; record counts under `## Progress`
 - [ ] `npm run build`; plain-dist grep prints 0
