@@ -1500,6 +1500,49 @@ describe('App — per-field generating state (B3)', () => {
     expect(screen.getByRole('button', { name: 'Generate all remaining (1)' })).toBeTruthy()
   })
 
+  it('says where a batch stopped when the session leaves the screen', async () => {
+    // The batch is bound to the displayed session (generateOne resolves its row
+    // out of `main`), so a tab switch ends it. Silently reverting the button to
+    // "Generate all remaining" hid that; the panel must say where it stopped.
+    const calls: number[] = []
+    const pending: Record<number, (draft: string) => void> = {}
+    installNeedsInputScan((params, requestId) => new Promise((resolve) => {
+      calls.push(params.handle.fid)
+      pending[params.handle.fid] = (draft) => resolve({ requestId, ok: true, result: { draft } })
+    }))
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Generate all remaining (2)' }))
+    await waitFor(() => expect(calls).toEqual([0]))
+
+    await activate(8)
+    await act(async () => { pending[0]!('Draft one') })
+    await activate(7)
+
+    await waitFor(() => expect(document.querySelector('[data-jff-generate-paused]')?.textContent)
+      .toMatch(/Stopped at 1 of 2/))
+    expect(calls).toEqual([0]) // row 1 was NOT generated behind the user's back
+  })
+
+  it('keeps the batch label across a tab round-trip while a row is in flight', async () => {
+    // The regression: `display` blanked the in-flight state on every swap,
+    // including a swap BACK, so a running batch read "Generate all remaining"
+    // until its next row landed.
+    const pending: Record<number, (draft: string) => void> = {}
+    installNeedsInputScan((params, requestId) => new Promise((resolve) => {
+      pending[params.handle.fid] = (draft) => resolve({ requestId, ok: true, result: { draft } })
+    }))
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Generate all remaining (2)' }))
+    await screen.findByRole('button', { name: 'Generating 1/2…' })
+
+    await activate(8)   // away while row 0 is still pending
+    await activate(7)   // and straight back
+
+    expect(screen.getByRole('button', { name: 'Generating 1/2…' })).toBeTruthy()
+  })
+
   it('stops the batch on a terminal host error kind', async () => {
     const calls: number[] = []
     installNeedsInputScan((params, requestId) => {

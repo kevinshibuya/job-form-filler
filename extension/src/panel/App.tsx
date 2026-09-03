@@ -76,6 +76,16 @@ interface SessionRuntime {
   pendingRescan: boolean
   /** A4: "Scan anyway" belongs to ONE session. */
   appliedOverride: boolean
+  /** B4: the running batch's progress, kept PER SESSION because `display`
+   *  blanks the in-flight React state on every swap — including a swap back to
+   *  the same session, which left the button reading "Generate all remaining"
+   *  while the batch was mid-await. */
+  generateAll: { done: number; total: number } | null
+  /** B4: set when a batch stopped because its session left the screen. The
+   *  batch is bound to the DISPLAYED session (generateOne reads `main` and
+   *  `scopeNow`), so a tab switch ends it — that must be SAID, not silently
+   *  reverted to a button that looks like nothing ever ran. */
+  generatePaused: { done: number; total: number } | null
   /** A3: the generation a submit prompt was dismissed against — only a NEW
    *  navigation may re-arm it. */
   promptDismissedGen: number
@@ -86,6 +96,7 @@ interface SessionRuntime {
 
 const newRuntime = (gen: number): SessionRuntime => ({
   gen, epoch: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
+  generateAll: null, generatePaused: null,
 })
 
 /**
@@ -209,6 +220,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // independent host requests, and completing one must not touch the others.
   const [generatingRefs, setGeneratingRefs] = useState<ReadonlySet<string>>(new Set())
   const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
+  const [generatePaused, setGeneratePaused] = useState<{ done: number; total: number } | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
@@ -400,7 +412,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setMarking(false)
     setSaving(false)
     setGeneratingRefs(new Set())
-    setGenerateAll(null)
+    // NOT blanked: the batch belongs to the session, not to the screen. Blanking
+    // here is what made a tab round-trip report "Generate all remaining" while
+    // the batch was still running.
+    setGenerateAll(s === null ? null : runtimeOf(s.tabId).generateAll)
+    setGeneratePaused(s === null ? null : runtimeOf(s.tabId).generatePaused)
     setMarkedMsg(null)
   }
 
@@ -1339,25 +1355,47 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const TERMINAL_GENERATE_KINDS: ReadonlySet<string> = new Set(['not_installed', 'not_authed', 'rate_limit'])
 
+  /** Mirror per-session batch state into the runtime, and onto the screen only
+   *  while that session is the one being displayed. */
+  const showGenerateAll = (target: number, v: { done: number; total: number } | null): void => {
+    runtimeOf(target).generateAll = v
+    if (tabIdRef.current === target) setGenerateAll(v)
+  }
+  const showGeneratePaused = (target: number, v: { done: number; total: number } | null): void => {
+    runtimeOf(target).generatePaused = v
+    if (tabIdRef.current === target) setGeneratePaused(v)
+  }
+
   const onGenerateAll = async (): Promise<void> => {
     if (generateAll !== null) return
     const refs = generateEligible.map((r) => r.ref)
     const sc = scopeNow()
     if (refs.length === 0 || sc === null) return
+    showGeneratePaused(sc.target, null)
+    let done = 0
     try {
       for (let i = 0; i < refs.length; i++) {
-        // A re-scan means these refs describe a dead page: abort silently.
-        if (!inScope(sc)) return
-        setGenerateAll({ done: i, total: refs.length })
+        // The batch is bound to the DISPLAYED session: generateOne resolves its
+        // row out of `main` and its scope out of `scopeNow`, both of which
+        // follow the screen. So leaving the session ENDS the batch — say where
+        // it stopped, so the user can resume instead of guessing. A dead page
+        // (re-scan, navigation) is different: those refs describe nothing, and
+        // `alive` below distinguishes it from a mere tab switch.
+        if (!inScope(sc)) {
+          if (alive(sc)) showGeneratePaused(sc.target, { done, total: refs.length })
+          return
+        }
+        showGenerateAll(sc.target, { done: i, total: refs.length })
         const out = await generateOne(refs[i]!)
         if (out === 'aborted') return
         // Terminal host problems affect every remaining row identically; the
         // banner is already up (generateOne set it). Transient per-row failures
         // ('timeout', 'process', …) skip the row and continue.
         if (TERMINAL_GENERATE_KINDS.has(out)) return
+        done = i + 1
       }
     } finally {
-      setGenerateAll(null)
+      showGenerateAll(sc.target, null)
     }
   }
 
@@ -1769,6 +1807,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                           ? `Generate all remaining (${generateEligible.length})`
                           : `Generating ${generateAll.done + 1}/${generateAll.total}…`}
                       </button>
+                      {generatePaused !== null && generateAll === null && (
+                        <p className="mt-1.5 text-neutral-500 dark:text-neutral-400" data-jff-generate-paused="1">
+                          Stopped at {generatePaused.done} of {generatePaused.total} — the batch runs
+                          only while this tab is on screen. Press the button to carry on.
+                        </p>
+                      )}
                     </div>
                   )}
                   <ul className="m-0 grid list-none gap-2 p-0">
