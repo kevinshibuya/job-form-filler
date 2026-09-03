@@ -38,18 +38,26 @@ defects the handoff left open, three of which are ATS-shaped or state-shaped.
 
 ## Scope
 
-Five deliverables, four plans.
+Six deliverables, five plans. The review wave split C: its two defect fixes
+need nothing from B, and stacking them behind the architecture branch delayed
+the only two user-visible fixes in the set.
 
 - **A. Profile write guard** (defect 10). Plan `2026-09-03-profile-write-guard.md`.
-- **B. ATS identity and modules**, including the job description work and the
-  Ashby junk fix. Plan `2026-09-03-ats-identity-and-modules.md`.
-- **C. Panel state, empty scan, Ignored field, Capture** (defects 7 and 8).
-  Plan `2026-09-03-panel-state-and-captures.md`.
-- **D. Serial choice fill** (defect 9). Plan `2026-09-03-serial-choice-fill.md`.
+- **B. ATS identity and modules**, including the job description work. Plan
+  `2026-09-03-ats-identity-and-modules.md`.
+- **C1. Panel state and the empty scan** (defects 8 and 7). Plan
+  `2026-09-03-panel-state.md`.
+- **C2. Ignored field, Capture, and the ATS evidence loop**. Plan
+  `2026-09-03-ignore-and-captures.md`.
+- **D. Serial choice fill** (defect 9, contained not cured). Plan
+  `2026-09-03-serial-choice-fill.md`.
 - **E. Docs**: this spec, ADR 0007, the glossary entries. Done during the grill.
 
-Execution order: A, D, B, C. A and D are independent of everything else. C
-consumes B's ATS id and empty-scan hint.
+Execution order, as one linear branch stack: A, C1, D, B, C2. Each branch is
+created from the previous and its PR is based on the previous, retargeted to
+`ai-staging` as the parent merges. They all edit `App.tsx`, and the stack is
+what keeps them from colliding. C2 consumes B's ATS modules; C1 does not, and
+deliberately ships before B so defects 7 and 8 land first.
 
 Out of scope, deliberately: Workday, Lever, Gupy modules; an ATS gesture that
 clicks the page to make the form present; a control adapter hook (the fill
@@ -193,15 +201,27 @@ sequence to open, so the same may hold for selecting.
   still yields `ashby` for the empty-state hint. `ScanOutcome`, `Session` and
   the `resolve` payload gain `ats: AtsId`. A session with no scan yet, or one
   stored before this change, reads as `generic`.
-- **B4.** `recognize` takes `{ label, name, ats }` and a db. An ATS may veto a
-  baseline match: `ATS_RECOGNIZER_VETOES: Partial<Record<AtsId, { key:
-  FieldKey; unless: RegExp }[]>>`. A veto applies when `unless` matches the
-  label or the name; a vetoed match returns null and the Field falls through
-  to the next tier. Learned mappings are never vetoed. Seed: `greenhouse`,
-  `earliestStart`, `unless: /(^|[^a-z])(month|day|year|mm|dd|yyyy)([^a-z]|$)/i`.
-  The seed encodes the handoff's observation (three matches, two of them
-  date-part inputs) and is confirmed or corrected against the Greenhouse
-  Capture at the live gate.
+- **B4.** `recognize` takes `{ label, name }` and a db. A baseline recognizer
+  entry may carry an `unless: RegExp`; the match is vetoed when `unless`
+  matches the label or the name, and the Field falls through to the next tier.
+  Learned mappings are never vetoed. The one seeded veto goes on the existing
+  `earliestStart` entry:
+  `unless: /(^|[^a-z])(month|day|year|mm|dd|yyyy)([^a-z]|$)/i`.
+
+  **The veto is generic, not per-ATS.** The review wave rejected the original
+  `ATS_RECOGNIZER_VETOES: Partial<Record<AtsId, …>>` design: no ATS wants the
+  free-text `earliestStart` answer typed into a numeric date-year input, so
+  filing the rule under `greenhouse` would have left the same mis-targeting
+  live on every other ATS while paying for a per-ATS table. Per-ATS recognizer
+  knowledge is built the day a case is genuinely ATS-specific; nothing in the
+  evidence is.
+
+  The veto also needs its second exit closed. A vetoed tier-2 hit reaches the
+  LLM, whose `known_key` branch (`host/src/resolve/waterfall.ts:145-150`) can
+  name the same key, find the stored value and emit a `proposed` resolution
+  the user can Accept. The same `unless` therefore guards that branch too.
+  `ats` still rides the `resolve` payload — it reaches `host.log` and a future
+  mapping prompt would read it — but nothing branches on it yet.
 - **B5.** `extension/src/ats/` holds one file per ATS plus `index.ts`:
 
   ```ts
@@ -214,17 +234,39 @@ sequence to open, so the same may hold for selecting.
     /** Tried before the learned selector. null = none known. */
     jobTextSelector: string | null
   }
-  export function moduleFor(ats: AtsId): AtsModule
+  export function moduleFor(ats: AtsId | undefined): AtsModule
   ```
 
   `generic.ts` returns `{ emptyHint: null, dropField: () => false,
-  jobTextSelector: null }`. Every module has a unit test built on a fixture of
-  its own ATS. The generic path's tests do not import any ATS module.
-- **B6.** Ashby module: `dropField` returns true for `kind === 'file' &&
-  !visible && label === null` (the hidden autofill input, the screenshot row).
-  `emptyHint`: `On Ashby the form is under the "Application" tab. Open it, then
-  Scan again.` `jobTextSelector`: read from the Ashby Capture at execution
-  time, null until then.
+  jobTextSelector: null }`. `moduleFor` accepts `undefined` because a Session
+  persisted before this change carries no `ats`, and returns the generic module
+  for that and for any unrecognised id, never throwing. Every module has a unit
+  test built on a fixture of its own ATS. The generic path's tests do not
+  import any ATS module.
+
+  Modules stay bundle-neutral: pure functions over `EnumField` and `Document`,
+  no panel imports. When a content-side hook eventually arrives (a Workday
+  gesture to make the form present), it reads its id from
+  `detectAts(location.hostname)` in the frame itself, which yields the same id
+  the panel derives from the elected frame's url, with no message change. That
+  is what keeps the seam from being reopened by the third ATS.
+- **B6.** Ashby module: `emptyHint`: `On Ashby the form is under the
+  "Application" tab. Open it, then Scan again.` `dropField: () => false` and
+  `jobTextSelector: null` in plan B; both are filled from the Ashby Capture in
+  plan C2.
+
+  **The junk rule this spec originally carried was withdrawn by the review
+  wave.** It was `kind === 'file' && !visible && label === null`, and it is
+  unsafe: `keepField` (`extension/src/panel/junk.ts:26`) already drops a hidden
+  unlabelled file input unless `scoreResumeField(f) > 0`, so the only fields
+  that rule can still reach are ones that scored as résumé candidates on their
+  `name`, `idAttr`, `accept` or `required` — and Ashby's real résumé control is
+  a dropzone over a hidden native input. The rule is therefore either a no-op
+  or it drops the résumé target, `pickResumeTarget` returns null, and Ashby
+  silently stops uploading the résumé. Writing it before the Capture existed
+  also inverted ADR 0007's own rule that a module rule comes from observed DOM.
+  Plan C2 writes it from the Capture, keyed on a signal that separates the two
+  inputs, with an assertion that the résumé target survives it.
 - **B7.** Greenhouse module: `dropField: () => false`, `emptyHint: null`,
   `jobTextSelector`: read from the Greenhouse Capture at execution time.
 - **B8.** `dropJunk` takes the module: `dropJunk(fields, module)` keeps a field
@@ -299,13 +341,27 @@ sequence to open, so the same may hold for selecting.
   `<capturesDir>/<yyyy-mm-dd-hhmmss>-<ats>-<hostname>.json` (a configured
   directory defaulting to `<HOME_DIR>/captures`) and answers `{ path }`, which
   the panel shows in the save line. The privacy line, stated exactly: a
-  Capture never leaves the machine; typed Values are blanked in the HTML and
-  redacted from the evidence; page text stays, including anything the ATS
-  rendered from the Resume as text (a filename next to a dropzone, an
-  auto-parsed name in a custom widget).
-- **C5.** The Ashby and Greenhouse live pages are captured at the gate of plan
-  C; those two files are the fixtures for B6 and B7's `jobTextSelector` values
-  and for the two module tests.
+  Capture never leaves the machine, the directory is `0700` and the file
+  `0600`, and what a Capture keeps is structure, not content.
+
+  The first version of this line was wrong, and the review wave caught it three
+  ways. "Typed Values are blanked" does not cover a committed choice:
+  `fill.ts:448-452` documents that a successful react-select commit leaves
+  `input.value` empty and writes the chosen text into a visible container, so
+  after a fill the answers to work authorization, sponsorship, degree and
+  notice period are ordinary page text. Nor did it cover a `checked` checkbox,
+  which is an answer, or personal data sitting in `href`, `title`, `aria-*` and
+  `data-*`. The redaction is therefore: drop `script`, `style`, `noscript`,
+  `svg`, `img`, `iframe`, `link`; blank input values and `checked`, textarea
+  and `contenteditable` text, and `option[selected]`; strip every attribute
+  outside a small structural allowlist; and blank every text node and attribute
+  whose value equals one of the values the panel holds, which is what catches
+  the committed choice. Page text otherwise stays, including anything the ATS
+  rendered from the Resume as text.
+- **C5.** The Ashby and Greenhouse live pages are captured in plan C2; those
+  two files are the fixtures for B6 and B7's `jobTextSelector` values, for the
+  Ashby `dropField` rule, and for the two module tests. Capture is enabled on a
+  zero-field scan, which is exactly the state whose evidence defect 7 needs.
 
 ### D. Serial choice fill
 
