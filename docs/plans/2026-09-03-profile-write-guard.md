@@ -90,8 +90,8 @@ In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ??
 
 **Boundaries:** `generateOne` is unchanged: the batch filter and the missing button keep keyed rows out. `ProfileEditor.tsx` itself is not touched.
 
-- [ ] FieldRow prop, button, `acting` union; four cases red, then green
-- [ ] `onSaveFact`, `generateEligible` filter, `r.ok` checks on both requests inside `onSaveFacts`; two App cases; typecheck; commit `feat(panel): Save to profile on fact rows; facts are never generated; the editor reports a refused save`
+- [x] FieldRow prop, button, `acting` union; four cases red, then green
+- [x] `onSaveFact`, `generateEligible` filter, `r.ok` checks on both requests inside `onSaveFacts`; two App cases; typecheck; commit `feat(panel): Save to profile on fact rows; facts are never generated; the editor reports a refused save`
 
 ### Task 3: The e2e loop learns the new path
 
@@ -199,3 +199,29 @@ of being deleted.
 
 878 is 866 plus the twelve cases this task added across `keys.test.ts`,
 `messages.test.ts`, `save.test.ts` and `handlers.test.ts`.
+
+### Task 2 (done)
+
+`FieldRow` needed two props the plan's Interfaces list does not name. The
+acceptance check requires a case where a keyed row renders nothing "even though
+`facts` is empty", which only means something if the row can tell an empty map
+from an unloaded one, so the component takes `facts` and `factsReady`. App
+passes `factsReady={factsLoaded && factsOk === true}`, which is the plan's
+`factsLoaded && factsOk` gate spelled for a `boolean | null`.
+
+One fixture correction, again found by a red test. `FieldRow.test.tsx`'s
+`needsInput()` helper patches `tier`, `value` and `source` but inherits
+`key: 'salary'` from the base resolution, so every "Why us?" row in the file was
+secretly keyed. Suppressing Generate on keyed rows turned those red. A subjective
+question resolves to `custom` with no key, so the helper was wrong before this
+task and now says `key: null`.
+
+The button sits first in the row's flex container, which puts it before Fill on a
+`needs_input` row and makes it the only control a `page` or `saved_answer` row has
+ever had, as the plan's "Where the button goes" note requires.
+
+| check | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 887 passed (887)` |

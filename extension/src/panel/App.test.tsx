@@ -3226,3 +3226,73 @@ describe('App — session concurrency (S7)', () => {
     expect(injectCount()).toBe(injectsBefore)
   }, 15_000)
 })
+
+describe('App — Save to profile (a fact is stored, never drafted)', () => {
+  /** One keyed GitHub row, needs_input, with nothing stored under the key. */
+  function installKeyedScan(calls: { m: string; p: unknown }[], setFails = false): void {
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return {
+          ok: true,
+          replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: true, scan: { epoch: 1, fields: [
+            { frameId: -1, fid: 0, epoch: 1, label: 'GitHub', name: null, idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false },
+          ], unreachableWidgets: 0, activeCaptcha: false } } }],
+          failures: [],
+        }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') {
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [], failures: [] }
+      return { ok: true }
+    })
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      calls.push({ m: method, p: params })
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.set' && setFails) {
+        return { requestId, ok: false, error: { kind: 'bad_request', message: 'fact value over 500 characters: github' } }
+      }
+      if (method === 'resolve') {
+        return { requestId, ok: true, result: { epoch: 1, resolutions: [{
+          handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input' as const,
+          value: null, source: null, key: 'github' as const, answerId: null, reason: 'recognizer:github',
+        }], llmError: null } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+  }
+
+  it('sends exactly one profile.set for the row, and never a save', async () => {
+    const calls: { m: string; p: unknown }[] = []
+    installKeyedScan(calls)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    // The row is a fact: it offers Save to profile and no draft button at all.
+    expect(screen.queryByRole('button', { name: 'Generate with AI' })).toBeNull()
+    fireEvent.change(screen.getByLabelText('GitHub'), { target: { value: 'https://github.com/x' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save to profile' }))
+
+    await waitFor(() => expect(calls.filter((c) => c.m === 'profile.set')).toHaveLength(1))
+    expect(calls.find((c) => c.m === 'profile.set')!.p).toEqual({ values: { github: 'https://github.com/x' } })
+    expect(calls.some((c) => c.m === 'save')).toBe(false)
+    // Stored now, so the button retires rather than offering an overwrite.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save to profile' })).toBeNull())
+  })
+
+  it('a refused profile.set from the editor keeps the editor open and shows the error', async () => {
+    const calls: { m: string; p: unknown }[] = []
+    installKeyedScan(calls, true)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit your facts' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save facts' }))
+
+    // It used to merge the refused values into `facts` and leave for the session
+    // view, so the panel showed a value the host had never accepted.
+    await waitFor(() => expect(screen.getByText(/over 500 characters/)).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Back to fields' })).toBeTruthy()
+  })
+})

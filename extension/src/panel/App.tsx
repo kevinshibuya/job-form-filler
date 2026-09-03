@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
+import { isProfileKey } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
@@ -225,7 +226,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
   const [marking, setMarking] = useState(false)
-  const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' } | null>(null)
+  const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' | 'save_fact' } | null>(null)
   const [submitPrompt, setSubmitPrompt] = useState(false)
 
   /* ------------------------------------------------------------ the store */
@@ -1348,6 +1349,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  currently generating. Foreign rows are structurally absent from `main`. */
   const generateEligible = main.filter((r) =>
     r.resolution.tier === 'needs_input'
+    // A keyed row is a fact. It is saved, never drafted, so it stays out of the
+    // batch exactly as it stays out of the per-row Generate button.
+    && r.resolution.key === null
     && (r.field.label ?? '').trim() !== ''
     && (edits[r.ref] ?? '').trim() === ''
     && !generatedRefs.includes(r.ref)
@@ -1441,11 +1445,48 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setResumeName(file.name)
   }
 
+  /** Stores one row's fact under its key. This is the ONLY way a fact reaches
+   *  profile/answer_bank from the session view — Save answers cannot carry one
+   *  any more, and a Draft therefore cannot be stored as a Known key value. */
+  const onSaveFact = async (ref: string): Promise<void> => {
+    const row = main.find((r) => r.ref === ref)
+    const key = row?.resolution.key
+    if (row === undefined || key === undefined || key === null || acting !== null) return
+    const port = portRef.current
+    if (port === null) return
+    // Same precedence buildSaveItems uses, so a fact the user corrected on the
+    // page is the one that gets stored.
+    const value = (session?.snapshot[ref] ?? edits[ref] ?? row.resolution.value ?? '').trim()
+    if (value === '') return
+
+    setActing({ ref, action: 'save_fact' })
+    try {
+      const method = isProfileKey(key) ? 'profile.set' : 'answerBank.set'
+      const r = await port.request(method, { values: { [key]: value } })
+      if (!r.ok) {
+        setScanStatus({ kind: 'action_failed', reason: `Save to profile failed: ${hostErrorText(r.error)}` })
+        return
+      }
+      setFacts((f) => ({ ...f, [key]: value }))
+      clearActionFailure()
+    } catch (e) {
+      setScanStatus({ kind: 'action_failed', reason: `Save to profile failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setActing(null)
+    }
+  }
+
   const onSaveFacts = async (profile: Record<string, string>, bank: Record<string, string>): Promise<void> => {
     const port = portRef.current
     if (port === null) return
-    await port.request('profile.set', { values: profile })
-    await port.request('answerBank.set', { values: bank })
+    // A refused write must not look like a saved one. onOnboardingFinish already
+    // checks both responses for exactly this reason; without it the editor merged
+    // the values into `facts` and left for the session view, so the panel showed a
+    // value the host had rejected.
+    const pr = await port.request('profile.set', { values: profile })
+    if (!pr.ok) { setHostError(hostErrorText(pr.error)); return }
+    const br = await port.request('answerBank.set', { values: bank })
+    if (!br.ok) { setHostError(hostErrorText(br.error)); return }
     // Merge, never replace: the editor omits keys it never loaded.
     setFacts((f) => ({ ...f, ...profile, ...bank }))
     setView('session')
@@ -1820,6 +1861,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       <FieldRow
                         key={row.ref} row={row} edited={edits[row.ref] ?? null}
                         onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
+                        onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
                         generating={generatingRefs.has(row.ref)}
                         filled={filledRefs.includes(row.ref)}
                         acting={acting !== null && acting.ref === row.ref ? acting.action : null}
@@ -1845,6 +1887,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       <FieldRow
                         key={row.ref} row={row} edited={edits[row.ref] ?? null}
                         onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
+                        onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
                         generating={false}
                         filled={filledRefs.includes(row.ref)}
                         acting={acting !== null && acting.ref === row.ref ? acting.action : null}
