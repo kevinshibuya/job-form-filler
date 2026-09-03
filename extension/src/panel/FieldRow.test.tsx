@@ -19,12 +19,15 @@ const noop = () => undefined
 /** Default props, so a test only spells out what it is actually asserting on. */
 const props = {
   edited: null as string | null,
-  onEdit: noop, onAccept: noop, onGenerate: noop, onFill: noop,
+  onEdit: noop, onAccept: noop, onGenerate: noop, onFill: noop, onSaveFact: noop,
   generating: false, filled: false, acting: null, locked: false,
+  // factsReady false by default, so only the tests that are about "Save to
+  // profile" ever render the button.
+  facts: {} as Record<string, string>, factsReady: false,
 }
 
 const needsInput = (label = 'Why us?') =>
-  row(field({ label }), resolution({ tier: 'needs_input', value: null, source: null }))
+  row(field({ label }), resolution({ tier: 'needs_input', value: null, source: null, key: null }))
 
 describe('FieldRow', () => {
   it('shows the label, the value and the source badge', () => {
@@ -278,5 +281,70 @@ describe('FieldRow — foreign rows and hints (A9/B1 seam)', () => {
     const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'no-matching-option' }))
     render(<ul><FieldRow row={r} {...props} /></ul>)
     expect(screen.getByText('No option matches this value. Try different text.')).toBeTruthy()
+  })
+})
+
+describe('FieldRow — Save to profile (a fact is stored, never drafted)', () => {
+  const keyed = (patch: Partial<Resolution> = {}) => row(
+    field({ label: 'GitHub' }),
+    resolution({ tier: 'needs_input', value: null, source: null, key: 'github', ...patch }),
+  )
+  const ready = { ...props, factsReady: true }
+  const saveBtn = () => screen.queryByRole('button', { name: 'Save to profile' })
+  const genBtn = () => screen.queryByRole('button', { name: 'Generate with AI' })
+
+  it('offers Save to profile, not Generate, on a keyed needs-input row', () => {
+    const onSaveFact = vi.fn()
+    render(<ul><FieldRow {...ready} row={keyed()} edited="https://github.com/x" onSaveFact={onSaveFact} /></ul>)
+    expect(genBtn()).toBeNull()
+    fireEvent.click(saveBtn()!)
+    expect(onSaveFact).toHaveBeenCalledWith('0:1')
+  })
+
+  it('offers it on a saved_answer row too, which had no controls at all before', () => {
+    render(<ul><FieldRow {...ready} row={keyed({ tier: 'auto', value: 'https://github.com/x', source: 'saved_answer' })} /></ul>)
+    expect(saveBtn()).toBeTruthy()
+  })
+
+  it('offers neither on a row already backed by the store', () => {
+    render(<ul><FieldRow {...ready} row={keyed({ tier: 'auto', value: 'https://github.com/x', source: 'profile' })} /></ul>)
+    expect(saveBtn()).toBeNull()
+    expect(genBtn()).toBeNull()
+  })
+
+  it('offers neither when the key already holds a stored fact', () => {
+    // The overwrite case: an ATS autofilled the page, and the stored value is
+    // the good one. Changing it is the Profile editor's job.
+    render(<ul><FieldRow
+      {...ready} facts={{ github: 'https://github.com/kevinshibuya' }}
+      row={keyed({ tier: 'auto', value: 'https://github.com/wrong', source: 'page' })}
+    /></ul>)
+    expect(saveBtn()).toBeNull()
+    expect(genBtn()).toBeNull()
+  })
+
+  it('offers neither before the facts have arrived, even though facts is empty', () => {
+    // Until the load lands every key looks absent. Offering the button here
+    // would let one click overwrite a stored fact with a page value.
+    render(<ul><FieldRow
+      {...props} factsReady={false}
+      row={keyed({ tier: 'auto', value: 'https://github.com/wrong', source: 'page' })}
+    /></ul>)
+    expect(saveBtn()).toBeNull()
+  })
+
+  it('disables it while the row has no value, while locked, and while acting', () => {
+    const { rerender } = render(<ul><FieldRow {...ready} row={keyed()} /></ul>)
+    expect((saveBtn() as HTMLButtonElement).disabled).toBe(true)
+    rerender(<ul><FieldRow {...ready} row={keyed()} edited="https://github.com/x" locked /></ul>)
+    expect((saveBtn() as HTMLButtonElement).disabled).toBe(true)
+    rerender(<ul><FieldRow {...ready} row={keyed()} edited="https://github.com/x" acting="save_fact" /></ul>)
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeTruthy()
+  })
+
+  it('still offers Generate on a keyless needs-input row', () => {
+    render(<ul><FieldRow {...ready} row={needsInput()} /></ul>)
+    expect(genBtn()).toBeTruthy()
+    expect(saveBtn()).toBeNull()
   })
 })

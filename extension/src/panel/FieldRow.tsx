@@ -32,14 +32,21 @@ export interface FieldRowProps {
   onGenerate: (ref: string) => void
   /** Puts the row's current value on the page WITHOUT accepting it as a mapping. */
   onFill: (ref: string) => void
+  /** Stores the row's fact under its key. Only ever offered on a keyed row. */
+  onSaveFact: (ref: string) => void
   generating: boolean
   filled: boolean
   /** Which of this row's page-writing actions is in flight, if any. */
-  acting: 'accept' | 'fill' | null
+  acting: 'accept' | 'fill' | 'save_fact' | null
   /** SOME row is acting. Page writes are serialized globally, so every row's
    *  buttons must look disabled — an enabled button that silently no-ops is the
    *  failure mode this rule removes. */
   locked: boolean
+  /** The stored facts, and whether they have actually arrived. Both matter: until
+   *  the load lands every key looks absent, and offering "Save to profile" in that
+   *  window would let one click overwrite a stored fact with a page value. */
+  facts: Record<string, string>
+  factsReady: boolean
   /** A9: the row belongs to a non-elected frame — manual Fill only. */
   foreign?: boolean
   /** A8: this file row won the resume scoring and is wired to the stored resume. */
@@ -61,10 +68,19 @@ function editorKindOf(row: Row): EditorKind {
 }
 
 export function FieldRow(p: FieldRowProps) {
-  const { row, edited, onEdit, onAccept, onGenerate, onFill, generating, filled, acting, locked } = p
+  const { row, edited, onEdit, onAccept, onGenerate, onFill, onSaveFact, generating, filled, acting, locked } = p
   const { field, resolution, ref } = row
   const label = field.label ?? '(unlabelled field)'
   const value = edited ?? resolution.value ?? ''
+  // A keyed row IS a fact, so it is never generated. It offers "Save to profile"
+  // instead, but only when nothing is stored under the key yet: a page-sourced
+  // email that an ATS autofilled must not overwrite the stored one on one click.
+  const keyed = resolution.key !== null
+  const backedByStore = resolution.source === 'profile'
+    || resolution.source === 'answer_bank'
+    || resolution.source === 'llm_key'
+  const alreadyStored = resolution.key !== null && (p.facts[resolution.key] ?? '').trim() !== ''
+  const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
   const hint = REASON_HINT[resolution.reason]
 
@@ -185,6 +201,18 @@ export function FieldRow(p: FieldRowProps) {
 
       {editor !== 'file' && (
         <div className="mt-1.5 flex items-center gap-2">
+          {/* First control in the container: for a needs_input row it lands before
+              Fill, and for a page-sourced or saved_answer row (tier 'auto') it is
+              the only control that row has ever had. */}
+          {canSaveFact && (
+            <button
+              type="button" data-jff-save-fact="1" className={BTN}
+              disabled={value.trim() === '' || locked || acting !== null}
+              onClick={() => onSaveFact(ref)}
+            >
+              {busyLabel(acting === 'save_fact', 'Save to profile', 'Saving…')}
+            </button>
+          )}
           {resolution.tier === 'proposed' && (
             // Accept both fills the page AND confirms the mapping (App.onAccept).
             <button type="button" className={BTN_PRIMARY} disabled={locked || acting !== null} onClick={() => onAccept(ref)}>
@@ -195,7 +223,7 @@ export function FieldRow(p: FieldRowProps) {
             <>
               {/* A9: a foreign row has no resolution the host ever saw, so there
                   is nothing to generate against — manual Fill is all it gets. */}
-              {p.foreign !== true && (
+              {p.foreign !== true && !keyed && (
                 <button type="button" className={BTN} disabled={generating || locked || acting !== null} onClick={() => onGenerate(ref)}>
                   {generating ? 'Drafting…' : 'Generate with AI'}
                 </button>
