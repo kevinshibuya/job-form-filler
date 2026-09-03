@@ -35,8 +35,8 @@
 
 **Boundaries:** No source edits. If any test is red, stop and report `blocked: baseline red: <test>`.
 
-- [ ] `git checkout -b profile-write-guard`
-- [ ] Run typecheck, lint, unit; write the counts under `## Progress`; commit `docs(plan): profile write guard, task 0 baseline`
+- [x] `git checkout -b profile-write-guard`
+- [x] Run typecheck, lint, unit; write the counts under `## Progress`; commit `docs(plan): profile write guard, task 0 baseline`
 
 ### Task 1: Facts never travel through Save answers; fact values are single-line
 
@@ -131,4 +131,36 @@ In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ??
 
 ## Progress
 
-(filled in by execution)
+### Task 0 (done)
+
+Branch `profile-write-guard` created from `origin/ai-staging` (`7b307d1`).
+
+One correction was needed before the baseline. PR #1 merged at `439473e`, which
+is one commit before `30dfe76`, the fable pass that produced the approved plan
+set. So `ai-staging` carried the superseded plans: the pre-correction text still
+named `harness-v3-migration` as this branch's base, still had
+`serial-choice-fill` inside the stack, and was missing both the stack
+merge-commit rule and Task 2's `factsLoaded && factsOk` gate. The approved text
+is the contract, so `harness-v3-migration` was merged into this branch as its
+first commit and travels to `ai-staging` with this PR. After that merge
+`git diff --stat 30dfe76 HEAD` is empty: the branch is the code the plan was
+written against.
+
+Baseline, measured on the branch:
+
+| check | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0, no errors or warnings |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 866 passed (866)` |
+
+Matches the plan's stated baseline of 866 tests / 53 files, typecheck 0, lint 0.
+
+The full `npm run verify` was owed from the previous session and ran green at the
+start of this one, on a tree byte-identical to this branch: typecheck 0, lint 0,
+866/866, Playwright `17 passed`, and `grep -rl 'jffFakeHost' extension/dist | wc -l`
+printing 0 after a plain rebuild.
+
+Profile gate from Global constraints: 10 clean keys, `github` holds
+`https://github.com/kevinshibuya`. Not prose, so the stop condition does not
+fire.
