@@ -108,7 +108,7 @@ In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ??
 
 **Boundaries:** No other e2e spec changes.
 
-- [ ] Edit the spec; `npx tsc -p e2e`; commit `test(e2e): Save answers writes no fact; Save to profile does`
+- [x] Edit the spec; `npx tsc -p e2e`; commit `test(e2e): Save answers writes no fact; Save to profile does`
 
 ### Task 4: Live gate and PR
 
@@ -225,3 +225,18 @@ ever had, as the plan's "Where the button goes" note requires.
 | `npm run typecheck` | exit 0 |
 | `npm run lint` | exit 0 |
 | `npx vitest run` | `Test Files 53 passed (53)`, `Tests 887 passed (887)` |
+
+### Task 3 (done)
+
+The assertion pair at `:157-158` is inverted, and a Save to profile step after it
+proves the other half. Two small departures from the plan's wording:
+
+- The inverse of "the bank gained `workAuth`" is asserted as
+  `bank.map(b => b.key)` not containing `workAuth`, not as an empty table. The
+  spec's own onboarding may put other keys there, and an empty-table assertion
+  would fail for a reason that has nothing to do with this change.
+- The row locator matches `Work Authorization`, the label
+  `e2e/fixtures/greenhouse-apply/fixture-form.html:71` actually renders. This is
+  the fixture the spec's own `apps[0].url` assertion pins.
+
+`npx tsc -p e2e` exits 0. The behavioural check is Task 4's.
