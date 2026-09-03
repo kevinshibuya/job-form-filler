@@ -8,7 +8,9 @@
 ## Global constraints
 
 - TypeScript: never `any`. Typed test fakes included.
-- Branch `ats-identity-and-modules`, created in Task 0 from `serial-choice-fill`. This plan is the fourth of five in a linear stack: `profile-write-guard` → `panel-state` → `serial-choice-fill` → `ats-identity-and-modules` → `ignore-and-captures`. Every plan in the stack edits `App.tsx`, so the stack is what keeps them from colliding. Open the PR against the parent branch `serial-choice-fill`, and retarget it to `ai-staging` once the parent merges. Never commit on `main`.
+- Branch `ats-identity-and-modules`, created in Task 0 from `panel-state`. This plan is part of a four-plan linear stack: `profile-write-guard` → `panel-state` → `ats-identity-and-modules` → `ignore-and-captures`. Those four all edit `App.tsx` and each consumes the one before it, so the stack is what keeps them from colliding. `2026-09-03-serial-choice-fill.md` is **not** in the stack: it touches `fill.ts` only and runs in parallel from `ai-staging`. Open the PR against the parent branch `panel-state`, and retarget it to `ai-staging` once the parent merges. Never commit on `main`.
+- Stack mechanics, so the retargets stay cheap: merge every stack PR with a **merge commit**, not a squash. Under a squash merge the child's three-dot diff re-shows the parent's whole change and the merge reapplies it, which forces a `git rebase --onto ai-staging <parent-tip>` first. And when a review of the parent produces fix commits, merge the parent forward into this branch **before** this PR's review is triggered, so the review reads the code that will actually land.
+- Every `App.tsx:NNNN` citation in this plan is a line number as of `d90d6ed`. Earlier plans in the stack insert code above most of them, so re-find each site by the quoted anchor text rather than trusting the number.
 - Run tests from the repo root: `npx vitest run <path>`. After any edit under `shared/src`, run `npm run build -w @jff/shared` before host or extension tests.
 - `npm run smoke` and `npm run verify` only on an idle machine; the last task restores the plain dist and proves it with `grep -rl 'jffFakeHost' extension/dist | wc -l` printing 0.
 - Every `.md` written here passes the design-tells hook. Do not add a `design-tells: acknowledged` marker.
@@ -26,7 +28,7 @@
 - Consumes: nothing
 - Produces: branch `ats-identity-and-modules`, a recorded baseline under `## Progress`
 
-**Work:** `git status` must be clean. Create the branch. Run typecheck, lint and unit tests; record the counts.
+**Work:** `git status` must be clean. Create the branch from `panel-state`. Run typecheck, lint and unit tests; record the counts.
 
 **Acceptance check:** `git branch --show-current` prints `ats-identity-and-modules`; `npm run typecheck && npm run lint && npx vitest run` exit 0. Red state: the branch does not exist.
 
@@ -108,7 +110,7 @@
 
 A learned mapping still wins first and is never vetoed. A baseline hit is vetoed when its entry has an `unless` that matches the trimmed label or the name; a vetoed hit returns null. Every existing caller of `recognize(label, db)` becomes `recognize({ label, name }, db)`; the test file's existing calls pass `{ label, name: null }` through a small local helper so the table of baseline cases stays readable.
 
-**The veto needs its second exit closed.** A vetoed tier-2 hit falls through to the LLM, and `waterfall.ts:145-150` can answer `known_key: 'earliestStart'`, find the stored value and emit `tier: 'proposed', source: 'llm_key', value: 'Imediato'` for the same year input. The batch no longer auto-fills it, but Accept does, so the mis-targeting survives the fix through a different door. Apply the entry's `unless` to the `known_key` decision as well: when the resolved key has an `unless` that matches this field's label or name, do not take the `llm_key` branch — fall through to the rest of the waterfall as if the LLM had not named a key.
+**The veto needs its second exit closed.** A vetoed tier-2 hit falls through to the LLM, and `waterfall.ts:145-150` can answer `known_key: 'earliestStart'`, find the stored value and emit `tier: 'proposed', source: 'llm_key', value: 'Imediato'` for the same year input. The batch no longer auto-fills it, but Accept does, so the mis-targeting survives the fix through a different door. Apply the entry's `unless` to the `known_key` decision as well: when the resolved key has an `unless` that matches this field's label or name, do not take the `llm_key` branch — fall through to the rest of the waterfall as if the LLM had not named a key. The Field lands on `needs_input` with reason `llm-key:<key>:vetoed`, so the panel's reason span shows why a field the LLM recognised was not filled; Task 7's rundown reads that string.
 
 `ats` rides the resolve payload from here (it reaches `host.log` and is what a future mapping prompt would read), but nothing in this task branches on it. It is **optional in the schema for this task only**: `scan.ts` does not send it until Task 4, and a required field here would leave every live resolve failing `bad_request` between the two commits while the unit suite stayed green, because `scan.test.ts` uses a fake port and `port.request` params are untyped. Task 4 tightens it to required in the same commit that starts sending it.
 
@@ -158,7 +160,7 @@ A learned mapping still wins first and is never vetoed. A baseline hit is vetoed
 
 **Work:** One procedure, one election. `electAndDetect(fields, reports, tabHostname)` does, in order: `kept = dropJunk(fields, generic)`; `election = electFrame(kept)`; `ats = detectAts(frameHostname(election, reports) ?? tabHostname)` where `frameHostname` is `hostnameOf` of the elected frame's url in `reports` (the lookup `electionOut()` already does), null when the url is null; `module = moduleFor(ats)`; then the module's `dropField` is applied to the **elected frame's fields only** (foreign fields are review-only and never resolved, so the module has nothing to say about them). There is no second election. The helper runs at both election sites (`scan.ts:185`, the `let election = electFrame(kept)` line, and the post-resume re-enumeration at `:249`), so the ATS is re-derived whenever the election is. For the zero-field returns at `scan.ts:169` and `:295` (which happen with no election), `ats` is the first non-generic `detectAts` over the tab hostname followed by every non-null `reports[].url`, else `generic`; this is what lets the Ashby hint render on a wrapper page such as `trmlabs.com`.
 
-**The elected frame can now empty out, and nothing catches it today.** The existing guard is `if (kept.length === 0)` at `scan.ts:293`, which counts **every** frame, while the payload sent five lines later is `electedOf(kept)` (`:300`). So when the module drops every field of the elected frame but a foreign frame still contributes kept fields, that guard does not fire and `resolve` is called with zero fields — the exact thing the comments at `:257` and `:294` say must never happen, and the user pays the host for it. The shape that produces it is this plan's own headline case: a `trmlabs.com` wrapper whose top frame carries fields while the Ashby iframe is elected. Add an explicit return before `:300`: when `electedOf(kept)` is empty, return the same "only junk" shape the `:295` return produces, carrying the detected `ats` so the hint still renders. Prove it with the `scan.test.ts` case named in Files.
+**The elected frame can now empty out, and nothing catches it today.** The existing guard is `if (kept.length === 0)` at `scan.ts:293`, which counts **every** frame, while the payload sent five lines later is `electedOf(kept)` (`:300`). So when the module drops every field of the elected frame but a foreign frame still contributes kept fields, that guard does not fire and `resolve` is called with zero fields — the exact thing the comments at `:257` and `:294` say must never happen, and the user pays the host for it. The shape that produces it is this plan's own headline case: a `trmlabs.com` wrapper whose top frame carries fields while the Ashby iframe is elected. Add an explicit return before `:300`: when `electedOf(kept)` is empty, return the same "only junk" shape the `:295` return produces, carrying the detected `ats` so the hint still renders. Like `:295`, that return also drops the foreign review-only fields; that is intended, since a scan with nothing resolvable has nothing to review. Prove it with the `scan.test.ts` case named in Files.
 
 **Module contents.** Ashby: `emptyHint: 'On Ashby the form is under the "Application" tab. Open it, then Scan again.'`; `dropField: () => false`; `jobTextSelector: null`. Greenhouse: no drop, no hint, `null`.
 
@@ -171,7 +173,7 @@ Ashby ships with **no junk rule on purpose.** The rule this plan originally carr
 - [ ] Modules and their tests
 - [ ] `dropJunk` signature and tests
 - [ ] Move `hostnameOf` to `site.ts`; fix the three imports
-- [ ] `electAndDetect` at both sites, zero-field detection, payload; session field; App projection; run the check; typecheck; commit `feat(extension): ATS modules, detection from the elected frame, Ashby junk rule`
+- [ ] `electAndDetect` at both sites, zero-field detection, payload; session field; App projection; run the check; typecheck; commit `feat(extension): ATS modules, detection from the elected frame, elected-frame-empty return`
 
 ### Task 5: Job description order, extractor hygiene, no auto-learn, and the source line
 
@@ -231,11 +233,11 @@ Ashby ships with **no junk rule on purpose.** The rule this plan originally carr
 
 **Interfaces:**
 - Consumes: everything above
-- Produces: PR `ats-identity-and-modules` into `serial-choice-fill`, a rundown for the user
+- Produces: PR `ats-identity-and-modules` into `panel-state`, a rundown for the user
 
 **Work:** At idle, `npm run verify`, then `npm run build` and the plain-dist grep. Reload the unpacked extension. The rundown for the PR body: on the Ashby direct URL with the Application tab open, scan and confirm the job description line reads a source, **and upload a résumé to confirm it still attaches** (this plan ships no Ashby junk rule, so this is the baseline the later rule must not break); on `trmlabs.com/careers?ashby_jid=…` (the wrapper) scan and confirm the line reads `from a heuristic`, click `Not the job description`, confirm `from nothing found`, pick the description, confirm `from your pick`; on Greenhouse, scan and confirm `earliestStart` resolves one field and that the two date-year inputs are not among them (`sqlite3` on `request_log` or the panel's reason strings); confirm `resolve` requests in `host.log` carry `ats`.
 
-**Acceptance check:** `npm run verify` exits 0; plain-dist grep prints 0; `gh pr view --json baseRefName` prints `serial-choice-fill`. Red state: no PR exists.
+**Acceptance check:** `npm run verify` exits 0; plain-dist grep prints 0; `gh pr view --json baseRefName` prints `panel-state`. Red state: no PR exists.
 
 **Boundaries:** No merge. No changes outside the Progress section. Stop after opening the PR: the review is the user's to trigger.
 
