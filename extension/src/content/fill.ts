@@ -23,6 +23,25 @@ export function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement | HTML
   el.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+/**
+ * A TYPED input (number, date, email, url, …) silently DISCARDS a value it
+ * cannot parse: the assignment does not throw, the page logs "The specified
+ * value cannot be parsed, or is out of range" and keeps an EMPTY value.
+ * Returning ok on that is how a row gets marked "on the page" while the page
+ * took nothing — found live on Greenhouse, where 'Imediato' was written into
+ * a numeric date-year input.
+ *
+ * Empty-after-writing-non-empty is the unambiguous rejection signature. Any
+ * other divergence is the page NORMALISING (trimming, a canonical date), which
+ * is a success reported through `committed`, exactly as the widget paths do.
+ */
+function fillTextual(el: HTMLInputElement | HTMLTextAreaElement, value: string): FillOutcome {
+  setNativeValue(el, value)
+  if (el.value === '' && value !== '') return { ok: false, reason: 'value-rejected' }
+  if (el.value === value) return { ok: true }
+  return { ok: true, committed: el.value }
+}
+
 function fillSelect(el: HTMLSelectElement, value: string): FillOutcome {
   const target = norm(value)
   const byLabel = Array.from(el.options).find((o) => norm(o.textContent ?? '') === target)
@@ -466,7 +485,7 @@ export async function fillOne(el: Element, value: string): Promise<FillOutcome> 
   if (el instanceof HTMLInputElement && el.type === 'radio') return fillRadioGroup(el, value)
   if (el instanceof HTMLInputElement && el.type === 'checkbox') return fillCheckbox(el, value)
   if (el instanceof HTMLInputElement && el.type === 'file') return { ok: false, reason: 'file-needs-blob' }
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) { setNativeValue(el, value); return { ok: true } }
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return fillTextual(el, value)
   return { ok: false, reason: 'unsupported-widget' }
 }
 
