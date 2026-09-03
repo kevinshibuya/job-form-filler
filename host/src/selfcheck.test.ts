@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { realAuthCache, selfCheck } from './selfcheck.js'
+import { realAuthCache, realProbeAuth, realProbeCodexAuth, selfCheck, summariseProbeFailure } from './selfcheck.js'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -177,5 +177,54 @@ describe('realAuthCache', () => {
 
   it('returns null when the file is absent', () => {
     expect(realAuthCache('/nonexistent/authcheck.json').readAuthCache()).toBeNull()
+  })
+})
+
+describe('summariseProbeFailure', () => {
+  it('keeps the last ERROR line out of a page of codex retry noise', () => {
+    const raw = [
+      'Reading additional input from stdin...',
+      'ERROR: Reconnecting... 4/5',
+      'ERROR: Reconnecting... 5/5',
+      'ERROR: unexpected status 404 Not Found, url: https://chatgpt.com/backend-api/codex/responses',
+    ].join('\n')
+    expect(summariseProbeFailure(raw)).toBe('unexpected status 404 Not Found, url: https://chatgpt.com/backend-api/codex/responses')
+  })
+
+  it('falls back to the last non-empty line when nothing is tagged ERROR', () => {
+    expect(summariseProbeFailure('one\n\ntwo\n')).toBe('two')
+  })
+
+  it('caps a very long line', () => {
+    const out = summariseProbeFailure('x'.repeat(500))
+    expect(out.length).toBe(200)
+    expect(out.endsWith('\u2026')).toBe(true)
+  })
+
+  it('never returns an empty detail', () => {
+    expect(summariseProbeFailure('   \n  \n')).toMatch(/no output/)
+  })
+})
+
+describe('the sign-in probes', () => {
+  const schemaOk = { ok: true }
+
+  it('gives claude a one-minute budget and a single attempt', async () => {
+    const complete = vi.fn(async () => schemaOk)
+    await realProbeAuth('/bin/claude', 'claude-opus-5', { complete })()
+    expect(complete.mock.calls[0]?.[2]).toMatchObject({ model: 'claude-opus-5', timeoutMs: 180_000, retryTransient: false })
+  })
+
+  it('gives codex the same budget and a single attempt', async () => {
+    const complete = vi.fn(async () => schemaOk)
+    await realProbeCodexAuth('/bin/codex', 'gpt-5.6-luna', { complete })()
+    expect(complete.mock.calls[0]?.[2]).toMatchObject({ model: 'gpt-5.6-luna', timeoutMs: 180_000, retryTransient: false })
+  })
+
+  it('summarises a noisy codex failure instead of shipping it whole', async () => {
+    const complete = vi.fn(async () => { throw new Error('boot\nERROR: Reconnecting... 5/5\nERROR: unexpected status 404 Not Found') })
+    const r = await realProbeCodexAuth('/bin/codex', 'gpt-5.6-luna', { complete })()
+    expect(r.ok).toBe(false)
+    expect(r.detail).toBe('unexpected status 404 Not Found')
   })
 })
