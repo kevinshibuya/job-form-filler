@@ -1862,6 +1862,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                         key={row.ref} row={row} edited={edits[row.ref] ?? null}
                         onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
                         onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
+                        pageValue={snapshot[row.ref] ?? null}
                         generating={generatingRefs.has(row.ref)}
                         filled={filledRefs.includes(row.ref)}
                         acting={acting !== null && acting.ref === row.ref ? acting.action : null}
@@ -1888,6 +1889,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                         key={row.ref} row={row} edited={edits[row.ref] ?? null}
                         onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
                         onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
+                        pageValue={snapshot[row.ref] ?? null}
                         generating={false}
                         filled={filledRefs.includes(row.ref)}
                         acting={acting !== null && acting.ref === row.ref ? acting.action : null}
