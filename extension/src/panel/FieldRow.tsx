@@ -47,6 +47,10 @@ export interface FieldRowProps {
    *  window would let one click overwrite a stored fact with a page value. */
   facts: Record<string, string>
   factsReady: boolean
+  /** What this row holds ON THE PAGE, when the page has its own value. The editor
+   *  above shows the panel's value; a fact the user picked or typed on the page
+   *  lives only in the session snapshot, and that is the value a save stores. */
+  pageValue?: string | null
   /** A9: the row belongs to a non-elected frame — manual Fill only. */
   foreign?: boolean
   /** A8: this file row won the resume scoring and is wired to the stored resume. */
@@ -81,6 +85,10 @@ export function FieldRow(p: FieldRowProps) {
     || resolution.source === 'llm_key'
   const alreadyStored = resolution.key !== null && (p.facts[resolution.key] ?? '').trim() !== ''
   const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
+  // The value a save would actually store: page beats panel edit beats engine,
+  // the same precedence buildSaveItems and App.onSaveFact use. Reading `value`
+  // here would disable the button for every row the user answered on the page.
+  const factValue = (p.pageValue ?? edited ?? resolution.value ?? '').trim()
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
   const hint = REASON_HINT[resolution.reason]
 
@@ -207,7 +215,7 @@ export function FieldRow(p: FieldRowProps) {
           {canSaveFact && (
             <button
               type="button" data-jff-save-fact="1" className={BTN}
-              disabled={value.trim() === '' || locked || acting !== null}
+              disabled={factValue === '' || locked || acting !== null}
               onClick={() => onSaveFact(ref)}
             >
               {busyLabel(acting === 'save_fact', 'Save to profile', 'Saving…')}

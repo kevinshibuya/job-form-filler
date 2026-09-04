@@ -342,6 +342,22 @@ describe('FieldRow — Save to profile (a fact is stored, never drafted)', () =>
     expect(screen.getByRole('button', { name: 'Saving…' })).toBeTruthy()
   })
 
+  it('stays enabled when the only value is the one the user set on the page', () => {
+    // The regression that timed the e2e loop out: a select answered on the page
+    // has nothing in `edited` and a null resolution value, so a button keyed on
+    // the editor's value renders permanently disabled and no click ever lands.
+    const onSaveFact = vi.fn()
+    render(<ul><FieldRow
+      {...ready} row={keyed({ tier: 'auto', source: null })}
+      pageValue="I am authorized to work for any employer in the US."
+      onSaveFact={onSaveFact}
+    /></ul>)
+    const btn = saveBtn() as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    fireEvent.click(btn)
+    expect(onSaveFact).toHaveBeenCalledWith('0:1')
+  })
+
   it('still offers Generate on a keyless needs-input row', () => {
     render(<ul><FieldRow {...ready} row={needsInput()} /></ul>)
     expect(genBtn()).toBeTruthy()
