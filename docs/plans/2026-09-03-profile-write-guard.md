@@ -125,9 +125,9 @@ In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ??
 
 **Boundaries:** No merge. No changes outside the Progress section.
 
-- [ ] `uptime`, then `npm run verify`; record counts under `## Progress`
-- [ ] `npm run build`; plain-dist grep prints 0
-- [ ] Push, open the PR against `ai-staging` with the rundown; commit `docs(plan): profile write guard, task 4 gate`
+- [x] `uptime`, then `npm run verify`; record counts under `## Progress`
+- [x] `npm run build`; plain-dist grep prints 0
+- [x] Push, open the PR against `ai-staging` with the rundown; commit `docs(plan): profile write guard, task 4 gate`
 
 ## Progress
 
@@ -240,3 +240,49 @@ proves the other half. Two small departures from the plan's wording:
   the fixture the spec's own `apps[0].url` assertion pins.
 
 `npx tsc -p e2e` exits 0. The behavioural check is Task 4's.
+
+### Task 2, follow-up: the button read the wrong value
+
+The first `npm run verify` on this branch failed `e2e/full-loop.spec.ts` at its
+240s cap with no locator error and no assertion — the shape of a click parked on
+a control that never becomes enabled.
+
+It was: `FieldRow` computed the button's disabled state from
+`edited ?? resolution.value`, the panel's own value. A fact the user answers ON
+the page lands in `session.snapshot`, which App passes to `buildSaveItems` and to
+`onSaveFact` but never to `FieldRow`. So for exactly the rows this feature exists
+to serve — a recognised factual field the user corrected on the page — the button
+rendered permanently disabled.
+
+`onSaveFact` was already correct, using the snapshot-first precedence
+`buildSaveItems` uses at `save.ts:76`. `FieldRow` now takes `pageValue` and
+computes `factValue` with that same precedence; the two agree.
+
+The plan's Task 2 says the button is "disabled when the current value is blank"
+without saying which of the three values is current, and its acceptance check
+exercises only the `edited` path. Every one of the six FieldRow cases written
+against that check drove the button through `edited`, so the unit suite could
+not have caught this: the gap was between App's three value sources and the
+component's one, and no case crossed that seam. The regression case added with
+the fix drives the button through `pageValue` alone.
+
+The spec now passes in 3.7s.
+
+### Task 4 (done)
+
+`npm run verify` green on an idle machine, load 2.47 before and 2.95 after:
+
+| leg | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 888 passed (888)` |
+| playwright | `17 passed (28.8s)` |
+| `grep -rl 'jffFakeHost' extension/dist \| wc -l` | 0, after `npm run build` |
+
+The two earlier gate runs were at load 3.9 to 4.8, which `CLAUDE.md` calls
+load-noise territory. This one is the idle evidence, and the e2e leg went from a
+240s timeout to 28.8s for the whole suite once the `pageValue` fix landed.
+
+PR opened against `ai-staging`. Not merged: the three-leg review is the user's to
+trigger, and only their explicit GREEN closes it.
