@@ -25,9 +25,13 @@ const body = () => {
 
   // The review pass: hand the drafted answer back unchanged, so the full-loop
   // suite still asserts the claude draft it always did.
+  // The security preamble names the open tag too, so read from the LAST open
+  // tag: a match from the first one would hand back the preamble as the draft.
   if (/You review ONE drafted answer/.test(prompt)) {
-    const m = prompt.match(/<draft_under_review>([\s\S]*?)<\/draft_under_review>/)
-    return { draft: m ? m[1] : '' }
+    const open = '<draft_under_review>'
+    const start = prompt.lastIndexOf(open)
+    const end = prompt.indexOf('</draft_under_review>', start)
+    return { draft: start >= 0 && end > start ? prompt.slice(start + open.length, end) : '' }
   }
 
   // Facts extraction: the closed key set, empty is valid.
