@@ -13,11 +13,11 @@ beforeEach(() => { db = openDb(':memory:') })
 
 describe('profile + answer bank', () => {
   it('round-trips values and routes getStoredValue by key ownership', () => {
-    setProfile(db, { email: 'kevin@example.com', firstName: 'Kevin' })
+    setProfile(db, { email: 'ada@example.com', firstName: 'Ada' })
     setAnswerBank(db, { salary: 'R$ 18.000/mo', workAuth: 'Brazilian citizen' })
-    expect(getProfile(db)).toEqual({ email: 'kevin@example.com', firstName: 'Kevin' })
+    expect(getProfile(db)).toEqual({ email: 'ada@example.com', firstName: 'Ada' })
     expect(getAnswerBank(db)).toEqual({ salary: 'R$ 18.000/mo', workAuth: 'Brazilian citizen' })
-    expect(getStoredValue(db, 'email')).toBe('kevin@example.com')
+    expect(getStoredValue(db, 'email')).toBe('ada@example.com')
     expect(getStoredValue(db, 'salary')).toBe('R$ 18.000/mo')
     expect(getStoredValue(db, 'github')).toBeNull()
   })

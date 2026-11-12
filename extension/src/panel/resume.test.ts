@@ -32,9 +32,9 @@ describe('resume store', () => {
   })
 
   it('round-trips a file as base64 with its name and mime type', async () => {
-    await saveResume(new File([new Uint8Array([1, 2, 3, 4])], 'kevin-cv.pdf', { type: 'application/pdf' }), async () => null)
+    await saveResume(new File([new Uint8Array([1, 2, 3, 4])], 'ada-cv.pdf', { type: 'application/pdf' }), async () => null)
     const stored = await loadResume()
-    expect(stored).toMatchObject({ name: 'kevin-cv.pdf', mimeType: 'application/pdf' })
+    expect(stored).toMatchObject({ name: 'ada-cv.pdf', mimeType: 'application/pdf' })
     expect(atob(stored!.dataBase64)).toHaveLength(4)
   })
 

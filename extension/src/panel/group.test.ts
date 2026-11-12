@@ -19,7 +19,7 @@ describe('buildRows', () => {
     field(2, 'Gender', 1),
   ]
   const resolutions = [
-    resolution(0, { handle: { frameId: 1, fid: 0, epoch: 1 }, tier: 'auto', value: 'Kevin', source: 'profile' }),
+    resolution(0, { handle: { frameId: 1, fid: 0, epoch: 1 }, tier: 'auto', value: 'Ada', source: 'profile' }),
     resolution(1, { handle: { frameId: 1, fid: 1, epoch: 1 }, tier: 'needs_input' }),
     resolution(2, { handle: { frameId: 1, fid: 2, epoch: 1 }, tier: 'skipped', reason: 'eeo' }),
   ]

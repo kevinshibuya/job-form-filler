@@ -1274,7 +1274,7 @@ describe('App — B3 page-accepted fills and failure surfacing', () => {
         const p = params as { fields: { frameId: number; fid: number; kind: string }[] }
         return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
           handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'auto' as const,
-          value: f.kind === 'choice' ? 'Yes' : 'Kevin', source: 'profile' as const,
+          value: f.kind === 'choice' ? 'Yes' : 'Ada', source: 'profile' as const,
           key: null, answerId: null, reason: 'test',
         })), llmError: null } }
       }
@@ -1711,7 +1711,7 @@ describe('App — onboarding gate (O1/O3)', () => {
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)
@@ -1734,7 +1734,7 @@ describe('App — onboarding gate (O1/O3)', () => {
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)
@@ -2063,7 +2063,7 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
   it('a tab switch saves the session and displays the activated tab: empty state, NO scan', async () => {
     installScan()
     await mountScanned()
-    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'kevin@example.com' } })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'ada@example.com' } })
     const scansBefore = scanCount()
 
     await activate(8)
@@ -2074,14 +2074,14 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     // Tab 8 has no session: nothing to re-scan, and a scan per tab switch would
     // spend one batched `claude -p` resolve every time.
     expect(scanCount()).toBe(scansBefore)
-    await waitFor(() => { expect(row(7)?.edits['0:0']).toBe('kevin@example.com') })
+    await waitFor(() => { expect(row(7)?.edits['0:0']).toBe('ada@example.com') })
     expect(row(8)).toBeUndefined()
   })
 
   it('switching back restores the first session with its work intact', async () => {
     installScan()
     await mountScanned()
-    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'kevin@example.com' } })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'ada@example.com' } })
     await activate(8)
     await waitFor(() => { expect(sessionAttr()).toBe('none') })
     const scansBefore = scanCount()
@@ -2089,7 +2089,7 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await activate(7)
 
     await waitFor(() => { expect(sessionAttr()).toBe('7') })
-    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('kevin@example.com')
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('ada@example.com')
     // Restoring is not re-scanning.
     expect(scanCount()).toBe(scansBefore)
   })
@@ -2283,7 +2283,7 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
         // tier 'auto' with a value is what makes runScan batch a JFF_FILL.
         const resolutions: Resolution[] = p.fields.map((f) => ({
           handle: { frameId: 0, fid: f.fid, epoch: 1 }, tier: 'auto',
-          value: 'kevin@example.com', source: 'profile', key: null, answerId: null, reason: 'recognizer:email',
+          value: 'ada@example.com', source: 'profile', key: null, answerId: null, reason: 'recognizer:email',
         }))
         return { requestId, ok: true, result: { epoch: 1, resolutions, llmError: null } }
       }
@@ -2750,18 +2750,18 @@ describe('App — label-keyed answer carry (S4)', () => {
     installScan()
     render(<App />)
     await waitFor(() => { expect(status()).toBe('done') })
-    fireEvent.change(screen.getByLabelText('E-mail'), { target: { value: 'kevin@example.com' } })
+    fireEvent.change(screen.getByLabelText('E-mail'), { target: { value: 'ada@example.com' } })
 
     await step(STEP_2, 2)
 
     // answerKey('E-mail') !== answerKey('Email address'): only the single map
     // entry carrying fieldKey 'email' can have rescued this.
-    expect(valueOf('Email address')).toBe('kevin@example.com')
+    expect(valueOf('Email address')).toBe('ada@example.com')
 
     // Plan deviation (reported): the plan plants the SECOND fieldKey-'email'
     // entry directly. Typing into the step-2 row plants it through the product's
     // own write path, which is strictly stronger evidence for the same rule.
-    fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'kevin@work.com' } })
+    fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'ada@work.example.com' } })
     await waitFor(() => { expect(Object.keys(row(7)?.answers ?? {}).length).toBe(2) })
 
     await step(STEP_3, 3)

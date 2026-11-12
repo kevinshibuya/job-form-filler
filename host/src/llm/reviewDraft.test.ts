@@ -8,7 +8,7 @@ const input: GenerationInput = {
   description: null,
   jobText: 'Acme builds payment rails.',
   company: 'Acme',
-  profileSummary: 'Name: Kevin Shibuya',
+  profileSummary: 'Name: Ada Lovelace',
   cvText: 'Built a job-form filler extension.',
   projectNotes: null,
   references: [],

@@ -39,11 +39,11 @@ describe('ProfileEditor', () => {
 
   it('merges extracted facts into EMPTY fields only and never auto-saves', async () => {
     const onSave = vi.fn()
-    const onExtract = vi.fn(async () => ({ email: 'cv@x.com', firstName: 'Kevin' }))
+    const onExtract = vi.fn(async () => ({ email: 'cv@x.com', firstName: 'Ada' }))
     render(<ProfileEditor values={{}} loaded={true} onSave={onSave} onExtract={onExtract} />)
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'typed@x.com' } })
     fireEvent.click(screen.getByRole('button', { name: 'Generate from CV' }))
-    await waitFor(() => expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Kevin'))
+    await waitFor(() => expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Ada'))
     expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('typed@x.com') // user-typed wins
     expect(onSave).not.toHaveBeenCalled() // the user still reviews and presses Save
   })

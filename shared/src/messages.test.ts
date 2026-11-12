@@ -108,7 +108,7 @@ describe('ContentMessageSchema', () => {
   it('accepts a fill message carrying the identity triple', () => {
     const msg = ContentMessageSchema.parse({
       type: 'JFF_FILL', epoch: 7,
-      fills: [{ handle, value: 'kevin@example.com' }],
+      fills: [{ handle, value: 'ada@example.com' }],
     })
     expect(msg.type).toBe('JFF_FILL')
   })

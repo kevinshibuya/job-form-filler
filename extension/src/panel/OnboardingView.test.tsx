@@ -27,7 +27,7 @@ describe('OnboardingView (O2)', () => {
     expect(finishBtn().disabled).toBe(true)
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     await waitFor(() => expect(finishBtn().disabled).toBe(false))
   })
 
@@ -35,7 +35,7 @@ describe('OnboardingView (O2)', () => {
     mount({ resumeName: null })
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     expect(finishBtn().disabled).toBe(true)
   })
 
@@ -63,12 +63,12 @@ describe('OnboardingView (O2)', () => {
     const props = mount({ resumeName: 'cv.pdf' })
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     fireEvent.change(screen.getByLabelText(/^Salary expectation/), { target: { value: '100k' } })
     await waitFor(() => expect(finishBtn().disabled).toBe(false))
     fireEvent.click(finishBtn())
     await waitFor(() => expect(props.onFinish).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'k@x.dev', phone: '1', fullName: 'Kevin B' }),
+      expect.objectContaining({ email: 'k@x.dev', phone: '1', fullName: 'Ada Lovelace' }),
       expect.objectContaining({ salary: '100k' }),
     ))
   })

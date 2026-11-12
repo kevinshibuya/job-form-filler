@@ -40,7 +40,7 @@ const runnerThatThrows = (kind: 'rate_limit'): StubRunner => ({
 let db: Database.Database
 beforeEach(() => {
   db = openDb(':memory:')
-  setProfile(db, { firstName: 'Kevin', email: 'kevin@example.com' })
+  setProfile(db, { firstName: 'Ada', email: 'ada@example.com' })
   setAnswerBank(db, { salary: 'R$ 18.000/mo' })
 })
 
@@ -60,15 +60,15 @@ describe('tier 0 — EEO', () => {
 describe('tier 1 — values already on the page', () => {
   it('treats an ATS-populated value as filled, sourced from the page', async () => {
     const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
-      input([field(1, 'First Name', { currentValue: 'Kevin' })]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'page', value: 'Kevin', reason: 'already-on-page' })
+      input([field(1, 'First Name', { currentValue: 'Ada' })]))
+    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'page', value: 'Ada', reason: 'already-on-page' })
   })
 })
 
 describe('tier 2 — deterministic recognizers', () => {
   it('auto-fills a recognized key that has a stored value', async () => {
     const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'E-mail *')]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'profile', key: 'email', value: 'kevin@example.com', reason: 'recognizer:email' })
+    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'profile', key: 'email', value: 'ada@example.com', reason: 'recognizer:email' })
   })
 
   it('routes a recognized key with NO stored value to needs-input', async () => {
@@ -203,9 +203,9 @@ describe('tier 5 and failure modes', () => {
 describe('B5a/B5c — recall correctness', () => {
   it('tier 1 attaches the recognized key to an already-on-page value', async () => {
     const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
-      input([field(1, 'First Name', { currentValue: 'Kevin' })]))
+      input([field(1, 'First Name', { currentValue: 'Ada' })]))
     expect(r.resolutions[0]).toMatchObject({
-      tier: 'auto', source: 'page', value: 'Kevin', key: 'firstName', reason: 'already-on-page',
+      tier: 'auto', source: 'page', value: 'Ada', key: 'firstName', reason: 'already-on-page',
     })
   })
 
@@ -218,12 +218,12 @@ describe('B5a/B5c — recall correctness', () => {
   it('a recognized key with NO stored value falls through to the exact qa_memory match', async () => {
     const id = upsertAnswer(db, {
       questionNormalized: normalizeQuestion('GitHub URL'), questionRaw: 'GitHub URL',
-      answer: 'https://github.com/kevin', language: 'en', reusability: 'reusable',
+      answer: 'https://github.com/ada', language: 'en', reusability: 'reusable',
     })
     const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
     expect(r.resolutions[0]).toMatchObject({
       tier: 'auto', source: 'saved_answer', key: 'github', answerId: id,
-      value: 'https://github.com/kevin', reason: 'exact-match:key-fallback',
+      value: 'https://github.com/ada', reason: 'exact-match:key-fallback',
     })
     expect(getAnswerById(db, id)!.timesUsed).toBe(1)
   })

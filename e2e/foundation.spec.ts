@@ -159,7 +159,7 @@ test('a real submit pushes a per-tab-per-frame snapshot into storage.session', a
   const t = await openFixtureTab()
   try {
     await t.send({ type: 'JFF_SCAN', epoch: 40 }) // stamps fids + installs listeners
-    await t.target.fill('#first_name', 'Kevin')
+    await t.target.fill('#first_name', 'Ada')
     await t.target.selectOption('#work_auth', { index: 1 })
     await t.target.fill('#hard_bug', 'typed by hand')
     await t.target.click('#submit_app')

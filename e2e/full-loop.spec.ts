@@ -67,9 +67,9 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // own precondition) and `seedResume` the extension-side half.
     // firstName/lastName are kept on top of the shared persona because the
     // fixture's name fields are what the deterministic tier is asserted to fill
-    // below; ONBOARDED_PROFILE.email is the same 'kevin@example.com' this test
+    // below; ONBOARDED_PROFILE.email is the same 'ada@example.com' this test
     // has always asserted.
-    seedOnboardedProfile(host.dbPath, { firstName: 'Kevin', lastName: 'Shibuya' })
+    seedOnboardedProfile(host.dbPath, { firstName: 'Ada', lastName: 'Lovelace' })
     await seedResume(ext)
 
     // The page under test.
@@ -97,9 +97,9 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     await expect(panel.locator('li[data-jff-tier="auto"]').first()).toBeVisible({ timeout: 60_000 })
 
     // The deterministic recognizers filled the page for real.
-    await expect(target.locator('#first_name')).toHaveValue('Kevin')
-    await expect(target.locator('#last_name')).toHaveValue('Shibuya')
-    await expect(target.locator('#email')).toHaveValue('kevin@example.com')
+    await expect(target.locator('#first_name')).toHaveValue('Ada')
+    await expect(target.locator('#last_name')).toHaveValue('Lovelace')
+    await expect(target.locator('#email')).toHaveValue('ada@example.com')
 
     // EEO is skipped, never filled.
     const eeoValue = await target.frameLocator('#eeo-frame').locator('#gender').inputValue()
@@ -183,7 +183,7 @@ test('a rate-limited codex leaves fields as needs-input and shows the right bann
     // observe: without a stored profile the deterministic tier would have nothing
     // to fill and its assertion below could not fail. O3 era: the seed is ALSO
     // the onboarding gate's precondition now — see the first test.
-    seedOnboardedProfile(host.dbPath, { firstName: 'Kevin' })
+    seedOnboardedProfile(host.dbPath, { firstName: 'Ada' })
     await seedResume(ext)
 
     const target = await ext.context.newPage()
@@ -206,7 +206,7 @@ test('a rate-limited codex leaves fields as needs-input and shows the right bann
     await expect(panel.locator('[data-jff-banner="error"]')).toContainText('Subscription rate limit', { timeout: 60_000 })
     // Deterministic fills still happened; only the LLM tier degraded.
     await expect(panel.locator('li[data-jff-tier="needs_input"]').first()).toBeVisible()
-    await expect(target.locator('#first_name')).toHaveValue('Kevin')
+    await expect(target.locator('#first_name')).toHaveValue('Ada')
   } finally {
     await ext.close()
     await host.stop()

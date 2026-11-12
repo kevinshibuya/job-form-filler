@@ -114,8 +114,8 @@ describe('buildSaveItems', () => {
     expect(buildSaveItems({
       ...base,
       fields: [field(0, 'First Name')],
-      resolutions: [res(0, { tier: 'auto', value: 'Kevin', source: 'page' })],
-      snapshot: { '0:0': 'Kevin Shibuya' },
+      resolutions: [res(0, { tier: 'auto', value: 'Ada', source: 'page' })],
+      snapshot: { '0:0': 'Ada Lovelace' },
     })).toEqual([])
   })
 
@@ -153,12 +153,12 @@ describe('buildSaveItems', () => {
     const items = buildSaveItems({
       ...base,
       fields: [field(0, 'First Name')],
-      resolutions: [res(0, { tier: 'auto', value: 'Kevin', source: 'page', key: 'firstName' })],
+      resolutions: [res(0, { tier: 'auto', value: 'Ada', source: 'page', key: 'firstName' })],
     })
     expect(items).toEqual([{
       handle: { frameId: 0, fid: 0, epoch: 1 },
       questionRaw: 'First Name',
-      answer: 'Kevin',
+      answer: 'Ada',
       reusability: 'reusable',
       fieldKey: 'firstName',
     }])

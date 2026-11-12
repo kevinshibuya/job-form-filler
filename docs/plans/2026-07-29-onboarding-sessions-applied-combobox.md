@@ -118,7 +118,7 @@ Done: `7c6f917..70209a1`, see progress notes.
 import { describe, expect, it } from 'vitest'
 import { profileCompleteness, REQUIRED_FACTS } from './completeness'
 
-const FULL = { email: 'k@x.dev', phone: '+55 11 90000-0000', fullName: 'Kevin B' }
+const FULL = { email: 'k@x.dev', phone: '+1 555 0100', fullName: 'Ada Lovelace' }
 
 describe('profileCompleteness (O1)', () => {
   it('complete: resume + email + phone + fullName', () => {
@@ -127,13 +127,13 @@ describe('profileCompleteness (O1)', () => {
 
   it('complete: firstName+lastName satisfies the name group', () => {
     expect(profileCompleteness(
-      { email: 'k@x.dev', phone: '1', firstName: 'Kevin', lastName: 'B' }, true, true,
+      { email: 'k@x.dev', phone: '1', firstName: 'Ada', lastName: 'Lovelace' }, true, true,
     )).toBe('complete')
   })
 
   it('incomplete: firstName WITHOUT lastName does not satisfy the name group', () => {
     expect(profileCompleteness(
-      { email: 'k@x.dev', phone: '1', firstName: 'Kevin' }, true, true,
+      { email: 'k@x.dev', phone: '1', firstName: 'Ada' }, true, true,
     )).toBe('incomplete')
   })
 
@@ -273,7 +273,7 @@ describe('OnboardingView (O2)', () => {
     expect(finishBtn().disabled).toBe(true)
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     await waitFor(() => expect(finishBtn().disabled).toBe(false))
   })
 
@@ -281,7 +281,7 @@ describe('OnboardingView (O2)', () => {
     mount({ resumeName: null })
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     expect(finishBtn().disabled).toBe(true)
   })
 
@@ -309,12 +309,12 @@ describe('OnboardingView (O2)', () => {
     const props = mount({ resumeName: 'cv.pdf' })
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     fireEvent.change(screen.getByLabelText(/^Salary expectation/), { target: { value: '100k' } })
     await waitFor(() => expect(finishBtn().disabled).toBe(false))
     fireEvent.click(finishBtn())
     await waitFor(() => expect(props.onFinish).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'k@x.dev', phone: '1', fullName: 'Kevin B' }),
+      expect.objectContaining({ email: 'k@x.dev', phone: '1', fullName: 'Ada Lovelace' }),
       expect.objectContaining({ salary: '100k' }),
     ))
   })
@@ -620,7 +620,7 @@ describe('App — onboarding gate (O1/O3)', () => {
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)
@@ -643,7 +643,7 @@ describe('App — onboarding gate (O1/O3)', () => {
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
-    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Kevin B' } })
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)

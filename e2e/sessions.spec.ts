@@ -105,7 +105,7 @@ test('the onboarding gate blocks scanning until the real setup flow completes (O
   // NO seeding, on purpose: a fresh host home with an empty profile table and an
   // extension origin with no stored resume is exactly a first-run user.
   const cvPath = join(tmpdir(), `jff-onboarding-cv-${Date.now()}.txt`)
-  writeFileSync(cvPath, 'Kevin Shibuya — platform engineer\n')
+  writeFileSync(cvPath, 'Ada Lovelace — platform engineer\n')
   try {
     const target = await ext.context.newPage()
     await target.goto(`${fixtures.origin}/plain-form.html`)

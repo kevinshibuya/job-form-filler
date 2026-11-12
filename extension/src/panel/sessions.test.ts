@@ -541,8 +541,8 @@ describe('label-keyed answer carry (S4)', () => {
 
   it('rememberAnswer keys by the NORMALIZED label and carries the resolution fieldKey', () => {
     const s = sessionOf({ fields: [labelled(0, 'E-mail')], resolutions: [resolutionFor(0, 'email')] })
-    expect(rememberAnswer(s, '0:0', 'kevin@example.com', 'user').answers).toEqual({
-      email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' },
+    expect(rememberAnswer(s, '0:0', 'ada@example.com', 'user').answers).toEqual({
+      email: { value: 'ada@example.com', provenance: 'user', fieldKey: 'email' },
     })
   })
 
@@ -560,7 +560,7 @@ describe('label-keyed answer carry (S4)', () => {
     const s = sessionOf({
       fields: [labelled(0, 'E-mail')],
       resolutions: [resolutionFor(0, 'email')],
-      answers: { email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' } },
+      answers: { email: { value: 'ada@example.com', provenance: 'user', fieldKey: 'email' } },
     })
     expect(rememberAnswer(s, '0:0', '', 'user').answers).toEqual({})
   })
@@ -609,15 +609,15 @@ describe('label-keyed answer carry (S4)', () => {
 
   it('the fieldKey fallback rescues a relabelled field ONLY when exactly one answer claims the key', () => {
     const one = sessionOf({
-      answers: { email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' } },
+      answers: { email: { value: 'ada@example.com', provenance: 'user', fieldKey: 'email' } },
     })
     expect(projectAnswers(one, [labelled(0, 'Email address')], [resolutionFor(0, 'email')], {}).edits)
-      .toEqual({ '0:0': 'kevin@example.com' })
+      .toEqual({ '0:0': 'ada@example.com' })
 
     const ambiguous = sessionOf({
       answers: {
-        email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' },
-        'work email': { value: 'kevin@work.com', provenance: 'user', fieldKey: 'email' },
+        email: { value: 'ada@example.com', provenance: 'user', fieldKey: 'email' },
+        'work email': { value: 'ada@work.example.com', provenance: 'user', fieldKey: 'email' },
       },
     })
     expect(projectAnswers(ambiguous, [labelled(0, 'Email address')], [resolutionFor(0, 'email')], {}).edits).toEqual({})
@@ -627,7 +627,7 @@ describe('label-keyed answer carry (S4)', () => {
 
   it('duplicated labels on the NEW page receive nothing — fieldKey fallback included', () => {
     const s = sessionOf({
-      answers: { email: { value: 'kevin@example.com', provenance: 'user', fieldKey: 'email' } },
+      answers: { email: { value: 'ada@example.com', provenance: 'user', fieldKey: 'email' } },
     })
     const next = projectAnswers(
       s,

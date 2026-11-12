@@ -53,10 +53,10 @@ describe('setNativeValue', () => {
       get: () => shadowed,
       set: (v: string) => { shadowed = `shadowed:${v}` },
     })
-    setNativeValue(el, 'kevin')
+    setNativeValue(el, 'ada')
     expect(shadowed).toBe('') // the instance setter was never called
     delete (el as unknown as Record<string, unknown>).value // drop the shadow
-    expect(el.value).toBe('kevin') // the native value really changed
+    expect(el.value).toBe('ada') // the native value really changed
   })
 
   it('dispatches bubbling input and change events', () => {
@@ -65,17 +65,17 @@ describe('setNativeValue', () => {
     const seen: string[] = []
     document.querySelector('form')!.addEventListener('input', () => seen.push('input'))
     document.querySelector('form')!.addEventListener('change', () => seen.push('change'))
-    setNativeValue(el, 'kevin')
+    setNativeValue(el, 'ada')
     expect(seen).toEqual(['input', 'change'])
-    expect(el.value).toBe('kevin')
+    expect(el.value).toBe('ada')
   })
 })
 
 describe('fillOne', () => {
   it('fills a text input', async () => {
     document.body.innerHTML = '<input id="x">'
-    await expect(fillOne(document.getElementById('x')!, 'Kevin')).resolves.toEqual({ ok: true })
-    expect((document.getElementById('x') as HTMLInputElement).value).toBe('Kevin')
+    await expect(fillOne(document.getElementById('x')!, 'Ada')).resolves.toEqual({ ok: true })
+    expect((document.getElementById('x') as HTMLInputElement).value).toBe('Ada')
   })
 
   it('reports value-rejected when a typed input DISCARDS the value', async () => {
@@ -543,9 +543,9 @@ describe('fillFile', () => {
     const el = document.getElementById('cv') as HTMLInputElement
     const changed = vi.fn()
     el.addEventListener('change', changed)
-    const file = new File(['pdf bytes'], 'kevin-cv.pdf', { type: 'application/pdf' })
+    const file = new File(['pdf bytes'], 'ada-cv.pdf', { type: 'application/pdf' })
     expect(fillFile(el, file)).toEqual({ ok: true })
-    expect(el.files?.[0]?.name).toBe('kevin-cv.pdf')
+    expect(el.files?.[0]?.name).toBe('ada-cv.pdf')
     expect(changed).toHaveBeenCalledTimes(1)
   })
 })

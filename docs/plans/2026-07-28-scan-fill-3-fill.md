@@ -953,7 +953,7 @@ describe('App — B3 page-accepted fills and failure surfacing', () => {
         const p = params as { fields: { frameId: number; fid: number; kind: string }[] }
         return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
           handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'auto' as const,
-          value: f.kind === 'choice' ? 'Yes' : 'Kevin', source: 'profile' as const,
+          value: f.kind === 'choice' ? 'Yes' : 'Ada', source: 'profile' as const,
           key: null, answerId: null, reason: 'test',
         })), llmError: null } }
       }
