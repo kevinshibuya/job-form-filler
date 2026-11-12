@@ -3,7 +3,7 @@ import { extractPdfText, joinTextItems, type TextItemLike } from './cvText'
 
 /** A minimal valid one-page PDF (Helvetica) whose page stream draws the text
  *  'Ada Lovelace ada@example.com'. Generated offline with correct xref
- *  offsets; 606 bytes. */
+ *  offsets; 603 bytes. */
 const TINY_PDF_B64 = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA1OSA+PgpzdHJlYW0KQlQgL0YxIDEyIFRmIDcyIDcyMCBUZCAoQWRhIExvdmVsYWNlIGFkYUBleGFtcGxlLmNvbSkgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTAgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjAKJSVFT0YK'
 
 const bytesOf = (b64: string): ArrayBuffer => {
@@ -32,9 +32,9 @@ const item = (str: string, x: number, y: number, width: number): TextItemLike =>
 describe('joinTextItems', () => {
   it('does NOT insert spaces between the glyph runs of one word', () => {
     // The real regression: pdf.js hands back an email in three runs, and the
-    // old join(' ') stored 'hello @ example.com' as the profile email.
-    const runs = [item('hello', 72, 700, 24), item('@', 96, 700, 7), item('example.com', 103, 700, 70)]
-    expect(joinTextItems(runs)).toBe('hello@example.com')
+    // old join(' ') stored 'ada @ example.com' as the profile email.
+    const runs = [item('ada', 72, 700, 24), item('@', 96, 700, 7), item('example.com', 103, 700, 70)]
+    expect(joinTextItems(runs)).toBe('ada@example.com')
   })
 
   it('inserts a space where the runs are genuinely apart', () => {

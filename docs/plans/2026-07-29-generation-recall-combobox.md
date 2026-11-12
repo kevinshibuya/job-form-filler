@@ -1246,7 +1246,7 @@ import { extractPdfText } from './cvText'
 
 /** A minimal valid one-page PDF (Helvetica) whose page stream draws the text
  *  'Ada Lovelace ada@example.com'. Generated offline with correct xref
- *  offsets; 606 bytes. */
+ *  offsets; 603 bytes. */
 const TINY_PDF_B64 = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA1OSA+PgpzdHJlYW0KQlQgL0YxIDEyIFRmIDcyIDcyMCBUZCAoQWRhIExvdmVsYWNlIGFkYUBleGFtcGxlLmNvbSkgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTAgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjAKJSVFT0YK'
 
 const bytesOf = (b64: string): ArrayBuffer => {
@@ -3076,7 +3076,7 @@ Add a branch to the fake host bridge, above its catch-all `return { requestId, o
       }
 ```
 
-Add a module-scope const (same value as Task 7's `TINY_PDF_B64` in `cvText.test.ts` — copy it verbatim from there; it is a 606-byte valid PDF whose page draws 'Ada Lovelace ada@example.com'):
+Add a module-scope const (same value as Task 7's `TINY_PDF_B64` in `cvText.test.ts` — copy it verbatim from there; it is a 603-byte valid PDF whose page draws 'Ada Lovelace ada@example.com'):
 
 ```ts
 const TINY_PDF_B64 = '<verbatim value from extension/src/panel/cvText.test.ts>'

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { profileCompleteness, REQUIRED_FACTS } from './completeness'
 
-const FULL = { email: 'k@x.dev', phone: '+1 555 0100', fullName: 'Ada B' }
+const FULL = { email: 'k@x.dev', phone: '+1 555 0100', fullName: 'Ada Lovelace' }
 
 describe('profileCompleteness (O1)', () => {
   it('complete: resume + email + phone + fullName', () => {
@@ -10,7 +10,7 @@ describe('profileCompleteness (O1)', () => {
 
   it('complete: firstName+lastName satisfies the name group', () => {
     expect(profileCompleteness(
-      { email: 'k@x.dev', phone: '1', firstName: 'Ada', lastName: 'B' }, true, true,
+      { email: 'k@x.dev', phone: '1', firstName: 'Ada', lastName: 'Lovelace' }, true, true,
     )).toBe('complete')
   })
 

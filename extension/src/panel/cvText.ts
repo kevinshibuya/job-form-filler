@@ -29,8 +29,8 @@ const GAP_EPSILON = 1
 
 /**
  * pdf.js splits a line into GLYPH RUNS, not words: an email arrives as
- * ['hello', '@', 'example.com']. Joining those with a space wrote
- * 'hello @ example.com' into the profile — a corrupt email in every
+ * ['ada', '@', 'example.com']. Joining those with a space wrote
+ * 'ada @ example.com' into the profile — a corrupt email in every
  * filled form — and joining with nothing glues consecutive lines into
  * 'ada lovelacesoftware engineer'. Neither is a spacing rule; the geometry
  * is. A run starting on a new y begins a line; a run starting further right

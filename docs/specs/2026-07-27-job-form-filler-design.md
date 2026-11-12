@@ -15,11 +15,11 @@ subscription.
 Every application grows a local answers database, so each future application is filled
 more completely and more deterministically than the last.
 
-Design DNA ported from `<job-finder-checkout>` (Electron app, same
+Design DNA ported from the author's earlier `job-finder` project (Electron app, same
 problem domain): answer-bank schema, anti-fabrication fill invariants, baseline
 label→key regex recognizers, learned-mapping promotion, DOM enumeration for React
 widgets, EEO/CAPTCHA safety rules. Security posture (job postings are untrusted input)
-from `<ai-job-search-checkout>`.
+from the author's `ai-job-search` project.
 
 ## Decisions made during brainstorm
 
