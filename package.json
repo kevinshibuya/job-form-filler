@@ -17,7 +17,8 @@
     "test": "vitest run",
     "smoke": "JFF_TEST_SEAM=1 npm run build && playwright test",
     "lint": "eslint host/src extension/src shared/src --ext .ts,.tsx",
-    "verify": "npm run typecheck && npm run lint && npm run test && npm run smoke"
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run smoke",
+    "readme:shots": "JFF_TEST_SEAM=1 npm run build && playwright test --config docs/readme/playwright.config.ts; s=$?; npm run build && exit $s"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
