@@ -81,24 +81,29 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
     await panel.exposeFunction('__jffHostBridge', (req: BridgeReq) => {
       const { requestId, method } = req
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
+      // Resolution in two requests, split as the host splits it: the auto
+      // values need no model and come back first; the rest go to Mapping.
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const p = req.params as ResolveParams
+        const resolutions = p.fields.map((f) => {
+          const auto = AUTO_VALUE[f.kind]
+          return {
+            handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
+            tier: auto === undefined ? 'needs_input' : 'auto',
+            value: auto ?? null,
+            source: auto === undefined ? null : 'profile',
+            key: null, answerId: null, reason: 'e2e',
+          }
+        })
+        if (method === 'resolve.mapping') return { requestId, ok: true, result: { epoch: p.epoch, resolutions, llmError: null } }
+        // The first request carries every elected Field: it is the one asserted on.
         resolveCalls.push(p)
         return {
           requestId, ok: true,
           result: {
             epoch: p.epoch,
-            resolutions: p.fields.map((f) => {
-              const auto = AUTO_VALUE[f.kind]
-              return {
-                handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
-                tier: auto === undefined ? 'needs_input' : 'auto',
-                value: auto ?? null,
-                source: auto === undefined ? null : 'profile',
-                key: null, answerId: null, reason: 'e2e',
-              }
-            }),
-            llmError: null,
+            resolutions: resolutions.filter((r) => r.tier === 'auto'),
+            pending: resolutions.filter((r) => r.tier !== 'auto').map((r) => r.handle),
           },
         }
       }

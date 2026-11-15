@@ -221,6 +221,40 @@ export function projectAnswers(
   }
 }
 
+/**
+ * The second Resolution step lands on rows the first already projected. Only
+ * the pending refs change: each takes its Mapping Resolution, and its value is,
+ * in order, what the Mapping Fill put on the page, what the first projection
+ * already carried, or the carry re-run now that Mapping has named the Field's
+ * Known key (the fieldKey fallback needs that key, and the first step did not
+ * have it). Every other ref, and every edit the user made while Mapping ran,
+ * stays as it is.
+ */
+export function mergeMapping(
+  session: Session,
+  pendingRefs: ReadonlySet<string>,
+  mapped: Resolution[],
+  committedEdits: Record<string, string>,
+): Session {
+  const resolutions = [
+    ...session.resolutions.filter((r) => !pendingRefs.has(refOf(r.handle))),
+    ...mapped.filter((r) => pendingRefs.has(refOf(r.handle))),
+  ]
+  const carried = projectAnswers(session, session.fields, resolutions, committedEdits)
+  const edits = { ...session.edits }
+  // A Mapping Fill speaks for its ref in the page's words, as in the first
+  // projection: it is no longer a draft.
+  const generatedRefs = session.generatedRefs.filter((ref) => !(ref in committedEdits))
+  for (const ref of pendingRefs) {
+    if (ref in committedEdits) { edits[ref] = committedEdits[ref]!; continue }
+    if (ref in edits || !(ref in carried.edits)) continue
+    edits[ref] = carried.edits[ref]!
+    // The draft badge rides the carry, as it does in the first projection.
+    if (carried.generatedRefs.includes(ref)) generatedRefs.push(ref)
+  }
+  return { ...session, resolutions, edits, generatedRefs }
+}
+
 /** Storage-shaping only — never mutates the in-memory session, whose full option
  *  lists the open combobox still needs. */
 export function capForStorage(s: Session): Session {

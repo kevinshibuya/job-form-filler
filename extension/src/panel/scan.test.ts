@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ContentMessage, EnumField, Resolution } from '@jff/shared'
 import type { HostPort } from './port'
-import { runScan, ScanError, type ScanDeps } from './scan'
+import { runMapping, runScan, ScanError, type ScanDeps } from './scan'
 
 const field = (frameId: number, fid: number, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: -1, fid, epoch: 0, label: `L${fid}`, name: `n${fid}`, idAttr: null, kind: 'text',
@@ -36,11 +36,11 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
     port: {
       request: vi.fn(async (method: string) => {
         if (method === 'selector.get') return { ok: true, result: { selector: null } }
-        if (method === 'resolve') {
+        if (method === 'resolve.first') {
           const resolutions: Resolution[] = [
             { handle: { frameId: 0, fid: 0, epoch }, tier: 'auto', value: 'V0', source: 'profile', key: 'email', answerId: null, reason: 'recognizer:email' },
           ]
-          return { ok: true, result: { epoch, resolutions, llmError: null } }
+          return { ok: true, result: { epoch, resolutions, pending: [] } }
         }
         return { ok: true, result: {} }
       }),
@@ -86,7 +86,7 @@ function depsWithFields(fields: ReturnType<typeof field>[], resolveTier: 'auto' 
   made.deps.port = {
     request: vi.fn(async (method: string, params: unknown) => {
       if (method === 'selector.get') return { ok: true, result: { selector: null } }
-      if (method === 'resolve') {
+      if (method === 'resolve.first') {
         resolveCalls.push(params)
         const p = params as { fields: { frameId: number; fid: number }[] }
         return {
@@ -98,7 +98,7 @@ function depsWithFields(fields: ReturnType<typeof field>[], resolveTier: 'auto' 
               value: resolveTier === 'auto' ? 'V' : null,
               source: null, key: null, answerId: null, reason: 'test',
             })),
-            llmError: null,
+            pending: [],
           },
         }
       }
@@ -155,7 +155,7 @@ function twoFrameDeps(over: {
   made.deps.port = {
     request: vi.fn(async (method: string, params: unknown) => {
       if (method === 'selector.get') return { ok: true, result: { selector: null } }
-      if (method === 'resolve') {
+      if (method === 'resolve.first') {
         const p = params as { fields: EnumField[] }
         resolveCalls.push(p)
         return {
@@ -166,7 +166,7 @@ function twoFrameDeps(over: {
               handle: { frameId: f.frameId, fid: f.fid, epoch }, tier: 'auto',
               value: 'V', source: 'profile', key: null, answerId: null, reason: 'test',
             })),
-            llmError: null,
+            pending: [],
           },
         }
       }
@@ -245,10 +245,10 @@ describe('runScan', () => {
       port: {
         request: vi.fn(async (method: string) => {
           if (method === 'selector.get') return { ok: true, result: { selector: null } }
-          if (method === 'resolve') return {
+          if (method === 'resolve.first') return {
             ok: true,
             result: {
-              epoch: 2, llmError: null,
+              epoch: 2, pending: [],
               resolutions: [
                 { handle: { frameId: 0, fid: 0, epoch: 2 }, tier: 'auto', value: 'FILL ME', source: 'profile', key: 'email', answerId: null, reason: 'r' },
                 { handle: { frameId: 0, fid: 1, epoch: 2 }, tier: 'auto', value: 'ALREADY THERE', source: 'page', key: null, answerId: null, reason: 'already-on-page' },
@@ -267,12 +267,12 @@ describe('runScan', () => {
     expect(fill.fills.map((f) => f.value)).toEqual(['FILL ME'])
   })
 
-  it('surfaces an llmError from the host without throwing', async () => {
+  it('surfaces a first step that failed outright without throwing', async () => {
     const { deps } = makeDeps({
       port: {
         request: vi.fn(async (method: string) => {
           if (method === 'selector.get') return { ok: true, result: { selector: null } }
-          if (method === 'resolve') return { ok: true, result: { epoch: 2, resolutions: [], llmError: { kind: 'rate_limit', message: 'limit' } } }
+          if (method === 'resolve.first') return { ok: false, error: { kind: 'rate_limit', message: 'limit' } }
           return { ok: true, result: {} }
         }),
         onDisconnect: () => undefined,
@@ -320,7 +320,7 @@ describe('runScan', () => {
     expect(out.activeCaptcha).toBe(true)
     expect(out.resolutions).toEqual([])
     expect(sent.map((m) => m.type)).not.toContain('JFF_FILL')
-    expect(deps.port.request).not.toHaveBeenCalledWith('resolve', expect.anything())
+    expect(deps.port.request).not.toHaveBeenCalledWith('resolve.first', expect.anything())
   })
 
   it('emits injecting -> enumerating -> resolving on the happy path', async () => {
@@ -514,7 +514,7 @@ describe('runScan', () => {
     expect(calls).toBe(1)
     expect(out.activeCaptcha).toBe(true)
     expect(sent.map((m) => m.type)).not.toContain('JFF_FILL')
-    expect(deps.port.request).not.toHaveBeenCalledWith('resolve', expect.anything())
+    expect(deps.port.request).not.toHaveBeenCalledWith('resolve.first', expect.anything())
   })
 
   it('never resolves when the post-resume re-enumeration comes back empty', async () => {
@@ -541,7 +541,7 @@ describe('runScan', () => {
     expect(out.fields).toEqual([])
     expect(out.resolutions).toEqual([])
     expect(phases).toEqual(['injecting', 'enumerating', 'enumerating'])
-    expect(deps.port.request).not.toHaveBeenCalledWith('resolve', expect.anything())
+    expect(deps.port.request).not.toHaveBeenCalledWith('resolve.first', expect.anything())
   })
 
   it('throws a ScanError carrying the enumeration evidence when a later step dies', async () => {
@@ -803,5 +803,116 @@ describe('runScan — B3 fill report collection', () => {
     const { deps } = depsWithFields([field(0, 0)], 'needs_input')
     const out = await runScan(deps)
     expect(out.fill).toEqual({ filled: [], failed: [] })
+  })
+})
+
+describe('the two Resolution steps', () => {
+  /** A first step that answers fid 0 and leaves fid 1 pending, like the host. */
+  function splitDeps() {
+    const made = depsWithFields([field(0, 0, { label: 'Email' }), field(0, 1, { label: 'Why us?' })])
+    const requests: { method: string; params: { fields: EnumField[] } }[] = []
+    made.deps.port = {
+      request: vi.fn(async (method: string, params: { epoch: number; fields: EnumField[] }) => {
+        requests.push({ method, params })
+        if (method === 'selector.get') return { ok: true, result: { selector: null } }
+        if (method === 'resolve.first') {
+          return { ok: true, result: {
+            epoch: params.epoch,
+            resolutions: [{ handle: { frameId: 0, fid: 0, epoch: params.epoch }, tier: 'auto', value: 'ada@example.com', source: 'profile', key: 'email', answerId: null, reason: 'recognizer:email' }],
+            pending: [{ frameId: 0, fid: 1, epoch: params.epoch }],
+          } }
+        }
+        return { ok: true, result: {} }
+      }),
+      onDisconnect: () => undefined,
+      disconnect: () => undefined,
+    } as unknown as HostPort
+    return { ...made, requests }
+  }
+
+  it('fills from the first reply and hands back the Fields it left pending', async () => {
+    const { deps, sent, requests } = splitDeps()
+    const out = await runScan(deps)
+    expect(requests.map((r) => r.method)).not.toContain('resolve.mapping')
+    expect(out.resolutions.map((r) => r.handle.fid)).toEqual([0])
+    expect(out.pending.map((f) => [f.fid, f.label])).toEqual([[1, 'Why us?']])
+    const fill = sent.find((m) => m.type === 'JFF_FILL') as { fills: { value: string }[] }
+    expect(fill.fills.map((f) => f.value)).toEqual(['ada@example.com'])
+  })
+
+  const mappingPort = (answer: (params: { epoch: number; fields: EnumField[] }) => unknown) => {
+    const calls: { method: string; params: { fields: EnumField[] } }[] = []
+    const port = {
+      request: vi.fn(async (method: string, params: { epoch: number; fields: EnumField[] }) => {
+        calls.push({ method, params })
+        return answer(params)
+      }),
+      onDisconnect: () => undefined,
+      disconnect: () => undefined,
+    } as unknown as HostPort
+    return { port, calls }
+  }
+  const pending = [field(0, 1, { frameId: 0, epoch: 3, label: 'Why us?' }), field(0, 2, { frameId: 0, epoch: 3, label: 'Salary' })]
+  const scan = { epoch: 3, jobText: 'JD', pending }
+  const res = (fid: number, patch: Partial<Resolution>): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 3 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom', ...patch,
+  })
+
+  it('sends only the pending Fields, under the scan epoch', async () => {
+    const { port, calls } = mappingPort((p) => ({ ok: true, result: { epoch: p.epoch, resolutions: [], llmError: null } }))
+    const sendToTab = vi.fn(async () => ({ replies: [], failures: [] }))
+    await runMapping({ port, sendToTab }, scan, () => true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.method).toBe('resolve.mapping')
+    expect(calls[0]!.params).toMatchObject({ epoch: 3, jobText: 'JD' })
+    expect(calls[0]!.params.fields.map((f) => f.fid)).toEqual([1, 2])
+  })
+
+  it('returns its Resolutions and fills only what it answered auto', async () => {
+    const { port } = mappingPort(() => ({ ok: true, result: { epoch: 3, llmError: null, resolutions: [
+      res(1, { tier: 'proposed', value: 'Because', source: 'llm_reuse', answerId: 4, reason: 'llm-reuse:4' }),
+      res(2, { tier: 'auto', value: '100k', source: 'answer_bank', key: 'salary', reason: 'test' }),
+      // Not pending: the first step owns it, and it must never land twice.
+      res(0, { tier: 'auto', value: 'OTHER', source: 'profile', key: 'email', reason: 'test' }),
+    ] } }))
+    const sent: ContentMessage[] = []
+    const sendToTab = vi.fn(async (_f: number | undefined, m: ContentMessage) => {
+      sent.push(m)
+      return { replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: 3, filled: [{ handle: { frameId: 0, fid: 2, epoch: 3 }, committed: null }], failed: [] } } }], failures: [] }
+    })
+    const out = await runMapping({ port, sendToTab }, scan, () => true)
+    expect(out!.resolutions.map((r) => r.handle.fid)).toEqual([1, 2])
+    expect(sent).toEqual([{ type: 'JFF_FILL', epoch: 3, fills: [{ handle: { frameId: 0, fid: 2, epoch: 3 }, value: '100k' }] }])
+    expect(out!.fill.filled).toHaveLength(1)
+    expect(out!.llmError).toBeNull()
+  })
+
+  it('makes every pending Field Needs input with the error when the request fails outright', async () => {
+    const { port } = mappingPort(() => ({ ok: false, error: { kind: 'timeout', message: 'slow' } }))
+    const sendToTab = vi.fn(async () => ({ replies: [], failures: [] }))
+    const out = await runMapping({ port, sendToTab }, scan, () => true)
+    expect(out!.llmError).toEqual({ kind: 'timeout', message: 'slow' })
+    expect(out!.resolutions.map((r) => [r.handle.fid, r.tier, r.reason])).toEqual([
+      [1, 'needs_input', 'llm-error:timeout'], [2, 'needs_input', 'llm-error:timeout'],
+    ])
+    expect(sendToTab).not.toHaveBeenCalled()
+  })
+
+  it('passes a model error in the reply through', async () => {
+    const { port } = mappingPort(() => ({ ok: true, result: { epoch: 3, llmError: { kind: 'rate_limit', message: 'limit' }, resolutions: [
+      res(1, { reason: 'llm-error:rate_limit' }), res(2, { reason: 'llm-error:rate_limit' }),
+    ] } }))
+    const out = await runMapping({ port, sendToTab: vi.fn(async () => ({ replies: [], failures: [] })) }, scan, () => true)
+    expect(out!.llmError).toEqual({ kind: 'rate_limit', message: 'limit' })
+    expect(out!.resolutions.every((r) => r.tier === 'needs_input')).toBe(true)
+  })
+
+  it('drops a reply whose Scan was superseded, and fills nothing', async () => {
+    const { port } = mappingPort(() => ({ ok: true, result: { epoch: 3, llmError: null, resolutions: [
+      res(2, { tier: 'auto', value: '100k', source: 'answer_bank', key: 'salary', reason: 'test' }),
+    ] } }))
+    const sendToTab = vi.fn(async () => ({ replies: [], failures: [] }))
+    expect(await runMapping({ port, sendToTab }, scan, () => false)).toBeNull()
+    expect(sendToTab).not.toHaveBeenCalled()
   })
 })
