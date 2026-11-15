@@ -8,7 +8,9 @@
 ## Global constraints
 
 - TypeScript: never `any`. Typed test fakes included.
-- Branch `profile-write-guard`, created in Task 0 from `harness-v3-migration`. This plan is the first of five in a linear stack: `profile-write-guard` → `panel-state` → `serial-choice-fill` → `ats-identity-and-modules` → `ignore-and-captures`. Every plan in the stack edits `App.tsx`, so the stack is what keeps them from colliding. PR #1 (`harness-v3-migration` into `ai-staging`) is open and not merged, so open this PR against `harness-v3-migration` and retarget it to `ai-staging` once PR #1 merges. Never commit on `main`.
+- Branch `profile-write-guard`, created in Task 0 from `ai-staging`. This plan is part of a four-plan linear stack: `profile-write-guard` → `panel-state` → `ats-identity-and-modules` → `ignore-and-captures`. Those four all edit `App.tsx` and each consumes the one before it, so the stack is what keeps them from colliding. `2026-09-03-serial-choice-fill.md` is **not** in the stack: it touches `fill.ts` only and runs in parallel from `ai-staging`. PR #1 merged `harness-v3-migration` into `ai-staging`; confirm with `git log --oneline -1 origin/ai-staging` before branching, and if it has not merged, branch from `harness-v3-migration` and retarget on merge. Target `ai-staging`. Never commit on `main`.
+- Stack mechanics, so the retargets stay cheap: merge every stack PR with a **merge commit**, not a squash. Under a squash merge the child's three-dot diff re-shows the parent's whole change and the merge reapplies it, which forces a `git rebase --onto ai-staging <parent-tip>` first. And when a review of the parent produces fix commits, merge the parent forward into this branch **before** this PR's review is triggered, so the review reads the code that will actually land.
+- Every `App.tsx:NNNN` citation in this plan is a line number as of `d90d6ed`. Earlier plans in the stack insert code above most of them, so re-find each site by the quoted anchor text rather than trusting the number.
 - Run tests from the repo root: `npx vitest run <path>`. After any edit under `shared/src`, run `npm run build -w @jff/shared` before host or extension tests, or they exercise the stale build.
 - Every task ends with `npm run typecheck` green before its commit; the schema narrowing in Task 1 touches producer and consumer in the same commit for that reason.
 - `npm run smoke` and `npm run verify` only on an idle machine (`uptime` load under the core count). They leave a seam dist behind; the last task restores the plain dist and proves it with `grep -rl 'jffFakeHost' extension/dist | wc -l` printing 0.
@@ -27,14 +29,14 @@
 - Consumes: nothing
 - Produces: branch `profile-write-guard`, a recorded baseline under `## Progress`
 
-**Work:** `git status` must be clean. Create the branch from `harness-v3-migration`. Run typecheck, lint and unit tests; record the counts under `## Progress`. Run the profile check from Global constraints.
+**Work:** `git status` must be clean. Create the branch from `ai-staging`. Run typecheck, lint and unit tests; record the counts under `## Progress`. Run the profile check from Global constraints.
 
 **Acceptance check:** `git branch --show-current` prints `profile-write-guard`; `npm run typecheck && npm run lint && npx vitest run` exit 0. Red state before the task: the branch does not exist.
 
 **Boundaries:** No source edits. If any test is red, stop and report `blocked: baseline red: <test>`.
 
-- [ ] `git checkout -b profile-write-guard`
-- [ ] Run typecheck, lint, unit; write the counts under `## Progress`; commit `docs(plan): profile write guard, task 0 baseline`
+- [x] `git checkout -b profile-write-guard`
+- [x] Run typecheck, lint, unit; write the counts under `## Progress`; commit `docs(plan): profile write guard, task 0 baseline`
 
 ### Task 1: Facts never travel through Save answers; fact values are single-line
 
@@ -58,9 +60,9 @@
 
 **Boundaries:** Do not touch `waterfall.ts`; the `key` on a Resolution stays, Task 2 consumes it. No SQLite schema change. `e2e/full-loop.spec.ts` is Task 3's.
 
-- [ ] Schema, `keys.ts` helpers with tests; rebuild shared
-- [ ] `save.ts` and its tests
-- [ ] Host branch removal and shape rule with tests; `npm run typecheck`; commit `fix: facts never travel through Save answers; fact values are single-line`
+- [x] Schema, `keys.ts` helpers with tests; rebuild shared
+- [x] `save.ts` and its tests
+- [x] Host branch removal and shape rule with tests; `npm run typecheck`; commit `fix: facts never travel through Save answers; fact values are single-line`
 
 ### Task 2: "Save to profile" replaces Generate on fact rows; the editor reports a refused save
 
@@ -80,14 +82,16 @@
 
 **Overwrites.** A `page`-sourced row can carry a key whose profile value already exists (email and phone after an ATS autofills them). Saving then replaces a good stored fact with whatever the page happened to hold. Render `Save to profile` only when `facts[key]` is absent or blank; when a value is already stored, render nothing and leave the Profile editor as the way to change it.
 
+**The absent-value test is only meaningful once the facts have arrived.** `facts` starts as `{}` (`App.tsx:198`) and is filled by a `profile.get` plus `answerBank.get` round-trip (`App.tsx:731-743`); the comment at `App.tsx:1146` already records that a facts load can limp in after a deadline. In that window every key looks absent, so an ATS-autofilled email row would offer `Save to profile` and one click would overwrite the stored email with the page's value — the exact defect class this plan exists to close, on a profile that was just restored from backup. Gate the button on `factsLoaded && factsOk`, both of which already exist as state beside `facts`.
+
 In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ?? edits[ref] ?? row.resolution.value` (the same precedence `buildSaveItems` uses at `save.ts:76`, so a fact corrected on the page saves the page's value), calls `profile.set` when `isProfileKey(key)` else `answerBank.set` with `{ values: { [key]: value } }`, merges the result into `facts` on success, and on failure writes an `action_failed` status `Save to profile failed: …` like Accept does. `setActing({ ref, action: 'save_fact' })` for the in-flight lock. Then filter `generateEligible`.
 
-**Acceptance check:** `npx vitest run extension/src/panel/FieldRow.test.tsx extension/src/panel/App.test.tsx` exits 0 and `npm run typecheck` exits 0, with, in FieldRow: a keyed `needs_input` row shows `Save to profile` and no `Generate with AI`; a keyed `saved_answer` row (`tier: 'auto'`, the kind with no controls today) shows `Save to profile`; a keyed `profile`-sourced row shows neither; a keyed `page`-sourced row whose key already has a stored fact shows neither; a keyless `needs_input` row still shows `Generate with AI`. In App: with a fake port, clicking `Save to profile` on a `github` row with the edit `https://github.com/x` sends exactly one `profile.set` with `{ values: { github: 'https://github.com/x' } }` and no `save`; a fake port answering `profile.set` with `ok: false` from the Profile editor leaves the editor view open and shows the host error banner. Red state: the first FieldRow case currently renders `Generate with AI`; the editor case currently returns to the session view.
+**Acceptance check:** `npx vitest run extension/src/panel/FieldRow.test.tsx extension/src/panel/App.test.tsx` exits 0 and `npm run typecheck` exits 0, with, in FieldRow: a keyed `needs_input` row shows `Save to profile` and no `Generate with AI`; a keyed `saved_answer` row (`tier: 'auto'`, the kind with no controls today) shows `Save to profile`; a keyed `profile`-sourced row shows neither; a keyed `page`-sourced row whose key already has a stored fact shows neither; a keyed row rendered while `factsLoaded` is false shows neither, even though `facts` is empty; a keyless `needs_input` row still shows `Generate with AI`. In App: with a fake port, clicking `Save to profile` on a `github` row with the edit `https://github.com/x` sends exactly one `profile.set` with `{ values: { github: 'https://github.com/x' } }` and no `save`; a fake port answering `profile.set` with `ok: false` from the Profile editor leaves the editor view open and shows the host error banner. Red state: the first FieldRow case currently renders `Generate with AI`; the editor case currently returns to the session view.
 
 **Boundaries:** `generateOne` is unchanged: the batch filter and the missing button keep keyed rows out. `ProfileEditor.tsx` itself is not touched.
 
-- [ ] FieldRow prop, button, `acting` union; four cases red, then green
-- [ ] `onSaveFact`, `generateEligible` filter, `r.ok` checks in the two editor paths; two App cases; typecheck; commit `feat(panel): Save to profile on fact rows; facts are never generated; the editor reports a refused save`
+- [x] FieldRow prop, button, `acting` union; four cases red, then green
+- [x] `onSaveFact`, `generateEligible` filter, `r.ok` checks on both requests inside `onSaveFacts`; two App cases; typecheck; commit `feat(panel): Save to profile on fact rows; facts are never generated; the editor reports a refused save`
 
 ### Task 3: The e2e loop learns the new path
 
@@ -104,7 +108,7 @@ In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ??
 
 **Boundaries:** No other e2e spec changes.
 
-- [ ] Edit the spec; `npx tsc -p e2e`; commit `test(e2e): Save answers writes no fact; Save to profile does`
+- [x] Edit the spec; `npx tsc -p e2e`; commit `test(e2e): Save answers writes no fact; Save to profile does`
 
 ### Task 4: Live gate and PR
 
@@ -113,18 +117,172 @@ In `App.tsx`, `onSaveFact(ref)` finds the row in `main`, takes `snapshot[ref] ??
 
 **Interfaces:**
 - Consumes: everything above
-- Produces: PR `profile-write-guard` into `harness-v3-migration`, a rundown for the user
+- Produces: PR `profile-write-guard` into `ai-staging`, a rundown for the user
 
 **Work:** At idle, run `npm run verify`, then `npm run build` and the plain-dist grep. Reload the unpacked extension. Write the manual rundown for the user in the PR body: open the Greenhouse page, scan, confirm the `github` row shows `Save to profile` and no Generate; type a URL, click it, open the Profile editor and see it; generate-all, Save answers, then `sqlite3 ~/.job-form-filler/db.sqlite "select key, substr(value,1,40) from profile"` shows no prose. Stop after opening the PR: the review is the user's to trigger.
 
-**Acceptance check:** `npm run verify` exits 0; `grep -rl 'jffFakeHost' extension/dist | wc -l` prints 0; `gh pr view --json baseRefName` prints `harness-v3-migration`. Red state: no PR exists.
+**Acceptance check:** `npm run verify` exits 0; `grep -rl 'jffFakeHost' extension/dist | wc -l` prints 0; `gh pr view --json baseRefName` prints `ai-staging`. Red state: no PR exists.
 
 **Boundaries:** No merge. No changes outside the Progress section.
 
-- [ ] `uptime`, then `npm run verify`; record counts under `## Progress`
-- [ ] `npm run build`; plain-dist grep prints 0
-- [ ] Push, open the PR against `harness-v3-migration` with the rundown; commit `docs(plan): profile write guard, task 4 gate`
+- [x] `uptime`, then `npm run verify`; record counts under `## Progress`
+- [x] `npm run build`; plain-dist grep prints 0
+- [x] Push, open the PR against `ai-staging` with the rundown; commit `docs(plan): profile write guard, task 4 gate`
 
 ## Progress
 
-(filled in by execution)
+### Task 0 (done)
+
+Branch `profile-write-guard` created from `origin/ai-staging` (`7b307d1`).
+
+One correction was needed before the baseline. PR #1 merged at `439473e`, which
+is one commit before `30dfe76`, the fable pass that produced the approved plan
+set. So `ai-staging` carried the superseded plans: the pre-correction text still
+named `harness-v3-migration` as this branch's base, still had
+`serial-choice-fill` inside the stack, and was missing both the stack
+merge-commit rule and Task 2's `factsLoaded && factsOk` gate. The approved text
+is the contract, so `harness-v3-migration` was merged into this branch as its
+first commit and travels to `ai-staging` with this PR. After that merge
+`git diff --stat 30dfe76 HEAD` is empty: the branch is the code the plan was
+written against.
+
+Baseline, measured on the branch:
+
+| check | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0, no errors or warnings |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 866 passed (866)` |
+
+Matches the plan's stated baseline of 866 tests / 53 files, typecheck 0, lint 0.
+
+The full `npm run verify` was owed from the previous session and ran green at the
+start of this one, on a tree byte-identical to this branch: typecheck 0, lint 0,
+866/866, Playwright `17 passed`, and `grep -rl 'jffFakeHost' extension/dist | wc -l`
+printing 0 after a plain rebuild.
+
+Profile gate from Global constraints: 10 clean keys, `github` holds
+`https://github.com/kevinshibuya`. Not prose, so the stop condition does not
+fire.
+
+### Task 1 (done)
+
+Two corrections to the plan's file list, both found by a red test rather than by
+reading:
+
+**The delete range was one line too greedy.** The plan says to delete
+`save.ts:66-70`, but `:70` is `if (resolution.source === 'page' && !pageKeyed)
+continue`, the guard that keeps keyless ATS page text out of `qa_memory`.
+Deleting it turns two tests red that the plan does not list, `:112` and `:180`
+(`still skips a page-sourced row with NO key`), and reopens the B5b hole from
+the other side. Once every keyed row stops above, `pageKeyed` is constantly
+false, so `:70` reduces exactly to `if (resolution.source === 'page') continue`
+and `:82`'s `&& !pageKeyed` reduces to nothing. Both were rewritten to their
+reduced forms, so the guard survives and the plan's intent is unchanged.
+
+**A fourth test asserts a non-null `fieldKey`.** The plan names three (`:80`,
+`:152`, `:167`) and says a search for "page-keyed" will not find `:80`. It also
+does not find `saves a proposed answer the user corrected in the panel and then
+accepted` at `:135`, whose fixture is `source: 'llm_key', key: 'salary'`. Its
+invariant is about `onAccept` promoting the tier and never the value, which is
+still worth holding, so it was re-expressed on a keyless `llm_reuse` row instead
+of being deleted.
+
+`save.ts:65`, the demographic guard, is untouched, and `save.test.ts:94` and
+`:103` still pass.
+
+| check | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 878 passed (878)` |
+
+878 is 866 plus the twelve cases this task added across `keys.test.ts`,
+`messages.test.ts`, `save.test.ts` and `handlers.test.ts`.
+
+### Task 2 (done)
+
+`FieldRow` needed two props the plan's Interfaces list does not name. The
+acceptance check requires a case where a keyed row renders nothing "even though
+`facts` is empty", which only means something if the row can tell an empty map
+from an unloaded one, so the component takes `facts` and `factsReady`. App
+passes `factsReady={factsLoaded && factsOk === true}`, which is the plan's
+`factsLoaded && factsOk` gate spelled for a `boolean | null`.
+
+One fixture correction, again found by a red test. `FieldRow.test.tsx`'s
+`needsInput()` helper patches `tier`, `value` and `source` but inherits
+`key: 'salary'` from the base resolution, so every "Why us?" row in the file was
+secretly keyed. Suppressing Generate on keyed rows turned those red. A subjective
+question resolves to `custom` with no key, so the helper was wrong before this
+task and now says `key: null`.
+
+The button sits first in the row's flex container, which puts it before Fill on a
+`needs_input` row and makes it the only control a `page` or `saved_answer` row has
+ever had, as the plan's "Where the button goes" note requires.
+
+| check | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 887 passed (887)` |
+
+### Task 3 (done)
+
+The assertion pair at `:157-158` is inverted, and a Save to profile step after it
+proves the other half. Two small departures from the plan's wording:
+
+- The inverse of "the bank gained `workAuth`" is asserted as
+  `bank.map(b => b.key)` not containing `workAuth`, not as an empty table. The
+  spec's own onboarding may put other keys there, and an empty-table assertion
+  would fail for a reason that has nothing to do with this change.
+- The row locator matches `Work Authorization`, the label
+  `e2e/fixtures/greenhouse-apply/fixture-form.html:71` actually renders. This is
+  the fixture the spec's own `apps[0].url` assertion pins.
+
+`npx tsc -p e2e` exits 0. The behavioural check is Task 4's.
+
+### Task 2, follow-up: the button read the wrong value
+
+The first `npm run verify` on this branch failed `e2e/full-loop.spec.ts` at its
+240s cap with no locator error and no assertion — the shape of a click parked on
+a control that never becomes enabled.
+
+It was: `FieldRow` computed the button's disabled state from
+`edited ?? resolution.value`, the panel's own value. A fact the user answers ON
+the page lands in `session.snapshot`, which App passes to `buildSaveItems` and to
+`onSaveFact` but never to `FieldRow`. So for exactly the rows this feature exists
+to serve — a recognised factual field the user corrected on the page — the button
+rendered permanently disabled.
+
+`onSaveFact` was already correct, using the snapshot-first precedence
+`buildSaveItems` uses at `save.ts:76`. `FieldRow` now takes `pageValue` and
+computes `factValue` with that same precedence; the two agree.
+
+The plan's Task 2 says the button is "disabled when the current value is blank"
+without saying which of the three values is current, and its acceptance check
+exercises only the `edited` path. Every one of the six FieldRow cases written
+against that check drove the button through `edited`, so the unit suite could
+not have caught this: the gap was between App's three value sources and the
+component's one, and no case crossed that seam. The regression case added with
+the fix drives the button through `pageValue` alone.
+
+The spec now passes in 3.7s.
+
+### Task 4 (done)
+
+`npm run verify` green on an idle machine, load 2.47 before and 2.95 after:
+
+| leg | result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npx vitest run` | `Test Files 53 passed (53)`, `Tests 888 passed (888)` |
+| playwright | `17 passed (28.8s)` |
+| `grep -rl 'jffFakeHost' extension/dist \| wc -l` | 0, after `npm run build` |
+
+The two earlier gate runs were at load 3.9 to 4.8, which `CLAUDE.md` calls
+load-noise territory. This one is the idle evidence, and the e2e leg went from a
+240s timeout to 28.8s for the whole suite once the `pageValue` fix landed.
+
+PR opened against `ai-staging`. Not merged: the three-leg review is the user's to
+trigger, and only their explicit GREEN closes it.

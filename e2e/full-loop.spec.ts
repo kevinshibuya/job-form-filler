@@ -153,13 +153,25 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     expect(bug.reusability).toBe('reusable')
     // The unlabelled field is skipped by design.
     expect(answers.map((a) => a.answer)).not.toContain('unlabelled, must never be saved')
-    // The factual correction routed to the ANSWER BANK, not qa_memory.
-    expect(bank).toContainEqual({ key: 'workAuth', value: 'I am authorized to work for any employer in the US.' })
+    // Save answers writes NO fact, to either store. The correction is on the page
+    // and in the panel, and neither of those is a decision to keep it.
+    expect(bank.map((b) => b.key)).not.toContain('workAuth')
     expect(answers.map((a) => a.answer)).not.toContain('I am authorized to work for any employer in the US.')
     // One application row, with the edited company and exactly one generated draft.
     expect(apps).toHaveLength(1)
     expect(apps[0]!).toMatchObject({ company: 'Acme', generated_count: 1 })
     expect(apps[0]!.url).toContain('fixture-form.html')
+
+    // ...and "Save to profile" is what does write it. The row carries key
+    // 'workAuth' and nothing is stored under it yet, so the button is offered.
+    const authRow = panel.locator('li', { hasText: 'Work Authorization' })
+    await authRow.locator('[data-jff-save-fact="1"]').click()
+    await expect(authRow.locator('[data-jff-save-fact="1"]')).toHaveCount(0, { timeout: 30_000 })
+
+    const db2 = new DatabaseCtor(host.dbPath, { readonly: true })
+    const bank2 = db2.prepare('SELECT key, value FROM answer_bank').all() as { key: string; value: string }[]
+    db2.close()
+    expect(bank2).toContainEqual({ key: 'workAuth', value: 'I am authorized to work for any employer in the US.' })
 
     // Protocol hygiene: the host never wrote anything but frames to stdout, and it
     // logged to stderr. A stray console.log would have corrupted every response.

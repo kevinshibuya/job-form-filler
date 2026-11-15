@@ -53,11 +53,19 @@ the only two user-visible fixes in the set.
   `2026-09-03-serial-choice-fill.md`.
 - **E. Docs**: this spec, ADR 0007, the glossary entries. Done during the grill.
 
-Execution order, as one linear branch stack: A, C1, D, B, C2. Each branch is
-created from the previous and its PR is based on the previous, retargeted to
-`ai-staging` as the parent merges. They all edit `App.tsx`, and the stack is
-what keeps them from colliding. C2 consumes B's ATS modules; C1 does not, and
-deliberately ships before B so defects 7 and 8 land first.
+Execution shape: two lanes. A → C1 → B → C2 is a linear branch stack, each
+branch created from the previous and its PR based on the previous, retargeted
+to `ai-staging` as the parent merges. Those four all edit `App.tsx` and each
+consumes the one before it (A adds an `action_failed` site C1 migrates; C1
+rewires the render site B extends with `hint`; C2 consumes B's modules), so
+the stack is what keeps them from colliding. C1 deliberately ships before B so
+defects 7 and 8 land first.
+
+D runs in parallel, straight from `ai-staging`. Its files are `fill.ts` and
+`fill.test.ts`, which no other plan touches, and its boundaries forbid changing
+the panel — so stacking it would make the defect-9 containment wait behind two
+unrelated reviews for no benefit. Stack PRs merge with a merge commit, not a
+squash, so a retarget needs no rebase.
 
 Out of scope, deliberately: Workday, Lever, Gupy modules; an ATS gesture that
 clicks the page to make the form present; a control adapter hook (the fill
@@ -327,13 +335,10 @@ sequence to open, so the same may hold for selecting.
   line under the list: `<n> ignored · show`, which toggles a collapsed list of
   the ignored labels, each with **Restore**.
 - **C4.** Capture. A **Save a capture** button (`data-jff-capture`) next to
-  Discard session. The panel sends `JFF_CAPTURE { epoch }` to the elected
-  frame; the content script answers `{ ok: true, html }` where `html` is the
-  document's `outerHTML` after: removing every `script` element; removing the
-  `value` attribute of every `input`; emptying every `textarea`'s text and
-  every `[contenteditable]`'s text; clearing `selected` on every `option`;
-  capped at 2,000,000 characters (truncated with a trailing
-  `<!-- jff: truncated -->`). The panel redacts the scan evidence before
+  Discard session. The panel sends `JFF_CAPTURE { epoch, secrets }` to the
+  elected frame; the content script answers `{ ok: true, html }` where `html`
+  is the document's `outerHTML` after the redaction stated below, capped at
+  2,000,000 characters (truncated with a trailing `<!-- jff: truncated -->`). The panel redacts the scan evidence before
   sending: every field's `currentValue` and every resolution's `value` become
   null, and the host refuses an unredacted payload. The panel sends host
   `capture.save { ats, url, hostname, html, fields, resolutions, ignoredRefs,
@@ -412,7 +417,7 @@ the whole set:
 1. Greenhouse page: scan, batch fill, Degree commits or is reported failed;
    the Save answers count excludes fact rows; `earliestStart` targets one field.
 2. Ashby direct URL, landing state: the empty state renders with the Ashby
-   hint. Application tab: the hidden autofill input is gone from the list.
+   hint. Application tab: the hidden autofill input is gone from the list, or, if the Ashby Capture showed no signal that separates it from the résumé input, a recorded reason under Progress for leaving it (and the résumé still uploads).
 3. Both pages: Save a capture, file lands under `~/.job-form-filler/captures/`.
 4. Job description line reads the right source on both; "Not the job
    description" clears and the picker re-learns.
