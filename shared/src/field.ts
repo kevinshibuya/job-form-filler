@@ -19,6 +19,9 @@ export type FieldHandle = z.infer<typeof FieldHandleSchema>
 
 export const WidgetKindSchema = z.enum([
   'text', 'textarea', 'select', 'combobox', 'radiogroup', 'checkbox', 'file', 'choice',
+  // Checkboxes that share a name or a group label: one Field whose Options are
+  // the boxes' labels and whose Value is a set of them (a multi-choice Control).
+  'checkboxgroup',
 ])
 export type WidgetKind = z.infer<typeof WidgetKindSchema>
 
@@ -52,6 +55,24 @@ export type EnumField = z.infer<typeof EnumFieldSchema>
  */
 export function isConsentCheckbox(field: Pick<EnumField, 'kind'>): boolean {
   return field.kind === 'checkbox'
+}
+
+/** A checkbox group: one Field, a multi-choice Control, its Options the boxes' labels. */
+export function isCheckboxGroup(field: Pick<EnumField, 'kind'>): boolean {
+  return field.kind === 'checkboxgroup'
+}
+
+/**
+ * The Value of a multi-choice Control is a set of Option labels. Wherever it
+ * travels as text, the set is its labels joined by a newline, in page order.
+ */
+export function optionSetValue(labels: readonly string[]): string {
+  return labels.join('\n')
+}
+
+/** The Option labels a Value written as text holds, blank lines dropped. */
+export function optionSetLabels(value: string): string[] {
+  return value.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '')
 }
 
 /** What the panel does with a resolved field. */

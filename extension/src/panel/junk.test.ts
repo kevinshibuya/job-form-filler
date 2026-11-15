@@ -31,6 +31,12 @@ describe('keepField', () => {
     expect(keepField(field({ kind: 'checkbox', visible: false, label: null }))).toBe(false)
   })
 
+  it('keeps a hidden checkbox group with a label as a row, as it keeps a hidden lone checkbox', () => {
+    const group = { kind: 'checkboxgroup' as const, visible: false, options: ['He/him', 'She/her'] }
+    expect(keepField(field({ ...group, label: 'Pronouns' }))).toBe(true)
+    expect(keepField(field({ ...group, label: null }))).toBe(false)
+  })
+
   it('keeps hidden file inputs ONLY with a resolvable label (no blanket exemption)', () => {
     expect(keepField(field({ kind: 'file', visible: false, label: 'Resume' }))).toBe(true)
     expect(keepField(field({ kind: 'file', visible: false, label: null }))).toBe(false)
