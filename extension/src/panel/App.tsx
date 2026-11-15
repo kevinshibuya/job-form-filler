@@ -4,6 +4,7 @@ import { isProfileKey } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow } from './FieldRow'
+import { isTickRow } from './CheckboxGroupRow'
 import { buildRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
@@ -1410,6 +1411,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // A keyed row is a fact. It is saved, never drafted, so it stays out of the
     // batch exactly as it stays out of the per-row Generate button.
     && r.resolution.key === null
+    // A tick-box row is answered by ticking, never drafted.
+    && !isTickRow(r.field)
     && (r.field.label ?? '').trim() !== ''
     && (edits[r.ref] ?? '').trim() === ''
     && !generatedRefs.includes(r.ref)

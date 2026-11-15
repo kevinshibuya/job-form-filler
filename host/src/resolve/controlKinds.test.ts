@@ -195,3 +195,19 @@ describe('a lone checkbox is a Consent checkbox', () => {
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null, answerId: null })
   })
 })
+
+describe('a checkbox group takes no Known key', () => {
+  it('a pronoun checkbox group takes no Known key and goes to Mapping, told its Control kind and Options', async () => {
+    const pronouns = field('Pronouns', 'checkboxgroup', { options: ['He/him', 'She/her', 'They/them'] })
+    const [r] = await resolve(pronouns)
+    expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
+    expect(mappingPrompt()).toContain(`ref=${refOf(pronouns)} kind=checkboxgroup`)
+    expect(mappingPrompt()).toContain('She/her')
+  })
+
+  it('a checkbox group under a demographic heading is one Skipped Resolution', async () => {
+    const group = field('Which of these describe you?', 'checkboxgroup', { options: ['Option A', 'Option B'], demographic: true })
+    const out = await resolve(group)
+    expect(out).toEqual([expect.objectContaining({ tier: 'skipped', value: null, key: null })])
+  })
+})

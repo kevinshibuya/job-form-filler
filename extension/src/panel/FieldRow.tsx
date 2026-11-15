@@ -1,5 +1,6 @@
 import type { ResolutionTier } from '@jff/shared'
 import { norm } from '@jff/shared'
+import { CheckboxGroupEditor, ConsentTick, isTickRow } from './CheckboxGroupRow'
 import { SOURCE_BADGE, type Row } from './group'
 import { scoreResumeField } from './resumeTarget'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from './ui'
@@ -64,11 +65,13 @@ export interface FieldRowProps {
   onFillResume?: (ref: string) => void
 }
 
-type EditorKind = 'segmented' | 'picker' | 'combobox-empty' | 'file' | 'textarea'
+type EditorKind = 'segmented' | 'picker' | 'combobox-empty' | 'file' | 'textarea' | 'checkboxes' | 'consent'
 
 function editorKindOf(row: Row): EditorKind {
   const { field } = row
   if (field.kind === 'file') return 'file'
+  if (field.kind === 'checkboxgroup') return 'checkboxes'
+  if (field.kind === 'checkbox') return 'consent'
   if ((field.kind === 'choice' || field.kind === 'radiogroup')
     && field.options.length > 0 && field.options.length <= SEGMENTED_MAX_OPTIONS) return 'segmented'
   if (field.options.length > 0) return 'picker' // >5-option sets, selects, harvested comboboxes
@@ -114,7 +117,7 @@ export function FieldRow(p: FieldRowProps) {
   return (
     <li className={rowClass} data-jff-tier={resolution.tier}>
       <div className="flex items-baseline gap-1.5">
-        <label className="font-semibold" htmlFor={`f-${ref}`}>{label}</label>
+        <label className="font-semibold" id={`l-${ref}`} htmlFor={`f-${ref}`}>{label}</label>
         {field.required && <RequiredMark />}
         <span
           data-jff-tier-badge="1"
@@ -137,6 +140,15 @@ export function FieldRow(p: FieldRowProps) {
       {field.description !== undefined && field.description !== '' && (
         <p data-jff-description="1" className={`mt-0.5 text-[12px] ${MUTED}`}>{field.description}</p>
       )}
+
+      {editor === 'checkboxes' && (
+        <CheckboxGroupEditor
+          options={field.options} value={value} labelledBy={`l-${ref}`}
+          onChange={(v) => onEdit(ref, v)}
+        />
+      )}
+
+      {editor === 'consent' && <ConsentTick id={`f-${ref}`} value={value} onChange={(v) => onEdit(ref, v)} />}
 
       {editor === 'segmented' && (
         <div className="mt-1.5 flex flex-wrap gap-1" role="group" data-jff-editor="segmented">
@@ -239,7 +251,8 @@ export function FieldRow(p: FieldRowProps) {
             <>
               {/* A9: a foreign row has no resolution the host ever saw, so there
                   is nothing to generate against — manual Fill is all it gets. */}
-              {p.foreign !== true && !keyed && (
+              {/* A tick-box row is answered by ticking, never drafted. */}
+              {p.foreign !== true && !keyed && !isTickRow(field) && (
                 <button type="button" className={BTN} disabled={generating || locked || acting !== null} onClick={() => onGenerate(ref)}>
                   {generating ? 'Drafting…' : 'Generate with AI'}
                 </button>

@@ -1,3 +1,4 @@
+import { groupBoxesOf, groupValue } from './checkboxGroup'
 import { walkElements } from './dom'
 import { getEpoch } from './enumerate'
 
@@ -7,6 +8,9 @@ export interface SnapshotPayload {
 }
 
 function liveValue(el: Element): string {
+  // A checkbox group's Value: its ticked labels, one per line, never "true".
+  const group = groupBoxesOf(el)
+  if (group !== null) return groupValue(group) ?? ''
   if (el instanceof HTMLSelectElement) return (el.selectedOptions[0]?.textContent ?? '').trim()
   if (el instanceof HTMLInputElement && el.type === 'checkbox') return el.checked ? 'true' : ''
   if (el instanceof HTMLInputElement && el.type === 'radio') return el.checked ? (el.value || 'true') : ''
