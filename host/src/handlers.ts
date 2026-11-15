@@ -16,6 +16,7 @@ import { CodexError, type CodexRunner } from './llm/codexCli.js'
 import { buildProfileSummary, runGeneration, sanitizeDraft, type GenerationInput } from './llm/generate.js'
 import { readProjectNotes } from './llm/projects.js'
 import { reviewDraft } from './llm/reviewDraft.js'
+import { claimsInDraft } from './llm/draftCheck.js'
 import { runFactsExtract } from './llm/factsExtract.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
@@ -127,18 +128,23 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           references,
         }
         const draft = await runGeneration(deps.runner, input, { model: deps.models.generate })
-        // B2d: claude draft → codex review → final. ANY reviewer failure
-        // degrades to the unreviewed draft — codex never blocks generation.
-        let final = draft
+        // B2d: claude draft → Draft check (codex) → final. ANY Draft check
+        // failure degrades to the unchecked draft — codex never blocks
+        // generation. A flagged sentence reaches the reply only when the final
+        // Draft contains it (ADR 0004: the Draft is still shown, with the warning).
+        let reply: { draft: string; unsupportedClaims?: string[] } = { draft }
         try {
-          final = sanitizeDraft(await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft, retryTransient: false }))
+          const checked = await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft, retryTransient: false })
+          const final = sanitizeDraft(checked.draft)
+          const unsupportedClaims = claimsInDraft(final, checked.unsupported)
+          reply = unsupportedClaims.length === 0 ? { draft: final } : { draft: final, unsupportedClaims }
         } catch (e) {
           const kind = e instanceof CodexError ? e.kind : 'process'
           log('warn', 'codex review failed; returning unreviewed draft', {
             kind, message: e instanceof Error ? e.message : String(e),
           })
         }
-        return ok(req.requestId, { draft: final })
+        return ok(req.requestId, reply)
       }
 
       case 'save': {

@@ -149,6 +149,66 @@ describe('handleRequest', () => {
     }
   })
 
+  it('carries the Draft and a sentence the Draft check flags as a warning', async () => {
+    complete.mockResolvedValueOnce({ draft: 'claude draft' })
+    codexComplete.mockResolvedValueOnce({
+      draft: 'I would enjoy this role. I do not need any accommodations.',
+      unsupported: ['I do not need any accommodations.'],
+    })
+    const r = await handleRequest(deps, genReq('gen-w1'))
+    expect(r).toEqual({ requestId: 'gen-w1', ok: true, result: {
+      draft: 'I would enjoy this role. I do not need any accommodations.',
+      unsupportedClaims: ['I do not need any accommodations.'],
+    } })
+  })
+
+  it('quotes a flagged sentence that differs from the Draft only in spacing or in a dash the clean-up rewrote', async () => {
+    complete.mockResolvedValueOnce({ draft: 'claude draft' })
+    codexComplete.mockResolvedValueOnce({
+      draft: 'I can start soon — next month works. I do not need any accommodations.',
+      unsupported: ['I can start soon — next month works.', 'I do not  need any\naccommodations .'],
+    })
+    const r = await handleRequest(deps, genReq('gen-w2'))
+    expect(r).toMatchObject({ ok: true, result: {
+      draft: 'I can start soon, next month works. I do not need any accommodations.',
+      unsupportedClaims: ['I can start soon, next month works.', 'I do not need any accommodations.'],
+    } })
+  })
+
+  it('drops a flagged sentence the Draft does not contain', async () => {
+    complete.mockResolvedValueOnce({ draft: 'claude draft' })
+    codexComplete.mockResolvedValueOnce({
+      draft: 'I would enjoy this role. I do not need any accommodations.',
+      unsupported: ['I have no disability.', 'I do not need any accommodations.'],
+    })
+    const r = await handleRequest(deps, genReq('gen-w3'))
+    expect(r).toMatchObject({ ok: true, result: { unsupportedClaims: ['I do not need any accommodations.'] } })
+
+    complete.mockResolvedValueOnce({ draft: 'claude draft' })
+    codexComplete.mockResolvedValueOnce({ draft: 'I would enjoy this role.', unsupported: ['I have no disability.'] })
+    const only = await handleRequest(deps, genReq('gen-w4'))
+    expect(only).toEqual({ requestId: 'gen-w4', ok: true, result: { draft: 'I would enjoy this role.' } })
+  })
+
+  it('gives no warning when the Draft check flags nothing, or replies in the old shape', async () => {
+    complete.mockResolvedValueOnce({ draft: 'claude draft' })
+    codexComplete.mockResolvedValueOnce({ draft: 'I would enjoy this role.', unsupported: [] })
+    expect(await handleRequest(deps, genReq('gen-w5')))
+      .toEqual({ requestId: 'gen-w5', ok: true, result: { draft: 'I would enjoy this role.' } })
+
+    complete.mockResolvedValueOnce({ draft: 'claude draft' })
+    codexComplete.mockResolvedValueOnce({ draft: 'I would enjoy this role.' })
+    expect(await handleRequest(deps, genReq('gen-w6')))
+      .toEqual({ requestId: 'gen-w6', ok: true, result: { draft: 'I would enjoy this role.' } })
+  })
+
+  it('returns the unchecked Draft with no unsupported-claim warning when the Draft check fails', async () => {
+    complete.mockResolvedValueOnce({ draft: 'I do not need any accommodations.' })
+    codexComplete.mockRejectedValueOnce(new CodexError('timeout', 'codex exec exceeded 120000ms'))
+    expect(await handleRequest(deps, genReq('gen-w7')))
+      .toEqual({ requestId: 'gen-w7', ok: true, result: { draft: 'I do not need any accommodations.' } })
+  })
+
   it('a claude failure surfaces as the host error and codex is never consulted', async () => {
     complete.mockRejectedValueOnce(new ClaudeError('rate_limit', 'limit'))
     const r = await handleRequest(deps, genReq('gen-cf'))

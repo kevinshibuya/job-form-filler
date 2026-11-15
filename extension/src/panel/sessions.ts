@@ -38,6 +38,9 @@ export interface Session {
   reuseOverrides: Record<string, 'reusable' | 'company_specific'>
   filledRefs: string[]
   generatedRefs: string[]
+  /** ref → the sentences of that row's Draft the Draft check found unsupported
+   *  by the user's own material. A ref is absent when its Draft has none. */
+  draftWarnings: Record<string, string[]>
   unreachable: number
   activeCaptcha: boolean
   election: ElectionOutcome | null
@@ -92,6 +95,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     reuseOverrides: {},
     filledRefs: [],
     generatedRefs: [],
+    draftWarnings: {},
     unreachable: 0,
     activeCaptcha: false,
     election: null,
@@ -158,7 +162,7 @@ export function rememberAnswer(
  *
  * Refs are meaningless across a re-enumeration (`fid` restarts at 0), so every
  * ref-keyed assertion dies with the page: `filledRefs`, `generatedRefs`,
- * `snapshot`, `reuseOverrides`, `election` and the old `edits`. What comes back
+ * `draftWarnings`, `snapshot`, `reuseOverrides`, `election` and the old `edits`. What comes back
  * is derived from the label-keyed carry:
  *  - primary hit: `answers[answerKey(label)]`;
  *  - secondary hit (primary missed and the new resolution has a key): the SINGLE
@@ -218,6 +222,7 @@ export function projectAnswers(
     resolutions: newResolutions,
     edits,
     generatedRefs,
+    draftWarnings: {},
     filledRefs: [],
     snapshot: {},
     reuseOverrides: {},
@@ -318,6 +323,9 @@ const isField = (v: unknown): boolean =>
 
 const allStrings = (a: unknown[]): boolean => a.every((x) => typeof x === 'string')
 
+const isDraftWarnings = (v: unknown): v is Record<string, string[]> =>
+  isRecord(v) && Object.values(v).every((w) => Array.isArray(w) && allStrings(w))
+
 /** Structural gate on untrusted storage rows: a version mismatch or any shape
  *  surprise yields null rather than a half-typed Session. Never throws. */
 export function parseStoredSession(raw: unknown): Session | null {
@@ -338,10 +346,10 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (!allStrings(raw.filledRefs) || !allStrings(raw.generatedRefs)) return null
     if (!isRecord(raw.edits) || !isRecord(raw.answers)) return null
     if (!isRecord(raw.snapshot) || !isRecord(raw.reuseOverrides)) return null
-    // A row stored before waiting rows existed has nothing waiting.
-    if (raw.waiting === undefined) return { ...(raw as unknown as Session), waiting: [] }
-    if (!Array.isArray(raw.waiting) || !allStrings(raw.waiting)) return null
-    return raw as unknown as Session
+    // A row stored before waiting rows, or Draft warnings, existed has none.
+    if (raw.waiting !== undefined && (!Array.isArray(raw.waiting) || !allStrings(raw.waiting))) return null
+    if (raw.draftWarnings !== undefined && !isDraftWarnings(raw.draftWarnings)) return null
+    return { ...(raw as unknown as Session), waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {} }
   } catch {
     return null
   }
