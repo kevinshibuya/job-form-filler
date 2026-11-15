@@ -24,6 +24,11 @@ export const REASON_HINT: Record<string, string> = {
 
 const SEGMENTED_MAX_OPTIONS = 5
 
+/** The same mark on every row kind, Skipped included, so the user sees what is still theirs to answer. */
+function RequiredMark() {
+  return <span className="text-red-600 dark:text-red-400" title="required">*</span>
+}
+
 export interface FieldRowProps {
   row: Row
   edited: string | null
@@ -95,7 +100,10 @@ export function FieldRow(p: FieldRowProps) {
   if (resolution.tier === 'skipped') {
     return (
       <li className={rowClass} data-jff-tier="skipped">
-        <div className="flex items-baseline gap-1.5"><span className="font-semibold">{label}</span></div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="font-semibold">{label}</span>
+          {field.required && <RequiredMark />}
+        </div>
         <p className={`mt-1 text-[12px] ${MUTED}`}>Demographic question. Never auto-filled.</p>
       </li>
     )
@@ -107,7 +115,7 @@ export function FieldRow(p: FieldRowProps) {
     <li className={rowClass} data-jff-tier={resolution.tier}>
       <div className="flex items-baseline gap-1.5">
         <label className="font-semibold" htmlFor={`f-${ref}`}>{label}</label>
-        {field.required && <span className="text-red-600 dark:text-red-400" title="required">*</span>}
+        {field.required && <RequiredMark />}
         <span
           data-jff-tier-badge="1"
           className={`rounded-full border border-neutral-200 px-1.5 text-[11px] dark:border-neutral-700 ${MUTED}`}
