@@ -11,12 +11,12 @@ export type LlmTask =
 /** Exact ids from the harness model table. Claude writes prose, Codex runs the
  *  structured tasks. */
 export const DEFAULT_MODELS: Readonly<Record<LlmTask, string>> = Object.freeze({
-  factsExtract: 'gpt-5.6-sol',
-  mapping: 'gpt-5.6-sol',
-  generate: 'claude-opus-5',
-  reviewDraft: 'gpt-5.6-sol',
-  claudeAuthProbe: 'claude-opus-5',
-  codexAuthProbe: 'gpt-5.6-luna',
+  factsExtract: 'gpt-6.1-sol',
+  mapping: 'gpt-6.1-sol',
+  generate: 'claude-opus-5-5',
+  reviewDraft: 'gpt-6.1-sol',
+  claudeAuthProbe: 'claude-opus-5-5',
+  codexAuthProbe: 'gpt-6-luna',
 })
 
 export const LLM_TASKS: readonly LlmTask[] = Object.freeze(

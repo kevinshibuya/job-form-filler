@@ -4,13 +4,20 @@ import { DEFAULT_MODELS, LLM_TASKS, resolveModels } from './models.js'
 describe('DEFAULT_MODELS', () => {
   it('pins the exact id per task from the harness model table', () => {
     expect(DEFAULT_MODELS).toEqual({
-      factsExtract: 'gpt-5.6-sol',
-      mapping: 'gpt-5.6-sol',
-      generate: 'claude-opus-5',
-      reviewDraft: 'gpt-5.6-sol',
-      claudeAuthProbe: 'claude-opus-5',
-      codexAuthProbe: 'gpt-5.6-luna',
+      factsExtract: 'gpt-6.1-sol',
+      mapping: 'gpt-6.1-sol',
+      generate: 'claude-opus-5-5',
+      reviewDraft: 'gpt-6.1-sol',
+      claudeAuthProbe: 'claude-opus-5-5',
+      codexAuthProbe: 'gpt-6-luna',
     })
+  })
+
+  it('names no retired id', () => {
+    for (const id of Object.values(DEFAULT_MODELS)) {
+      expect(id).not.toMatch(/^gpt-5\.6-/)
+      expect(id).not.toBe('claude-opus-5')
+    }
   })
 
   it('LLM_TASKS lists every key of the table', () => {
