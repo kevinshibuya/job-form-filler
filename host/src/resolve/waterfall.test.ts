@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 import type Database from 'better-sqlite3'
-import type { EnumField } from '@jff/shared'
+import type { EnumField, Resolution } from '@jff/shared'
 import { openDb, setProfile, setAnswerBank, upsertAnswer, getAnswerById } from '../db/repos.js'
-import { resolveFields } from './waterfall.js'
+import { resolveFirst, resolveMapping } from './waterfall.js'
 import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import type { MappingDecision } from '../llm/mapping.js'
 import { normalizeQuestion } from './normalize.js'
@@ -38,6 +38,24 @@ const runnerThatThrows = (kind: 'rate_limit'): StubRunner => ({
 } as unknown as StubRunner)
 
 let db: Database.Database
+
+/** A Field the first step leaves for Mapping. */
+const PENDING = 'pending' as const
+
+/** The first step (`resolve.first`): each Field's Resolution, or PENDING, in Field order. */
+function first(fields: EnumField[]): (Resolution | typeof PENDING)[] {
+  const r = resolveFirst(db, input(fields))
+  return fields.map((f) => {
+    const decided = r.resolutions.find((x) => x.handle.fid === f.fid)
+    if (decided !== undefined) return decided
+    if (r.pending.some((h) => h.fid === f.fid)) return PENDING
+    throw new Error(`the first step neither decided nor left pending fid ${f.fid}`)
+  })
+}
+
+/** The Mapping step (`resolve.mapping`) over the given Fields. */
+const mapped = (codex: CodexRunner, fields: EnumField[]) => resolveMapping({ db, codex, mappingOpts: OPTS }, input(fields))
+
 beforeEach(() => {
   db = openDb(':memory:')
   setProfile(db, { firstName: 'Ada', email: 'ada@example.com' })
@@ -45,52 +63,51 @@ beforeEach(() => {
 })
 
 describe('tier 0 — EEO', () => {
-  it('skips a demographic field and never gives it a value', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'Gender', { demographic: true })]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'skipped', value: null, source: null, reason: 'eeo' })
+  it('skips a demographic field and never gives it a value', () => {
+    const [r] = first([field(1, 'Gender', { demographic: true })])
+    expect(r).toMatchObject({ tier: 'skipped', value: null, source: null, reason: 'eeo' })
   })
 
-  it('never sends a demographic field to the LLM', async () => {
+  it('never sends a demographic field to the LLM, even when the Mapping step is sent it', async () => {
     const runner = runnerReturning({})
-    await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'Gender', { demographic: true })]))
+    const r = await mapped(runner, [field(1, 'Gender', { demographic: true })])
+    expect(r.resolutions[0]).toMatchObject({ tier: 'skipped', value: null, reason: 'eeo' })
     expect(runner.complete).not.toHaveBeenCalled()
   })
 })
 
 describe('tier 1 — values already on the page', () => {
-  it('treats an ATS-populated value as filled, sourced from the page', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
-      input([field(1, 'First Name', { currentValue: 'Ada' })]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'page', value: 'Ada', reason: 'already-on-page' })
+  it('treats an ATS-populated value as filled, sourced from the page', () => {
+    const [r] = first([field(1, 'First Name', { currentValue: 'Ada' })])
+    expect(r).toMatchObject({ tier: 'auto', source: 'page', value: 'Ada', reason: 'already-on-page' })
   })
 })
 
 describe('tier 2 — deterministic recognizers', () => {
-  it('auto-fills a recognized key that has a stored value', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'E-mail *')]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'profile', key: 'email', value: 'ada@example.com', reason: 'recognizer:email' })
+  it('auto-fills a recognized key that has a stored value', () => {
+    const [r] = first([field(1, 'E-mail *')])
+    expect(r).toMatchObject({ tier: 'auto', source: 'profile', key: 'email', value: 'ada@example.com', reason: 'recognizer:email' })
   })
 
-  it('routes a recognized key with NO stored value to needs-input', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'recognizer:github:no-stored-value' })
+  it('routes a recognized key with NO stored value to needs-input', () => {
+    const [r] = first([field(1, 'GitHub URL')])
+    expect(r).toMatchObject({ tier: 'needs_input', value: null, reason: 'recognizer:github:no-stored-value' })
   })
 
-  it('reads an answer-bank key from the answer bank, not the profile', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'Desired salary')]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'answer_bank', key: 'salary', value: 'R$ 18.000/mo' })
+  it('reads an answer-bank key from the answer bank, not the profile', () => {
+    const [r] = first([field(1, 'Desired salary')])
+    expect(r).toMatchObject({ tier: 'auto', source: 'answer_bank', key: 'salary', value: 'R$ 18.000/mo' })
   })
 })
 
 describe('tier 3 — exact saved answers and the company-specificity guard', () => {
-  it('auto-fills an exact reusable match and bumps times_used', async () => {
+  it('auto-fills an exact reusable match and bumps times_used', () => {
     const id = upsertAnswer(db, {
       questionNormalized: 'how many years of react do you have', questionRaw: 'How many years of React do you have?',
       answer: '6 years', language: 'en', reusability: 'reusable',
     })
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
-      input([field(1, 'How many years of React do you have?')]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'saved_answer', value: '6 years', answerId: id, reason: 'exact-match' })
+    const [r] = first([field(1, 'How many years of React do you have?')])
+    expect(r).toMatchObject({ tier: 'auto', source: 'saved_answer', value: '6 years', answerId: id, reason: 'exact-match' })
     expect(getAnswerById(db, id)!.timesUsed).toBe(1)
   })
 
@@ -99,8 +116,9 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
       questionNormalized: 'why do you want to work here', questionRaw: 'Why do you want to work here?',
       answer: 'Because I love Acme', language: 'en', reusability: 'company_specific',
     })
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
-      input([field(1, 'Why do you want to work here?')]))
+    const why = field(1, 'Why do you want to work here?')
+    expect(first([why])).toEqual([PENDING])
+    const r = await mapped(runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }), [why])
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'custom' })
   })
 
@@ -108,7 +126,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
     upsertAnswer(db, { questionNormalized: 'why acme', questionRaw: 'Why Acme?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     upsertAnswer(db, { questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6', language: 'en', reusability: 'reusable' })
     const runner = runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } })
-    await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'Describe a hard bug you fixed.')]))
+    await mapped(runner, [field(1, 'Describe a hard bug you fixed.')])
     const prompt = runner.complete.mock.calls[0]![0] as string
     expect(prompt).toContain('Years of React?')
     expect(prompt).not.toContain('Why Acme?')
@@ -118,45 +136,45 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
 
 describe('tier 4 — LLM results are PROPOSED, never auto', () => {
   it('proposes a value for an LLM known_key with a stored value', async () => {
-    const r = await resolveFields(
-      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'salary', answerId: null } }) },
-      input([field(1, 'What are your comp expectations for this role?')]),
+    const r = await mapped(
+      runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'salary', answerId: null } }),
+      [field(1, 'What are your comp expectations for this role?')],
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'proposed', source: 'llm_key', key: 'salary', value: 'R$ 18.000/mo' })
   })
 
   it('substitutes the DB value, never anything the model said', async () => {
     const runner = { complete: vi.fn(async () => [{ ref: '0:1', decision: 'known_key', knownKey: 'salary', answerId: null, value: 'R$ 999.999' }]) } as unknown as StubRunner
-    const r = await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'Comp expectations?')]))
+    const r = await mapped(runner, [field(1, 'Comp expectations?')])
     expect(r.resolutions[0]!.value).toBe('R$ 18.000/mo')
   })
 
   it('routes an LLM known_key with no stored value to needs-input', async () => {
-    const r = await resolveFields(
-      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }) },
-      input([field(1, 'How soon could you join?')]),
+    const r = await mapped(
+      runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }),
+      [field(1, 'How soon could you join?')],
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'llm-key:notice:no-stored-value' })
   })
 
   it('proposes a reused reusable answer', async () => {
     const id = upsertAnswer(db, { questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6 years', language: 'en', reusability: 'reusable' })
-    const r = await resolveFields(
-      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
-      input([field(1, 'React experience in years?')]),
+    const r = await mapped(
+      runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }),
+      [field(1, 'React experience in years?')],
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'proposed', source: 'llm_reuse', value: '6 years', answerId: id })
   })
 
   it('refuses to reuse a company_specific answer even when the model points at it', async () => {
     const id = upsertAnswer(db, { questionNormalized: 'why acme', questionRaw: 'Why Acme?', answer: 'secret', language: 'en', reusability: 'company_specific' })
-    const r = await resolveFields(
-      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
-      input([field(1, 'Why do you want to join Acme?')]),
+    const r = await mapped(
+      runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }),
+      [field(1, 'Why do you want to join Acme?')],
     )
     // The refusal happens one layer UP, in validateMappingResponse: company_specific rows are
     // never offered as candidates, so this answerId is out-of-set and degrades to `custom`
-    // before the waterfall sees it. The waterfall's own company-specificity check stays as
+    // before the Mapping step sees it. The Mapping step's own company-specificity check stays as
     // defense-in-depth (unreachable via this path by construction, which is the point).
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', value: null, reason: 'custom' })
   })
@@ -164,77 +182,77 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
 
 describe('tier 5 and failure modes', () => {
   it('resolves an LLM custom decision to needs-input with reason custom', async () => {
-    const r = await resolveFields(
-      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
-      input([field(1, 'Tell us about a hard technical decision.')]),
+    const r = await mapped(
+      runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }),
+      [field(1, 'Tell us about a hard technical decision.')],
     )
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'custom', value: null })
   })
 
   it('fails every unresolved field closed when the mapping response does not round-trip', async () => {
-    const r = await resolveFields(
-      { db, mappingOpts: OPTS, codex: runnerReturning({ '9:9': { decision: 'custom', knownKey: null, answerId: null } }) },
-      // Both labels must miss every baseline recognizer, or the field resolves at tier 2 and
-      // never enters the LLM batch this test is exercising.
-      input([field(1, 'Anything else?'), field(2, 'What should we know about you?')]),
-    )
+    // Both labels must miss every baseline recognizer, or the field resolves at tier 2 and
+    // never enters the LLM batch this test is exercising.
+    const fields = [field(1, 'Anything else?'), field(2, 'What should we know about you?')]
+    expect(first(fields)).toEqual([PENDING, PENDING])
+    const r = await mapped(runnerReturning({ '9:9': { decision: 'custom', knownKey: null, answerId: null } }), fields)
     expect(r.resolutions.every((x) => x.tier === 'needs_input')).toBe(true)
     expect(r.resolutions.every((x) => x.reason === 'llm-unavailable')).toBe(true)
   })
 
   it('reports a rate limit without throwing and leaves fields as needs-input', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerThatThrows('rate_limit') }, input([field(1, 'Anything else?')]))
+    const r = await mapped(runnerThatThrows('rate_limit'), [field(1, 'Anything else?')])
     expect(r.llmError).toEqual({ kind: 'rate_limit', message: 'limit' })
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'llm-error:rate_limit' })
   })
 
   it('does not call the LLM at all when every field resolved deterministically', async () => {
+    const fields = [field(1, 'E-mail'), field(2, 'First Name')]
+    expect(resolveFirst(db, input(fields)).pending).toEqual([])
     const runner = runnerReturning({})
-    await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'E-mail'), field(2, 'First Name')]))
+    await mapped(runner, fields)
     expect(runner.complete).not.toHaveBeenCalled()
   })
 
-  it('echoes the request epoch so the panel can reject a stale reply', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'E-mail')]))
+  it('echoes the request epoch on both steps so the panel can reject a stale reply', async () => {
+    expect(resolveFirst(db, input([field(1, 'E-mail')])).epoch).toBe(5)
+    const r = await mapped(runnerReturning({}), [field(1, 'E-mail')])
     expect(r.epoch).toBe(5)
   })
 })
 
 describe('B5a/B5c — recall correctness', () => {
-  it('tier 1 attaches the recognized key to an already-on-page value', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
-      input([field(1, 'First Name', { currentValue: 'Ada' })]))
-    expect(r.resolutions[0]).toMatchObject({
+  it('tier 1 attaches the recognized key to an already-on-page value', () => {
+    const [r] = first([field(1, 'First Name', { currentValue: 'Ada' })])
+    expect(r).toMatchObject({
       tier: 'auto', source: 'page', value: 'Ada', key: 'firstName', reason: 'already-on-page',
     })
   })
 
-  it('tier 1 with an unrecognizable label keeps key null', async () => {
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) },
-      input([field(1, 'Tell us anything', { currentValue: 'prefilled' })]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'auto', source: 'page', key: null })
+  it('tier 1 with an unrecognizable label keeps key null', () => {
+    const [r] = first([field(1, 'Tell us anything', { currentValue: 'prefilled' })])
+    expect(r).toMatchObject({ tier: 'auto', source: 'page', key: null })
   })
 
-  it('a recognized key with NO stored value falls through to the exact qa_memory match', async () => {
+  it('a recognized key with NO stored value falls through to the exact qa_memory match', () => {
     const id = upsertAnswer(db, {
       questionNormalized: normalizeQuestion('GitHub URL'), questionRaw: 'GitHub URL',
       answer: 'https://github.com/ada', language: 'en', reusability: 'reusable',
     })
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
-    expect(r.resolutions[0]).toMatchObject({
+    const [r] = first([field(1, 'GitHub URL')])
+    expect(r).toMatchObject({
       tier: 'auto', source: 'saved_answer', key: 'github', answerId: id,
       value: 'https://github.com/ada', reason: 'exact-match:key-fallback',
     })
     expect(getAnswerById(db, id)!.timesUsed).toBe(1)
   })
 
-  it('the key fallback ignores company_specific rows and lands on needs_input', async () => {
+  it('the key fallback ignores company_specific rows and lands on needs_input', () => {
     upsertAnswer(db, {
       questionNormalized: normalizeQuestion('GitHub URL'), questionRaw: 'GitHub URL',
       answer: 'secret', language: 'en', reusability: 'company_specific',
     })
-    const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({}) }, input([field(1, 'GitHub URL')]))
-    expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', reason: 'recognizer:github:no-stored-value' })
+    const [r] = first([field(1, 'GitHub URL')])
+    expect(r).toMatchObject({ tier: 'needs_input', reason: 'recognizer:github:no-stored-value' })
   })
 
   it('the llm-key fallback also refuses a company_specific exact match', async () => {
@@ -247,10 +265,9 @@ describe('B5a/B5c — recall correctness', () => {
       questionNormalized: normalizeQuestion('How soon could you join?'), questionRaw: 'How soon could you join?',
       answer: 'two weeks, but only for Acme', language: 'en', reusability: 'company_specific',
     })
-    const r = await resolveFields(
-      { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }) },
-      input([field(1, 'How soon could you join?')]),
-    )
+    const join = field(1, 'How soon could you join?')
+    expect(first([join])).toEqual([PENDING])
+    const r = await mapped(runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'notice', answerId: null } }), [join])
     expect(r.resolutions[0]).toMatchObject({ tier: 'needs_input', key: 'notice', reason: 'llm-key:notice:no-stored-value' })
   })
 })

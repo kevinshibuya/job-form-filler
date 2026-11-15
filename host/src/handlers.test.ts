@@ -217,10 +217,10 @@ describe('applied.* (A1)', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
-  it('resolve maps through codex with the 240s budget, not claude', async () => {
+  it('resolve.mapping maps through codex with the 240s budget, not claude', async () => {
     codexComplete.mockResolvedValueOnce([{ ref: '0:1', decision: 'custom', knownKey: null, answerId: null }])
     const r = await handleRequest(deps, {
-      requestId: 'r1', method: 'resolve',
+      requestId: 'r1', method: 'resolve.mapping',
       params: {
         epoch: 5, url: 'https://boards.greenhouse.io/acme/jobs/1', hostname: 'boards.greenhouse.io',
         company: 'Acme', jobText: 'Senior engineer wanted.',

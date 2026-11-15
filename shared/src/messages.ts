@@ -54,7 +54,6 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('profile.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.get'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
-  z.object({ requestId: z.string().min(1), method: z.literal('resolve'), params: ResolveParamsSchema }),
   // Resolution in two requests. `resolve.first` runs no model and answers every
   // Field that needs none; `resolve.mapping` carries the pending Fields
   // themselves and runs Mapping on them. The host keeps no state between the two.
@@ -157,7 +156,7 @@ export const ResolveFirstResultSchema = z.object({
 })
 export type ResolveFirstResult = z.infer<typeof ResolveFirstResultSchema>
 
-/** The reply to `resolve.mapping` has the shape `resolve` returns. */
+/** The reply to `resolve.mapping`: a Resolution for every Field it carries. */
 export const ResolveMappingResultSchema = ResolveResultSchema
 export type ResolveMappingResult = ResolveResult
 
@@ -200,7 +199,7 @@ export type ContentMessage = z.infer<typeof ContentMessageSchema>
 // Both schemas below have a REAL runtime consumer: the content script `safeParse`s
 // its own JFF_SCAN / JFF_FILL reply before returning it (Task 14 Step 5, Task 15
 // Step 5). Validating our own output is the cheapest guard against enumerator or
-// filler drift shipping a malformed field into the host's `resolve` call, where it
+// filler drift shipping a malformed field into the host's Resolution requests, where it
 // would fail as an opaque bad_request instead of naming the offending frame.
 export const ScanResultSchema = z.object({
   epoch: z.number().int(),

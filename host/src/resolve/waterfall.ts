@@ -231,7 +231,7 @@ export function resolveFirst(db: Database.Database, input: WaterfallInput): Reso
 }
 
 /**
- * `resolve.mapping`, and `resolve` through it: Mapping over the Fields the
+ * `resolve.mapping`: Mapping over the Fields the
  * request carries. The host keeps no state between the two requests, so it does
  * not trust the panel to send only pending Fields: the first step runs again as
  * a guard, and a Field it decides (a Demographic Field, a Consent checkbox)
@@ -247,9 +247,3 @@ export async function resolveMapping(deps: WaterfallDeps, input: WaterfallInput)
     llmError: mapped.llmError,
   }
 }
-
-/**
- * `resolve`: the first step, then Mapping on what it left pending, in one
- * request. Kept until the panel moves onto the two requests (#16, #18).
- */
-export const resolveFields = resolveMapping

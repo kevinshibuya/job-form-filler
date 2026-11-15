@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import type { EnumField, Resolution, WidgetKind } from '@jff/shared'
+import type { EnumField, FieldHandle, Resolution, WidgetKind } from '@jff/shared'
 import { openDb, saveLearnedMapping, setAnswerBank, setProfile, upsertAnswer } from '../db/repos.js'
 import { handleRequest, type HandlerDeps } from '../handlers.js'
 import { resolveModels } from '../llm/models.js'
 import { normalizeQuestion } from './normalize.js'
 
-// Every test here is one `resolve` request through the host's request handler,
-// with a real in-memory database and a fake Mapping runner. What is asserted is
-// what the panel would receive: the Resolution of each Field, and what Mapping
-// was asked.
+// Every test here sends the Resolution requests through the host's request
+// handler, with a real in-memory database and a fake Mapping runner. A recognizer
+// hit, a Saved answer match, a Skipped Field and a Value already on the page are
+// asserted on `resolve.first`; what Mapping decides, and what it was asked, on
+// `resolve.mapping`. What is asserted is what the panel would receive.
 
 type Decision = { decision: 'known_key' | 'reuse_answer' | 'custom'; knownKey?: string; answerId?: number }
 
@@ -53,16 +54,35 @@ const field = (label: string, kind: WidgetKind, extra: Partial<EnumField> = {}):
   options: [], required: false, visible: true, currentValue: null, demographic: false, ...extra,
 })
 
-async function resolve(...fields: EnumField[]): Promise<Resolution[]> {
+async function send<T>(method: 'resolve.first' | 'resolve.mapping', fields: EnumField[]): Promise<T> {
   const r = await handleRequest(deps, {
-    requestId: crypto.randomUUID(), method: 'resolve',
+    requestId: crypto.randomUUID(), method,
     params: {
       epoch: 3, url: 'https://jobs.lever.co/acme/1', hostname: 'jobs.lever.co',
       company: 'Acme', jobText: 'Engineer wanted.', fields,
     },
   })
-  if (!r.ok) throw new Error(`resolve failed: ${JSON.stringify(r)}`)
-  return (r.result as { resolutions: Resolution[] }).resolutions
+  if (!r.ok) throw new Error(`${method} failed: ${JSON.stringify(r)}`)
+  return r.result as T
+}
+
+/** A Field `resolve.first` leaves for Mapping. */
+const PENDING = 'pending' as const
+
+/** `resolve.first`: each Field's Resolution, or PENDING, in Field order. */
+async function first(...fields: EnumField[]): Promise<(Resolution | typeof PENDING)[]> {
+  const r = await send<{ resolutions: Resolution[]; pending: FieldHandle[] }>('resolve.first', fields)
+  return fields.map((f) => {
+    const decided = r.resolutions.find((x) => x.handle.fid === f.fid)
+    if (decided !== undefined) return decided
+    if (r.pending.some((h) => h.fid === f.fid)) return PENDING
+    throw new Error(`resolve.first neither decided nor left pending fid ${f.fid}`)
+  })
+}
+
+/** `resolve.mapping` over the given Fields: their Resolutions, in Field order. */
+async function mapped(...fields: EnumField[]): Promise<Resolution[]> {
+  return (await send<{ resolutions: Resolution[] }>('resolve.mapping', fields)).resolutions
 }
 
 const mappingPrompt = (): string => (mapping.mock.calls[0]?.[0] as string | undefined) ?? ''
@@ -75,7 +95,7 @@ const YES_NO = ['Yes', 'No']
 describe('a Known key answers only a Control that can hold its Value', () => {
   it('a link, phone or text key answers a text box and a text area', async () => {
     for (const kind of TEXT_CONTROLS) {
-      const [linkedin, phone, email] = await resolve(field('LinkedIn URL', kind), field('Phone', kind), field('Email', kind))
+      const [linkedin, phone, email] = await first(field('LinkedIn URL', kind), field('Phone', kind), field('Email', kind))
       expect(linkedin).toMatchObject({ tier: 'auto', key: 'linkedin', value: ADA.linkedin })
       expect(phone).toMatchObject({ tier: 'auto', key: 'phone', value: ADA.phone })
       expect(email).toMatchObject({ tier: 'auto', key: 'email', value: ADA.email })
@@ -90,7 +110,9 @@ describe('a Known key answers only a Control that can hold its Value', () => {
         field('Phone', kind, { options: ['Mobile', 'Home'] }),
         field('Email', kind, { options: YES_NO }),
       ]
-      const out = await resolve(...fields)
+      expect(await first(...fields)).toEqual([PENDING, PENDING, PENDING])
+      expect(mapping).not.toHaveBeenCalled()
+      const out = await mapped(...fields)
       for (const r of out) expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
       expect(mapping).toHaveBeenCalledTimes(1)
       for (const f of fields) expect(mappingPrompt()).toContain(`ref=${refOf(f)} kind=${kind}`)
@@ -99,14 +121,16 @@ describe('a Known key answers only a Control that can hold its Value', () => {
 
   it('a yes/no key still answers a radio group, a dropdown, a combobox, yes/no buttons and a text box', async () => {
     for (const kind of ['radiogroup', 'select', 'combobox', 'choice', 'text'] as WidgetKind[]) {
-      const [r] = await resolve(field('Are you legally authorized to work in Brazil?', kind, { options: kind === 'text' ? [] : YES_NO }))
+      const [r] = await first(field('Are you legally authorized to work in Brazil?', kind, { options: kind === 'text' ? [] : YES_NO }))
       expect(r).toMatchObject({ tier: 'auto', key: 'workAuth', value: 'Yes' })
     }
   })
 
   it('a Control kind the rule does not list takes no Known key', async () => {
     const unlisted = 'signature' as WidgetKind
-    const [file, other] = await resolve(field('LinkedIn profile (PDF)', 'file'), field('Email', unlisted))
+    const fields = [field('LinkedIn profile (PDF)', 'file'), field('Email', unlisted)]
+    expect(await first(...fields)).toEqual([PENDING, PENDING])
+    const [file, other] = await mapped(...fields)
     expect(file).toMatchObject({ key: null, value: null })
     expect(file!.tier).not.toBe('auto')
     expect(other).toMatchObject({ key: null, value: null })
@@ -115,7 +139,8 @@ describe('a Known key answers only a Control that can hold its Value', () => {
 
   it('a yes/no question that mentions where the applicant is based does not receive the location line', async () => {
     const based = field('Are you based in US or Canada?', 'choice', { options: YES_NO, required: true })
-    const [r] = await resolve(based)
+    expect(await first(based)).toEqual([PENDING])
+    const [r] = await mapped(based)
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
     // It reached Mapping, told its Control kind and its Options.
     expect(mappingPrompt()).toContain(`ref=${refOf(based)} kind=choice`)
@@ -127,62 +152,66 @@ describe('a Known key answers only a Control that can hold its Value', () => {
       questionNormalized: normalizeQuestion('Are you based in US or Canada?'), questionRaw: 'Are you based in US or Canada?',
       answer: 'No', language: 'en', reusability: 'reusable',
     })
-    const [r] = await resolve(field('Are you based in US or Canada?', 'choice', { options: YES_NO }))
+    const [r] = await first(field('Are you based in US or Canada?', 'choice', { options: YES_NO }))
     expect(r).toMatchObject({ tier: 'auto', source: 'saved_answer', key: null, value: 'No' })
     expect(mapping).not.toHaveBeenCalled()
   })
 
   it('a learned mapping on the wrong Control is refused the same way', async () => {
     saveLearnedMapping(db, normalizeQuestion('Where do you live today?'), 'location')
-    const [onText] = await resolve(field('Where do you live today?', 'text'))
+    const [onText] = await first(field('Where do you live today?', 'text'))
     expect(onText).toMatchObject({ tier: 'auto', key: 'location', value: ADA.location })
-    const [onChoice] = await resolve(field('Where do you live today?', 'select', { options: ['Brazil', 'Elsewhere'] }))
+    const choice = field('Where do you live today?', 'select', { options: ['Brazil', 'Elsewhere'] })
+    expect(await first(choice)).toEqual([PENDING])
+    const [onChoice] = await mapped(choice)
     expect(onChoice).toMatchObject({ tier: 'needs_input', key: null, value: null })
   })
 
   it('a Known key Mapping names for a Control that cannot hold it leaves the Field Needs input', async () => {
     const source = field('How did you hear about us?', 'select', { options: ['LinkedIn', 'Referral', 'Other'] })
     decide = () => ({ decision: 'known_key', knownKey: 'linkedin' })
-    const [r] = await resolve(source)
+    expect(await first(source)).toEqual([PENDING])
+    const [r] = await mapped(source)
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
   })
 
   it('a Known key Mapping names for a Control that can hold it is still proposed', async () => {
     const auth = field('Can you work for us without restrictions?', 'radiogroup', { options: YES_NO })
     decide = () => ({ decision: 'known_key', knownKey: 'workAuth' })
-    const [r] = await resolve(auth)
+    expect(await first(auth)).toEqual([PENDING])
+    const [r] = await mapped(auth)
     expect(r).toMatchObject({ tier: 'proposed', key: 'workAuth', value: 'Yes' })
   })
 
   it('a Value already on the page carries no Known key its Control cannot hold', async () => {
-    const [onSelect] = await resolve(field('LinkedIn', 'select', { options: ['LinkedIn', 'Other'], currentValue: 'LinkedIn' }))
+    const [onSelect] = await first(field('LinkedIn', 'select', { options: ['LinkedIn', 'Other'], currentValue: 'LinkedIn' }))
     expect(onSelect).toMatchObject({ tier: 'auto', source: 'page', key: null, value: 'LinkedIn' })
-    const [onText] = await resolve(field('LinkedIn URL', 'text', { currentValue: ADA.linkedin }))
+    const [onText] = await first(field('LinkedIn URL', 'text', { currentValue: ADA.linkedin }))
     expect(onText).toMatchObject({ tier: 'auto', source: 'page', key: 'linkedin' })
   })
 })
 
 describe('a lone checkbox is a Consent checkbox', () => {
   it('a checkbox labelled "LinkedIn" resolves as Needs input with no Known key and no Value', async () => {
-    const [r] = await resolve(field('LinkedIn', 'checkbox', { name: 'source', required: true }))
+    const [r] = await first(field('LinkedIn', 'checkbox', { name: 'source', required: true }))
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null, source: null })
     expect(mapping).not.toHaveBeenCalled()
   })
 
   it('a lone checkbox whose text mentions email resolves as Needs input with no Known key', async () => {
-    const [r] = await resolve(field('I agree Acme may send me news about open roles by phone and email.', 'checkbox'))
+    const [r] = await first(field('I agree Acme may send me news about open roles by phone and email.', 'checkbox'))
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
     expect(mapping).not.toHaveBeenCalled()
   })
 
   it('a required lone checkbox flagged as demographic resolves as Needs input, not Skipped', async () => {
-    const [r] = await resolve(field('I consent to Acme processing my self-identification answers.', 'checkbox', { required: true, demographic: true }))
+    const [r] = await first(field('I consent to Acme processing my self-identification answers.', 'checkbox', { required: true, demographic: true }))
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
     expect(mapping).not.toHaveBeenCalled()
   })
 
   it('a Consent checkbox already ticked on the page is still Needs input', async () => {
-    const [r] = await resolve(field('I certify the information provided is accurate', 'checkbox', { currentValue: 'true' }))
+    const [r] = await first(field('I certify the information provided is accurate', 'checkbox', { currentValue: 'true' }))
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null, source: null })
   })
 
@@ -191,7 +220,7 @@ describe('a lone checkbox is a Consent checkbox', () => {
       questionNormalized: normalizeQuestion('I agree to the privacy notice'), questionRaw: 'I agree to the privacy notice',
       answer: 'true', language: 'en', reusability: 'reusable',
     })
-    const [r] = await resolve(field('I agree to the privacy notice', 'checkbox'))
+    const [r] = await first(field('I agree to the privacy notice', 'checkbox'))
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null, answerId: null })
   })
 })
@@ -199,7 +228,8 @@ describe('a lone checkbox is a Consent checkbox', () => {
 describe('a checkbox group takes no Known key', () => {
   it('a pronoun checkbox group takes no Known key and goes to Mapping, told its Control kind and Options', async () => {
     const pronouns = field('Pronouns', 'checkboxgroup', { options: ['He/him', 'She/her', 'They/them'] })
-    const [r] = await resolve(pronouns)
+    expect(await first(pronouns)).toEqual([PENDING])
+    const [r] = await mapped(pronouns)
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
     expect(mappingPrompt()).toContain(`ref=${refOf(pronouns)} kind=checkboxgroup`)
     expect(mappingPrompt()).toContain('She/her')
@@ -207,7 +237,7 @@ describe('a checkbox group takes no Known key', () => {
 
   it('a checkbox group under a demographic heading is one Skipped Resolution', async () => {
     const group = field('Which of these describe you?', 'checkboxgroup', { options: ['Option A', 'Option B'], demographic: true })
-    const out = await resolve(group)
+    const out = await first(group)
     expect(out).toEqual([expect.objectContaining({ tier: 'skipped', value: null, key: null })])
   })
 })
