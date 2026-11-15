@@ -225,14 +225,32 @@ describe('a lone checkbox is a Consent checkbox', () => {
   })
 })
 
-describe('a checkbox group takes no Known key', () => {
-  it('a pronoun checkbox group takes no Known key and goes to Mapping, told its Control kind and Options', async () => {
-    const pronouns = field('Pronouns', 'checkboxgroup', { options: ['He/him', 'She/her', 'They/them'] })
+describe('a checkbox group takes only the pronouns Known key', () => {
+  it('a pronoun checkbox group with an Option equal to the stored pronouns is filled with that Option', async () => {
+    const [r] = await first(field('Pronouns', 'checkboxgroup', { options: ['He/him', 'She/Her', 'They/them'] }))
+    expect(r).toMatchObject({ tier: 'auto', source: 'answer_bank', key: 'pronouns', value: 'She/Her' })
+    expect(mapping).not.toHaveBeenCalled()
+  })
+
+  it('a pronoun checkbox group with no equal Option goes to Mapping, told its Control kind and Options', async () => {
+    const pronouns = field('Pronouns', 'checkboxgroup', { options: ['He/him', 'They/them', 'Xe/xem'] })
     expect(await first(pronouns)).toEqual([PENDING])
     const [r] = await mapped(pronouns)
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
     expect(mappingPrompt()).toContain(`ref=${refOf(pronouns)} kind=checkboxgroup`)
-    expect(mappingPrompt()).toContain('She/her')
+    expect(mappingPrompt()).toContain('Xe/xem')
+  })
+
+  it('a pronoun text box is still answered from the stored Value', async () => {
+    const [r] = await first(field('Pronouns', 'text'))
+    expect(r).toMatchObject({ tier: 'auto', key: 'pronouns', value: 'she/her' })
+  })
+
+  it('a link, phone or text key answers no checkbox group, even with an Option equal to the stored Value', async () => {
+    const group = field('LinkedIn', 'checkboxgroup', { options: [ADA.linkedin, 'Other'] })
+    expect(await first(group)).toEqual([PENDING])
+    const [r] = await mapped(group)
+    expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
   })
 
   it('a checkbox group under a demographic heading is one Skipped Resolution', async () => {
