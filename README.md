@@ -141,7 +141,7 @@ Per-task model ids can be overridden under `models` in `~/.job-form-filler/confi
 - The banner says `claude CLI not found at the configured path`. `~/.job-form-filler/config.json` has a wrong `claudePath`. Re-run step 4 from a shell where `command -v claude` prints a path. The same holds for `codex`.
 - Unit tests fail in files you did not touch, and different ones each run. That is machine load on wall-clock timeouts. Re-run the failing file on its own on an idle machine before investigating.
 
-For agents: the working rules are in [CLAUDE.md](CLAUDE.md) and the vocabulary is in [CONTEXT.md](CONTEXT.md).
+For agents: the working rules are in [CLAUDE.md](CLAUDE.md) and the vocabulary is in [GLOSSARY.md](GLOSSARY.md).
 
 ## How it's built
 
