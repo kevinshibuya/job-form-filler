@@ -37,23 +37,29 @@ export const SaveItemSchema = z.object({
 })
 export type SaveItem = z.infer<typeof SaveItemSchema>
 
+/** What every Resolution request carries: the Scan's context and its Fields. */
+export const ResolveParamsSchema = z.object({
+  epoch: z.number().int(),
+  url: z.string(),
+  hostname: z.string(),
+  company: z.string().nullable(),
+  jobText: z.string(),
+  fields: z.array(EnumFieldSchema),
+})
+export type ResolveParams = z.infer<typeof ResolveParamsSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.get'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
-  z.object({
-    requestId: z.string().min(1), method: z.literal('resolve'),
-    params: z.object({
-      epoch: z.number().int(),
-      url: z.string(),
-      hostname: z.string(),
-      company: z.string().nullable(),
-      jobText: z.string(),
-      fields: z.array(EnumFieldSchema),
-    }),
-  }),
+  z.object({ requestId: z.string().min(1), method: z.literal('resolve'), params: ResolveParamsSchema }),
+  // Resolution in two requests. `resolve.first` runs no model and answers every
+  // Field that needs none; `resolve.mapping` carries the pending Fields
+  // themselves and runs Mapping on them. The host keeps no state between the two.
+  z.object({ requestId: z.string().min(1), method: z.literal('resolve.first'), params: ResolveParamsSchema }),
+  z.object({ requestId: z.string().min(1), method: z.literal('resolve.mapping'), params: ResolveParamsSchema }),
   z.object({
     requestId: z.string().min(1), method: z.literal('generate'),
     params: z.object({
@@ -138,6 +144,22 @@ export const ResolveResultSchema = z.object({
   llmError: z.object({ kind: HostErrorKindSchema, message: z.string() }).nullable(),
 })
 export type ResolveResult = z.infer<typeof ResolveResultSchema>
+
+/**
+ * The reply to `resolve.first`: a Resolution for every Field that needs no
+ * model, and the handles of the Fields left for `resolve.mapping`. Every Field
+ * of the request is in exactly one of the two lists.
+ */
+export const ResolveFirstResultSchema = z.object({
+  epoch: z.number().int(),
+  resolutions: z.array(ResolutionSchema),
+  pending: z.array(FieldHandleSchema),
+})
+export type ResolveFirstResult = z.infer<typeof ResolveFirstResultSchema>
+
+/** The reply to `resolve.mapping` has the shape `resolve` returns. */
+export const ResolveMappingResultSchema = ResolveResultSchema
+export type ResolveMappingResult = ResolveResult
 
 /* ------------------------------------------------ panel <-> content script */
 

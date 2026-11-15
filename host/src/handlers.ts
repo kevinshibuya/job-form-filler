@@ -18,7 +18,7 @@ import { readProjectNotes } from './llm/projects.js'
 import { reviewDraft } from './llm/reviewDraft.js'
 import { runFactsExtract } from './llm/factsExtract.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
-import { resolveFields } from './resolve/waterfall.js'
+import { resolveFields, resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
 import { log } from './log.js'
 import type { ResolvedModels } from './llm/models.js'
 
@@ -47,6 +47,9 @@ export interface HandlerDeps {
   models: ResolvedModels
   selfCheckFn: () => Promise<SelfCheck>
 }
+
+const waterfallDeps = (deps: HandlerDeps): WaterfallDeps =>
+  ({ db: deps.db, codex: deps.codex, mappingOpts: { model: deps.models.mapping, timeoutMs: 240_000 } })
 
 const ok = (requestId: string, result: unknown): HostResponse => ({ requestId, ok: true, result })
 const fail = (requestId: string, kind: HostErrorKind, message: string): HostResponse =>
@@ -104,7 +107,14 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       }
 
       case 'resolve':
-        return ok(req.requestId, await resolveFields({ db, codex: deps.codex, mappingOpts: { model: deps.models.mapping, timeoutMs: 240_000 } }, req.params))
+        return ok(req.requestId, await resolveFields(waterfallDeps(deps), req.params))
+
+      // No model: the host never hands this step a runner.
+      case 'resolve.first':
+        return ok(req.requestId, resolveFirst(db, req.params))
+
+      case 'resolve.mapping':
+        return ok(req.requestId, await resolveMapping(waterfallDeps(deps), req.params))
 
       case 'generate': {
         const lang = detectLanguage(req.params.questionRaw)
