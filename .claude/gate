@@ -1,0 +1,2 @@
+heavy cpu -- sh -c 'npm run build -w @jff/shared && npm test'
+heavy browser:1 -- npm run smoke
