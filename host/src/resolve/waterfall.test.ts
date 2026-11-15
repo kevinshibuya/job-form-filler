@@ -97,7 +97,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
   it('never auto-fills a company_specific exact match — it falls through to needs-input', async () => {
     upsertAnswer(db, {
       questionNormalized: 'why do you want to work here', questionRaw: 'Why do you want to work here?',
-      answer: 'Because I love Figma', language: 'en', reusability: 'company_specific',
+      answer: 'Because I love Acme', language: 'en', reusability: 'company_specific',
     })
     const r = await resolveFields({ db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
       input([field(1, 'Why do you want to work here?')]))
@@ -105,13 +105,13 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
   })
 
   it('does not offer company_specific rows to the mapping call as candidates', async () => {
-    upsertAnswer(db, { questionNormalized: 'why figma', questionRaw: 'Why Figma?', answer: 'secret', language: 'en', reusability: 'company_specific' })
+    upsertAnswer(db, { questionNormalized: 'why acme', questionRaw: 'Why Acme?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     upsertAnswer(db, { questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6', language: 'en', reusability: 'reusable' })
     const runner = runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } })
     await resolveFields({ db, codex: runner, mappingOpts: OPTS }, input([field(1, 'Describe a hard bug you fixed.')]))
     const prompt = runner.complete.mock.calls[0]![0] as string
     expect(prompt).toContain('Years of React?')
-    expect(prompt).not.toContain('Why Figma?')
+    expect(prompt).not.toContain('Why Acme?')
     expect(prompt).not.toContain('secret')
   })
 })
@@ -149,7 +149,7 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
   })
 
   it('refuses to reuse a company_specific answer even when the model points at it', async () => {
-    const id = upsertAnswer(db, { questionNormalized: 'why figma', questionRaw: 'Why Figma?', answer: 'secret', language: 'en', reusability: 'company_specific' })
+    const id = upsertAnswer(db, { questionNormalized: 'why acme', questionRaw: 'Why Acme?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     const r = await resolveFields(
       { db, mappingOpts: OPTS, codex: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
       input([field(1, 'Why do you want to join Acme?')]),

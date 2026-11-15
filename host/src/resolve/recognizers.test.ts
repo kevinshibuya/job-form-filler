@@ -46,7 +46,7 @@ describe('recognize', () => {
   })
 
   it('returns null for a free-text question so it falls through to the LLM', () => {
-    expect(recognize('Why do you want to join Figma?')).toBeNull()
+    expect(recognize('Why do you want to join Acme?')).toBeNull()
     expect(recognize('Tell us about a hard technical decision you made.')).toBeNull()
   })
 

@@ -847,7 +847,7 @@ git commit -m "feat(shared): field identity triple, host RPC schemas, content-sc
 - Create: `extension/manifest.config.ts`, `extension/vite.config.ts`, `extension/vite.content.config.ts`
 - Create: `extension/src/background.ts`, `extension/src/content/index.ts`
 - Create: `extension/src/panel/index.html`, `extension/src/panel/main.tsx`, `extension/src/panel/App.tsx`, `extension/src/panel/tailwind.css`
-- Create: `e2e/fixtures/greenhouse-apply/{fixture-form.html,figma-form.html,gusto-form.html}` (copied; `fixture-form.html` then gets PROJECT-OWNED modifications, Step 7)
+- Create: `e2e/fixtures/greenhouse-apply/{fixture-form.html,real-page-a.html,real-page-b.html}` (copied; `fixture-form.html` then gets PROJECT-OWNED modifications, Step 7)
 - Create: `e2e/static-server.ts`, `e2e/ext.ts`, `e2e/foundation.spec.ts`, `e2e/tsconfig.json`, `playwright.config.ts`
 - Modify: `package.json` (root scripts), `extension/package.json` (exact version pins, Step 6b)
 
@@ -1173,14 +1173,14 @@ vite 7 in their peer ranges (`@crxjs` `^3||^4||^5||^6||^7||^8`, `@tailwindcss/vi
 ```bash
 mkdir -p e2e/fixtures/greenhouse-apply
 cp <job-finder-checkout>/e2e/fixtures/greenhouse-apply/fixture-form.html e2e/fixtures/greenhouse-apply/
-cp <job-finder-checkout>/e2e/fixtures/greenhouse-apply/figma-form.html e2e/fixtures/greenhouse-apply/
-cp <job-finder-checkout>/e2e/fixtures/greenhouse-apply/gusto-form.html e2e/fixtures/greenhouse-apply/
+cp <job-finder-checkout>/e2e/fixtures/greenhouse-apply/real-page-a.html e2e/fixtures/greenhouse-apply/
+cp <job-finder-checkout>/e2e/fixtures/greenhouse-apply/real-page-b.html e2e/fixtures/greenhouse-apply/
 ```
 
 (`lyft-form.html` is deliberately NOT copied: it is an empty SPA shell with no form markup, so it proves nothing offline.)
 
 Then apply these three PROJECT-OWNED modifications to our copy of `fixture-form.html`
-(`figma-form.html` and `gusto-form.html` stay verbatim). This copy belongs to this repo;
+(`real-page-a.html` and `real-page-b.html` stay verbatim). This copy belongs to this repo;
 it never syncs back from job-finder.
 
 **(a) A real job-description block** — insert directly after `<main class="main job-post">`'s
@@ -2014,7 +2014,7 @@ describe('qa_memory', () => {
 
   it('listReusableAnswers excludes company_specific rows (company-specificity guard)', () => {
     upsertAnswer(db, { ...base, questionNormalized: 'reusable q', reusability: 'reusable' })
-    upsertAnswer(db, { ...base, questionRaw: 'Why Figma?', answer: 'I love design tools', questionNormalized: 'why figma', reusability: 'company_specific' })
+    upsertAnswer(db, { ...base, questionRaw: 'Why Acme?', answer: 'I love design tools', questionNormalized: 'why acme', reusability: 'company_specific' })
     const reusable = listReusableAnswers(db, 'en')
     expect(reusable.map((r) => r.questionNormalized)).toEqual(['reusable q'])
   })
@@ -2396,7 +2396,7 @@ describe('normalizeQuestion', () => {
 
   it('makes two label spellings of the same question collide', () => {
     expect(normalizeQuestion('E-mail *')).toBe(normalizeQuestion('email'))
-    expect(normalizeQuestion('Why do you want to join Figma?')).toBe('why do you want to join figma')
+    expect(normalizeQuestion('Why do you want to join Acme?')).toBe('why do you want to join acme')
   })
 
   it('caps length so a pathological label cannot blow up a key', () => {
@@ -2523,7 +2523,7 @@ describe('recognize', () => {
   })
 
   it('returns null for a free-text question so it falls through to the LLM', () => {
-    expect(recognize('Why do you want to join Figma?')).toBeNull()
+    expect(recognize('Why do you want to join Acme?')).toBeNull()
     expect(recognize('Tell us about a hard technical decision you made.')).toBeNull()
   })
 
@@ -3438,7 +3438,7 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
   it('never auto-fills a company_specific exact match — it falls through to needs-input', async () => {
     upsertAnswer(db, {
       questionNormalized: 'why do you want to work here', questionRaw: 'Why do you want to work here?',
-      answer: 'Because I love Figma', language: 'en', reusability: 'company_specific',
+      answer: 'Because I love Acme', language: 'en', reusability: 'company_specific',
     })
     const r = await resolveFields({ db, runner: runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } }) },
       input([field(1, 'Why do you want to work here?')]))
@@ -3446,13 +3446,13 @@ describe('tier 3 — exact saved answers and the company-specificity guard', () 
   })
 
   it('does not offer company_specific rows to the mapping call as candidates', async () => {
-    upsertAnswer(db, { questionNormalized: 'why figma', questionRaw: 'Why Figma?', answer: 'secret', language: 'en', reusability: 'company_specific' })
+    upsertAnswer(db, { questionNormalized: 'why acme', questionRaw: 'Why Acme?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     upsertAnswer(db, { questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6', language: 'en', reusability: 'reusable' })
     const runner = runnerReturning({ '0:1': { decision: 'custom', knownKey: null, answerId: null } })
     await resolveFields({ db, runner }, input([field(1, 'Describe a hard bug you fixed.')]))
     const prompt = runner.complete.mock.calls[0]![0] as string
     expect(prompt).toContain('Years of React?')
-    expect(prompt).not.toContain('Why Figma?')
+    expect(prompt).not.toContain('Why Acme?')
     expect(prompt).not.toContain('secret')
   })
 })
@@ -3490,7 +3490,7 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
   })
 
   it('refuses to reuse a company_specific answer even when the model points at it', async () => {
-    const id = upsertAnswer(db, { questionNormalized: 'why figma', questionRaw: 'Why Figma?', answer: 'secret', language: 'en', reusability: 'company_specific' })
+    const id = upsertAnswer(db, { questionNormalized: 'why acme', questionRaw: 'Why Acme?', answer: 'secret', language: 'en', reusability: 'company_specific' })
     const r = await resolveFields(
       { db, runner: runnerReturning({ '0:1': { decision: 'reuse_answer', knownKey: null, answerId: id } }) },
       input([field(1, 'Why do you want to join Acme?')]),

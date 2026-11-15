@@ -205,7 +205,7 @@ The tool fills forms with real answers, and the repo is public, so the two never
 
 `scripts/check-private.mjs` enforces it. `npm install` points git at `.githooks`, which run it before every commit and push, over each commit's added lines, message and author address. It blocks home-directory paths, addresses on real domains, credential-shaped strings, and any string listed in `~/.job-form-filler/private-strings.txt`, a denylist that stays on your machine: one string per line, your email, phone and anything else only you would recognise. CI runs the same rules without the denylist.
 
-A page saved from a real application becomes a fixture only through `node scripts/sanitize-capture.mjs <captured.html> <fixture.html>`, which empties the form and replaces what the guard would refuse.
+A page saved from a real application becomes a fixture only through `node scripts/sanitize-capture.mjs [--company <name>]... <captured.html> <fixture.html>`. It keeps the application form and nothing else of the page, replaces the posting's prose with placeholder text, renames the employer Acme (read from the page's title and board address; `--company` adds a spelling the page uses elsewhere), empties every address, empties the form and replaces what the guard would refuse.
 
 ## How it was made
 
@@ -215,8 +215,8 @@ Each feature started as a spec in `docs/specs`, became a plan of tasks in `docs/
 
 Runtime dependencies: [React](https://react.dev) 18 (MIT), [pdf.js](https://github.com/mozilla/pdf.js) via `pdfjs-dist` (Apache-2.0), [zod](https://github.com/colinhacks/zod) (MIT), [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) (MIT). Build and test: [Vite](https://vite.dev), `@crxjs/vite-plugin`, [Tailwind CSS](https://tailwindcss.com), [Vitest](https://vitest.dev), jsdom and Testing Library (all MIT), [Playwright](https://playwright.dev) (Apache-2.0).
 
-`e2e/fixtures/greenhouse-apply/figma-form.html` and `e2e/fixtures/greenhouse-apply/gusto-form.html` are saved copies of public job application pages from Figma and Gusto, hosted on Greenhouse. They are kept as offline test fixtures so the scanner is tested against real markup. They remain the property of their owners and are not covered by this repository's licence. The other fixtures, including `e2e/fixtures/greenhouse-apply/fixture-form.html` and `e2e/fixtures/ashby-embed/apply-frame.html`, are hand-written stand-ins that model the shape of those platforms' forms and hold no real application data.
+`e2e/fixtures/real/` holds the application forms of public job application pages hosted on Greenhouse, Lever and Ashby, cut down to the form by `scripts/sanitize-capture.mjs`, with the posting's prose replaced and the employer renamed Acme. They are kept as offline test fixtures so the scanner is tested against real markup. That markup remains the property of its owners and is not covered by this repository's licence. The other fixtures, including `e2e/fixtures/greenhouse-apply/fixture-form.html` and `e2e/fixtures/ashby-embed/apply-frame.html`, are hand-written stand-ins that model the shape of those platforms' forms and hold no real application data.
 
-This project is not affiliated with Greenhouse, Ashby, Figma, Gusto, Anthropic or OpenAI.
+This project is not affiliated with Greenhouse, Lever, Ashby, Anthropic or OpenAI.
 
 MIT licence, Copyright (c) 2026 Kevin Shibuya. See [LICENSE](LICENSE).
