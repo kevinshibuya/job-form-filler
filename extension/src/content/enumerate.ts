@@ -1,8 +1,9 @@
 import type { EnumField, WidgetKind } from '@jff/shared'
 import {
-  countUnreachableWidgets, DEMOGRAPHIC_RE, descriptionFor, groupLabelFor, isSoleControl, kindOf,
+  countUnreachableWidgets, descriptionFor, groupLabelFor, isSoleControl, kindOf,
   labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements, type LabelBinding,
 } from './dom'
+import { isDemographicField } from './demographic'
 
 export interface Measure {
   display: string
@@ -195,7 +196,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             // Which button a checked hidden radio maps to is not observable
             // here; null is honest and routes through the normal waterfall.
             currentValue: null,
-            demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+            demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
           }
         : {
@@ -204,7 +205,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             kind: 'radiogroup', options: [optionLabelOf(el)],
             required: requiredOf(el, binding),
             visible, currentValue: (el as HTMLInputElement).checked ? optionLabelOf(el) : null,
-            demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+            demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
           }
       // Only the FIRST member carries data-jff-fid; the filler re-finds the
@@ -228,7 +229,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
           kind: 'choice', options: choice.options,
           required: requiredOf(el, binding),
           visible, currentValue: null,
-          demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+          demographic: isDemographicField(binding.text, isDemographic(el)),
           description: descriptionFor(el, binding) ?? undefined,
         })
         fid++
@@ -253,7 +254,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       kind, options,
       required: requiredOf(el, binding),
       visible, currentValue: currentValueOf(el, kind),
-      demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+      demographic: isDemographicField(binding.text, isDemographic(el)),
       description: descriptionFor(el, binding) ?? undefined,
       accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
     })
