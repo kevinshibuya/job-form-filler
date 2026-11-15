@@ -42,10 +42,39 @@ describe('isDemographic', () => {
     expect(isDemographic(document.getElementById('e')!)).toBe(false)
   })
 
-  it('stops after 5 ancestor levels', () => {
-    document.body.innerHTML = `<form><section><h2>Demographic Questions</h2>
+  it('reads a container id, class or aria-label no more than 5 levels up', () => {
+    document.body.innerHTML = `<form><section id="eeo-section">
       <div><div><div><div><div><div><select id="g"></select></div></div></div></div></div></div></section></form>`
     expect(isDemographic(document.getElementById('g')!)).toBe(false)
+  })
+
+  it('catches a field under a demographic heading that sits beside its wrapper, however deep', () => {
+    document.body.innerHTML = `<form><div class="questions"><label for="e">Email</label><input id="e"></div>
+      <div id="x"><h3>[EN] Demographic Questionnaire</h3>
+      <div><div><div><div><div><div><div><select id="g"></select></div></div></div></div></div></div></div></div></form>`
+    expect(isDemographic(document.getElementById('g')!)).toBe(true)
+    expect(isDemographic(document.getElementById('e')!)).toBe(false)
+  })
+
+  it('does not catch a field that comes before the demographic heading in the same container', () => {
+    document.body.innerHTML = `<form><div><div><label for="e">Email</label><input id="e"></div>
+      <h3>Voluntary Self-Identification</h3><div><select id="g"></select></div></div></form>`
+    expect(isDemographic(document.getElementById('e')!)).toBe(false)
+    expect(isDemographic(document.getElementById('g')!)).toBe(true)
+  })
+
+  it('lets a nearer, ordinary heading close the demographic section', () => {
+    document.body.innerHTML = `<form><div><h3>Voluntary Self-Identification</h3><div><select id="g"></select></div>
+      <h3>Additional questions</h3><div><label for="w">Why us?</label><textarea id="w"></textarea></div></div></form>`
+    expect(isDemographic(document.getElementById('g')!)).toBe(true)
+    expect(isDemographic(document.getElementById('w')!)).toBe(false)
+  })
+
+  it('never reads a heading beside the form or in the page body', () => {
+    document.body.innerHTML = `<div><h2>Voluntary Self-Identification</h2><form><div><label for="e">Email</label><input id="e"></div></form></div>`
+    expect(isDemographic(document.getElementById('e')!)).toBe(false)
+    document.body.innerHTML = `<h2>Voluntary Self-Identification</h2><div><label for="e">Email</label><input id="e"></div>`
+    expect(isDemographic(document.getElementById('e')!)).toBe(false)
   })
 
   it('treats a subframe whose own title says EEO as demographic', () => {
