@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  isConsentCheckbox, isProfileKey, type EnumField, type FieldKey, type Resolution,
+  isCheckboxGroup, isConsentCheckbox, isProfileKey, type EnumField, type FieldKey, type Resolution,
   type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -9,6 +9,7 @@ import {
 import type { CallOpts } from '../llm/claudeCli.js'
 import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
+import { matchOptionSet, optionEqualTo } from './choiceSets.js'
 import { canHold, keyFor } from './controlKinds.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
 import { recognize } from './recognizers.js'
@@ -44,6 +45,30 @@ function exactAnswer(db: Database.Database, label: string) {
   return hit !== null && hit.reusability === 'reusable' ? hit : null
 }
 
+/**
+ * A Saved answer on a checkbox group: the stored set meets the page's Options.
+ * Every stored label offered gives the whole set at `best`; some give the
+ * matching Options as Proposed; none leaves the group Needs input. An answer on
+ * any other Control is used whole, at `best`.
+ */
+function fromAnswer(
+  f: EnumField, answer: string, best: 'auto' | 'proposed',
+): { tier: Resolution['tier']; value: string | null; partial: '' | ':partial' | ':no-offered-option' } {
+  if (!isCheckboxGroup(f)) return { tier: best, value: answer, partial: '' }
+  const m = matchOptionSet(answer, f.options)
+  if (m.match === 'all') return { tier: best, value: m.value, partial: '' }
+  if (m.match === 'some') return { tier: 'proposed', value: m.value, partial: ':partial' }
+  return { tier: 'needs_input', value: null, partial: ':no-offered-option' }
+}
+
+/**
+ * A stored Known key Value as this Control takes it: on a checkbox group only
+ * the one Option equal to it, in the page's wording, and null when none is.
+ */
+function keyValueFor(f: EnumField, stored: string): string | null {
+  return isCheckboxGroup(f) ? optionEqualTo(stored, f.options) : stored
+}
+
 interface StepResult {
   byRef: Map<string, Resolution>
 }
@@ -75,7 +100,8 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
       // learnable fact (Ashby's resume auto-parse fills these), and save-side
       // learning needs the key to route it to profile/answer_bank.
       // A key the Control cannot hold is not harvested either.
-      const pageKey = label === '' ? null : keyFor(f.kind, recognize(label, db))
+      // A group's ticked set is not a Known key Value, so none is harvested.
+      const pageKey = label === '' || isCheckboxGroup(f) ? null : keyFor(f.kind, recognize(label, db))
       byRef.set(ref, res(f, { tier: 'auto', source: 'page', key: pageKey, value: f.currentValue, reason: 'already-on-page' }))
       continue
     }
@@ -83,7 +109,21 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     // 2 — deterministic recognizers + user-confirmed learned mappings. A hit on
     //     a Control that cannot hold the key's Value is not a hit: the Field goes
     //     on to tier 3 and Mapping as if nothing had matched.
-    const key = label === '' ? null : keyFor(f.kind, recognize(label, db))
+    let key = label === '' ? null : keyFor(f.kind, recognize(label, db))
+    // On a checkbox group a key answers only with an Option equal to its stored
+    // Value. With none, the group goes on as if the key had not matched.
+    if (key !== null && isCheckboxGroup(f)) {
+      const stored = getStoredValue(db, key)
+      const option = stored === null ? null : keyValueFor(f, stored)
+      if (option !== null) {
+        byRef.set(ref, res(f, {
+          tier: 'auto', source: isProfileKey(key) ? 'profile' : 'answer_bank',
+          key, value: option, reason: `recognizer:${key}`,
+        }))
+        continue
+      }
+      key = null
+    }
     if (key !== null) {
       const value = getStoredValue(db, key)
       if (value !== null) {
@@ -113,8 +153,12 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     if (label !== '') {
       const hit = exactAnswer(db, label)
       if (hit !== null) {
-        touchAnswer(db, hit.id)
-        byRef.set(ref, res(f, { tier: 'auto', source: 'saved_answer', value: hit.answer, answerId: hit.id, reason: 'exact-match' }))
+        const out = fromAnswer(f, hit.answer, 'auto')
+        if (out.value !== null) touchAnswer(db, hit.id)
+        byRef.set(ref, res(f, {
+          tier: out.tier, source: out.value === null ? null : 'saved_answer', value: out.value,
+          answerId: out.value === null ? null : hit.id, reason: `exact-match${out.partial}`,
+        }))
         continue
       }
     }
@@ -175,9 +219,15 @@ async function mappingStep(
           byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:wrong-control` }))
           continue
         }
-        const value = getStoredValue(db, key)
+        const stored = getStoredValue(db, key)
+        const value = stored === null ? null : keyValueFor(f, stored)
         if (value !== null) {
           byRef.set(ref, res(f, { tier: 'proposed', source: 'llm_key', key, value, reason: `llm-key:${key}` }))
+          continue
+        }
+        if (stored !== null) {
+          // A group that offers no Option equal to the stored Value.
+          byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:no-offered-option` }))
           continue
         }
         // B5c, defense in depth: every LABELLED field already tried tier 3
@@ -186,11 +236,12 @@ async function mappingStep(
         // `proposed`: the key is LLM-derived ("LLM results are PROPOSED").
         const fallbackLabel = (f.label ?? '').trim()
         const hit = fallbackLabel === '' ? null : exactAnswer(db, fallbackLabel)
-        if (hit !== null) {
+        const out = hit === null ? null : fromAnswer(f, hit.answer, 'proposed')
+        if (hit !== null && out !== null && out.value !== null) {
           touchAnswer(db, hit.id)
           byRef.set(ref, res(f, {
-            tier: 'proposed', source: 'saved_answer', key, value: hit.answer,
-            answerId: hit.id, reason: 'exact-match:key-fallback',
+            tier: out.tier, source: 'saved_answer', key, value: out.value,
+            answerId: hit.id, reason: `exact-match:key-fallback${out.partial}`,
           }))
         } else {
           byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `llm-key:${key}:no-stored-value` }))
@@ -202,7 +253,10 @@ async function mappingStep(
         const row = getAnswerById(db, d.answerId)
         // Second guard: even a validated id must not be company_specific.
         if (row !== null && row.reusability === 'reusable') {
-          byRef.set(ref, res(f, { tier: 'proposed', source: 'llm_reuse', value: row.answer, answerId: row.id, reason: `llm-reuse:${row.id}` }))
+          const out = fromAnswer(f, row.answer, 'proposed')
+          byRef.set(ref, out.value === null
+            ? res(f, { tier: 'needs_input', reason: `llm-reuse:${row.id}${out.partial}` })
+            : res(f, { tier: out.tier, source: 'llm_reuse', value: out.value, answerId: row.id, reason: `llm-reuse:${row.id}${out.partial}` }))
         } else {
           byRef.set(ref, res(f, { tier: 'needs_input', reason: 'company-specific' }))
         }

@@ -6,6 +6,7 @@ import { VALUE_TYPE_OF, type FieldKey, type ValueType } from '@jff/shared'
  * The rule lists the Controls each Value type answers, never the ones it does
  * not: a Control kind added later takes no Known key until it is listed here.
  * A lone checkbox and a file picker are deliberately absent from every list.
+ * A checkbox group takes only the keys `ALSO_ANSWERS` names.
  */
 const TEXT_CONTROLS = ['text', 'textarea'] as const
 const CHOICE_CONTROLS = ['select', 'combobox', 'radiogroup', 'choice'] as const
@@ -18,9 +19,18 @@ const ANSWERS: Readonly<Record<ValueType, ReadonlySet<string>>> = {
   place: new Set(),
 }
 
+/**
+ * Controls one key answers beyond its Value type's list. `pronouns` answers a
+ * checkbox group, but only with an Option equal to the stored Value; the
+ * Resolution checks that equality, this rule only lets the key through.
+ */
+const ALSO_ANSWERS: Readonly<Partial<Record<FieldKey, ReadonlySet<string>>>> = {
+  pronouns: new Set(['checkboxgroup']),
+}
+
 /** True when a Control of this kind can hold the Value of this Known key. */
 export function canHold(kind: string, key: FieldKey): boolean {
-  return ANSWERS[VALUE_TYPE_OF[key]].has(kind)
+  return ANSWERS[VALUE_TYPE_OF[key]].has(kind) || (ALSO_ANSWERS[key]?.has(kind) ?? false)
 }
 
 /** The key itself when the Control can hold it, else null: a hit on the wrong
