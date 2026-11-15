@@ -25,9 +25,12 @@ const PAGE = [
   field(6, 'I agree to the privacy notice', { kind: 'checkbox' }),
 ]
 
-const mappingFor = (fields: EnumField[]) => fields.map((f) => f.fid === 4
-  ? resolution(f, { tier: 'proposed', value: '120000', source: 'llm_key', key: 'salary', reason: 'llm-key:salary' })
-  : resolution(f, {}))
+const mappingFor = (fields: EnumField[]) => fields.map((f) => {
+  if (f.fid === 4) return resolution(f, { tier: 'proposed', value: '120000', source: 'llm_key', key: 'salary', reason: 'llm-key:salary' })
+  // Mapping labels the one free-text question a Prose Field.
+  if (f.fid === 3) return resolution(f, { fieldClass: 'prose' })
+  return resolution(f, {})
+})
 
 const host = installHeldMappingHost()
 beforeEach(() => {
@@ -70,8 +73,9 @@ describe('rows still being matched say so', () => {
       expect(buttons.map((b) => b.textContent)).toEqual(['Accept', 'Generate with AI', 'Fill'])
       for (const b of buttons) expect(b.disabled).toBe(true)
     }
-    // Only the first step's Needs input row counts.
-    expect(generateAllText()).toBe('Generate all remaining (1)')
+    // Nothing counts yet: the first step's Needs input row is no Prose Field,
+    // and a waiting row has no Resolution to be one.
+    expect(generateAllText()).toBeUndefined()
   })
 
   it('counts the waiting rows beside a filled count that matches the page', async () => {
@@ -94,7 +98,7 @@ describe('rows still being matched say so', () => {
     expect(statusText()).toBe('✓ 2 filled, 0 already on page, 1 proposed, 4 need input')
     expect(statusText()).not.toMatch(/still being matched/)
     // The landed Prose row now counts; the tick-box rows never do.
-    expect(generateAllText()).toBe('Generate all remaining (2)')
+    expect(generateAllText()).toBe('Generate all remaining (1)')
     expect(buttonsOf('Salary expectation').find((b) => b.textContent === 'Accept')!.disabled).toBe(false)
   })
 

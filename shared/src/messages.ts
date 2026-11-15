@@ -129,10 +129,9 @@ export const PageEnvelopeSchema = z.object({
   omitted: z.number().int().nonnegative(),
 })
 
-// There is deliberately NO customQuestions list here: the panel offers [Generate]
-// on EVERY needs-input row (spec, "Needs input — each with a [Generate with AI]
-// button"), so a separate list would be dead payload. The reason string `custom`
-// marks the rows the LLM classified as free-text.
+// There is deliberately NO customQuestions list here: each Resolution Mapping
+// matched to nothing carries its own `fieldClass`, and the panel offers
+// [Generate] only on a Needs input Prose Field on a text Control.
 export const ResolveResultSchema = z.object({
   epoch: z.number().int(),
   resolutions: z.array(ResolutionSchema),

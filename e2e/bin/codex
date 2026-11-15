@@ -53,7 +53,9 @@ const body = () => {
         return { ref, decision: 'known_key', knownKey: 'salary', answerId: null }
       }
     }
-    return { ref, decision: 'custom', knownKey: null, answerId: null }
+    // Every Field it matches to nothing is labelled a Prose Field, so the
+    // full loop still drafts its free-text question.
+    return { ref, decision: 'custom', knownKey: null, answerId: null, fieldClass: 'prose' }
   })
 }
 
