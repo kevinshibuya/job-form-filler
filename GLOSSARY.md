@@ -116,8 +116,8 @@ name, email, country, work authorization or notice period. Each has a Value type
 _Avoid_: field key, fact key, key
 
 **Value type**:
-What kind of thing a Known key holds: text, link, phone, yes/no, place or list
-of places. It decides which Controls the key can answer.
+What kind of thing a Known key holds: text, link, phone, yes/no, place, list of
+places or amount. It decides which Controls the key can answer.
 _Avoid_: data type, format
 
 ### Answers and drafting
