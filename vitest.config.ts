@@ -17,7 +17,7 @@ export default defineConfig({
         test: {
           name: 'host',
           environment: 'node',
-          include: ['host/src/**/*.test.ts', 'shared/src/**/*.test.ts'],
+          include: ['host/src/**/*.test.ts', 'shared/src/**/*.test.ts', 'scripts/**/*.test.mjs'],
           ...TIMEOUTS,
         },
       },

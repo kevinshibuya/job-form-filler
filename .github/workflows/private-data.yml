@@ -1,0 +1,41 @@
+name: private-data
+
+# The public half of scripts/check-private.mjs: the generic rules, over the tree
+# and over every commit a change adds. The private denylist stays on the
+# author's machine, where the git hooks read it.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tracked files
+        run: node scripts/check-private.mjs --tree
+      - name: Commits this change adds
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            node scripts/check-private.mjs --range "$PR_BASE..$PR_HEAD"
+          elif ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            # A new branch or a force-push has no usable "before": scan what the
+            # default branch lacks.
+            node scripts/check-private.mjs --range "$AFTER" --not origin/main
+          else
+            node scripts/check-private.mjs --range "$BEFORE..$AFTER"
+          fi

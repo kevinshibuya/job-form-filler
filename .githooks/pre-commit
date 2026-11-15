@@ -1,0 +1,3 @@
+#!/bin/sh
+# Refuses a commit whose staged lines or identity carry personal data.
+exec node "$(git rev-parse --show-toplevel)/scripts/check-private.mjs" --staged

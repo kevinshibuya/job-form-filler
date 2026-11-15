@@ -27,4 +27,15 @@ it from stored answers, and draft the free-text ones under human review.
 - Product model routing lives in `host/src/llm/models.ts` and follows the
   harness model table. Override per task under `models` in
   `~/.job-form-filler/config.json`.
+- The repo is public. Real data stays in `~/.job-form-filler/`; tests, fixtures,
+  plans and screenshots use the Ada Lovelace persona (`ada@example.com`,
+  `+1 555 0100`), never a real name, address, city or path.
+- `scripts/check-private.mjs` runs from `.githooks` (set by `npm install`) and in
+  CI. The denylist is `~/.job-form-filler/private-strings.txt`, outside the
+  repo. Never pass `--no-verify`; fix the finding. `npm run check:private` scans
+  the tree, and `--range <revs>` scans commits: history counts, not only the tip.
+- Notes that hold real application data (pages visited, answers given, employers)
+  go in `~/.job-form-filler/dev/`. A PR, an issue and a commit message are
+  public: write them from the sanitised summary.
+- A captured page becomes a fixture only through `scripts/sanitize-capture.mjs`.
 - Branch flow: feature branch, PR into `ai-staging`. Never commit on `main`.
