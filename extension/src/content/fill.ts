@@ -67,10 +67,20 @@ function fillRadioGroup(el: HTMLInputElement, value: string): FillOutcome {
   return { ok: true }
 }
 
-function fillCheckbox(el: HTMLInputElement, value: string): FillOutcome {
-  const want = /^(true|yes|sim|on|1|checked)$/i.test(value.trim())
+/**
+ * A box holds yes or no and nothing else: any other Value (a link, an email
+ * address, a place) is refused with the box untouched, never read as "no".
+ * "filled" means the box ENDS in the asked state, so the state is read back a
+ * frame after the click, once the page's framework has had its turn to put
+ * its own state back.
+ */
+async function fillCheckbox(el: HTMLInputElement, value: string): Promise<FillOutcome> {
+  const v = value.trim()
+  const want = AFFIRMATIVE_RE.test(v) ? true : NEGATIVE_RE.test(v) ? false : null
+  if (want === null) return { ok: false, reason: 'value-not-yes-no' }
   if (el.checked === want) return { ok: true }
   el.click()
+  await nextFrame()
   if (el.checked !== want) return { ok: false, reason: 'click-rejected' }
   return { ok: true }
 }

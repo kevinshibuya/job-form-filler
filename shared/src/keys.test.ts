@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { PROFILE_KEYS, ANSWER_BANK_KEYS, FIELD_KEYS, isFieldKey, normalizeFactValue, FACT_MAX_CHARS } from './keys.js'
+import {
+  PROFILE_KEYS, ANSWER_BANK_KEYS, FIELD_KEYS, VALUE_TYPES, VALUE_TYPE_OF, isFieldKey, normalizeFactValue, FACT_MAX_CHARS,
+} from './keys.js'
 
 describe('field key sets', () => {
   it('FIELD_KEYS is the union of profile and answer-bank keys with no duplicates', () => {
@@ -24,6 +26,27 @@ describe('field key sets', () => {
     expect(isFieldKey('whyInterested')).toBe(false)
     expect(isFieldKey('__proto__')).toBe(false)
     expect(isFieldKey('')).toBe(false)
+  })
+})
+
+describe('Value types', () => {
+  it('gives every Known key exactly one Value type, and no type to anything else', () => {
+    for (const key of FIELD_KEYS) {
+      expect(VALUE_TYPES, `Known key ${key} has no Value type`).toContain(VALUE_TYPE_OF[key])
+    }
+    expect(Object.keys(VALUE_TYPE_OF).sort()).toEqual([...FIELD_KEYS].sort())
+  })
+
+  it('types each Known key as the spec\'s table does', () => {
+    const byType = (type: string) => FIELD_KEYS.filter((k) => VALUE_TYPE_OF[k] === type).sort()
+    expect(byType('link')).toEqual(['github', 'linkedin', 'portfolio'])
+    expect(byType('phone')).toEqual(['phone'])
+    expect(byType('yes_no')).toEqual(['relocate', 'sponsorshipNeeded', 'workAuth'])
+    expect(byType('text')).toEqual([
+      'earliestStart', 'email', 'firstName', 'fullName', 'lastName', 'location', 'notice',
+      'preferredName', 'pronouns', 'remotePreference', 'salary',
+    ])
+    expect(byType('place')).toEqual([])
   })
 })
 

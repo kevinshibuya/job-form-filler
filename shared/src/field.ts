@@ -44,6 +44,16 @@ export const EnumFieldSchema = FieldHandleSchema.extend({
 })
 export type EnumField = z.infer<typeof EnumFieldSchema>
 
+/**
+ * A lone checkbox is a Consent checkbox: the user agrees to or acknowledges
+ * something by it. Resolution always leaves it Needs input, and Save answers
+ * never stores it, so a consent is never recalled onto another form.
+ * A checkbox drawn as yes/no buttons enumerates as `choice`, not here.
+ */
+export function isConsentCheckbox(field: Pick<EnumField, 'kind'>): boolean {
+  return field.kind === 'checkbox'
+}
+
 /** What the panel does with a resolved field. */
 export const ResolutionTierSchema = z.enum(['auto', 'proposed', 'needs_input', 'skipped'])
 export type ResolutionTier = z.infer<typeof ResolutionTierSchema>
