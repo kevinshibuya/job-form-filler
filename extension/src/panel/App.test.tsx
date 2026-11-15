@@ -1391,11 +1391,21 @@ describe('App — per-field generating state (B3)', () => {
 
   function installNeedsInputScan(
     onGen: (params: { handle: { fid: number } }, requestId: string) => HostResponse | Promise<HostResponse>,
+    /** Fields scanned after the two textareas, fids 2 and up. */
+    extra: Record<string, unknown>[] = [],
   ): void {
+    const scan = extra.length === 0 ? twoFieldScan : {
+      ...twoFieldScan,
+      replies: [{ ...twoFieldScan.replies[0]!, payload: { ok: true, scan: {
+        ...twoFieldScan.replies[0]!.payload.scan,
+        fields: [...twoFieldScan.replies[0]!.payload.scan.fields, ...extra],
+      } } }],
+    }
+    const fids = [0, 1, ...extra.map((f) => f.fid as number)]
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
-      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return twoFieldScan
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scan
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') {
         return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
       }
@@ -1406,7 +1416,7 @@ describe('App — per-field generating state (B3)', () => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve') {
-        return { requestId, ok: true, result: { epoch: 1, resolutions: [0, 1].map((fid) => ({
+        return { requestId, ok: true, result: { epoch: 1, resolutions: fids.map((fid) => ({
           handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input' as const, value: null, source: null, key: null, answerId: null, reason: 'custom',
         })), llmError: null } }
       }
@@ -1456,6 +1466,18 @@ describe('App — per-field generating state (B3)', () => {
     await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
     await act(async () => { finish!() })
     expect(screen.queryByDisplayValue('Dead-page draft')).toBeNull()
+  })
+
+  it('Generate all remaining leaves a checkbox group row and a Consent checkbox row out of its count', async () => {
+    installNeedsInputScan((_params, requestId) => ({ requestId, ok: true, result: { draft: 'unused' } }), [
+      { frameId: -1, fid: 2, epoch: 1, label: 'Pronouns', name: 'pronouns', idAttr: null, kind: 'checkboxgroup', options: ['He/him', 'She/her'], required: false, visible: true, currentValue: null, demographic: false },
+      { frameId: -1, fid: 3, epoch: 1, label: 'I agree to be contacted', name: 'consent', idAttr: null, kind: 'checkbox', options: [], required: false, visible: true, currentValue: null, demographic: false },
+    ])
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    expect(screen.getByRole('group', { name: 'Pronouns' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Generate all remaining (2)' })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Generate with AI' })).toHaveLength(2)
   })
 
   it('generates all remaining sequentially with a progress label', async () => {

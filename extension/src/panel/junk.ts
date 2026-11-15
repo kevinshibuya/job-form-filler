@@ -8,7 +8,8 @@ import { scoreResumeField } from './resumeTarget'
  *
  * Kept despite visible:false —
  * - kind 'choice': the backing input is hidden BY DESIGN (A3 re-kinded it);
- * - hidden checkboxes/radios with a resolvable label: styled-control recipe;
+ * - hidden checkboxes, checkbox groups and radios with a resolvable label:
+ *   styled-control recipe;
  * - file inputs with a resolvable label: dropzone-hidden real inputs
  *   (Greenhouse). The blanket file exemption is deliberately GONE — an
  *   unlabelled hidden file input (Ashby's autofill pane) is junk. Slice 2 (A8)
@@ -17,7 +18,7 @@ import { scoreResumeField } from './resumeTarget'
 export function keepField(f: EnumField): boolean {
   if (f.visible) return true
   if (f.kind === 'choice') return true
-  if ((f.kind === 'checkbox' || f.kind === 'radiogroup') && f.label !== null) return true
+  if ((f.kind === 'checkbox' || f.kind === 'checkboxgroup' || f.kind === 'radiogroup') && f.label !== null) return true
   // A8 seam (this is the extension plan 1 documented): a hidden file input
   // earns its keep by a resolvable label OR by scoring positively on the
   // resume scorer (name/id/accept/required signals). Still no blanket keep —
