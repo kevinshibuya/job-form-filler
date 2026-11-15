@@ -4,11 +4,19 @@ import type { CallOpts } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 import { buildTrustedContext, type GenerationInput } from './generate.js'
 
-const ReviewResponseSchema = z.object({ draft: z.string() })
+// `unsupported` is optional so a reply in the old shape, `{draft}`, still
+// reads as a checked Draft that flagged nothing.
+const ReviewResponseSchema = z.object({ draft: z.string(), unsupported: z.array(z.string()).nullish() })
 
-/** B2d: the gpt-sol reviewer pass. Same trusted/untrusted context as the
- *  drafting prompt, plus the claude draft; it removes ungrounded factual
- *  claims and tightens wording — it never adds new claims. */
+/** What the Draft check returns: the checked Draft and the sentences it flagged
+ *  as stating something about the user the stored material does not support. */
+export interface CheckedDraft { draft: string; unsupported: string[] }
+
+/** B2d: the Draft check, the gpt-sol reviewer pass. Same trusted/untrusted
+ *  context as the drafting prompt, plus the claude draft; it removes ungrounded
+ *  factual claims and tightens wording — it never adds new claims — and flags,
+ *  without removing, any other sentence about the candidate that the trusted
+ *  blocks do not support. */
 export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): string {
   return [
     'You review ONE drafted answer to a job-application question, keeping the candidate\'s voice.',
@@ -28,11 +36,18 @@ export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): 
     '5. Never use a spaced em-dash or en-dash as sentence punctuation.',
     'If the draft is already grounded and tight, return it unchanged.',
     '',
-    'Return {"draft": "..."}.',
+    'Then list, under "unsupported", every sentence of your rewritten draft that states something about the candidate',
+    '(a need, a circumstance, a preference or a piece of history, such as having no accommodation needs) which the',
+    'trusted blocks above do not support. Do not remove or rewrite such a sentence for this reason: leave it in the draft,',
+    'and copy it into "unsupported" exactly as it appears in the draft. A sentence the trusted blocks support, an opinion',
+    'about the job or the Company, or a fix you already made under rule 1 does not go in the list. When there is none,',
+    'return an empty list.',
+    '',
+    'Return {"draft": "...", "unsupported": ["..."]}.',
   ].join('\n')
 }
 
-export async function reviewDraft(runner: CodexRunner, input: GenerationInput, claudeDraft: string, opts: CallOpts): Promise<string> {
+export async function reviewDraft(runner: CodexRunner, input: GenerationInput, claudeDraft: string, opts: CallOpts): Promise<CheckedDraft> {
   const out = await runner.complete(buildReviewPrompt(input, claudeDraft), ReviewResponseSchema, opts)
-  return out.draft
+  return { draft: out.draft, unsupported: out.unsupported ?? [] }
 }

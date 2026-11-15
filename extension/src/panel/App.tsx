@@ -188,7 +188,7 @@ const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ k
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], waiting: [], election: null, edits: {}, filledRefs: [], generatedRefs: [],
+  fields: [], resolutions: [], waiting: [], election: null, edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -497,6 +497,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const resolutions = session?.resolutions ?? []
   const edits = session?.edits ?? {}
   const generatedRefs = session?.generatedRefs ?? []
+  const draftWarnings = session?.draftWarnings ?? {}
   const filledRefs = session?.filledRefs ?? []
   const election = session?.election ?? null
   const company = session?.company ?? ''
@@ -1393,7 +1394,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // never land in edits (spec D3).
     setGeneratingRefs((s) => new Set(s).add(ref))
     try {
-      const r = await port.request<{ draft: string }>('generate', {
+      const r = await port.request<{ draft: string; unsupportedClaims?: string[] }>('generate', {
         handle: row.resolution.handle,
         questionRaw: row.field.label ?? '',
         description: row.field.description,
@@ -1407,13 +1408,19 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (!alive(sc)) return 'aborted'
       if (r.ok) {
         const draft = r.result.draft
+        const unsupported = r.result.unsupportedClaims ?? []
         // S4: a settled draft is carried with provenance 'generated', which is
-        // what re-enters generatedRefs on the next step.
-        await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
-          ...s,
-          edits: { ...s.edits, [ref]: draft },
-          generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
-        }, ref, draft, 'generated'))
+        // what re-enters generatedRefs on the next step. Its Draft check
+        // warning replaces whatever the row's previous Draft carried.
+        await applyToSession(sc.target, sc.gen, (s) => {
+          const { [ref]: _previous, ...draftWarnings } = s.draftWarnings
+          return rememberAnswer({
+            ...s,
+            edits: { ...s.edits, [ref]: draft },
+            generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
+            draftWarnings: unsupported.length === 0 ? draftWarnings : { ...draftWarnings, [ref]: unsupported },
+          }, ref, draft, 'generated')
+        })
         return 'ok'
       }
       setHostError(hostErrorText(r.error))
@@ -1945,6 +1952,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                           onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
                           onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
                           pageValue={snapshot[row.ref] ?? null}
+                          unsupportedClaims={draftWarnings[row.ref] ?? []}
                           generating={generatingRefs.has(row.ref)}
                           filled={filledRefs.includes(row.ref)}
                           acting={acting !== null && acting.ref === row.ref ? acting.action : null}

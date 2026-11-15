@@ -752,3 +752,29 @@ describe('waiting rows: Fields the first step left for Mapping', () => {
     expect(settleWaiting(s, 'mapping-lost')).toBe(s)
   })
 })
+
+describe('Draft warnings ride the Session', () => {
+  it('a new Session has none', () => {
+    expect(newSession(7).draftWarnings).toEqual({})
+  })
+
+  it('a stored row from before Draft warnings existed reads as none', () => {
+    const { draftWarnings: _gone, ...old } = newSession(7)
+    expect(parseStoredSession(old)?.draftWarnings).toEqual({})
+  })
+
+  it('a stored row keeps its Draft warnings', () => {
+    const s = { ...newSession(7), draftWarnings: { '0:1': ['I do not need any accommodations.'] } }
+    expect(parseStoredSession(s)?.draftWarnings).toEqual({ '0:1': ['I do not need any accommodations.'] })
+  })
+
+  it('a stored row whose Draft warnings are not lists of sentences is refused', () => {
+    expect(parseStoredSession({ ...newSession(7), draftWarnings: { '0:1': [1] } })).toBeNull()
+    expect(parseStoredSession({ ...newSession(7), draftWarnings: ['x'] })).toBeNull()
+  })
+
+  it('a re-scan drops them with the refs they were keyed by', () => {
+    const s = { ...newSession(7), draftWarnings: { '0:1': ['I do not need any accommodations.'] } }
+    expect(projectAnswers(s, [], [], {}).draftWarnings).toEqual({})
+  })
+})

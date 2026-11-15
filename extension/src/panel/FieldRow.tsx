@@ -94,6 +94,28 @@ export interface FieldRowProps {
   resumeTarget?: boolean
   resumeName?: string | null
   onFillResume?: (ref: string) => void
+  /** The sentences of this row's Draft the Draft check found unsupported by the
+   *  user's own material. Shown above the editor; none means no warning. */
+  unsupportedClaims?: string[]
+}
+
+/**
+ * Above a Draft the Draft check flagged: each sentence that states something
+ * about the user which nothing they stored supports, quoted so they can find
+ * and fix it in the editor below. The Draft itself stays editable (ADR 0004).
+ */
+function DraftWarning({ claims }: { claims: string[] }) {
+  return (
+    <div
+      role="note" data-jff-draft-warning="1"
+      className="mt-1.5 rounded-md border border-amber-300 px-2 py-1.5 text-[12px] text-amber-800 dark:border-amber-600 dark:text-amber-300"
+    >
+      <p>Nothing you stored supports {claims.length === 1 ? 'this sentence' : 'these sentences'}. Check {claims.length === 1 ? 'it' : 'them'} before you fill:</p>
+      <ul className="mt-1 space-y-0.5">
+        {claims.map((c) => <li key={c}><q>{c}</q></li>)}
+      </ul>
+    </div>
+  )
 }
 
 type EditorKind = 'segmented' | 'picker' | 'combobox-empty' | 'file' | 'textarea' | 'checkboxes' | 'consent'
@@ -174,6 +196,8 @@ export function FieldRow(p: FieldRowProps) {
       {field.description !== undefined && field.description !== '' && (
         <p data-jff-description="1" className={`mt-0.5 text-[12px] ${MUTED}`}>{field.description}</p>
       )}
+
+      {p.unsupportedClaims !== undefined && p.unsupportedClaims.length > 0 && <DraftWarning claims={p.unsupportedClaims} />}
 
       {editor === 'checkboxes' && (
         <CheckboxGroupEditor
