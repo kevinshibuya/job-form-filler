@@ -95,6 +95,16 @@ describe('MappingResponseSchema', () => {
     ])
     expect(parsed[0]).not.toHaveProperty('value')
   })
+
+  it('takes a label of prose or personal_fact and nothing else', () => {
+    const parsed = MappingResponseSchema.parse([
+      { ref: '0:1', decision: 'custom', fieldClass: 'prose' },
+      { ref: '0:2', decision: 'custom', fieldClass: 'personal_fact' },
+      { ref: '0:3', decision: 'custom', fieldClass: 'I have no accommodation needs.' },
+      { ref: '0:4', decision: 'custom' },
+    ])
+    expect(parsed.map((e) => e.fieldClass)).toEqual(['prose', 'personal_fact', null, null])
+  })
 })
 
 describe('validateMappingResponse', () => {
@@ -106,8 +116,8 @@ describe('validateMappingResponse', () => {
       { ref: '0:1', decision: 'reuse_answer', knownKey: null, answerId: 11 },
       { ref: '0:2', decision: 'known_key', knownKey: 'remotePreference', answerId: null },
     ], refs, ids)
-    expect(out.get('0:1')).toEqual({ decision: 'reuse_answer', knownKey: null, answerId: 11 })
-    expect(out.get('0:2')).toEqual({ decision: 'known_key', knownKey: 'remotePreference', answerId: null })
+    expect(out.get('0:1')).toEqual({ decision: 'reuse_answer', knownKey: null, answerId: 11, fieldClass: null })
+    expect(out.get('0:2')).toEqual({ decision: 'known_key', knownKey: 'remotePreference', answerId: null, fieldClass: null })
   })
 
   it('returns an empty map (all fields fail closed) when a ref is missing', () => {
@@ -133,7 +143,7 @@ describe('validateMappingResponse', () => {
       { ref: '0:1', decision: 'known_key', knownKey: 'socialSecurityNumber', answerId: null },
       { ref: '0:2', decision: 'custom', knownKey: null, answerId: null },
     ], refs, ids)
-    expect(out.get('0:1')).toEqual({ decision: 'custom', knownKey: null, answerId: null })
+    expect(out.get('0:1')).toEqual({ decision: 'custom', knownKey: null, answerId: null, fieldClass: null })
   })
 
   it('downgrades a reuse_answer id outside the candidate set to custom', () => {
@@ -141,7 +151,24 @@ describe('validateMappingResponse', () => {
       { ref: '0:1', decision: 'reuse_answer', knownKey: null, answerId: 999 },
       { ref: '0:2', decision: 'custom', knownKey: null, answerId: null },
     ], refs, ids)
-    expect(out.get('0:1')).toEqual({ decision: 'custom', knownKey: null, answerId: null })
+    expect(out.get('0:1')).toEqual({ decision: 'custom', knownKey: null, answerId: null, fieldClass: null })
+  })
+
+  it('keeps the label of a custom entry and drops it from every other', () => {
+    const out = validateMappingResponse([
+      { ref: '0:1', decision: 'custom', knownKey: null, answerId: null, fieldClass: 'prose' },
+      { ref: '0:2', decision: 'known_key', knownKey: 'email', answerId: null, fieldClass: 'prose' },
+    ], refs, ids)
+    expect(out.get('0:1')?.fieldClass).toBe('prose')
+    expect(out.get('0:2')?.fieldClass).toBeNull()
+  })
+
+  it('gives no label to an entry downgraded to custom', () => {
+    const out = validateMappingResponse([
+      { ref: '0:1', decision: 'reuse_answer', knownKey: null, answerId: 999, fieldClass: 'prose' },
+      { ref: '0:2', decision: 'custom', knownKey: null, answerId: null, fieldClass: 'prose' },
+    ], refs, ids)
+    expect(out.get('0:1')?.fieldClass).toBeNull()
   })
 
   it('returns an empty map for a non-array response', () => {

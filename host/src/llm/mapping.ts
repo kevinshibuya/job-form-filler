@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FIELD_KEYS, isFieldKey, type EnumField, type FieldKey } from '@jff/shared'
+import { FIELD_KEYS, FieldClassSchema, isFieldKey, type EnumField, type FieldClass, type FieldKey } from '@jff/shared'
 import type { CallOpts } from './claudeCli.js'
 import type { CodexRunner } from './codexCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
@@ -29,12 +29,15 @@ export function refOf(f: { frameId: number; fid: number }): string {
  * model CANNOT return answer text at all. It may only choose: a key from the
  * closed set, an id from the candidates we sent, or "custom". Every value that
  * reaches the page is substituted from SQLite by the waterfall.
+ * `fieldClass` is a closed two-value label, not text: anything else the model
+ * puts there, a sentence included, is caught to null on that entry alone.
  */
 export const MappingEntrySchema = z.object({
   ref: z.string(),
   decision: z.enum(['known_key', 'reuse_answer', 'custom']),
   knownKey: z.string().nullable().default(null),
   answerId: z.number().int().nullable().default(null),
+  fieldClass: FieldClassSchema.nullable().catch(null),
 })
 export const MappingResponseSchema = z.array(MappingEntrySchema)
 
@@ -42,9 +45,14 @@ export interface MappingDecision {
   decision: 'known_key' | 'reuse_answer' | 'custom'
   knownKey: FieldKey | null
   answerId: number | null
+  /**
+   * On a `custom` decision only: the label Mapping gave, or null when it gave
+   * none that counts. The waterfall reads null as a Personal-fact Field.
+   */
+  fieldClass: FieldClass | null
 }
 
-const CUSTOM: MappingDecision = { decision: 'custom', knownKey: null, answerId: null }
+const CUSTOM: MappingDecision = { decision: 'custom', knownKey: null, answerId: null, fieldClass: null }
 
 export function buildMappingPrompt(input: MappingInput): string {
   const fieldLines = input.fields.slice(0, CAPS.fieldsPerCall).map((f) => {
@@ -87,7 +95,13 @@ export function buildMappingPrompt(input: MappingInput): string {
     'For EVERY ref above return exactly one entry:',
     '- decision="known_key" with knownKey set, when the field asks for one of the known factual keys.',
     '- decision="reuse_answer" with answerId set, when a stored answer above already answers this exact field.',
-    '- decision="custom" for anything else (free-text or subjective questions).',
+    '- decision="custom" for anything else. A custom entry also sets fieldClass:',
+    '  - fieldClass="prose" when the field asks for opinion, motivation or narrative in free text,',
+    '    such as why this role, a project you are proud of, or how you approach a problem.',
+    '  - fieldClass="personal_fact" when the field asks something true or false about the applicant',
+    '    that the known keys and stored answers do not cover, such as accommodation needs,',
+    '    whether they have worked at the company before, a self-rating or a yes/no about their situation.',
+    '  - When in doubt, use "personal_fact". Leave fieldClass null on known_key and reuse_answer entries.',
     '',
     'Hard rules:',
     '- Return one entry per ref: no missing refs, no extra refs, no duplicates.',
@@ -119,14 +133,14 @@ export function validateMappingResponse(
     if (!wanted.has(e.ref) || out.has(e.ref)) return new Map()
     if (e.decision === 'known_key') {
       out.set(e.ref, e.knownKey !== null && isFieldKey(e.knownKey)
-        ? { decision: 'known_key', knownKey: e.knownKey, answerId: null }
+        ? { decision: 'known_key', knownKey: e.knownKey, answerId: null, fieldClass: null }
         : CUSTOM)
     } else if (e.decision === 'reuse_answer') {
       out.set(e.ref, e.answerId !== null && ids.has(e.answerId)
-        ? { decision: 'reuse_answer', knownKey: null, answerId: e.answerId }
+        ? { decision: 'reuse_answer', knownKey: null, answerId: e.answerId, fieldClass: null }
         : CUSTOM)
     } else {
-      out.set(e.ref, CUSTOM)
+      out.set(e.ref, { ...CUSTOM, fieldClass: e.fieldClass })
     }
   }
   if (out.size !== requestedRefs.length) return new Map()

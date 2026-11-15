@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { EnumField, Resolution } from '@jff/shared'
-import { FieldRow, WaitingRow } from './FieldRow'
+import { FieldRow, PERSONAL_FACT_HINT, WaitingRow } from './FieldRow'
 import type { Row } from './group'
 
 const field = (patch: Partial<EnumField> = {}): EnumField => ({
@@ -26,8 +26,9 @@ const props = {
   facts: {} as Record<string, string>, factsReady: false,
 }
 
+/** A Needs input Prose Field on a text box: the one row Generation drafts. */
 const needsInput = (label = 'Why us?') =>
-  row(field({ label }), resolution({ tier: 'needs_input', value: null, source: null, key: null }))
+  row(field({ label }), resolution({ tier: 'needs_input', value: null, source: null, key: null, fieldClass: 'prose' }))
 
 describe('FieldRow', () => {
   it('shows the label, the value and the source badge', () => {
@@ -126,7 +127,7 @@ const actingField = (fid: number): EnumField => ({
 })
 const actingResolution = (fid: number, tier: 'proposed' | 'needs_input'): Resolution => ({
   handle: { frameId: 0, fid, epoch: 1 }, tier, value: 'stored answer', source: tier === 'proposed' ? 'llm_key' : null,
-  key: null, answerId: null, reason: 'test',
+  key: null, answerId: null, reason: 'test', ...(tier === 'needs_input' ? { fieldClass: 'prose' as const } : {}),
 })
 const proposedRow: Row = { ref: '0:1', field: actingField(1), resolution: actingResolution(1, 'proposed') }
 const needsInputRow: Row = { ref: '0:2', field: actingField(2), resolution: actingResolution(2, 'needs_input') }
@@ -358,10 +359,49 @@ describe('FieldRow — Save to profile (a fact is stored, never drafted)', () =>
     expect(onSaveFact).toHaveBeenCalledWith('0:1')
   })
 
-  it('still offers Generate on a keyless needs-input row', () => {
+  it('still offers Generate on a keyless needs-input Prose Field', () => {
     render(<ul><FieldRow {...ready} row={needsInput()} /></ul>)
     expect(genBtn()).toBeTruthy()
     expect(saveBtn()).toBeNull()
+  })
+})
+
+describe('FieldRow — Generation is offered only on a Prose Field', () => {
+  const genBtn = () => screen.queryByRole('button', { name: 'Generate with AI' })
+  const unmatched = (f: Partial<EnumField>, r: Partial<Resolution> = {}) => row(
+    field({ label: 'Q', ...f }),
+    resolution({ tier: 'needs_input', value: null, source: null, key: null, reason: 'custom', ...r }),
+  )
+
+  it.each([
+    ['a text box', 'text'],
+    ['a text area', 'textarea'],
+  ] as const)('offers it on a Prose Field on %s', (_name, kind) => {
+    render(<ul><FieldRow {...props} row={unmatched({ kind }, { fieldClass: 'prose' })} /></ul>)
+    expect(genBtn()).toBeTruthy()
+  })
+
+  it.each([
+    ['a dropdown', { kind: 'select', options: ['A', 'B'] }],
+    ['a radio group', { kind: 'radiogroup', options: ['Yes', 'No'] }],
+    ['a combobox', { kind: 'combobox', options: [] }],
+    ['a checkbox group', { kind: 'checkboxgroup', options: ['A', 'B'] }],
+    ['a Consent checkbox', { kind: 'checkbox', options: [] }],
+  ] as const)('does not offer it on a Prose Field drawn as %s', (_name, f) => {
+    render(<ul><FieldRow {...props} row={unmatched({ ...f, options: [...f.options] }, { fieldClass: 'prose' })} /></ul>)
+    expect(genBtn()).toBeNull()
+  })
+
+  it('shows a Personal-fact Field a place to type, no Generation, and why', () => {
+    render(<ul><FieldRow {...props} row={unmatched({ kind: 'textarea', label: 'Do you need any accommodation?' }, { fieldClass: 'personal_fact' })} /></ul>)
+    expect(genBtn()).toBeNull()
+    expect(screen.getByLabelText('Do you need any accommodation?').tagName).toBe('TEXTAREA')
+    expect(document.querySelector('[data-jff-hint]')?.textContent).toBe(PERSONAL_FACT_HINT)
+  })
+
+  it('reads a row with no label as a Personal-fact Field', () => {
+    render(<ul><FieldRow {...props} row={unmatched({ kind: 'textarea' })} /></ul>)
+    expect(genBtn()).toBeNull()
   })
 })
 
