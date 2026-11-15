@@ -21,6 +21,7 @@ describe('ScanStatus', () => {
     [{ kind: 'retrying' }, 'No fields yet — looking again…'],
     [{ kind: 'resolving', fields: 12 }, 'Matching 12 fields… (an AI call can take a minute)'],
     [{ kind: 'done', filled: 8, alreadyOnPage: 2, proposed: 2, needsInput: 3 }, '✓ 8 filled, 2 already on page, 2 proposed, 3 need input'],
+    [{ kind: 'matching', filled: 2, alreadyOnPage: 0, proposed: 0, needsInput: 1, waiting: 4 }, '2 filled, 0 already on page, 0 proposed, 1 need input, 4 still being matched…'],
     [{ kind: 'empty', frames: 7 }, '⚠ Scanned 7 frames, found no form fields. Open the application form, then Scan again.'],
     [{ kind: 'captcha' }, '⚠ CAPTCHA active — nothing was filled.'],
     [{ kind: 'failed', reason: 'boom' }, '✕ Scan failed: boom'],
@@ -62,5 +63,15 @@ describe('ScanStatus', () => {
     expect(details).not.toBeNull()
     expect(details!.textContent).toContain('relay')
     expect(details!.textContent).toContain('Could not reach the page.')
+  })
+
+  it('shows no waiting count once nothing is waiting', () => {
+    render(<ScanStatus status={{ kind: 'done', filled: 2, alreadyOnPage: 0, proposed: 0, needsInput: 1 }} reports={[]} />)
+    expect(statusEl()!.textContent).not.toMatch(/still being matched/)
+  })
+
+  it('hides diagnostics while Mapping is still running', () => {
+    render(<ScanStatus status={{ kind: 'matching', filled: 2, alreadyOnPage: 0, proposed: 0, needsInput: 0, waiting: 1 }} reports={[badReport]} />)
+    expect(document.querySelector('[data-jff-diagnostics]')).toBeNull()
   })
 })

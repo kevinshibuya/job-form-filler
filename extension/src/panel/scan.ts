@@ -381,6 +381,10 @@ async function fillAuto(
   return { fill, reports }
 }
 
+/** The reason a Field Mapping never answered carries: the reply left it out,
+ *  or the request was lost with the panel that sent it. */
+export const MAPPING_LOST = 'mapping-lost'
+
 /** What `runMapping` needs: the host, the scan's own relay, and the page context. */
 export type MappingDeps = Pick<ScanDeps, 'port' | 'sendToTab' | 'hostname' | 'url' | 'company'>
 
@@ -432,9 +436,18 @@ export async function runMapping(
   if (!resolved.ok) return failed(resolved.error)
 
   // The host answers every Field it is sent, but only pending ones may land:
-  // a Resolution for anything else would overwrite a first-step row.
+  // a Resolution for anything else would overwrite a first-step row. A pending
+  // Field the reply leaves out becomes Needs input, so no row stays waiting.
   const pendingRefs = new Set(scan.pending.map(refOf))
   const resolutions = resolved.result.resolutions.filter((r) => pendingRefs.has(refOf(r.handle)))
+  const answered = new Set(resolutions.map((r) => refOf(r.handle)))
+  for (const f of scan.pending) {
+    if (answered.has(refOf(f))) continue
+    resolutions.push({
+      handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: MAPPING_LOST,
+    })
+  }
   const batch = await fillAuto(deps.sendToTab, scan.epoch, resolutions)
   return { resolutions, fill: batch.fill, llmError: resolved.result.llmError, frameReports: batch.reports }
 }

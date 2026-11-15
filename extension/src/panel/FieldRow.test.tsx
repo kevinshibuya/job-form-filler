@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { EnumField, Resolution } from '@jff/shared'
-import { FieldRow } from './FieldRow'
+import { FieldRow, WaitingRow } from './FieldRow'
 import type { Row } from './group'
 
 const field = (patch: Partial<EnumField> = {}): EnumField => ({
@@ -362,5 +362,46 @@ describe('FieldRow — Save to profile (a fact is stored, never drafted)', () =>
     render(<ul><FieldRow {...ready} row={needsInput()} /></ul>)
     expect(genBtn()).toBeTruthy()
     expect(saveBtn()).toBeNull()
+  })
+})
+
+describe('WaitingRow: a Field Mapping has not decided yet', () => {
+  const li = () => document.querySelector('li')!
+
+  it('says it is still being matched and shows no Resolution outcome', () => {
+    render(<ul><WaitingRow field={field({ label: 'Why us?' })} /></ul>)
+    expect(screen.getByText('Why us?')).toBeTruthy()
+    expect(li().textContent).toMatch(/still being matched/i)
+    expect(li().getAttribute('data-jff-waiting')).toBe('1')
+    expect(li().hasAttribute('data-jff-tier')).toBe(false)
+    expect(li().querySelector('[data-jff-tier-badge]')).toBeNull()
+    for (const badge of ['filled', 'proposed', 'needs input', 'skipped']) {
+      expect(screen.queryByText(badge)).toBeNull()
+    }
+  })
+
+  it('keeps Accept, Fill and Generate disabled', () => {
+    render(<ul><WaitingRow field={field({ label: 'Why us?' })} /></ul>)
+    for (const name of ['Accept', 'Fill', 'Generate with AI']) {
+      expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
+    }
+  })
+
+  it('marks a required Field', () => {
+    render(<ul><WaitingRow field={field({ required: true })} /></ul>)
+    expect(screen.getByTitle('required')).toBeTruthy()
+  })
+
+  it.each([
+    ['a checkbox group', field({ label: 'Pronouns', kind: 'checkboxgroup', options: ['she/her', 'he/him'] })],
+    ['a Consent checkbox', field({ label: 'I agree to the privacy notice', kind: 'checkbox' })],
+  ])('shows %s the same way as any other Field', (_name, f) => {
+    render(<ul><WaitingRow field={f} /></ul>)
+    expect(li().getAttribute('data-jff-waiting')).toBe('1')
+    expect(li().textContent).toMatch(/still being matched/i)
+    expect(li().querySelector('input, textarea')).toBeNull()
+    for (const name of ['Accept', 'Fill', 'Generate with AI']) {
+      expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
+    }
   })
 })

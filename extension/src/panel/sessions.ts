@@ -25,6 +25,9 @@ export interface Session {
   epoch: number
   fields: EnumField[]
   resolutions: Resolution[]
+  /** Refs of the Fields the first Resolution step left for Mapping, while
+   *  Mapping runs. A waiting ref has no Resolution: waiting is not an outcome. */
+  waiting: string[]
   edits: Record<string, string>
   /** S4: normalizeQuestion(label) → answer. The ref-INDEPENDENT carry. */
   answers: Record<string, SessionAnswer>
@@ -79,6 +82,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     epoch: now,
     fields: [],
     resolutions: [],
+    waiting: [],
     edits: {},
     answers: {},
     company: '',
@@ -252,7 +256,35 @@ export function mergeMapping(
     // The draft badge rides the carry, as it does in the first projection.
     if (carried.generatedRefs.includes(ref)) generatedRefs.push(ref)
   }
-  return { ...session, resolutions, edits, generatedRefs }
+  const waiting = session.waiting.filter((ref) => !pendingRefs.has(ref))
+  return { ...session, resolutions, waiting, edits, generatedRefs }
+}
+
+/**
+ * Every waiting row becomes Needs input with `reason`, for when its Mapping
+ * reply will never land: the Session was reopened after the request was lost,
+ * or a newer Scan dropped the request and then failed itself. No row stays
+ * waiting. The stored status line moves the waiting count into Needs input, so
+ * it still describes the rows.
+ */
+export function settleWaiting(session: Session, reason: string): Session {
+  if (session.waiting.length === 0) return session
+  const decided = new Set(session.resolutions.map((r) => refOf(r.handle)))
+  const waiting = new Set(session.waiting)
+  const settled: Resolution[] = session.fields
+    .filter((f) => waiting.has(refOf(f)) && !decided.has(refOf(f)))
+    .map((f) => ({
+      handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason,
+    }))
+  const last = session.lastOutcome
+  const lastOutcome: ScanUiState | null = last?.kind === 'matching'
+    ? {
+        kind: 'done', filled: last.filled, alreadyOnPage: last.alreadyOnPage,
+        proposed: last.proposed, needsInput: last.needsInput + settled.length,
+      }
+    : last
+  return { ...session, resolutions: [...session.resolutions, ...settled], waiting: [], lastOutcome }
 }
 
 /** Storage-shaping only — never mutates the in-memory session, whose full option
@@ -306,6 +338,9 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (!allStrings(raw.filledRefs) || !allStrings(raw.generatedRefs)) return null
     if (!isRecord(raw.edits) || !isRecord(raw.answers)) return null
     if (!isRecord(raw.snapshot) || !isRecord(raw.reuseOverrides)) return null
+    // A row stored before waiting rows existed has nothing waiting.
+    if (raw.waiting === undefined) return { ...(raw as unknown as Session), waiting: [] }
+    if (!Array.isArray(raw.waiting) || !allStrings(raw.waiting)) return null
     return raw as unknown as Session
   } catch {
     return null
