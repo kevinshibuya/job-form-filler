@@ -105,14 +105,19 @@ The link between a Field's wording and a Known key or a Saved answer. A learned
 mapping is one the tool remembers after the user confirms it.
 _Avoid_: classification, matching
 
+**Learned wording**:
+An Option's wording the user accepted as another way of saying a Known key's
+Value. The next Field that offers it is answered without asking.
+_Avoid_: synonym, alias
+
 **Known key**:
 One of the closed set of twenty-three facts the tool may answer from, such as
 name, email, country, work authorization or notice period. Each has a Value type.
 _Avoid_: field key, fact key, key
 
 **Value type**:
-What kind of thing a Known key holds: text, link, phone, yes/no or place. It
-decides which Controls the key can answer.
+What kind of thing a Known key holds: text, link, phone, yes/no, place or list
+of places. It decides which Controls the key can answer.
 _Avoid_: data type, format
 
 ### Answers and drafting
@@ -170,6 +175,11 @@ _Avoid_: factual question
 **Draft**:
 The text Generation produces, until the user approves it.
 _Avoid_: answer, generated answer, response
+
+**Draft check**:
+The second model's reading of a Draft before the user sees it. It flags what the
+Resume and Profile do not support; the Draft is still shown, with the warning.
+_Avoid_: review (the user's own act), validation
 
 **Review**:
 The user reading, editing and approving Drafts and proposed Values in the panel
