@@ -23,10 +23,20 @@ export const SOURCE_BADGE: Record<NonNullable<Resolution['source']>, string> = {
  *  never sees it (the synthetic resolution lives only inside PanelRows). */
 export const FOREIGN_REASON = 'other-frame'
 
+/** One entry of the elected frame's list: a row with its Resolution, or a
+ *  Field still being matched, which has none. */
+export type ListedRow =
+  | { kind: 'row'; row: Row }
+  | { kind: 'waiting'; ref: string; field: EnumField }
+
 export interface PanelRows {
   /** Elected-frame rows in document order (fid order IS document order within a
-   *  frame) — tier becomes a badge, not a bucket (A9). */
+   *  frame) — tier becomes a badge, not a bucket (A9). Only rows that carry a
+   *  Resolution: every action reads from here, so a waiting Field has none. */
   main: Row[]
+  /** `main` with the waiting Fields in their places, in document order: what
+   *  the panel lists. */
+  listed: ListedRow[]
   /** Non-elected-frame rows: synthetic needs_input resolution, manual Fill only. */
   foreign: Row[]
 }
@@ -36,11 +46,16 @@ export interface PanelRows {
  * is never an EnumField property (zod would strip it) and never a host concern.
  * Foreign fields were excluded from resolve, so they have no real resolution;
  * the synthetic one is minted so they render. Elected-frame fields with no
- * resolution are still dropped, never guessed.
+ * resolution are still dropped, never guessed, unless they are `waiting` on
+ * Mapping: those are listed as waiting, with no Resolution.
  */
-export function buildRows(fields: EnumField[], resolutions: Resolution[], electedFrameId: number | null): PanelRows {
+export function buildRows(
+  fields: EnumField[], resolutions: Resolution[], electedFrameId: number | null, waiting: readonly string[] = [],
+): PanelRows {
   const byRef = new Map(resolutions.map((r) => [refOf(r.handle), r]))
+  const waitingRefs = new Set(waiting)
   const main: Row[] = []
+  const listed: ListedRow[] = []
   const foreign: Row[] = []
   for (const field of fields) {
     const ref = refOf(field)
@@ -61,8 +76,13 @@ export function buildRows(fields: EnumField[], resolutions: Resolution[], electe
       continue
     }
     const resolution = byRef.get(ref)
-    if (resolution === undefined) continue
-    main.push({ ref, field, resolution })
+    if (resolution === undefined) {
+      if (waitingRefs.has(ref)) listed.push({ kind: 'waiting', ref, field })
+      continue
+    }
+    const row = { ref, field, resolution }
+    main.push(row)
+    listed.push({ kind: 'row', row })
   }
-  return { main, foreign }
+  return { main, listed, foreign }
 }

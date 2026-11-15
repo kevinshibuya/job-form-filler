@@ -1,8 +1,9 @@
-import type { ResolutionTier } from '@jff/shared'
+import type { EnumField, ResolutionTier } from '@jff/shared'
 import { norm } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick, isTickRow } from './CheckboxGroupRow'
 import { SOURCE_BADGE, type Row } from './group'
 import { scoreResumeField } from './resumeTarget'
+import { MAPPING_LOST } from './scan'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from './ui'
 
 export const TIER_BADGE: Record<ResolutionTier, string> = {
@@ -21,6 +22,7 @@ export const REASON_HINT: Record<string, string> = {
   // Widget-agnostic on purpose: this reason is shared by combobox, select and
   // radio-group no-match failures (review fix, minors item 16).
   'no-matching-option': 'No option matches this value. Try different text.',
+  [MAPPING_LOST]: 'Matching did not finish. Answer this yourself, or Scan again.',
 }
 
 const SEGMENTED_MAX_OPTIONS = 5
@@ -28,6 +30,31 @@ const SEGMENTED_MAX_OPTIONS = 5
 /** The same mark on every row kind, Skipped included, so the user sees what is still theirs to answer. */
 function RequiredMark() {
   return <span className="text-red-600 dark:text-red-400" title="required">*</span>
+}
+
+/**
+ * A Field the first Resolution step left for Mapping, while Mapping runs.
+ * Waiting is not a Resolution outcome, so the row carries no tier and no tier
+ * badge. Its actions show, disabled, until the row takes its Resolution: what
+ * a click would do depends on what Mapping decides. Every kind of Field, a
+ * checkbox group and a Consent checkbox included, waits the same way.
+ */
+export function WaitingRow({ field }: { field: EnumField }) {
+  const hold = 'Still being matched'
+  return (
+    <li className={`${ROW_BASE} border-l-neutral-300 dark:border-l-neutral-600`} data-jff-waiting="1">
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-semibold">{field.label ?? '(unlabelled field)'}</span>
+        {field.required && <RequiredMark />}
+      </div>
+      <p className={`mt-1 text-[12px] ${MUTED}`}>Still being matched…</p>
+      <div className="mt-1.5 flex items-center gap-2">
+        <button type="button" className={BTN_PRIMARY} disabled title={hold}>Accept</button>
+        <button type="button" className={BTN} disabled title={hold}>Generate with AI</button>
+        <button type="button" className={BTN_PRIMARY} disabled title={hold}>Fill</button>
+      </div>
+    </li>
+  )
 }
 
 export interface FieldRowProps {

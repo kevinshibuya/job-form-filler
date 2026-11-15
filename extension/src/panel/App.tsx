@@ -3,7 +3,7 @@ import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, 
 import { isProfileKey } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
-import { FieldRow } from './FieldRow'
+import { FieldRow, WaitingRow } from './FieldRow'
 import { isTickRow } from './CheckboxGroupRow'
 import { buildRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
@@ -13,11 +13,11 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { pickResumeTarget } from './resumeTarget'
-import { runMapping, runScan, ScanError, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
-import { ScanStatus, type ScanUiState } from './ScanStatus'
+import { MAPPING_LOST, runMapping, runScan, ScanError, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
-import { createSessionStore, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, type Session, type SessionStore } from './sessions'
+import { createSessionStore, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
 import { registrableDomain, sameSite } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
@@ -98,10 +98,14 @@ interface SessionRuntime {
    *  while the Scan that asked for it is still the newest: a newer Scan starts
    *  without waiting for it, and the older reply then changes nothing. */
   scanSeq: number
+  /** The epoch of the Scan whose Mapping request is in flight from THIS panel,
+   *  or null. A Session whose rows wait on any other epoch waits on a request
+   *  that is gone: the panel that sent it closed, or a newer Scan dropped it. */
+  mappingEpoch: number | null
 }
 
 const newRuntime = (gen: number): SessionRuntime => ({
-  gen, epoch: 0, scanSeq: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
+  gen, epoch: 0, scanSeq: 0, mappingEpoch: null, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
   generateAll: null, generatePaused: null,
 })
 
@@ -168,15 +172,15 @@ function settleFill(resolutions: Resolution[], fill: CollectedFill): { settled: 
  *  batch can never inflate it. `already on page` = page-sourced values the
  *  engine never wrote. The remaining counts run over the DEMOTED array so the
  *  four numbers always describe the rows on screen. */
-function doneOutcome(filled: number, settled: Resolution[]): ScanUiState {
+function countsOf(filled: number, settled: Resolution[]): ScanCounts {
   return {
-    kind: 'done',
     filled,
     alreadyOnPage: settled.filter((r) => r.tier === 'auto' && r.source === 'page').length,
     proposed: settled.filter((r) => r.tier === 'proposed').length,
     needsInput: settled.filter((r) => r.tier === 'needs_input').length,
   }
 }
+const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ kind: 'done', ...countsOf(filled, settled) })
 
 /** Everything a scan produced. A navigation makes ALL of it describe a page that
  *  is gone, and the ref-keyed halves are meaningless across a re-enumeration
@@ -184,7 +188,7 @@ function doneOutcome(filled: number, settled: Resolution[]): ScanUiState {
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], election: null, edits: {}, filledRefs: [], generatedRefs: [],
+  fields: [], resolutions: [], waiting: [], election: null, edits: {}, filledRefs: [], generatedRefs: [],
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -461,8 +465,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  that is per-session IN-FLIGHT: none of it belongs to the incoming session.
    *  The status line comes back from the session's own persisted `lastOutcome`,
    *  which is why that field is part of the stored shape. */
-  const display = (s: Session | null): void => {
+  const display = (stored: Session | null): void => {
+    // Rows wait only on a Mapping request this panel still has in flight. One
+    // that is gone (the panel closed before it answered) will never answer.
+    const lost = stored !== null && stored.waiting.length > 0
+      && runtimeOf(stored.tabId).mappingEpoch !== stored.epoch
+    const s = lost ? settleWaiting(stored, MAPPING_LOST) : stored
     showSession(s)
+    if (lost && s !== null) store.save(s)
     if (s !== null) seedEpoch(s)
     lastOutcomeRef.current = s?.lastOutcome ?? null
     setScanStatus(s?.lastOutcome ?? null)
@@ -495,7 +505,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const reuseOverrides = session?.reuseOverrides ?? {}
   const parked = session?.parked ?? false
 
-  const { main, foreign } = buildRows(fields, resolutions, election?.frameId ?? null)
+  const { main, listed, foreign } = buildRows(fields, resolutions, election?.frameId ?? null, session?.waiting ?? [])
   // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
   // the stored resume — recomputed over the CURRENT fields so a post-resume
   // re-enumeration can never leave the button on a stale fid.
@@ -1079,12 +1089,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
         : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
         : doneOutcome(out.fill.filled.length, first.settled)
-      // The first step has filled what needed no model. While Mapping runs the
-      // status line still says it is matching; the stored outcome is the first
-      // step's, so a Session reopened after the reply was lost claims nothing
-      // that never landed.
+      // The first step has filled what needed no model. While Mapping runs, the
+      // pending Fields are waiting rows and the status line counts them apart
+      // from the first step's rows. That is also what is stored: a Session
+      // reopened after the reply was lost settles them (`display`).
       const owesMapping = outcome.kind === 'done' && out.pending.length > 0
-      const onScreen: ScanUiState = owesMapping ? { kind: 'resolving', fields: out.pending.length } : outcome
+      const onScreen: ScanUiState = owesMapping
+        ? { kind: 'matching', ...countsOf(out.fill.filled.length, first.settled), waiting: out.pending.length }
+        : outcome
       if (inScope(sc)) { lastOutcomeRef.current = onScreen; setScanStatus(onScreen) }
       // S4: the ONE projection. Everything ref-keyed dies with the page the scan
       // replaced; the label-keyed carry re-attaches onto whatever refs the new
@@ -1093,12 +1105,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // second implementation would be a second copy of the never-guess rules.
       await applyToSession(target, sc.gen, (s) => ({
         ...projectAnswers(s, out.fields, first.settled, first.committedEdits),
+        waiting: owesMapping ? out.pending.map(refOf) : [],
         election: out.election,
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
         jobText: out.jobText !== '' ? out.jobText : s.jobText,
-        lastOutcome: outcome,
+        lastOutcome: onScreen,
       }))
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
       // The second step runs OUTSIDE the scan latch: it is not awaited here, so
@@ -1107,6 +1120,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (owesMapping) {
         const isCurrent = (): boolean =>
           mountedRef.current && alive(sc) && rt.scanSeq === seq && rt.epoch === out.epoch
+        rt.mappingEpoch = out.epoch
         void (async () => {
           const mapped = await runMapping({
             port, sendToTab: (frameId, message) => sendToTab(target, frameId, message), hostname, url, company: co,
@@ -1128,7 +1142,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             lastOutcome: settledOutcome,
           }))
           if (mapped.llmError !== null && inScope(sc)) setHostError(hostErrorText(mapped.llmError))
-        })().catch(swallow)
+        })().catch(swallow).finally(() => {
+          if (rt.mappingEpoch === out.epoch) rt.mappingEpoch = null
+        })
       }
       // A3: detection is only ever a PROMPT, and only for the session ON SCREEN
       // — a background tab has no panel to prompt in. Best-effort page text; a
@@ -1162,7 +1178,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const relayRow: FrameReport = { frameId: -1, url: null, fields: null, error: reason }
       const reports = e instanceof ScanError ? [...e.frameReports, relayRow] : [relayRow]
       if (inScope(sc)) { lastOutcomeRef.current = outcome; setScanStatus(outcome) }
-      await applyToSession(target, sc.gen, (s) => ({ ...s, lastOutcome: outcome, frameReports: reports }))
+      // This Scan dropped any older Mapping request still out, so rows an older
+      // Scan left waiting will never be answered.
+      await applyToSession(target, sc.gen, (s) => ({ ...settleWaiting(s, MAPPING_LOST), lastOutcome: outcome, frameReports: reports }))
     } finally {
       scanningRef.current = false
       if (mountedRef.current) {
@@ -1896,7 +1914,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                     )
                   : (
                     <>
-              {main.length > 0 && (
+              {listed.length > 0 && (
                 <section className="mt-4" data-jff-rows="1">
                   {(generateEligible.length > 0 || generateAll !== null) && (
                     <div className="mb-2" data-jff-generate-all="1">
@@ -1918,21 +1936,25 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                     </div>
                   )}
                   <ul className="m-0 grid list-none gap-2 p-0">
-                    {main.map((row) => (
-                      <FieldRow
-                        key={row.ref} row={row} edited={edits[row.ref] ?? null}
-                        onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
-                        onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
-                        pageValue={snapshot[row.ref] ?? null}
-                        generating={generatingRefs.has(row.ref)}
-                        filled={filledRefs.includes(row.ref)}
-                        acting={acting !== null && acting.ref === row.ref ? acting.action : null}
-                        locked={acting !== null}
-                        resumeTarget={row.ref === resumeTargetRef}
-                        resumeName={resumeName}
-                        onFillResume={onFillResume}
-                      />
-                    ))}
+                    {listed.map((entry) => {
+                      if (entry.kind === 'waiting') return <WaitingRow key={entry.ref} field={entry.field} />
+                      const { row } = entry
+                      return (
+                        <FieldRow
+                          key={row.ref} row={row} edited={edits[row.ref] ?? null}
+                          onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
+                          onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
+                          pageValue={snapshot[row.ref] ?? null}
+                          generating={generatingRefs.has(row.ref)}
+                          filled={filledRefs.includes(row.ref)}
+                          acting={acting !== null && acting.ref === row.ref ? acting.action : null}
+                          locked={acting !== null}
+                          resumeTarget={row.ref === resumeTargetRef}
+                          resumeName={resumeName}
+                          onFillResume={onFillResume}
+                        />
+                      )
+                    })}
                   </ul>
                 </section>
               )}
