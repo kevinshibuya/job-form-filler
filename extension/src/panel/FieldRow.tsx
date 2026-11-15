@@ -137,6 +137,10 @@ export function FieldRow(p: FieldRowProps) {
   const { field, resolution, ref } = row
   const label = field.label ?? '(unlabelled field)'
   const value = edited ?? resolution.value ?? ''
+  // The host quotes each claim exactly as the Draft had it. Once an edit takes
+  // a sentence out, its warning goes with it: a warning never quotes words the
+  // user cannot find in the row.
+  const claims = (p.unsupportedClaims ?? []).filter((c) => value.includes(c))
   // A keyed row IS a fact, so it is never generated. It offers "Save to profile"
   // instead, but only when nothing is stored under the key yet: a page-sourced
   // email that an ATS autofilled must not overwrite the stored one on one click.
@@ -197,7 +201,7 @@ export function FieldRow(p: FieldRowProps) {
         <p data-jff-description="1" className={`mt-0.5 text-[12px] ${MUTED}`}>{field.description}</p>
       )}
 
-      {p.unsupportedClaims !== undefined && p.unsupportedClaims.length > 0 && <DraftWarning claims={p.unsupportedClaims} />}
+      {claims.length > 0 && <DraftWarning claims={claims} />}
 
       {editor === 'checkboxes' && (
         <CheckboxGroupEditor

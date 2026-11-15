@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { EnumField } from '@jff/shared'
 import { App } from './App'
 import {
@@ -141,6 +141,23 @@ describe('rows still being matched say so', () => {
     expect(waitingLabels()).toEqual([])
     expect(rowLabels()).toHaveLength(PAGE.length)
     expect(statusText()).not.toMatch(/still being matched/)
+  })
+
+  it('settles the waiting rows when a rescan hits the applied badge while Mapping is out', async () => {
+    await mountHeld()
+    const base = window.__jffHostBridge!
+    window.__jffHostBridge = async (req) => req.method === 'applied.check'
+      ? { requestId: req.requestId, ok: true, result: { applied: { markedAt: '2026-11-15T12:00:00.000Z' } } }
+      : await base(req)
+    const scanButton = await screen.findByRole('button', { name: 'Scan' })
+    await waitFor(() => { expect((scanButton as HTMLButtonElement).disabled).toBe(false) })
+    fireEvent.click(scanButton)
+    await waitFor(() => { expect(waitingLabels()).toEqual([]) })
+    for (const label of PENDING) expect(tierOf(label)).toBe('needs_input')
+    expect(screen.getAllByText(/Matching did not finish/)).toHaveLength(PENDING.length)
+    // The older reply lands late and changes nothing.
+    await release(host, (h) => mapped(host, h))
+    expect(tierOf('Salary expectation')).toBe('needs_input')
   })
 
   it('shows a reopened Session\'s waiting rows as Needs input once their request is gone', async () => {

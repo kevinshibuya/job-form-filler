@@ -73,14 +73,26 @@ describe('The Draft check warns about unsupported claims', () => {
 
   it('keeps the Draft editable and fillable while the warning shows', async () => {
     const row = await mountAndGenerate(WARNED)
-    const fixed = 'I like the work Acme does.'
-    fireEvent.change(screen.getByLabelText(WARNED), { target: { value: fixed } })
-    expect((screen.getByLabelText(WARNED) as HTMLTextAreaElement).value).toBe(fixed)
+    // An edit that keeps the flagged sentence keeps its warning.
+    const edited = `${DRAFTS[WARNED]} I read the analytical engine notes.`
+    fireEvent.change(screen.getByLabelText(WARNED), { target: { value: edited } })
+    expect((screen.getByLabelText(WARNED) as HTMLTextAreaElement).value).toBe(edited)
     expect(warningIn(rowOf(WARNED)!)).not.toBeNull()
     const fill = within(row).getByRole('button', { name: 'Fill' }) as HTMLButtonElement
     expect(fill.disabled).toBe(false)
     fireEvent.click(fill)
-    await waitFor(() => { expect(host.page[0]).toBe(fixed) })
+    await waitFor(() => { expect(host.page[0]).toBe(edited) })
+  })
+
+  it('drops the warning once an edit takes its sentence out', async () => {
+    await mountAndGenerate(WARNED)
+    const fixed = 'I like the work Acme does.'
+    fireEvent.change(screen.getByLabelText(WARNED), { target: { value: fixed } })
+    expect((screen.getByLabelText(WARNED) as HTMLTextAreaElement).value).toBe(fixed)
+    expect(warningIn(rowOf(WARNED)!)).toBeNull()
+    // Putting the sentence back brings its warning back: the flag is the Draft's.
+    fireEvent.change(screen.getByLabelText(WARNED), { target: { value: DRAFTS[WARNED] } })
+    expect(warningIn(rowOf(WARNED)!)?.textContent).toContain(ACCOMMODATION_LINE)
   })
 
   it('shows no warning on a Draft the Draft check did not flag', async () => {

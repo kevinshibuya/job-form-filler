@@ -1001,7 +1001,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (!alive(sc)) return
         const hit = chk.ok ? (chk.result.applied ?? null) : null
         if (hit !== null) {
-          await applyToSession(target, sc.gen, (s) => ({ ...s, appliedHit: { markedAt: hit.markedAt } }))
+          // This Scan moved the sequence on, so an older Mapping reply still out
+          // will drop: rows it left waiting are settled here, as on failure.
+          await applyToSession(target, sc.gen, (s) => ({ ...settleWaiting(s, MAPPING_LOST), appliedHit: { markedAt: hit.markedAt } }))
           if (inScope(sc)) setScanStatus(null)
           return
         }

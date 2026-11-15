@@ -32,8 +32,10 @@ function isHeading(el: Element): boolean {
  *
  * The nearest heading decides, so a field under a later, ordinary heading never
  * inherits an earlier demographic one, and nothing before the heading does
- * either. Like the container walk it stops at the form, and it never reads the
- * children of document.body.
+ * either. Like the container walk it stops at the form and never reads the
+ * children of document.body, but it has NO level cap: the Greenhouse heading
+ * sits more than MAX_LEVELS above its inputs (pinned by the hosted fixture). On
+ * a page with no <form> it may climb as high as a child of body.
  */
 function sectionHeading(el: Element, form: Element | null): Element | null {
   let child: Element = el
@@ -55,7 +57,8 @@ function sectionHeading(el: Element, form: Element | null): Element | null {
  *   [role="group"] containers, hard-stop at the <form>, and NEVER look at
  *   document.body or document.documentElement. Checking body-level headings is
  *   precisely the page-global taint bug job-finder documented.
- *   Then the field's section heading (sectionHeading), within the same limits.
+ *   Then the field's section heading (sectionHeading): the same form and body
+ *   limits, with no level cap.
  *
  * Cross-frame attribution: an EEO section is often an iframe whose OWNING element
  * carries the signal, which the child frame cannot read. When we are in a subframe
