@@ -1,6 +1,7 @@
 import type { EnumField, ResolutionTier } from '@jff/shared'
 import { norm } from '@jff/shared'
-import { CheckboxGroupEditor, ConsentTick, isTickRow } from './CheckboxGroupRow'
+import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
+import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
 import { scoreResumeField } from './resumeTarget'
 import { MAPPING_LOST } from './scan'
@@ -24,6 +25,9 @@ export const REASON_HINT: Record<string, string> = {
   'no-matching-option': 'No option matches this value. Try different text.',
   [MAPPING_LOST]: 'Matching did not finish. Answer this yourself, or Scan again.',
 }
+
+/** Under a Personal-fact row: why it offers no Generation. */
+export const PERSONAL_FACT_HINT = 'A question about you. Answer it yourself.'
 
 const SEGMENTED_MAX_OPTIONS = 5
 
@@ -125,7 +129,10 @@ export function FieldRow(p: FieldRowProps) {
   // here would disable the button for every row the user answered on the page.
   const factValue = (p.pageValue ?? edited ?? resolution.value ?? '').trim()
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
-  const hint = REASON_HINT[resolution.reason]
+  // A Needs input row that is not a Prose Field asks about the user, unless it
+  // already says why it is theirs (a failed Mapping, a failed Fill).
+  const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
+  const hint = REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
 
   if (resolution.tier === 'skipped') {
     return (
@@ -277,9 +284,9 @@ export function FieldRow(p: FieldRowProps) {
           {resolution.tier === 'needs_input' && (
             <>
               {/* A9: a foreign row has no resolution the host ever saw, so there
-                  is nothing to generate against — manual Fill is all it gets. */}
-              {/* A tick-box row is answered by ticking, never drafted. */}
-              {p.foreign !== true && !keyed && !isTickRow(field) && (
+                  is nothing to generate against — manual Fill is all it gets.
+                  Otherwise only a Prose Field on a text Control is drafted. */}
+              {p.foreign !== true && offersGeneration(row) && (
                 <button type="button" className={BTN} disabled={generating || locked || acting !== null} onClick={() => onGenerate(ref)}>
                   {generating ? 'Drafting…' : 'Generate with AI'}
                 </button>

@@ -4,7 +4,7 @@ import { isProfileKey } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow, WaitingRow } from './FieldRow'
-import { isTickRow } from './CheckboxGroupRow'
+import { offersGeneration } from './generationOffer'
 import { buildRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
@@ -1385,7 +1385,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  row / no port / already running), 'aborted' (the page died mid-flight),
    *  or the host error kind — the batch loop dispatches on it. */
   const generateOne = async (ref: string): Promise<'ok' | 'skipped' | 'aborted' | HostErrorKind> => {
-    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'needs_input')  // foreign rows never generate
+    const row = main.find((r) => r.ref === ref && offersGeneration(r))  // foreign rows never generate
     const port = portRef.current
     const sc = scopeNow()
     if (row === undefined || port === null || sc === null || generatingRefs.has(ref)) return 'skipped'
@@ -1428,12 +1428,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   /** B4 eligibility: needs-input, labelled, nothing drafted/edited yet, not
    *  currently generating. Foreign rows are structurally absent from `main`. */
   const generateEligible = main.filter((r) =>
-    r.resolution.tier === 'needs_input'
-    // A keyed row is a fact. It is saved, never drafted, so it stays out of the
-    // batch exactly as it stays out of the per-row Generate button.
-    && r.resolution.key === null
-    // A tick-box row is answered by ticking, never drafted.
-    && !isTickRow(r.field)
+    // The same rows the per-row Generate button shows on: a Needs input Prose
+    // Field on a text Control. One click never drafts a fact about the user.
+    offersGeneration(r)
     && (r.field.label ?? '').trim() !== ''
     && (edits[r.ref] ?? '').trim() === ''
     && !generatedRefs.includes(r.ref)

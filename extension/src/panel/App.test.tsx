@@ -914,7 +914,7 @@ describe('App per-field fill failures', () => {
   })
   const resolutions: Resolution[] = [
     { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
-    { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
+    { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown', fieldClass: 'prose' },
   ]
 
   /** The content script answers ok:true and reports the refusal PER FIELD — the
@@ -1067,7 +1067,7 @@ describe('App generate request', () => {
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve.first' || method === 'resolve.mapping') {
         return { requestId, ok: true, result: answerTwoStep(method, params, [
-          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' },
+          { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom', fieldClass: 'prose' },
         ])! }
       }
       if (method === 'generate') { generateCalls.push(params); return { requestId, ok: true, result: { draft: 'A draft' } } }
@@ -1112,7 +1112,7 @@ describe('App generate request', () => {
         if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
         if (method === 'resolve.first' || method === 'resolve.mapping') {
           return { requestId, ok: true, result: answerTwoStep(method, params, [
-            { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' },
+            { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom', fieldClass: 'prose' },
           ])! }
         }
         if (method === 'generate') { generateCalls.push(params); return { requestId, ok: true, result: { draft: 'A draft' } } }
@@ -1416,7 +1416,7 @@ describe('App — per-field generating state (B3)', () => {
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'resolve.first' || method === 'resolve.mapping') {
         return { requestId, ok: true, result: answerTwoStep(method, params, fids.map((fid) => ({
-          handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input' as const, value: null, source: null, key: null, answerId: null, reason: 'custom',
+          handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input' as const, value: null, source: null, key: null, answerId: null, reason: 'custom', fieldClass: 'prose',
         })))! }
       }
       if (method === 'generate') return await onGen(params as { handle: { fid: number } }, requestId)
@@ -2641,7 +2641,7 @@ describe('App — label-keyed answer carry (S4)', () => {
     const spec = current.find((s) => s.fid === f.fid)
     const handle = { frameId: f.frameId, fid: f.fid, epoch: f.epoch }
     return spec?.auto === undefined
-      ? { handle, tier: 'needs_input', value: null, source: null, key: spec?.key ?? null, answerId: null, reason: 'custom' }
+      ? { handle, tier: 'needs_input', value: null, source: null, key: spec?.key ?? null, answerId: null, reason: 'custom', fieldClass: 'prose' }
       : { handle, tier: 'auto', value: spec.auto, source: 'answer_bank', key: spec.key ?? null, answerId: null, reason: 'exact' }
   }
 
@@ -2901,7 +2901,7 @@ describe('App — session concurrency (S7)', () => {
   })
   const needsInput = (fid: number): Resolution => ({
     handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input',
-    value: null, source: null, key: null, answerId: null, reason: 'custom',
+    value: null, source: null, key: null, answerId: null, reason: 'custom', fieldClass: 'prose',
   })
 
   const scanReplyFor = (p: Page) => ({
@@ -2955,7 +2955,7 @@ describe('App — session concurrency (S7)', () => {
     const p = [...pages.values()].find((x) => x.fid === f.fid)
     const handle = { frameId: f.frameId, fid: f.fid, epoch: f.epoch }
     return p?.auto === undefined
-      ? { handle, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' }
+      ? { handle, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom', fieldClass: 'prose' }
       : { handle, tier: 'auto', value: p.auto, source: 'answer_bank', key: null, answerId: null, reason: 'exact' }
   }
 

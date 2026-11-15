@@ -93,6 +93,9 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
             value: auto ?? null,
             source: auto === undefined ? null : 'profile',
             key: null, answerId: null, reason: 'e2e',
+            // What Mapping matched to nothing it labels prose, so the essay
+            // row still offers Generation. The panel keeps it to text Controls.
+            ...(auto === undefined ? { fieldClass: 'prose' } : {}),
           }
         })
         if (method === 'resolve.mapping') return { requestId, ok: true, result: { epoch: p.epoch, resolutions, llmError: null } }

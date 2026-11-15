@@ -1,4 +1,4 @@
-import { norm, optionSetLabels, optionSetValue, type EnumField } from '@jff/shared'
+import { norm, optionSetLabels, optionSetValue } from '@jff/shared'
 
 /**
  * The tick-box editors of the Side panel. A checkbox group shows its Options as
@@ -7,12 +7,6 @@ import { norm, optionSetLabels, optionSetValue, type EnumField } from '@jff/shar
  * text: a group the ticked labels in page order, one per line; a Consent
  * checkbox "true" when ticked, nothing when not.
  */
-
-/** A row answered by ticking: a checkbox group or a Consent checkbox. Such a
- *  row is never drafted by Generation. */
-export function isTickRow(field: Pick<EnumField, 'kind'>): boolean {
-  return field.kind === 'checkbox' || field.kind === 'checkboxgroup'
-}
 
 const AFFIRMATIVE_RE = /^(true|yes|sim|on|1|checked)$/i
 

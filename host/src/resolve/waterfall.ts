@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  isCheckboxGroup, isConsentCheckbox, isProfileKey, type EnumField, type FieldKey, type Resolution,
+  isCheckboxGroup, isConsentCheckbox, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
   type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -35,7 +35,19 @@ function res(f: EnumField, patch: Partial<Resolution> & { tier: Resolution['tier
     handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
     tier: patch.tier, value: patch.value ?? null, source: patch.source ?? null,
     key: patch.key ?? null, answerId: patch.answerId ?? null, reason: patch.reason,
+    // Only a Field Mapping matched to nothing carries the label; every other
+    // Resolution leaves the property out.
+    ...(patch.fieldClass === undefined ? {} : { fieldClass: patch.fieldClass }),
   }
+}
+
+/**
+ * A Field Mapping left unmatched, or never got to answer for: Needs input,
+ * labelled. Without a label Mapping gave, it is a Personal-fact Field, so a
+ * degraded Mapping errs toward asking the user rather than drafting.
+ */
+function unmatched(f: EnumField, reason: string, fieldClass: FieldClass | null = null): Resolution {
+  return res(f, { tier: 'needs_input', reason, fieldClass: fieldClass ?? 'personal_fact' })
 }
 
 // B5c: the exact reusable-answer lookup, shared by tier 3 and both
@@ -203,12 +215,12 @@ async function mappingStep(
       const ref = refOf(f)
 
       if (llmError !== null) {
-        byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-error:${llmError.kind}` }))
+        byRef.set(ref, unmatched(f, `llm-error:${llmError.kind}`))
         continue
       }
       const d = decisions.get(ref)
       if (d === undefined) {
-        byRef.set(ref, res(f, { tier: 'needs_input', reason: 'llm-unavailable' }))
+        byRef.set(ref, unmatched(f, 'llm-unavailable'))
         continue
       }
 
@@ -263,7 +275,7 @@ async function mappingStep(
         continue
       }
 
-      byRef.set(ref, res(f, { tier: 'needs_input', reason: 'custom' }))
+      byRef.set(ref, unmatched(f, 'custom', d.fieldClass))
     }
   }
 
