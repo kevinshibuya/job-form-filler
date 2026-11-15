@@ -31,12 +31,14 @@ const handle = (f: EnumField) => ({ frameId: 0, fid: f.fid, epoch: f.epoch })
 const fill = (f: EnumField, value: string) => fillFields(document, [{ handle: handle(f), value }])
 
 describe('a checkbox Fill reports filled only when the box ends as asked', () => {
-  it('a checkbox Fill asked to write a link fails and leaves the box unchanged', async () => {
-    const linkedin = find(scan('lever-source-group'), /^LinkedIn$/)
-    const report = await fill(linkedin, ADA_LINKEDIN)
+  it('a checkbox group Fill asked to write a link fails and leaves the LinkedIn box unchanged', async () => {
+    // "LinkedIn" is an Option of the source question, not a Field of its own.
+    const source = find(scan('lever-source-group'), /how did you hear about us/i, 'checkboxgroup')
+    const report = await fill(source, ADA_LINKEDIN)
     expect(report.filled).toEqual([])
-    expect(report.failed).toEqual([{ handle: handle(linkedin), reason: 'value-not-yes-no' }])
-    expect(box(linkedin).checked).toBe(false)
+    expect(report.failed).toEqual([{ handle: handle(source), reason: 'no-matching-option' }])
+    const linkedin = Array.from(document.querySelectorAll('label')).find((l) => (l.textContent ?? '').trim() === 'LinkedIn')
+    expect(linkedin?.querySelector('input')?.checked).toBe(false)
   })
 
   it('a checkbox Fill asked to write an email address fails and leaves the box unchanged', async () => {

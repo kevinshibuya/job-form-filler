@@ -75,3 +75,20 @@ describe('installSnapshotListeners', () => {
     expect(push).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('snapshotValues on a checkbox group', () => {
+  it('reads a group as its ticked labels joined by a newline, never "true"', () => {
+    document.body.innerHTML = `
+      <fieldset><legend>Shifts</legend>
+        <label><input type="checkbox" name="shift" id="am"> Mornings</label>
+        <label><input type="checkbox" name="shift" id="mid"> Afternoons</label>
+        <label><input type="checkbox" name="shift" id="pm"> Evenings</label>
+      </fieldset>
+      <label><input type="checkbox" id="ok"> I agree</label>`
+    enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    ;(document.getElementById('pm') as HTMLInputElement).checked = true
+    ;(document.getElementById('am') as HTMLInputElement).checked = true
+    ;(document.getElementById('ok') as HTMLInputElement).checked = true
+    expect(snapshotValues(document)).toEqual({ 0: 'Mornings\nEvenings', 1: 'true' })
+  })
+})
