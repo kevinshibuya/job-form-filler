@@ -124,6 +124,33 @@ npm run smoke
 
 Expect: `17 passed`. The smoke run leaves a test build in `extension/dist`; run `npm run build` before loading the extension again.
 
+### Measure it on live pages
+
+The tests run on fixture pages, so they can pass while the tool fails on real forms. The probe measures the fill rate on live application pages instead. Run it by hand after a change to the scanner. No test, `npm run verify` or CI run calls it.
+
+Write a page list: a text file with one application page URL per line. Blank lines and lines starting with `#` are skipped. Keep it outside the repo, for example in `~/.job-form-filler/pages.txt`.
+
+```bash
+npm run probe -- --pages ~/.job-form-filler/pages.txt --resume ~/cv.pdf
+```
+
+For each URL, the probe opens the page in a fresh headless Chromium with the extension, opens the panel on it, and lets the tool Scan and Fill. It clicks nothing on the page, so no form is submitted, and it blocks Mark applied and Save answers. The host runs on a copy of your database, so the Profile and Saved answers are your real ones and the live database is only read. The Resume is passed by flag because a fresh browser has none, and the Onboarding gate blocks every Scan without one. The run builds the extension with its test seam and rebuilds the production extension when it ends.
+
+The page list, the Resume and the records must all be outside the repo; the probe refuses to start otherwise. Records go to `~/.job-form-filler/probe/<start time>/` unless `--records` names another directory: `pages.jsonl` holds one line per page with each row's label and outcome, `table.txt` the table, and `host.log` the host's log. `npm run probe -- --help` lists every flag.
+
+The table has one row per ATS and an `all` row:
+
+| Column | Meaning |
+| --- | --- |
+| Pages | Pages probed. A page with no form, or one that failed to load, counts with 0 Fields |
+| Fields | Rows the panel showed |
+| Filled | Fields the page accepted a value for |
+| Rate | Filled out of Fields |
+| First Fill | Median wait from opening the panel, which starts the Scan, to the first filled Field |
+| Nothing waiting | Median wait until no row is still being matched |
+
+The ATS is read from the page address: the hosted board's domain, or a `gh_jid` or `ashby_jid` parameter on a company page. Everything else is `other`.
+
 ### Environment variables
 
 | Name | Required | What it does | How to get a value |
@@ -181,6 +208,7 @@ flowchart LR
 | `host/scripts/install.mjs` | Installer: wrapper script, host config, Chrome manifest |
 | `shared/src/` | Message schemas in zod, the eighteen Known keys, text normalisation |
 | `e2e/` | Playwright specs, fake `claude` and `codex`, fixture forms |
+| `scripts/` | The private-data guard, the capture sanitiser and the live probe |
 | `docs/` | ADRs, specs, plans, and the README image script |
 
 ## Why it's built this way
