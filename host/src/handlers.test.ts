@@ -213,7 +213,7 @@ describe('applied.* (A1)', () => {
     const r = await handleRequest(deps, { requestId: 'f1', method: 'facts.extract', params: { cvText: 'CV text' } })
     expect(r.ok).toBe(true)
     expect(codexComplete).toHaveBeenCalledTimes(1)
-    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-5.6-sol', timeoutMs: 240_000 })
+    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-6.1-sol', timeoutMs: 240_000 })
     expect(complete).not.toHaveBeenCalled()
   })
 
@@ -233,7 +233,7 @@ describe('applied.* (A1)', () => {
     })
     expect(r.ok).toBe(true)
     expect(codexComplete).toHaveBeenCalledTimes(1)
-    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-5.6-sol', timeoutMs: 240_000 })
+    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-6.1-sol', timeoutMs: 240_000 })
     expect(complete).not.toHaveBeenCalled()
   })
 
