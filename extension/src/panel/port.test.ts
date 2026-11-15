@@ -71,7 +71,7 @@ describe('createNativeHostPort', () => {
   it('passes an error response through with its taxonomy kind', async () => {
     const p = fakePort()
     const port = createNativeHostPort(() => p as unknown as chrome.runtime.Port)
-    const pending = port.request('resolve', {})
+    const pending = port.request('resolve.mapping', {})
     const sent = p.sent[0] as { requestId: string }
     p.emit({ requestId: sent.requestId, ok: false, error: { kind: 'rate_limit', message: 'limit' } })
     await expect(pending).resolves.toEqual({ ok: false, error: { kind: 'rate_limit', message: 'limit' } })
@@ -160,6 +160,14 @@ describe('createHostPort', () => {
   it('returns the in-page fake when the test flag is present', async () => {
     const port = createHostPort('?jffFakeHost=1')
     await expect(port.request('selfCheck', {})).resolves.toMatchObject({ ok: true })
+  })
+
+  it('answers both Resolution requests, the first with nothing left pending', async () => {
+    const port = createHostPort('?jffFakeHost=1')
+    await expect(port.request('resolve.first', {})).resolves
+      .toEqual({ ok: true, result: { epoch: 0, resolutions: [], pending: [] } })
+    await expect(port.request('resolve.mapping', {})).resolves
+      .toEqual({ ok: true, result: { epoch: 0, resolutions: [], llmError: null } })
   })
 })
 

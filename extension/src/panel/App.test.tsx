@@ -4,14 +4,15 @@ import { act, render, screen, fireEvent, waitFor, within } from '@testing-librar
 import type { EnumField, FieldHandle, FieldKey, HostResponse, Resolution } from '@jff/shared'
 import { App, hostnameOf } from './App'
 import { clearResume, saveResume } from './resume'
+import { answerTwoStep } from './testing/twoStepHost'
 import { answerKey, capForStorage, MAX_PERSISTED_OPTIONS, newSession, type Session } from './sessions'
 
 /** The fake port forwards to `window.__jffHostBridge` when one is installed, so
  *  this is how a test gives the panel real resolutions (the canned fake answers
  *  every resolve with zero) or a host that never answers at all. */
-function installHostBridge(answer: (method: string) => Promise<unknown>): void {
-  window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> =>
-    ({ requestId, ok: true, result: method === 'profile.get' ? ONBOARDED : await answer(method) })
+function installHostBridge(answer: (method: string, params: unknown) => Promise<unknown>): void {
+  window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> =>
+    ({ requestId, ok: true, result: method === 'profile.get' ? ONBOARDED : await answer(method, params) })
 }
 
 const SELF_CHECK = {
@@ -350,11 +351,10 @@ describe('App scan status', () => {
 
   it('scans anyway when the host connects but never answers the self-check', async () => {
     // A wedged host must not pin the panel on 'connecting' forever.
-    installHostBridge(async (method) => {
+    installHostBridge(async (method, params) => {
       if (method === 'selfCheck') return await new Promise(() => undefined) // never answers
       if (method === 'selector.get') return { selector: null }
-      if (method === 'resolve') return { epoch: 1, resolutions: [], llmError: null }
-      return {}
+      return answerTwoStep(method, params, []) ?? {}
     })
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
@@ -471,14 +471,14 @@ describe('App mid-scan navigation', () => {
 
   beforeEach(() => {
     // A resolution is required for the field to render as a row at all.
-    installHostBridge(async (method) => {
+    installHostBridge(async (method, params) => {
       if (method === 'selfCheck') return SELF_CHECK
       if (method === 'selector.get') return { selector: null }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const resolutions: Resolution[] = [
           { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: '', source: null, key: null, answerId: null, reason: 'unknown' },
         ]
-        return { epoch: 1, resolutions, llmError: null }
+        return answerTwoStep(method, params, resolutions)
       }
       return {}
     })
@@ -609,15 +609,15 @@ describe('App generation discipline', () => {
   }
 
   beforeEach(() => {
-    installHostBridge(async (method) => {
+    installHostBridge(async (method, params) => {
       if (method === 'selfCheck') return SELF_CHECK
       if (method === 'selector.get') return { selector: null }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const resolutions: Resolution[] = [
           { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
           { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
         ]
-        return { epoch: 1, resolutions, llmError: null }
+        return answerTwoStep(method, params, resolutions)
       }
       return {}
     })
@@ -827,16 +827,16 @@ describe('App generation discipline', () => {
     // SECOND await (getTab, read for the hostname) is still in flight. Without its
     // own guard, the old page's selector would be saved under the new hostname.
     let selectorSaveCalled = false
-    installHostBridge(async (method) => {
+    installHostBridge(async (method, params) => {
       if (method === 'selfCheck') return SELF_CHECK
       if (method === 'selector.get') return { selector: null }
       if (method === 'selector.save') { selectorSaveCalled = true; return {} }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const resolutions: Resolution[] = [
           { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'proposed', value: 'Proposed answer', source: 'llm_key', key: 'salary', answerId: null, reason: 'llm' },
           { handle: { frameId: 0, fid: 1, epoch: 1 }, tier: 'needs_input', value: 'My drafted answer', source: null, key: null, answerId: null, reason: 'unknown' },
         ]
-        return { epoch: 1, resolutions, llmError: null }
+        return answerTwoStep(method, params, resolutions)
       }
       return {}
     })
@@ -926,11 +926,10 @@ describe('App per-field fill failures', () => {
   }
 
   beforeEach(async () => {
-    installHostBridge(async (method) => {
+    installHostBridge(async (method, params) => {
       if (method === 'selfCheck') return SELF_CHECK
       if (method === 'selector.get') return { selector: null }
-      if (method === 'resolve') return { epoch: 1, resolutions, llmError: null }
-      return {}
+      return answerTwoStep(method, params, resolutions) ?? {}
     })
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
@@ -1066,10 +1065,10 @@ describe('App generate request', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
-        return { requestId, ok: true, result: { epoch: 1, resolutions: [
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
+        return { requestId, ok: true, result: answerTwoStep(method, params, [
           { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' },
-        ], llmError: null } }
+        ])! }
       }
       if (method === 'generate') { generateCalls.push(params); return { requestId, ok: true, result: { draft: 'A draft' } } }
       return { requestId, ok: true, result: {} }
@@ -1111,10 +1110,10 @@ describe('App generate request', () => {
       window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
         if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
         if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-        if (method === 'resolve') {
-          return { requestId, ok: true, result: { epoch: 1, resolutions: [
+        if (method === 'resolve.first' || method === 'resolve.mapping') {
+          return { requestId, ok: true, result: answerTwoStep(method, params, [
             { handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom' },
-          ], llmError: null } }
+          ])! }
         }
         if (method === 'generate') { generateCalls.push(params); return { requestId, ok: true, result: { draft: 'A draft' } } }
         return { requestId, ok: true, result: {} }
@@ -1158,12 +1157,12 @@ describe('App — election rendering (A7/A9)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const p = params as { fields: { frameId: number; fid: number }[] }
-        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map((f) => ({
           handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'needs_input' as const,
           value: null, source: null, key: null, answerId: null, reason: 'custom',
-        })), llmError: null } }
+        })))! }
       }
       return { requestId, ok: true, result: {} }
     }
@@ -1214,12 +1213,12 @@ describe('App — resume row wiring (A8/A9)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const p = params as { fields: { frameId: number; fid: number }[] }
-        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map((f) => ({
           handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'needs_input' as const,
           value: null, source: null, key: null, answerId: null, reason: 'custom',
-        })), llmError: null } }
+        })))! }
       }
       return { requestId, ok: true, result: {} }
     }
@@ -1270,13 +1269,13 @@ describe('App — B3 page-accepted fills and failure surfacing', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const p = params as { fields: { frameId: number; fid: number; kind: string }[] }
-        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => ({
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map((f) => ({
           handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'auto' as const,
           value: f.kind === 'choice' ? 'Yes' : 'Ada', source: 'profile' as const,
           key: null, answerId: null, reason: 'test',
-        })), llmError: null } }
+        })))! }
       }
       if (method === 'selector.get') return { requestId, ok: true, result: { selector: null } }
       return { requestId, ok: true, result: {} }
@@ -1323,16 +1322,16 @@ describe('App — committed canonical text (B1c)', () => {
       if (msg?.kind === 'toContent') return { ok: true, replies: [], failures: [] }
       return { ok: true }
     })
-    window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
-        return { requestId, ok: true, result: { epoch: 1, resolutions: [{
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
+        return { requestId, ok: true, result: answerTwoStep(method, params, [{
           handle: { frameId: 0, fid: 0, epoch: 1 }, tier,
           value: tier === 'auto' ? 'bra' : null,
           source: tier === 'auto' ? 'profile' : null,
           key: null, answerId: null, reason: tier === 'auto' ? 'test' : 'custom',
-        }], llmError: null } }
+        }])! }
       }
       return { requestId, ok: true, result: {} }
     }
@@ -1405,10 +1404,10 @@ describe('App — per-field generating state (B3)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
-        return { requestId, ok: true, result: { epoch: 1, resolutions: [0, 1].map((fid) => ({
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
+        return { requestId, ok: true, result: answerTwoStep(method, params, [0, 1].map((fid) => ({
           handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input' as const, value: null, source: null, key: null, answerId: null, reason: 'custom',
-        })), llmError: null } }
+        })))! }
       }
       if (method === 'generate') return await onGen(params as { handle: { fid: number } }, requestId)
       return { requestId, ok: true, result: {} }
@@ -1755,8 +1754,8 @@ describe('App — mark applied (A2)', () => {
         if (fail) return { requestId, ok: false, error: { kind: 'db', message: 'nope' } }
         return { requestId, ok: true, result: { id: 1, url: (params as { url: string }).url, canonicalUrl: 'c', company: null, jobTitle: null, markedAt: '2026-07-29T00:00:00.000Z' } }
       }
-      if (method === 'resolve') {
-        return { requestId, ok: true, result: { epoch: 1, resolutions: [], llmError: null } }
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
+        return { requestId, ok: true, result: answerTwoStep(method, params, [])! }
       }
       return { requestId, ok: true, result: {} }
     }
@@ -1826,7 +1825,7 @@ describe('App — submission detection prompt (A3)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') return { requestId, ok: true, result: { epoch: 1, resolutions: [], llmError: null } }
+      if (method === 'resolve.first' || method === 'resolve.mapping') return { requestId, ok: true, result: answerTwoStep(method, params, [])! }
       if (method === 'applied.mark') { marks.push(params); return { requestId, ok: true, result: { markedAt: '2026-07-29T00:00:00.000Z' } } }
       return { requestId, ok: true, result: {} }
     }
@@ -2023,9 +2022,9 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const p = params as { fields: { frameId: number; fid: number }[] }
-        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map((f) => resolutionFor(f.fid)), llmError: null } }
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map((f) => resolutionFor(f.fid)))! }
       }
       if (method === 'applied.check') {
         const url = (params as { url: string }).url
@@ -2277,7 +2276,7 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         await resolving
         const p = params as { fields: { fid: number }[] }
         // tier 'auto' with a value is what makes runScan batch a JFF_FILL.
@@ -2285,13 +2284,13 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
           handle: { frameId: 0, fid: f.fid, epoch: 1 }, tier: 'auto',
           value: 'ada@example.com', source: 'profile', key: null, answerId: null, reason: 'recognizer:email',
         }))
-        return { requestId, ok: true, result: { epoch: 1, resolutions, llmError: null } }
+        return { requestId, ok: true, result: answerTwoStep(method, params, resolutions)! }
       }
       return { requestId, ok: true, result: {} }
     }
     installScan()
     render(<App />)
-    // The scan is parked inside `resolve`, dispatched for tab 7.
+    // The scan is parked inside `resolve.first`, dispatched for tab 7.
     await waitFor(() => { expect(status()).toBe('resolving') })
 
     await activate(8)
@@ -2629,9 +2628,9 @@ describe('App — label-keyed answer carry (S4)', () => {
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'generate') return { requestId, ok: true, result: { draft: DRAFT } }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const p = params as { fields: EnumField[] }
-        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map(resolutionFor), llmError: null } }
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map(resolutionFor))! }
       }
       return { requestId, ok: true, result: {} }
     }
@@ -2952,10 +2951,10 @@ describe('App — session concurrency (S7)', () => {
         if (generateGate !== null) await generateGate.passed
         return { requestId, ok: true, result: { draft: DRAFT } }
       }
-      if (method === 'resolve') {
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
         const p = params as { fields: EnumField[] }
         if (p.fields.some((f) => heldFids.has(f.fid))) await resolveGate.passed
-        return { requestId, ok: true, result: { epoch: 1, resolutions: p.fields.map(resolutionFor), llmError: null } }
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map(resolutionFor))! }
       }
       return { requestId, ok: true, result: {} }
     }
@@ -3255,11 +3254,11 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
       if (method === 'profile.set' && setFails) {
         return { requestId, ok: false, error: { kind: 'bad_request', message: 'fact value over 500 characters: github' } }
       }
-      if (method === 'resolve') {
-        return { requestId, ok: true, result: { epoch: 1, resolutions: [{
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
+        return { requestId, ok: true, result: answerTwoStep(method, params, [{
           handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input' as const,
           value: null, source: null, key: 'github' as const, answerId: null, reason: 'recognizer:github',
-        }], llmError: null } }
+        }])! }
       }
       return { requestId, ok: true, result: {} }
     }

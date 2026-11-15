@@ -3,7 +3,7 @@ import type { EnumField, FieldKey, Resolution } from '@jff/shared'
 import { sessionKey } from '../sessionKey'
 import {
   answerKey, answerKeysByRef, capForStorage, createSessionStore, MAX_PERSISTED_OPTIONS,
-  newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION,
+  mergeMapping, newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION,
   type Session,
 } from './sessions'
 
@@ -639,5 +639,49 @@ describe('label-keyed answer carry (S4)', () => {
       {},
     )
     expect(next.edits).toEqual({})
+  })
+})
+
+describe('mergeMapping: the second Resolution step lands on projected rows', () => {
+  const labelled = (fid: number, label: string): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const res = (fid: number, patch: Partial<Resolution> = {}): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
+    source: null, key: null, answerId: null, reason: 'custom', ...patch,
+  })
+  const fields = [labelled(0, 'First name'), labelled(1, 'Email address'), labelled(2, 'Why us?')]
+  const base = (over: Partial<Session> = {}): Session => ({
+    ...newSession(7, 'https://jobs.example.com/apply'),
+    fields,
+    resolutions: [res(0, { tier: 'auto', value: 'Ada', source: 'profile' })],
+    edits: { '0:0': 'Ada' },
+    ...over,
+  })
+  const pending = new Set(['0:1', '0:2'])
+
+  it('adds the pending rows and leaves an edit made on a first-step row alone', () => {
+    const merged = mergeMapping(base({ edits: { '0:0': 'Augusta' } }), pending, [res(1), res(2)], {})
+    expect(merged.resolutions.map((r) => r.handle.fid)).toEqual([0, 1, 2])
+    expect(merged.edits).toEqual({ '0:0': 'Augusta' })
+  })
+
+  it('takes the Mapping Fill for a pending ref in the page words', () => {
+    const merged = mergeMapping(base(), pending, [res(1, { tier: 'auto', value: 'ada@example.com' }), res(2)], { '0:1': 'ada@example.com' })
+    expect(merged.edits['0:1']).toBe('ada@example.com')
+  })
+
+  it('runs the fieldKey carry once Mapping names the key', () => {
+    const s = base({ answers: { 'e mail': { value: 'ada@example.com', provenance: 'user', fieldKey: 'email' } } })
+    const merged = mergeMapping(s, pending, [res(1, { key: 'email' }), res(2)], {})
+    expect(merged.edits['0:1']).toBe('ada@example.com')
+    expect(merged.edits['0:2']).toBeUndefined()
+  })
+
+  it('never touches a ref that was not pending', () => {
+    const merged = mergeMapping(base(), pending, [res(0, { value: 'OTHER' }), res(1), res(2)], { '0:0': 'OTHER' })
+    expect(merged.edits['0:0']).toBe('Ada')
+    expect(merged.resolutions.filter((r) => r.handle.fid === 0)).toEqual([res(0, { tier: 'auto', value: 'Ada', source: 'profile' })])
   })
 })

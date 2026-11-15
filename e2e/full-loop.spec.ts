@@ -225,3 +225,52 @@ test('a rate-limited codex leaves fields as needs-input and shows the right bann
     await fixtures.stop()
   }
 })
+
+test('fills identity Fields before Mapping answers', async () => {
+  const fixtures = await startFixtureServer()
+  // The fake codex holds its Mapping reply until the test releases it, so
+  // anything on the page before the release reached it without Mapping.
+  const host = await startHost({ holdMapping: true })
+  const ext = await launchWithExtension()
+  try {
+    seedOnboardedProfile(host.dbPath, { firstName: 'Ada', lastName: 'Lovelace' })
+    await seedResume(ext)
+
+    const target = await ext.context.newPage()
+    await target.goto(`${fixtures.origin}/fixture-form.html`)
+    // Same reason as the first test: an active CAPTCHA fills nothing at all.
+    await expect(target.locator(STUB_SELECTOR)).toHaveCount(1)
+    await target.evaluate((sel) => { document.querySelector(sel)?.remove() }, STUB_SELECTOR)
+    await expect(target.locator(STUB_SELECTOR)).toHaveCount(0)
+    const tabId = await tabIdForUrl(ext, 'fixture-form.html')
+
+    const panel = await ext.context.newPage()
+    await panel.exposeFunction('__jffHostBridge', (req: { requestId: string; method: string; params: unknown }) => host.request(req))
+    await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
+
+    // With the Mapping reply held, the first step has already filled the page.
+    await expect(target.locator('#first_name')).toHaveValue('Ada', { timeout: 60_000 })
+    await expect(target.locator('#last_name')).toHaveValue('Lovelace')
+    await expect(target.locator('#email')).toHaveValue('ada@example.com')
+    await expect(panel.locator('li[data-jff-tier="auto"]').first()).toBeVisible()
+    // Mapping decides the free-text question, so it has no row yet.
+    const bugRow = panel.locator('li', { hasText: 'Describe a hard bug you fixed' })
+    await expect(bugRow).toHaveCount(0)
+    await expect(panel.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'resolving')
+
+    host.releaseMapping()
+
+    // The reply lands: the Field Mapping decided gets its row.
+    await expect(bugRow).toHaveCount(1, { timeout: 60_000 })
+    await expect(bugRow).toHaveAttribute('data-jff-tier', 'needs_input')
+    await expect(panel.locator('[data-jff-status]')).toHaveAttribute('data-jff-status', 'done')
+    // What the first step filled is still on the page.
+    await expect(target.locator('#first_name')).toHaveValue('Ada')
+    expect(ext.consoleErrors).toEqual([])
+  } finally {
+    host.releaseMapping()
+    await ext.close()
+    await host.stop()
+    await fixtures.stop()
+  }
+})

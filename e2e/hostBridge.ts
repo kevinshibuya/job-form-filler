@@ -14,6 +14,8 @@ export interface HostChild {
   dbPath: string
   home: string
   stderr: string[]
+  /** Lets a Mapping reply held by `holdMapping` go. A no-op otherwise. */
+  releaseMapping(): void
   stop(): Promise<void>
 }
 
@@ -25,8 +27,10 @@ function encode(value: unknown): Buffer {
   return Buffer.concat([head, body])
 }
 
-export async function startHost(opts: { mode?: string; codexMode?: string } = {}): Promise<HostChild> {
+export async function startHost(opts: { mode?: string; codexMode?: string; holdMapping?: boolean } = {}): Promise<HostChild> {
   const home = await mkdtemp(join(tmpdir(), 'jff-home-'))
+  // The fake codex polls for this file before it answers a Mapping call.
+  const releaseFile = join(home, 'release-mapping')
   // The host reads config.json out of JFF_HOME; point claudePath at the fake CLI
   // so nothing in this suite can reach a real `claude` (or a real network).
   writeFileSync(join(home, 'config.json'), JSON.stringify({
@@ -43,6 +47,7 @@ export async function startHost(opts: { mode?: string; codexMode?: string } = {}
       PATH: `${FAKE_BIN}:${process.env.PATH ?? ''}`,
       JFF_FAKE_CLAUDE_MODE: opts.mode ?? 'ok',
       JFF_FAKE_CODEX_MODE: opts.codexMode ?? 'ok',
+      JFF_FAKE_CODEX_HOLD: opts.holdMapping === true ? releaseFile : '',
     },
   })
 
@@ -81,6 +86,7 @@ export async function startHost(opts: { mode?: string; codexMode?: string } = {}
     home,
     dbPath: join(home, 'db.sqlite'),
     stderr,
+    releaseMapping() { writeFileSync(releaseFile, '') },
     request(req) {
       return new Promise((resolveReq) => {
         pending.set(req.requestId, resolveReq)
