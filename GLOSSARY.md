@@ -45,13 +45,23 @@ The reading pass inside a Scan that collects every Field on the page.
 _Avoid_: scan (for the pass alone), crawl
 
 **Field**:
-One question on the form. A radio group is one Field.
+One question on the form. A radio group is one Field, and so is a checkbox
+group.
 _Avoid_: widget, row, input, question
 
 **Control**:
 The on-page element a Field is answered through: text box, dropdown, radio group,
-file picker.
+checkbox group, file picker.
 _Avoid_: widget, element, DOM node
+
+**Option**:
+One of the choices a choice Control offers, in the page's own words.
+_Avoid_: choice, item, alternative
+
+**Consent checkbox**:
+A lone checkbox by which the user agrees to or acknowledges something. It is
+always Needs input.
+_Avoid_: agreement box, terms checkbox
 
 **Combobox commit**:
 A type-to-search dropdown accepting a choice, where the text the page settles on
@@ -65,13 +75,18 @@ _Avoid_: waterfall, confidence tier, matching
 
 **Needs input**:
 A Resolution outcome: the Field could not be answered from stored data and is
-left to the user, with Generation offered where the tool can reach the Control.
+left to the user. Generation is offered only when it is a Prose Field.
 _Avoid_: needs-input, unresolved, unknown
 
 **Skipped**:
 A Resolution outcome: a Field the tool never fills, such as a demographic or
 EEO question.
 _Avoid_: ignored, excluded
+
+**Demographic Field**:
+A Field that asks for a protected attribute, such as gender, race, disability or
+veteran status. It is always Skipped.
+_Avoid_: EEO field, diversity question
 
 **Ignored field**:
 A Field the user hid in the Side panel for the current Session because the
@@ -90,10 +105,20 @@ The link between a Field's wording and a Known key or a Saved answer. A learned
 mapping is one the tool remembers after the user confirms it.
 _Avoid_: classification, matching
 
+**Learned wording**:
+An Option's wording the user accepted as another way of saying a Known key's
+Value. The next Field that offers it is answered without asking.
+_Avoid_: synonym, alias
+
 **Known key**:
-One of the closed set of eighteen facts the tool may answer from, such as name,
-email, work authorization, salary or notice period.
+One of the closed set of twenty-three facts the tool may answer from, such as
+name, email, country, work authorization or notice period. Each has a Value type.
 _Avoid_: field key, fact key, key
+
+**Value type**:
+What kind of thing a Known key holds: text, link, phone, yes/no, place, list of
+places or amount. It decides which Controls the key can answer.
+_Avoid_: data type, format
 
 ### Answers and drafting
 
@@ -132,12 +157,29 @@ The user's own local writing about past projects, used as reference for Drafts.
 _Avoid_: notes, portfolio
 
 **Generation**:
-Writing a new free-text answer with AI for a Field nothing stored can cover.
+Writing a new free-text answer with AI for a Prose Field nothing stored can
+cover.
 _Avoid_: AI answer, completion
+
+**Prose Field**:
+A Field that asks for opinion, motivation or narrative in free text. It is the
+only kind Generation drafts.
+_Avoid_: essay question, open question
+
+**Personal-fact Field**:
+A Field that asks something true or false about the user that nothing stored
+answers, such as accommodation needs or past work at the Company. The user
+answers it; Generation never does.
+_Avoid_: factual question
 
 **Draft**:
 The text Generation produces, until the user approves it.
 _Avoid_: answer, generated answer, response
+
+**Draft check**:
+The second model's reading of a Draft before the user sees it. It flags what the
+Resume and Profile do not support; the Draft is still shown, with the warning.
+_Avoid_: review (the user's own act), validation
 
 **Review**:
 The user reading, editing and approving Drafts and proposed Values in the panel
@@ -153,8 +195,8 @@ Writing approved Values into the page's Controls. Fill never submits the form.
 _Avoid_: submit, autofill (the browser feature), apply
 
 **Anti-fabrication rule**:
-For factual Fields the AI only picks which stored Value applies. It never invents
-one.
+For factual Fields the AI only picks which stored Value applies, or which of the
+page's Options expresses it. It never invents one.
 _Avoid_: hallucination guard
 
 ### Applications
