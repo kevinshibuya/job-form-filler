@@ -1,8 +1,10 @@
 import type { EnumField, WidgetKind } from '@jff/shared'
 import {
-  countUnreachableWidgets, DEMOGRAPHIC_RE, descriptionFor, groupLabelFor, isSoleControl, kindOf,
+  countUnreachableWidgets, descriptionFor, groupLabelFor, isSoleControl, kindOf,
   labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements, type LabelBinding,
 } from './dom'
+import { isDemographicField } from './demographic'
+import { GROUP_ATTR, groupCheckboxes, groupOptions, groupRequired, groupValue } from './checkboxGroup'
 
 export interface Measure {
   display: string
@@ -146,23 +148,37 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
 
   // A re-scan must not leave stale stamps behind: old handles die with the epoch,
   // and a leftover fid would let elementByFid resolve the wrong element.
-  for (const el of walkElements(opts.root)) el.removeAttribute(FID_ATTR)
+  for (const el of walkElements(opts.root)) { el.removeAttribute(FID_ATTR); el.removeAttribute(GROUP_ATTR) }
 
   const fields: EnumField[] = []
   const radioGroups = new Map<string, EnumField>()
   let fid = 0
 
-  for (const el of walkElements(opts.root)) {
+  // Checkbox groups are found before the walk, over every box a choice widget
+  // does not claim (a hidden box drawn as yes/no buttons is a choice Field).
+  const elements = walkElements(opts.root)
+  const measured = new Map<Element, Measure>()
+  const measureOnce = (el: Element): Measure => {
+    let m = measured.get(el)
+    if (m === undefined) { m = measure(el); measured.set(el, m) }
+    return m
+  }
+  const boxes = elements.filter((el): el is HTMLInputElement =>
+    kindOf(el) === 'checkbox' && !(selfHidden(measureOnce(el)) && detectChoice(el) !== null))
+  const checkboxGroups = groupCheckboxes(boxes)
+  const isVisible = (m: Measure): boolean => !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden' || m.clipped)
+
+  for (const el of elements) {
     const kind = kindOf(el)
     if (kind === null) continue
 
-    const m = measure(el)
+    const m = measureOnce(el)
     // HONEST visibility for every kind, file included: the blanket file
     // exemption moved to the panel filter (junk.ts), which keeps hidden file
     // inputs only when they carry a resolvable label (A8 adds scoring).
     // `clipped` counts: the visually-hidden recipe (1px box / clip:rect(0 0 0 0))
     // is how ATS pages hide real controls, so a clipped control is NOT visible.
-    const visible = !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden' || m.clipped)
+    const visible = isVisible(m)
 
     if (kind === 'radiogroup') {
       const name = el.getAttribute('name')
@@ -195,7 +211,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             // Which button a checked hidden radio maps to is not observable
             // here; null is honest and routes through the normal waterfall.
             currentValue: null,
-            demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+            demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
           }
         : {
@@ -204,7 +220,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             kind: 'radiogroup', options: [optionLabelOf(el)],
             required: requiredOf(el, binding),
             visible, currentValue: (el as HTMLInputElement).checked ? optionLabelOf(el) : null,
-            demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+            demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
           }
       // Only the FIRST member carries data-jff-fid; the filler re-finds the
@@ -213,6 +229,30 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       el.setAttribute(FID_ATTR, String(fid))
       radioGroups.set(groupKey, group)
       fields.push(group)
+      fid++
+      continue
+    }
+
+    const group = el instanceof HTMLInputElement ? checkboxGroups.get(el) : undefined
+    if (group !== undefined) {
+      // The first box carries the Field's fid and stamps every box with the
+      // group's; the later boxes add nothing of their own.
+      if (group.boxes[0] !== el) continue
+      for (const box of group.boxes) box.setAttribute(GROUP_ATTR, String(fid))
+      const head = group.boxes[0]!
+      el.setAttribute(FID_ATTR, String(fid))
+      fields.push({
+        frameId: -1, fid, epoch: opts.epoch,
+        label: group.binding.text, name: el.getAttribute('name'), idAttr: el.id === '' ? null : el.id,
+        kind: 'checkboxgroup', options: groupOptions(group.boxes),
+        required: groupRequired(group),
+        // A group whose boxes the page hides behind styled ones is still one
+        // Field: it is visible when any of its boxes is.
+        visible: group.boxes.some((b) => isVisible(measureOnce(b))),
+        currentValue: groupValue(group.boxes),
+        demographic: isDemographicField(group.binding.text, isDemographic(head)),
+        description: descriptionFor(head, group.binding) ?? undefined,
+      })
       fid++
       continue
     }
@@ -228,7 +268,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
           kind: 'choice', options: choice.options,
           required: requiredOf(el, binding),
           visible, currentValue: null,
-          demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+          demographic: isDemographicField(binding.text, isDemographic(el)),
           description: descriptionFor(el, binding) ?? undefined,
         })
         fid++
@@ -253,7 +293,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       kind, options,
       required: requiredOf(el, binding),
       visible, currentValue: currentValueOf(el, kind),
-      demographic: isDemographic(el) || DEMOGRAPHIC_RE.test(binding.text ?? ''),
+      demographic: isDemographicField(binding.text, isDemographic(el)),
       description: descriptionFor(el, binding) ?? undefined,
       accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
     })

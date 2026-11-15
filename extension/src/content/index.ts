@@ -39,7 +39,7 @@ async function handle(raw: unknown): Promise<unknown> {
     })
     // Validate our OWN reply. This is the consumer ScanResultSchema was written for
     // (Task 2): enumerator drift that emits a malformed field would otherwise reach
-    // the host's `resolve` call and fail there as an opaque bad_request, with no way
+    // the host's Resolution requests and fail there as an opaque bad_request, with no way
     // to tell which frame produced it.
     const scan = ScanResultSchema.safeParse({
       epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document),

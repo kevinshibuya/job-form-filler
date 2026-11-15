@@ -3,7 +3,7 @@ import type { EnumField, FieldKey, Resolution } from '@jff/shared'
 import { sessionKey } from '../sessionKey'
 import {
   answerKey, answerKeysByRef, capForStorage, createSessionStore, MAX_PERSISTED_OPTIONS,
-  newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION,
+  mergeMapping, newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION, settleWaiting,
   type Session,
 } from './sessions'
 
@@ -639,5 +639,142 @@ describe('label-keyed answer carry (S4)', () => {
       {},
     )
     expect(next.edits).toEqual({})
+  })
+})
+
+describe('mergeMapping: the second Resolution step lands on projected rows', () => {
+  const labelled = (fid: number, label: string): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const res = (fid: number, patch: Partial<Resolution> = {}): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
+    source: null, key: null, answerId: null, reason: 'custom', ...patch,
+  })
+  const fields = [labelled(0, 'First name'), labelled(1, 'Email address'), labelled(2, 'Why us?')]
+  const base = (over: Partial<Session> = {}): Session => ({
+    ...newSession(7, 'https://jobs.example.com/apply'),
+    fields,
+    resolutions: [res(0, { tier: 'auto', value: 'Ada', source: 'profile' })],
+    edits: { '0:0': 'Ada' },
+    ...over,
+  })
+  const pending = new Set(['0:1', '0:2'])
+
+  it('adds the pending rows and leaves an edit made on a first-step row alone', () => {
+    const merged = mergeMapping(base({ edits: { '0:0': 'Augusta' } }), pending, [res(1), res(2)], {})
+    expect(merged.resolutions.map((r) => r.handle.fid)).toEqual([0, 1, 2])
+    expect(merged.edits).toEqual({ '0:0': 'Augusta' })
+  })
+
+  it('takes the Mapping Fill for a pending ref in the page words', () => {
+    const merged = mergeMapping(base(), pending, [res(1, { tier: 'auto', value: 'ada@example.com' }), res(2)], { '0:1': 'ada@example.com' })
+    expect(merged.edits['0:1']).toBe('ada@example.com')
+  })
+
+  it('runs the fieldKey carry once Mapping names the key', () => {
+    const s = base({ answers: { 'e mail': { value: 'ada@example.com', provenance: 'user', fieldKey: 'email' } } })
+    const merged = mergeMapping(s, pending, [res(1, { key: 'email' }), res(2)], {})
+    expect(merged.edits['0:1']).toBe('ada@example.com')
+    expect(merged.edits['0:2']).toBeUndefined()
+  })
+
+  it('takes every pending ref out of waiting, and leaves no row waiting', () => {
+    const merged = mergeMapping(base({ waiting: ['0:1', '0:2'] }), pending, [res(1), res(2)], {})
+    expect(merged.waiting).toEqual([])
+  })
+
+  it('never touches a ref that was not pending', () => {
+    const merged = mergeMapping(base(), pending, [res(0, { value: 'OTHER' }), res(1), res(2)], { '0:0': 'OTHER' })
+    expect(merged.edits['0:0']).toBe('Ada')
+    expect(merged.resolutions.filter((r) => r.handle.fid === 0)).toEqual([res(0, { tier: 'auto', value: 'Ada', source: 'profile' })])
+  })
+})
+
+describe('waiting rows: Fields the first step left for Mapping', () => {
+  const labelled = (fid: number, label: string): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const filled: Resolution = {
+    handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'auto', value: 'Ada',
+    source: 'profile', key: 'firstName', answerId: null, reason: 'recognizer',
+  }
+  const waitingSession = (): Session => ({
+    ...newSession(7, 'https://jobs.example.com/apply'),
+    fields: [labelled(0, 'First name'), labelled(1, 'Why us?'), labelled(2, 'Salary expectation')],
+    resolutions: [filled],
+    waiting: ['0:1', '0:2'],
+    lastOutcome: { kind: 'matching', filled: 1, alreadyOnPage: 0, proposed: 0, needsInput: 0, waiting: 2 },
+  })
+
+  it('a new Session has nothing waiting', () => {
+    expect(newSession(7).waiting).toEqual([])
+  })
+
+  it('a stored row from before waiting rows existed reads as nothing waiting', () => {
+    const { waiting: _gone, ...old } = newSession(7)
+    expect(parseStoredSession(old)?.waiting).toEqual([])
+  })
+
+  it('a stored row whose waiting list is not a list of refs is refused', () => {
+    expect(parseStoredSession({ ...newSession(7), waiting: [1, 2] })).toBeNull()
+  })
+
+  it('settles every waiting row as Needs input with the reason, and none stays waiting', () => {
+    const settled = settleWaiting(waitingSession(), 'mapping-lost')
+    expect(settled.waiting).toEqual([])
+    expect(settled.resolutions).toHaveLength(3)
+    for (const fid of [1, 2]) {
+      const r = settled.resolutions.find((x) => x.handle.fid === fid)!
+      expect(r.tier).toBe('needs_input')
+      expect(r.reason).toBe('mapping-lost')
+      expect(r.value).toBeNull()
+      expect(r.key).toBeNull()
+    }
+    // What the first step decided is left as it was.
+    expect(settled.resolutions.find((x) => x.handle.fid === 0)).toEqual(filled)
+  })
+
+  it('moves the waiting count into the Needs input count of the stored status line', () => {
+    expect(settleWaiting(waitingSession(), 'mapping-lost').lastOutcome)
+      .toEqual({ kind: 'done', filled: 1, alreadyOnPage: 0, proposed: 0, needsInput: 2 })
+  })
+
+  it('never adds a second Resolution for a ref that already has one', () => {
+    const s = { ...waitingSession(), waiting: ['0:0', '0:1'] }
+    const settled = settleWaiting(s, 'mapping-lost')
+    expect(settled.resolutions.filter((r) => r.handle.fid === 0)).toEqual([filled])
+  })
+
+  it('returns a Session with nothing waiting unchanged', () => {
+    const s = { ...waitingSession(), waiting: [] }
+    expect(settleWaiting(s, 'mapping-lost')).toBe(s)
+  })
+})
+
+describe('Draft warnings ride the Session', () => {
+  it('a new Session has none', () => {
+    expect(newSession(7).draftWarnings).toEqual({})
+  })
+
+  it('a stored row from before Draft warnings existed reads as none', () => {
+    const { draftWarnings: _gone, ...old } = newSession(7)
+    expect(parseStoredSession(old)?.draftWarnings).toEqual({})
+  })
+
+  it('a stored row keeps its Draft warnings', () => {
+    const s = { ...newSession(7), draftWarnings: { '0:1': ['I do not need any accommodations.'] } }
+    expect(parseStoredSession(s)?.draftWarnings).toEqual({ '0:1': ['I do not need any accommodations.'] })
+  })
+
+  it('a stored row whose Draft warnings are not lists of sentences is refused', () => {
+    expect(parseStoredSession({ ...newSession(7), draftWarnings: { '0:1': [1] } })).toBeNull()
+    expect(parseStoredSession({ ...newSession(7), draftWarnings: ['x'] })).toBeNull()
+  })
+
+  it('a re-scan drops them with the refs they were keyed by', () => {
+    const s = { ...newSession(7), draftWarnings: { '0:1': ['I do not need any accommodations.'] } }
+    expect(projectAnswers(s, [], [], {}).draftWarnings).toEqual({})
   })
 })

@@ -1,7 +1,10 @@
-import type { ResolutionTier } from '@jff/shared'
+import type { EnumField, ResolutionTier } from '@jff/shared'
 import { norm } from '@jff/shared'
+import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
+import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
 import { scoreResumeField } from './resumeTarget'
+import { MAPPING_LOST } from './scan'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from './ui'
 
 export const TIER_BADGE: Record<ResolutionTier, string> = {
@@ -20,9 +23,43 @@ export const REASON_HINT: Record<string, string> = {
   // Widget-agnostic on purpose: this reason is shared by combobox, select and
   // radio-group no-match failures (review fix, minors item 16).
   'no-matching-option': 'No option matches this value. Try different text.',
+  [MAPPING_LOST]: 'Matching did not finish. Answer this yourself, or Scan again.',
 }
 
+/** Under a Personal-fact row: why it offers no Generation. */
+export const PERSONAL_FACT_HINT = 'A question about you. Answer it yourself.'
+
 const SEGMENTED_MAX_OPTIONS = 5
+
+/** The same mark on every row kind, Skipped included, so the user sees what is still theirs to answer. */
+function RequiredMark() {
+  return <span className="text-red-600 dark:text-red-400" title="required">*</span>
+}
+
+/**
+ * A Field the first Resolution step left for Mapping, while Mapping runs.
+ * Waiting is not a Resolution outcome, so the row carries no tier and no tier
+ * badge. Its actions show, disabled, until the row takes its Resolution: what
+ * a click would do depends on what Mapping decides. Every kind of Field, a
+ * checkbox group and a Consent checkbox included, waits the same way.
+ */
+export function WaitingRow({ field }: { field: EnumField }) {
+  const hold = 'Still being matched'
+  return (
+    <li className={`${ROW_BASE} border-l-neutral-300 dark:border-l-neutral-600`} data-jff-waiting="1">
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-semibold">{field.label ?? '(unlabelled field)'}</span>
+        {field.required && <RequiredMark />}
+      </div>
+      <p className={`mt-1 text-[12px] ${MUTED}`}>Still being matched…</p>
+      <div className="mt-1.5 flex items-center gap-2">
+        <button type="button" className={BTN_PRIMARY} disabled title={hold}>Accept</button>
+        <button type="button" className={BTN} disabled title={hold}>Generate with AI</button>
+        <button type="button" className={BTN_PRIMARY} disabled title={hold}>Fill</button>
+      </div>
+    </li>
+  )
+}
 
 export interface FieldRowProps {
   row: Row
@@ -57,13 +94,37 @@ export interface FieldRowProps {
   resumeTarget?: boolean
   resumeName?: string | null
   onFillResume?: (ref: string) => void
+  /** The sentences of this row's Draft the Draft check found unsupported by the
+   *  user's own material. Shown above the editor; none means no warning. */
+  unsupportedClaims?: string[]
 }
 
-type EditorKind = 'segmented' | 'picker' | 'combobox-empty' | 'file' | 'textarea'
+/**
+ * Above a Draft the Draft check flagged: each sentence that states something
+ * about the user which nothing they stored supports, quoted so they can find
+ * and fix it in the editor below. The Draft itself stays editable (ADR 0004).
+ */
+function DraftWarning({ claims }: { claims: string[] }) {
+  return (
+    <div
+      role="note" data-jff-draft-warning="1"
+      className="mt-1.5 rounded-md border border-amber-300 px-2 py-1.5 text-[12px] text-amber-800 dark:border-amber-600 dark:text-amber-300"
+    >
+      <p>Nothing you stored supports {claims.length === 1 ? 'this sentence' : 'these sentences'}. Check {claims.length === 1 ? 'it' : 'them'} before you fill:</p>
+      <ul className="mt-1 space-y-0.5">
+        {claims.map((c) => <li key={c}><q>{c}</q></li>)}
+      </ul>
+    </div>
+  )
+}
+
+type EditorKind = 'segmented' | 'picker' | 'combobox-empty' | 'file' | 'textarea' | 'checkboxes' | 'consent'
 
 function editorKindOf(row: Row): EditorKind {
   const { field } = row
   if (field.kind === 'file') return 'file'
+  if (field.kind === 'checkboxgroup') return 'checkboxes'
+  if (field.kind === 'checkbox') return 'consent'
   if ((field.kind === 'choice' || field.kind === 'radiogroup')
     && field.options.length > 0 && field.options.length <= SEGMENTED_MAX_OPTIONS) return 'segmented'
   if (field.options.length > 0) return 'picker' // >5-option sets, selects, harvested comboboxes
@@ -76,6 +137,10 @@ export function FieldRow(p: FieldRowProps) {
   const { field, resolution, ref } = row
   const label = field.label ?? '(unlabelled field)'
   const value = edited ?? resolution.value ?? ''
+  // The host quotes each claim exactly as the Draft had it. Once an edit takes
+  // a sentence out, its warning goes with it: a warning never quotes words the
+  // user cannot find in the row.
+  const claims = (p.unsupportedClaims ?? []).filter((c) => value.includes(c))
   // A keyed row IS a fact, so it is never generated. It offers "Save to profile"
   // instead, but only when nothing is stored under the key yet: a page-sourced
   // email that an ATS autofilled must not overwrite the stored one on one click.
@@ -90,12 +155,18 @@ export function FieldRow(p: FieldRowProps) {
   // here would disable the button for every row the user answered on the page.
   const factValue = (p.pageValue ?? edited ?? resolution.value ?? '').trim()
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
-  const hint = REASON_HINT[resolution.reason]
+  // A Needs input row that is not a Prose Field asks about the user, unless it
+  // already says why it is theirs (a failed Mapping, a failed Fill).
+  const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
+  const hint = REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
 
   if (resolution.tier === 'skipped') {
     return (
       <li className={rowClass} data-jff-tier="skipped">
-        <div className="flex items-baseline gap-1.5"><span className="font-semibold">{label}</span></div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="font-semibold">{label}</span>
+          {field.required && <RequiredMark />}
+        </div>
         <p className={`mt-1 text-[12px] ${MUTED}`}>Demographic question. Never auto-filled.</p>
       </li>
     )
@@ -106,8 +177,8 @@ export function FieldRow(p: FieldRowProps) {
   return (
     <li className={rowClass} data-jff-tier={resolution.tier}>
       <div className="flex items-baseline gap-1.5">
-        <label className="font-semibold" htmlFor={`f-${ref}`}>{label}</label>
-        {field.required && <span className="text-red-600 dark:text-red-400" title="required">*</span>}
+        <label className="font-semibold" id={`l-${ref}`} htmlFor={`f-${ref}`}>{label}</label>
+        {field.required && <RequiredMark />}
         <span
           data-jff-tier-badge="1"
           className={`rounded-full border border-neutral-200 px-1.5 text-[11px] dark:border-neutral-700 ${MUTED}`}
@@ -129,6 +200,17 @@ export function FieldRow(p: FieldRowProps) {
       {field.description !== undefined && field.description !== '' && (
         <p data-jff-description="1" className={`mt-0.5 text-[12px] ${MUTED}`}>{field.description}</p>
       )}
+
+      {claims.length > 0 && <DraftWarning claims={claims} />}
+
+      {editor === 'checkboxes' && (
+        <CheckboxGroupEditor
+          options={field.options} value={value} labelledBy={`l-${ref}`}
+          onChange={(v) => onEdit(ref, v)}
+        />
+      )}
+
+      {editor === 'consent' && <ConsentTick id={`f-${ref}`} value={value} onChange={(v) => onEdit(ref, v)} />}
 
       {editor === 'segmented' && (
         <div className="mt-1.5 flex flex-wrap gap-1" role="group" data-jff-editor="segmented">
@@ -230,8 +312,9 @@ export function FieldRow(p: FieldRowProps) {
           {resolution.tier === 'needs_input' && (
             <>
               {/* A9: a foreign row has no resolution the host ever saw, so there
-                  is nothing to generate against — manual Fill is all it gets. */}
-              {p.foreign !== true && !keyed && (
+                  is nothing to generate against — manual Fill is all it gets.
+                  Otherwise only a Prose Field on a text Control is drafted. */}
+              {p.foreign !== true && offersGeneration(row) && (
                 <button type="button" className={BTN} disabled={generating || locked || acting !== null} onClick={() => onGenerate(ref)}>
                   {generating ? 'Drafting…' : 'Generate with AI'}
                 </button>

@@ -124,6 +124,33 @@ npm run smoke
 
 Expect: `17 passed`. The smoke run leaves a test build in `extension/dist`; run `npm run build` before loading the extension again.
 
+### Measure it on live pages
+
+The tests run on fixture pages, so they can pass while the tool fails on real forms. The probe measures the fill rate on live application pages instead. Run it by hand after a change to the scanner. No test, `npm run verify` or CI run calls it.
+
+Write a page list: a text file with one application page URL per line. Blank lines and lines starting with `#` are skipped. Keep it outside the repo, for example in `~/.job-form-filler/pages.txt`.
+
+```bash
+npm run probe -- --pages ~/.job-form-filler/pages.txt --resume ~/cv.pdf
+```
+
+For each URL, the probe opens the page in a fresh headless Chromium with the extension, opens the panel on it, and lets the tool Scan and Fill. It clicks nothing on the page, so no form is submitted, and it blocks Mark applied and Save answers. The host runs on a copy of your database, so the Profile and Saved answers are your real ones and the live database is only read. The Resume is passed by flag because a fresh browser has none, and the Onboarding gate blocks every Scan without one. The run builds the extension with its test seam and rebuilds the production extension when it ends.
+
+The page list, the Resume and the records must all be outside the repo; the probe refuses to start otherwise. Records go to `~/.job-form-filler/probe/<start time>/` unless `--records` names another directory: `pages.jsonl` holds one line per page with each row's label and outcome, `table.txt` the table, and `host.log` the host's log. `npm run probe -- --help` lists every flag.
+
+The table has one row per ATS and an `all` row:
+
+| Column | Meaning |
+| --- | --- |
+| Pages | Pages probed. A page with no form, or one that failed to load, counts with 0 Fields |
+| Fields | Rows the panel showed |
+| Filled | Fields the page accepted a value for |
+| Rate | Filled out of Fields |
+| First Fill | Median wait from opening the panel, which starts the Scan, to the first filled Field |
+| Nothing waiting | Median wait until no row is still being matched |
+
+The ATS is read from the page address: the hosted board's domain, or a `gh_jid` or `ashby_jid` parameter on a company page. Everything else is `other`.
+
 ### Environment variables
 
 | Name | Required | What it does | How to get a value |
@@ -181,6 +208,7 @@ flowchart LR
 | `host/scripts/install.mjs` | Installer: wrapper script, host config, Chrome manifest |
 | `shared/src/` | Message schemas in zod, the eighteen Known keys, text normalisation |
 | `e2e/` | Playwright specs, fake `claude` and `codex`, fixture forms |
+| `scripts/` | The private-data guard, the capture sanitiser and the live probe |
 | `docs/` | ADRs, specs, plans, and the README image script |
 
 ## Why it's built this way
@@ -205,7 +233,7 @@ The tool fills forms with real answers, and the repo is public, so the two never
 
 `scripts/check-private.mjs` enforces it. `npm install` points git at `.githooks`, which run it before every commit and push, over each commit's added lines, message and author address. It blocks home-directory paths, addresses on real domains, credential-shaped strings, and any string listed in `~/.job-form-filler/private-strings.txt`, a denylist that stays on your machine: one string per line, your email, phone and anything else only you would recognise. CI runs the same rules without the denylist.
 
-A page saved from a real application becomes a fixture only through `node scripts/sanitize-capture.mjs <captured.html> <fixture.html>`, which empties the form and replaces what the guard would refuse.
+A page saved from a real application becomes a fixture only through `node scripts/sanitize-capture.mjs [--company <name>]... <captured.html> <fixture.html>`. It keeps the application form and nothing else of the page, replaces the posting's prose with placeholder text, renames the employer Acme (read from the page's title and board address; `--company` adds a spelling the page uses elsewhere), empties every address, empties the form and replaces what the guard would refuse.
 
 ## How it was made
 
@@ -215,8 +243,8 @@ Each feature started as a spec in `docs/specs`, became a plan of tasks in `docs/
 
 Runtime dependencies: [React](https://react.dev) 18 (MIT), [pdf.js](https://github.com/mozilla/pdf.js) via `pdfjs-dist` (Apache-2.0), [zod](https://github.com/colinhacks/zod) (MIT), [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) (MIT). Build and test: [Vite](https://vite.dev), `@crxjs/vite-plugin`, [Tailwind CSS](https://tailwindcss.com), [Vitest](https://vitest.dev), jsdom and Testing Library (all MIT), [Playwright](https://playwright.dev) (Apache-2.0).
 
-`e2e/fixtures/greenhouse-apply/figma-form.html` and `e2e/fixtures/greenhouse-apply/gusto-form.html` are saved copies of public job application pages from Figma and Gusto, hosted on Greenhouse. They are kept as offline test fixtures so the scanner is tested against real markup. They remain the property of their owners and are not covered by this repository's licence. The other fixtures, including `e2e/fixtures/greenhouse-apply/fixture-form.html` and `e2e/fixtures/ashby-embed/apply-frame.html`, are hand-written stand-ins that model the shape of those platforms' forms and hold no real application data.
+`e2e/fixtures/real/` holds the application forms of public job application pages hosted on Greenhouse, Lever and Ashby, cut down to the form by `scripts/sanitize-capture.mjs`, with the posting's prose replaced and the employer renamed Acme. They are kept as offline test fixtures so the scanner is tested against real markup. That markup remains the property of its owners and is not covered by this repository's licence. The other fixtures, including `e2e/fixtures/greenhouse-apply/fixture-form.html` and `e2e/fixtures/ashby-embed/apply-frame.html`, are hand-written stand-ins that model the shape of those platforms' forms and hold no real application data.
 
-This project is not affiliated with Greenhouse, Ashby, Figma, Gusto, Anthropic or OpenAI.
+This project is not affiliated with Greenhouse, Lever, Ashby, Anthropic or OpenAI.
 
 MIT licence, Copyright (c) 2026 Kevin Shibuya. See [LICENSE](LICENSE).

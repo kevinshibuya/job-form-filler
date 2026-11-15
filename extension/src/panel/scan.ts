@@ -1,5 +1,6 @@
-import type { ContentMessage, EnumField, FieldHandle, FillReport, HostErrorKind, Resolution, ResolveResult } from '@jff/shared'
+import type { ContentMessage, EnumField, FieldHandle, FillReport, HostErrorKind, Resolution, ResolveFirstResult, ResolveMappingResult } from '@jff/shared'
 import { electFrame } from './election'
+import { refOf } from './group'
 import { dropJunk } from './junk'
 import type { HostPort } from './port'
 import { pickResumeTarget } from './resumeTarget'
@@ -80,7 +81,11 @@ const emptyFill = (): CollectedFill => ({ filled: [], failed: [] })
 export interface ScanOutcome {
   epoch: number
   fields: EnumField[]
+  /** The first step's Resolutions: everything that needed no model. */
   resolutions: Resolution[]
+  /** The elected Fields the first step left for Mapping. Empty means no second
+   *  request is owed. They carry no Resolution until `runMapping` lands. */
+  pending: EnumField[]
   fill: CollectedFill
   /** null when nothing was elected: no fields survived, or none were seen yet. */
   election: ElectionOutcome | null
@@ -144,7 +149,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       // the delay, so a second pass can find fields with the flag back to false —
       // and the scan would then fill past a challenge we already saw.
       return {
-        epoch, fields: [], resolutions: [], fill: emptyFill(), election: null,
+        epoch, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: true,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
@@ -166,7 +171,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     if (enumd.fields.length === 0) {
       // An empty page must cost zero host round-trips: no selector.get, no resolve.
       return {
-        epoch, fields: [], resolutions: [], fill: emptyFill(), election: null,
+        epoch, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: enumd.activeCaptcha,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
@@ -214,7 +219,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
     if (activeCaptcha) {
       // An active challenge means the extension does nothing at all on this page.
-      return { epoch, fields: kept, resolutions: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
     // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
@@ -252,12 +257,12 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
         // Uploading a resume is a common trigger for an ATS challenge. Re-reading
         // activeCaptcha and then filling anyway would be worse than never re-reading
         // it: same blast radius, plus a paid resolve call.
-        return { epoch, fields: kept, resolutions: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
       if (fields.length === 0) {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
-        return { epoch, fields: kept, resolutions: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
     }
 
@@ -292,14 +297,17 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
     if (kept.length === 0) {
       // Only junk on the page: resolve is NEVER called with zero real fields.
-      return { epoch, fields: [], resolutions: [], fill: emptyFill(), election: null, unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
-    // PHASE 2 — the host pays only for the ELECTED frame. Foreign fields still
-    // come back in `fields`; they are review-only, never resolved and never filled.
+    // PHASE 2 — the host is asked about the ELECTED frame only. Foreign fields
+    // still come back in `fields`; they are review-only, never resolved and
+    // never filled. This is the FIRST step: no model runs, so what the profile
+    // and the Saved answers already know reaches the page without waiting on
+    // Mapping. The Fields it leaves pending go out in `runMapping`.
     const resolveFields = electedOf(kept)
     deps.onProgress({ phase: 'resolving', fields: resolveFields.length })
-    const resolved = await deps.port.request<ResolveResult>('resolve', {
+    const resolved = await deps.port.request<ResolveFirstResult>('resolve.first', {
       epoch,
       url: deps.url ?? '',
       hostname: deps.hostname ?? '',
@@ -309,51 +317,137 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     })
     if (!resolved.ok) {
       return {
-        epoch, fields: kept, resolutions: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText,
+        epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText,
         llmError: resolved.error, frameReports: reports,
       }
     }
 
-    // Auto-fill tier-1/tier-2 results only. `page` sourced values are already there.
-    const byFrame = new Map<number, { handle: Resolution['handle']; value: string }[]>()
-    for (const r of resolved.result.resolutions) {
-      if (r.tier !== 'auto' || r.source === 'page' || r.value === null || r.value === '') continue
-      const list = byFrame.get(r.handle.frameId) ?? []
-      list.push({ handle: r.handle, value: r.value })
-      byFrame.set(r.handle.frameId, list)
-    }
-    const fill = emptyFill()
-    for (const [frameId, fills] of byFrame) {
-      try {
-        const { replies } = await deps.sendToTab(frameId, { type: 'JFF_FILL', epoch, fills })
-        const p = replies[0]?.payload as { ok?: boolean; error?: string; fill?: FillReport } | undefined
-        if (p?.ok === true && p.fill !== undefined) {
-          fill.filled.push(...p.fill.filled)
-          fill.failed.push(...p.fill.failed)
-        } else {
-          // A refused envelope (stale_epoch, bad_fill_report) accepted NOTHING:
-          // every fill sent to this frame failed, with the frame's own reason.
-          for (const f of fills) fill.failed.push({ handle: f.handle, reason: p?.error ?? 'no-fill-report' })
-        }
-      } catch (e) {
-        // A frame that vanished mid-fill (wizard advanced, iframe swapped) is
-        // evidence, not a reason to throw away the resolved scan.
-        reports = [...reports, { frameId, url: null, fields: null, error: `fill failed: ${String(e)}` }]
-        for (const f of fills) fill.failed.push({ handle: f.handle, reason: 'frame-unreachable' })
-      }
-    }
+    const pendingRefs = new Set(resolved.result.pending.map(refOf))
+    const batch = await fillAuto(deps.sendToTab, epoch, resolved.result.resolutions)
+    reports = [...reports, ...batch.reports]
 
     return {
       epoch, fields: kept,
       resolutions: resolved.result.resolutions,
-      fill,
+      pending: resolveFields.filter((f) => pendingRefs.has(refOf(f))),
+      fill: batch.fill,
       election: electionOut(),
       unreachableWidgets, activeCaptcha, jobText,
-      llmError: resolved.result.llmError,
+      llmError: null,
       frameReports: reports,
     }
   } catch (e) {
     if (e instanceof ScanError) throw e
     throw new ScanError(e instanceof Error ? e.message : String(e), reports)
   }
+}
+
+/**
+ * B3: the batched scan-time Fill. Only tier `auto` Resolutions with a value
+ * are sent; `page` sourced values are already there. Each frame's own JFF_FILL
+ * report decides what counts as filled.
+ */
+async function fillAuto(
+  sendToTab: ScanDeps['sendToTab'], epoch: number, resolutions: Resolution[],
+): Promise<{ fill: CollectedFill; reports: FrameReport[] }> {
+  const byFrame = new Map<number, { handle: Resolution['handle']; value: string }[]>()
+  for (const r of resolutions) {
+    if (r.tier !== 'auto' || r.source === 'page' || r.value === null || r.value === '') continue
+    const list = byFrame.get(r.handle.frameId) ?? []
+    list.push({ handle: r.handle, value: r.value })
+    byFrame.set(r.handle.frameId, list)
+  }
+  const fill = emptyFill()
+  const reports: FrameReport[] = []
+  for (const [frameId, fills] of byFrame) {
+    try {
+      const { replies } = await sendToTab(frameId, { type: 'JFF_FILL', epoch, fills })
+      const p = replies[0]?.payload as { ok?: boolean; error?: string; fill?: FillReport } | undefined
+      if (p?.ok === true && p.fill !== undefined) {
+        fill.filled.push(...p.fill.filled)
+        fill.failed.push(...p.fill.failed)
+      } else {
+        // A refused envelope (stale_epoch, bad_fill_report) accepted NOTHING:
+        // every fill sent to this frame failed, with the frame's own reason.
+        for (const f of fills) fill.failed.push({ handle: f.handle, reason: p?.error ?? 'no-fill-report' })
+      }
+    } catch (e) {
+      // A frame that vanished mid-fill (wizard advanced, iframe swapped) is
+      // evidence, not a reason to throw away the resolved scan.
+      reports.push({ frameId, url: null, fields: null, error: `fill failed: ${String(e)}` })
+      for (const f of fills) fill.failed.push({ handle: f.handle, reason: 'frame-unreachable' })
+    }
+  }
+  return { fill, reports }
+}
+
+/** The reason a Field Mapping never answered carries: the reply left it out,
+ *  or the request was lost with the panel that sent it. */
+export const MAPPING_LOST = 'mapping-lost'
+
+/** What `runMapping` needs: the host, the scan's own relay, and the page context. */
+export type MappingDeps = Pick<ScanDeps, 'port' | 'sendToTab' | 'hostname' | 'url' | 'company'>
+
+/** The second step's result, merged by the caller onto the first step's rows. */
+export interface MappingOutcome {
+  /** One per pending Field the host answered, Needs input on a failure. */
+  resolutions: Resolution[]
+  fill: CollectedFill
+  llmError: { kind: HostErrorKind; message: string } | null
+  /** Frames a Mapping Fill could not reach. */
+  frameReports: FrameReport[]
+}
+
+/**
+ * The second step: `resolve.mapping` over the Fields the first step left
+ * pending, then a Fill of whatever it answers `auto`, under the scan's own
+ * epoch. Only pending Fields are sent, so nothing the first step filled is
+ * filled again. It never throws: a request that fails outright makes every
+ * pending Field Needs input with the error, as a Mapping failure does.
+ *
+ * `isCurrent` is asked when the reply lands. A reply for a Scan that a newer
+ * one superseded is dropped there: null, and no Fill.
+ */
+export async function runMapping(
+  deps: MappingDeps, scan: Pick<ScanOutcome, 'epoch' | 'jobText' | 'pending'>, isCurrent: () => boolean,
+): Promise<MappingOutcome | null> {
+  const failed = (llmError: { kind: HostErrorKind; message: string }): MappingOutcome => ({
+    resolutions: scan.pending.map((f) => ({
+      handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null,
+      reason: `llm-error:${llmError.kind}`,
+    })),
+    fill: emptyFill(), llmError, frameReports: [],
+  })
+  let resolved
+  try {
+    resolved = await deps.port.request<ResolveMappingResult>('resolve.mapping', {
+      epoch: scan.epoch,
+      url: deps.url ?? '',
+      hostname: deps.hostname ?? '',
+      company: deps.company ?? null,
+      jobText: scan.jobText,
+      fields: scan.pending,
+    })
+  } catch (e) {
+    return isCurrent() ? failed({ kind: 'unreachable', message: e instanceof Error ? e.message : String(e) }) : null
+  }
+  if (!isCurrent()) return null
+  if (!resolved.ok) return failed(resolved.error)
+
+  // The host answers every Field it is sent, but only pending ones may land:
+  // a Resolution for anything else would overwrite a first-step row. A pending
+  // Field the reply leaves out becomes Needs input, so no row stays waiting.
+  const pendingRefs = new Set(scan.pending.map(refOf))
+  const resolutions = resolved.result.resolutions.filter((r) => pendingRefs.has(refOf(r.handle)))
+  const answered = new Set(resolutions.map((r) => refOf(r.handle)))
+  for (const f of scan.pending) {
+    if (answered.has(refOf(f))) continue
+    resolutions.push({
+      handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: MAPPING_LOST,
+    })
+  }
+  const batch = await fillAuto(deps.sendToTab, scan.epoch, resolutions)
+  return { resolutions, fill: batch.fill, llmError: resolved.result.llmError, frameReports: batch.reports }
 }

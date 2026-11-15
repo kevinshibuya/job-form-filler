@@ -171,7 +171,10 @@ export function createFakeHostPort(): HostPort {
         'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString() },
         'answerBank.get': {},
         'selector.get': { selector: null },
-        resolve: { epoch: 0, resolutions: [], llmError: null },
+        // Resolution in two requests: the canned page has nothing to resolve,
+        // so the first step leaves nothing pending and no Mapping is owed.
+        'resolve.first': { epoch: 0, resolutions: [], pending: [] },
+        'resolve.mapping': { epoch: 0, resolutions: [], llmError: null },
         generate: { draft: '' },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },

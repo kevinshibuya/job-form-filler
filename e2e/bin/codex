@@ -8,6 +8,9 @@
 //   JFF_FAKE_CODEX_MODE=not_authed   exit 1 with a sign-in message on stderr
 //   JFF_FAKE_CODEX_MODE=rate_limit   exit 1 with a usage-limit message on stderr
 //   JFF_FAKE_CODEX_MODE=timeout      sleep past the host deadline so SIGKILL fires
+//   JFF_FAKE_CODEX_HOLD=<path>       (ok mode) hold the MAPPING reply until <path>
+//                                    exists; every other call answers at once.
+//                                    The test creates the file to release it.
 // Deliberately written to parse identically as CommonJS or ESM: the file has no
 // extension, so Node picks the goal symbol itself and this must not care. That
 // rules out `require` and a top-level `return`.
@@ -18,6 +21,9 @@ const mode = process.env.JFF_FAKE_CODEX_MODE ?? 'ok'
 // Read the claude mode too, so the salary tests keep their contract now that
 // mapping has moved off the claude runner.
 const claudeMode = process.env.JFF_FAKE_CLAUDE_MODE ?? 'ok'
+
+// Set by body() when the prompt fell through to the mapping branch.
+let isMapping = false
 
 const body = () => {
   // The codex auth probe from selfCheck.
@@ -38,6 +44,7 @@ const body = () => {
   if (/You extract job-application facts/.test(prompt)) return {}
 
   // The mapping call: one entry per ref, in the order the prompt lists them.
+  isMapping = true
   const refs = [...prompt.matchAll(/ref=(\d+:\d+)/g)].map((m) => m[1])
   return refs.map((ref) => {
     if (claudeMode === 'salary') {
@@ -46,7 +53,9 @@ const body = () => {
         return { ref, decision: 'known_key', knownKey: 'salary', answerId: null }
       }
     }
-    return { ref, decision: 'custom', knownKey: null, answerId: null }
+    // Every Field it matches to nothing is labelled a Prose Field, so the
+    // full loop still drafts its free-text question.
+    return { ref, decision: 'custom', knownKey: null, answerId: null, fieldClass: 'prose' }
   })
 }
 
@@ -61,7 +70,20 @@ if (mode === 'not_authed') {
   setTimeout(() => process.exit(0), 130_000)
 } else {
   import('node:fs').then((fs) => {
-    fs.writeFileSync(outFile, JSON.stringify(body()), 'utf8')
-    process.exit(0)
+    const answer = JSON.stringify(body())
+    const write = () => {
+      fs.writeFileSync(outFile, answer, 'utf8')
+      process.exit(0)
+    }
+    const hold = process.env.JFF_FAKE_CODEX_HOLD ?? ''
+    if (!isMapping || hold === '') {
+      write()
+      return
+    }
+    const poll = setInterval(() => {
+      if (!fs.existsSync(hold)) return
+      clearInterval(poll)
+      write()
+    }, 50)
   })
 }

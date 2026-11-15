@@ -86,10 +86,14 @@ export function buildGenerationPrompt(input: GenerationInput): string {
   ].join('\n')
 }
 
-/** Belt and braces for rule 7, plus a hard length cap. */
+/** Belt and braces for rule 8: a spaced em-dash or en-dash becomes a comma. */
+export function rewriteSpacedDashes(s: string): string {
+  return s.replace(/\s+[—–]\s+/g, ', ')
+}
+
+/** The clean-up every Draft gets before it is returned: rule 8, plus a hard length cap. */
 export function sanitizeDraft(s: string): string {
-  return s
-    .replace(/\s+[—–]\s+/g, ', ')
+  return rewriteSpacedDashes(s)
     .trim()
     .slice(0, CAPS.answer)
 }

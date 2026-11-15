@@ -25,6 +25,9 @@ export interface Session {
   epoch: number
   fields: EnumField[]
   resolutions: Resolution[]
+  /** Refs of the Fields the first Resolution step left for Mapping, while
+   *  Mapping runs. A waiting ref has no Resolution: waiting is not an outcome. */
+  waiting: string[]
   edits: Record<string, string>
   /** S4: normalizeQuestion(label) → answer. The ref-INDEPENDENT carry. */
   answers: Record<string, SessionAnswer>
@@ -35,6 +38,9 @@ export interface Session {
   reuseOverrides: Record<string, 'reusable' | 'company_specific'>
   filledRefs: string[]
   generatedRefs: string[]
+  /** ref → the sentences of that row's Draft the Draft check found unsupported
+   *  by the user's own material. A ref is absent when its Draft has none. */
+  draftWarnings: Record<string, string[]>
   unreachable: number
   activeCaptcha: boolean
   election: ElectionOutcome | null
@@ -79,6 +85,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     epoch: now,
     fields: [],
     resolutions: [],
+    waiting: [],
     edits: {},
     answers: {},
     company: '',
@@ -88,6 +95,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     reuseOverrides: {},
     filledRefs: [],
     generatedRefs: [],
+    draftWarnings: {},
     unreachable: 0,
     activeCaptcha: false,
     election: null,
@@ -154,7 +162,7 @@ export function rememberAnswer(
  *
  * Refs are meaningless across a re-enumeration (`fid` restarts at 0), so every
  * ref-keyed assertion dies with the page: `filledRefs`, `generatedRefs`,
- * `snapshot`, `reuseOverrides`, `election` and the old `edits`. What comes back
+ * `draftWarnings`, `snapshot`, `reuseOverrides`, `election` and the old `edits`. What comes back
  * is derived from the label-keyed carry:
  *  - primary hit: `answers[answerKey(label)]`;
  *  - secondary hit (primary missed and the new resolution has a key): the SINGLE
@@ -214,11 +222,74 @@ export function projectAnswers(
     resolutions: newResolutions,
     edits,
     generatedRefs,
+    draftWarnings: {},
     filledRefs: [],
     snapshot: {},
     reuseOverrides: {},
     election: null,
   }
+}
+
+/**
+ * The second Resolution step lands on rows the first already projected. Only
+ * the pending refs change: each takes its Mapping Resolution, and its value is,
+ * in order, what the Mapping Fill put on the page, what the first projection
+ * already carried, or the carry re-run now that Mapping has named the Field's
+ * Known key (the fieldKey fallback needs that key, and the first step did not
+ * have it). Every other ref, and every edit the user made while Mapping ran,
+ * stays as it is.
+ */
+export function mergeMapping(
+  session: Session,
+  pendingRefs: ReadonlySet<string>,
+  mapped: Resolution[],
+  committedEdits: Record<string, string>,
+): Session {
+  const resolutions = [
+    ...session.resolutions.filter((r) => !pendingRefs.has(refOf(r.handle))),
+    ...mapped.filter((r) => pendingRefs.has(refOf(r.handle))),
+  ]
+  const carried = projectAnswers(session, session.fields, resolutions, committedEdits)
+  const edits = { ...session.edits }
+  // A Mapping Fill speaks for its ref in the page's words, as in the first
+  // projection: it is no longer a draft.
+  const generatedRefs = session.generatedRefs.filter((ref) => !(ref in committedEdits))
+  for (const ref of pendingRefs) {
+    if (ref in committedEdits) { edits[ref] = committedEdits[ref]!; continue }
+    if (ref in edits || !(ref in carried.edits)) continue
+    edits[ref] = carried.edits[ref]!
+    // The draft badge rides the carry, as it does in the first projection.
+    if (carried.generatedRefs.includes(ref)) generatedRefs.push(ref)
+  }
+  const waiting = session.waiting.filter((ref) => !pendingRefs.has(ref))
+  return { ...session, resolutions, waiting, edits, generatedRefs }
+}
+
+/**
+ * Every waiting row becomes Needs input with `reason`, for when its Mapping
+ * reply will never land: the Session was reopened after the request was lost,
+ * or a newer Scan dropped the request and then failed itself. No row stays
+ * waiting. The stored status line moves the waiting count into Needs input, so
+ * it still describes the rows.
+ */
+export function settleWaiting(session: Session, reason: string): Session {
+  if (session.waiting.length === 0) return session
+  const decided = new Set(session.resolutions.map((r) => refOf(r.handle)))
+  const waiting = new Set(session.waiting)
+  const settled: Resolution[] = session.fields
+    .filter((f) => waiting.has(refOf(f)) && !decided.has(refOf(f)))
+    .map((f) => ({
+      handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason,
+    }))
+  const last = session.lastOutcome
+  const lastOutcome: ScanUiState | null = last?.kind === 'matching'
+    ? {
+        kind: 'done', filled: last.filled, alreadyOnPage: last.alreadyOnPage,
+        proposed: last.proposed, needsInput: last.needsInput + settled.length,
+      }
+    : last
+  return { ...session, resolutions: [...session.resolutions, ...settled], waiting: [], lastOutcome }
 }
 
 /** Storage-shaping only — never mutates the in-memory session, whose full option
@@ -252,6 +323,9 @@ const isField = (v: unknown): boolean =>
 
 const allStrings = (a: unknown[]): boolean => a.every((x) => typeof x === 'string')
 
+const isDraftWarnings = (v: unknown): v is Record<string, string[]> =>
+  isRecord(v) && Object.values(v).every((w) => Array.isArray(w) && allStrings(w))
+
 /** Structural gate on untrusted storage rows: a version mismatch or any shape
  *  surprise yields null rather than a half-typed Session. Never throws. */
 export function parseStoredSession(raw: unknown): Session | null {
@@ -272,7 +346,10 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (!allStrings(raw.filledRefs) || !allStrings(raw.generatedRefs)) return null
     if (!isRecord(raw.edits) || !isRecord(raw.answers)) return null
     if (!isRecord(raw.snapshot) || !isRecord(raw.reuseOverrides)) return null
-    return raw as unknown as Session
+    // A row stored before waiting rows, or Draft warnings, existed has none.
+    if (raw.waiting !== undefined && (!Array.isArray(raw.waiting) || !allStrings(raw.waiting))) return null
+    if (raw.draftWarnings !== undefined && !isDraftWarnings(raw.draftWarnings)) return null
+    return { ...(raw as unknown as Session), waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {} }
   } catch {
     return null
   }

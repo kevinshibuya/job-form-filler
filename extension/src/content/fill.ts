@@ -1,4 +1,5 @@
-import { norm, type FieldHandle, type FillReport } from '@jff/shared'
+import { norm, optionSetLabels, type FieldHandle, type FillReport } from '@jff/shared'
+import { groupBoxesOf } from './checkboxGroup'
 import { optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
 import { attributableListbox, mountedListboxes } from './harvest'
@@ -67,11 +68,44 @@ function fillRadioGroup(el: HTMLInputElement, value: string): FillOutcome {
   return { ok: true }
 }
 
-function fillCheckbox(el: HTMLInputElement, value: string): FillOutcome {
-  const want = /^(true|yes|sim|on|1|checked)$/i.test(value.trim())
+/**
+ * A box holds yes or no and nothing else: any other Value (a link, an email
+ * address, a place) is refused with the box untouched, never read as "no".
+ * "filled" means the box ENDS in the asked state, so the state is read back a
+ * frame after the click, once the page's framework has had its turn to put
+ * its own state back.
+ */
+async function fillCheckbox(el: HTMLInputElement, value: string): Promise<FillOutcome> {
+  const v = value.trim()
+  const want = AFFIRMATIVE_RE.test(v) ? true : NEGATIVE_RE.test(v) ? false : null
+  if (want === null) return { ok: false, reason: 'value-not-yes-no' }
   if (el.checked === want) return { ok: true }
   el.click()
+  await nextFrame()
   if (el.checked !== want) return { ok: false, reason: 'click-rejected' }
+  return { ok: true }
+}
+
+/**
+ * A checkbox group's Value is a set of Option labels, one per line. The Fill
+ * leaves exactly the chosen Options ticked: every chosen label must name a box
+ * (under `norm`) or nothing is touched, then each box whose state differs is
+ * clicked, and "filled" is reported only once every box's checked state, read
+ * back a frame later, is the one asked for.
+ */
+async function fillCheckboxGroup(boxes: HTMLInputElement[], value: string): Promise<FillOutcome> {
+  const chosen = new Set<HTMLInputElement>()
+  for (const label of optionSetLabels(value)) {
+    const target = norm(label)
+    const hit = boxes.find((b) => norm(optionLabelOf(b)) === target) ?? boxes.find((b) => norm(b.value) === target)
+    if (hit === undefined) return { ok: false, reason: 'no-matching-option' }
+    chosen.add(hit)
+  }
+  for (const box of boxes) {
+    if (box.checked !== chosen.has(box)) box.click()
+  }
+  await nextFrame()
+  if (boxes.some((box) => box.checked !== chosen.has(box))) return { ok: false, reason: 'click-rejected' }
   return { ok: true }
 }
 
@@ -472,6 +506,9 @@ export async function fillOne(el: Element, value: string): Promise<FillOutcome> 
     return { ok: false, reason: 'unsupported-widget' }
   }
   if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') return fillCombobox(el, value)
+  // A checkbox group, stamped by the enumerator on every one of its boxes.
+  const group = groupBoxesOf(el)
+  if (group !== null) return fillCheckboxGroup(group, value)
   // B1: choice widgets dispatch on LIVE structure — the same detectChoice the
   // enumerator used, under the same selfHidden gate, so filler and enumerator
   // can never disagree — and BEFORE the radio and checkbox branches: radio

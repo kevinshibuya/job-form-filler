@@ -73,7 +73,16 @@ async function installScriptedHost(panel: Page): Promise<void> {
     if (method === 'answerBank.get') return { requestId, ok: true, result: {} }
     if (method === 'selector.get') return { requestId, ok: true, result: { selector: null } }
     if (method === 'applied.check') return { requestId, ok: true, result: { applied: null } }
-    if (method === 'resolve') {
+    // Needs input is Mapping's answer, so the first request leaves every Field
+    // pending and the second decides them all.
+    if (method === 'resolve.first') {
+      const p = req.params as ResolveParams
+      return {
+        requestId, ok: true,
+        result: { epoch: p.epoch, resolutions: [], pending: p.fields.map((f) => ({ frameId: f.frameId, fid: f.fid, epoch: f.epoch })) },
+      }
+    }
+    if (method === 'resolve.mapping') {
       const p = req.params as ResolveParams
       return {
         requestId, ok: true,

@@ -20,12 +20,45 @@ function isContainer(el: Element): boolean {
   return el.tagName === 'FIELDSET' || el.tagName === 'SECTION' || el.getAttribute('role') === 'group'
 }
 
+function isHeading(el: Element): boolean {
+  return /^(LEGEND|H1|H2|H3|H4|H5|H6)$/.test(el.tagName) || el.getAttribute('role') === 'heading'
+}
+
+/**
+ * The heading a field sits under when its section is a plain container: the
+ * nearest heading among the EARLIER siblings of the field and of each of its
+ * ancestors. The hosted Greenhouse form lays its self-identification section
+ * out this way, an <h3> beside the field wrappers, far above the inputs.
+ *
+ * The nearest heading decides, so a field under a later, ordinary heading never
+ * inherits an earlier demographic one, and nothing before the heading does
+ * either. Like the container walk it stops at the form and never reads the
+ * children of document.body, but it has NO level cap: the Greenhouse heading
+ * sits more than MAX_LEVELS above its inputs (pinned by the hosted fixture). On
+ * a page with no <form> it may climb as high as a child of body.
+ */
+function sectionHeading(el: Element, form: Element | null): Element | null {
+  let child: Element = el
+  let node: Element | null = el.parentElement
+  while (node !== null && node !== document.body && node !== document.documentElement) {
+    for (let s = child.previousElementSibling; s !== null; s = s.previousElementSibling) {
+      if (isHeading(s)) return s
+    }
+    if (node === form) break
+    child = node
+    node = node.parentElement
+  }
+  return null
+}
+
 /**
  * EEO/demographic detection, EXACT rule:
  *   walk UP from the field, at most 5 levels, testing ONLY fieldset / section /
  *   [role="group"] containers, hard-stop at the <form>, and NEVER look at
  *   document.body or document.documentElement. Checking body-level headings is
  *   precisely the page-global taint bug job-finder documented.
+ *   Then the field's section heading (sectionHeading): the same form and body
+ *   limits, with no level cap.
  *
  * Cross-frame attribution: an EEO section is often an iframe whose OWNING element
  * carries the signal, which the child frame cannot read. When we are in a subframe
@@ -47,6 +80,9 @@ export function isDemographic(el: Element, opts: { isSubframe?: boolean } = {}):
     node = node.parentElement
     levels++
   }
+
+  const heading = sectionHeading(el, form)
+  if (heading !== null && DEMOGRAPHIC_RE.test(heading.textContent ?? '')) return true
 
   const isSubframe = opts.isSubframe ?? (window.top !== window.self)
   if (isSubframe) {

@@ -48,7 +48,7 @@ describe('qa_memory', () => {
 
   it('listReusableAnswers excludes company_specific rows (company-specificity guard)', () => {
     upsertAnswer(db, { ...base, questionNormalized: 'reusable q', reusability: 'reusable' })
-    upsertAnswer(db, { ...base, questionRaw: 'Why Figma?', answer: 'I love design tools', questionNormalized: 'why figma', reusability: 'company_specific' })
+    upsertAnswer(db, { ...base, questionRaw: 'Why Acme?', answer: 'I love design tools', questionNormalized: 'why acme', reusability: 'company_specific' })
     const reusable = listReusableAnswers(db, 'en')
     expect(reusable.map((r) => r.questionNormalized)).toEqual(['reusable q'])
   })

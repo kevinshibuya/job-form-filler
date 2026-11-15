@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { enumerateFields, elementByFid, detectChoice, isClipped, CHOICE_MAX_OPTION_CHARS, type MeasureFn } from './enumerate'
+import { fillFields } from './fill'
 import {
   ASHBY_CHOICE_RADIO, ASHBY_COMBOBOX, ASHBY_COMBOBOX_WITH_DESCRIPTION, ASHBY_CONSENT_SINGLE,
   ASHBY_EEO_YESNO, ASHBY_ESSAY_WITH_DESCRIPTION, ASHBY_OPTIONAL_FIELD, ASHBY_RADIO_FIELDSET,
@@ -405,5 +406,23 @@ describe('enumerateFields — file accept capture (A8)', () => {
     const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
     expect(fields[0]!.accept).toBeUndefined()
     expect(fields[1]!.accept).toBeUndefined()
+  })
+})
+
+describe('checkbox groups across a re-scan', () => {
+  it('a box left alone after its group lost a member is a lone checkbox again, and Fill treats it as one', async () => {
+    document.body.innerHTML = `
+      <label><input type="checkbox" name="shift" id="am"> Mornings</label>
+      <label><input type="checkbox" name="shift" id="pm"> Evenings</label>`
+    const first = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields
+    expect(first.map((f) => f.kind)).toEqual(['checkboxgroup'])
+
+    document.getElementById('pm')!.closest('label')!.remove()
+    const second = enumerateFields({ root: document, epoch: 2, measure: allVisible }).fields
+    expect(second.map((f) => [f.kind, f.label])).toEqual([['checkbox', 'Mornings']])
+
+    const report = await fillFields(document, [{ handle: { frameId: 0, fid: second[0]!.fid, epoch: 2 }, value: 'true' }])
+    expect(report.filled).toHaveLength(1)
+    expect((document.getElementById('am') as HTMLInputElement).checked).toBe(true)
   })
 })

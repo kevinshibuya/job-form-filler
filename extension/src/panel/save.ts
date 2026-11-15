@@ -1,4 +1,4 @@
-import type { EnumField, Resolution, SaveItem } from '@jff/shared'
+import { isConsentCheckbox, type EnumField, type Resolution, type SaveItem } from '@jff/shared'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
 import { refOf } from './group'
 
@@ -63,6 +63,9 @@ export function buildSaveItems(input: SaveInput): SaveItem[] {
     const resolution = byRef.get(ref)
     if (resolution === undefined) continue
     if (field.demographic || resolution.tier === 'skipped') continue
+    // A consent is given on one form only: stored, it would be recalled onto
+    // the next form that words its box the same way.
+    if (isConsentCheckbox(field)) continue
     // Facts reach profile/answer_bank only through "Save to profile" and the
     // Profile editor, never through Save answers. A keyed row IS a fact, so it
     // stops here and qa_memory only ever holds keyless free-text answers.

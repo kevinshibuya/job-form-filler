@@ -8,7 +8,7 @@ describe('normalizeQuestion', () => {
 
   it('makes two label spellings of the same question collide', () => {
     expect(normalizeQuestion('E-mail *')).toBe(normalizeQuestion('email'))
-    expect(normalizeQuestion('Why do you want to join Figma?')).toBe('why do you want to join figma')
+    expect(normalizeQuestion('Why do you want to join Acme?')).toBe('why do you want to join acme')
   })
 
   it('caps length so a pathological label cannot blow up a key', () => {

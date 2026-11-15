@@ -1,20 +1,31 @@
 import type { FrameReport } from './scan'
 import { MUTED } from './ui'
 
+/** What the rows on screen hold. `filled` is what the page accepted. */
+export interface ScanCounts { filled: number; alreadyOnPage: number; proposed: number; needsInput: number }
+
 export type ScanUiState =
   | { kind: 'connecting' }
   | { kind: 'injecting' }
   | { kind: 'enumerating'; frames: number }
   | { kind: 'retrying' }
   | { kind: 'resolving'; fields: number }
-  | { kind: 'done'; filled: number; alreadyOnPage: number; proposed: number; needsInput: number }
+  | ({ kind: 'done' } & ScanCounts)
+  // The first step has settled and Mapping still runs: the counts describe the
+  // rows on screen, and the waiting rows are counted apart from them.
+  | ({ kind: 'matching'; waiting: number } & ScanCounts)
   | { kind: 'empty'; frames: number }
   | { kind: 'captcha' }
-  | { kind: 'failed'; reason: string }
+  // `counts` is set when Mapping failed after the first step filled: those
+  // fills stay on the page, so the line keeps counting them.
+  | { kind: 'failed'; reason: string; counts?: ScanCounts }
   | { kind: 'action_failed'; reason: string }
   // A scan the page outlived. Its resolve cannot be cancelled (host-protocol
   // change, deferred), so the panel says why it is waiting instead of going blank.
   | { kind: 'superseded' }
+
+const countsCopy = (c: ScanCounts): string =>
+  `${c.filled} filled, ${c.alreadyOnPage} already on page, ${c.proposed} proposed, ${c.needsInput} need input`
 
 function copyFor(s: ScanUiState): string {
   switch (s.kind) {
@@ -23,10 +34,13 @@ function copyFor(s: ScanUiState): string {
     case 'enumerating': return `Scanning page (${s.frames} frames)…`
     case 'retrying': return 'No fields yet — looking again…'
     case 'resolving': return `Matching ${s.fields} fields… (an AI call can take a minute)`
-    case 'done': return `✓ ${s.filled} filled, ${s.alreadyOnPage} already on page, ${s.proposed} proposed, ${s.needsInput} need input`
+    case 'done': return `✓ ${countsCopy(s)}`
+    case 'matching': return `${countsCopy(s)}, ${s.waiting} still being matched…`
     case 'empty': return `⚠ Scanned ${s.frames} frames, found no form fields. Open the application form, then Scan again.`
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'
-    case 'failed': return `✕ Scan failed: ${s.reason}`
+    case 'failed': return s.counts === undefined
+      ? `✕ Scan failed: ${s.reason}`
+      : `${countsCopy(s.counts)} · ✕ Matching failed: ${s.reason}`
     case 'action_failed': return `✕ ${s.reason}`
     case 'superseded': return 'Page changed — finishing the old scan before rescanning…'
   }
@@ -34,7 +48,7 @@ function copyFor(s: ScanUiState): string {
 
 const TONE: Record<ScanUiState['kind'], string> = {
   connecting: MUTED, injecting: MUTED, enumerating: MUTED, retrying: MUTED, resolving: MUTED,
-  superseded: MUTED,
+  superseded: MUTED, matching: MUTED,
   done: 'text-green-700 dark:text-green-400',
   empty: 'text-amber-600 dark:text-amber-400',
   captcha: 'text-amber-600 dark:text-amber-400',

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import type { EnumField, Resolution } from '@jff/shared'
 import { buildSaveItems, mergeStoredSnapshots, suggestReusability } from './save'
+import { enumerateFields } from '../content/enumerate'
+import { snapshotValues } from '../content/snapshot'
+import { loadRealFixture } from '../content/fixtures/real'
 
 const field = (fid: number, label: string, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
@@ -231,3 +234,48 @@ describe('mergeStoredSnapshots', () => {
     expect(mergeStoredSnapshots({ 'jff:other': snap(42, { '3': 'x' }) }, 7, 42)).toEqual({})
   })
 })
+
+describe('a checkbox group is saved as one Saved answer holding the set', () => {
+  function scanPronouns(): EnumField {
+    loadRealFixture('lever-pronoun-group')
+    const fields = enumerateFields({ root: document, epoch: 1 }).fields.map((f) => ({ ...f, frameId: 0 }))
+    const group = fields.find((f) => f.kind === 'checkboxgroup' && f.label === 'Pronouns')
+    if (group === undefined) throw new Error('no Pronouns group')
+    return group
+  }
+
+  function tickOnPage(label: string): void {
+    const box = Array.from(document.querySelectorAll('label'))
+      .find((l) => (l.textContent ?? '').trim() === label)?.querySelector('input')
+    if (!box) throw new Error(`no box labelled ${label}`)
+    box.click()
+  }
+
+  const expected = (group: EnumField) => [{
+    handle: { frameId: 0, fid: group.fid, epoch: 1 },
+    questionRaw: 'Pronouns',
+    answer: 'She/her\nThey/them',
+    reusability: 'reusable',
+    fieldKey: null,
+  }]
+
+  it('ticking Options in the row and saving stores one Saved answer under the question, holding the set', () => {
+    const group = scanPronouns()
+    const items = buildSaveItems({
+      ...base, fields: [group], resolutions: [res(group.fid)],
+      panelEdits: { [`0:${group.fid}`]: 'She/her\nThey/them' },
+    })
+    expect(items).toEqual(expected(group))
+  })
+
+  it('ticking the same boxes on the page stores the same Saved answer, never "true"', () => {
+    const group = scanPronouns()
+    tickOnPage('They/them')
+    tickOnPage('She/her')
+    const snapshot = Object.fromEntries(Object.entries(snapshotValues(document)).map(([fid, v]) => [`0:${fid}`, v]))
+    const items = buildSaveItems({ ...base, fields: [group], resolutions: [res(group.fid)], snapshot })
+    expect(items).toEqual(expected(group))
+    expect(items.map((i) => i.answer)).not.toContain('true')
+  })
+})
+

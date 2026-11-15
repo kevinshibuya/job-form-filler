@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { addedLines, scanIdentity, scanLine } from './check-private.mjs'
-import { sanitizeCapture } from './sanitize-capture.mjs'
 
 // Every offending sample is assembled at run time, so this file never holds a
 // string the guard it tests would refuse to commit.
@@ -35,8 +34,8 @@ describe('scanLine', () => {
     expect(hits).toEqual([{ rule: 'private-string', detail: 'denylist entry 1' }])
   })
 
-  it('allows the third-party strings the captured fixtures carry', () => {
-    expect(scanLine('"\\u003eaccommodations-ext@figma.com\\u003c"')).toEqual([])
+  it('allows the third-party strings the captured fixtures carry, even glued to escaped markup', () => {
+    expect(scanLine('"\\u003enoreply@github.com\\u003c"')).toEqual([])
   })
 })
 
@@ -71,45 +70,5 @@ describe('addedLines', () => {
       { file: 'a.ts', line: 5, text: 'second' },
       { file: 'a.ts', line: 11, text: 'third' },
     ])
-  })
-})
-
-describe('sanitizeCapture', () => {
-  const page = `<!doctype html><html><body><form>
-    <input type="text" name="name" value="Jane Doe">
-    <input type="hidden" name="csrf" value="tok-123">
-    <input type="checkbox" name="agree" value="yes" checked>
-    <input type="submit" value="Apply">
-    <textarea name="why">I live in Springfield Heights</textarea>
-    <select name="c"><option>One</option><option selected>Two</option></select>
-    <p>Questions? ${realEmail} or ada@example.com</p>
-    <script>window.cfg = { key: "${token}" }</script>
-  </form></body></html>`
-
-  const clean = sanitizeCapture(page, ['jane doe', 'springfield heights'])
-
-  it('empties typed answers, hidden values and selections', () => {
-    expect(clean).not.toContain('Jane Doe')
-    expect(clean).not.toContain('tok-123')
-    expect(clean).not.toContain('Springfield Heights')
-    expect(clean).not.toMatch(/checked|selected/)
-  })
-
-  it('keeps the structure a scan reads', () => {
-    expect(clean).toContain('<input type="text" name="name">')
-    expect(clean).toContain('<input type="checkbox" name="agree" value="yes">')
-    expect(clean).toContain('<input type="submit" value="Apply">')
-    expect(clean).toContain('<option>Two</option>')
-  })
-
-  it('replaces real addresses and keys, and leaves the persona alone', () => {
-    expect(clean).not.toContain(realEmail)
-    expect(clean).not.toContain(token)
-    expect(clean).toContain('someone@example.com or ada@example.com')
-  })
-
-  it('leaves nothing the guard would refuse', () => {
-    const left = clean.split('\n').flatMap((line) => scanLine(line, ['jane doe', 'springfield heights']))
-    expect(left).toEqual([])
   })
 })

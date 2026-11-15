@@ -41,12 +41,38 @@ describe('buildReviewPrompt', () => {
     expect(prompt).toMatch(/Tighten wording/i)
     expect(prompt).toMatch(/return it unchanged/i)
   })
+
+  it('keeps the five kinds of claim it removes today', () => {
+    expect(prompt).toMatch(/employer, technology, metric, degree, date/)
+  })
+
+  it('asks for the sentences about the user the stored material does not support, and leaves them in the draft', () => {
+    expect(prompt).toMatch(/states something about the candidate/i)
+    expect(prompt).toMatch(/need, a circumstance, a preference or a piece of history/i)
+    expect(prompt).toMatch(/do not support/i)
+    expect(prompt).toMatch(/leave (it|them) in the draft/i)
+    expect(prompt).toMatch(/"unsupported"/)
+    expect(prompt).toContain('Return {"draft": "...", "unsupported": ["..."]}')
+  })
 })
 
 describe('reviewDraft', () => {
-  it('returns the reviewer draft', async () => {
+  it('returns the reviewer draft and the sentences it flagged', async () => {
+    const runner = { complete: vi.fn(async () => ({ draft: 'refined', unsupported: ['I need no help.'] })) } as unknown as CodexRunner
+    await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' }))
+      .resolves.toEqual({ draft: 'refined', unsupported: ['I need no help.'] })
+  })
+
+  it('reads a reply in the old shape as one that flagged nothing', async () => {
     const runner = { complete: vi.fn(async () => ({ draft: 'refined' })) } as unknown as CodexRunner
-    await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' })).resolves.toBe('refined')
+    await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' }))
+      .resolves.toEqual({ draft: 'refined', unsupported: [] })
+  })
+
+  it('reads a null list as one that flagged nothing', async () => {
+    const runner = { complete: vi.fn(async (_p: string, schema: { parse: (v: unknown) => unknown }) => schema.parse({ draft: 'refined', unsupported: null })) } as unknown as CodexRunner
+    await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' }))
+      .resolves.toEqual({ draft: 'refined', unsupported: [] })
   })
 
   it('propagates a codex failure to the caller (the handler degrades, not this module)', async () => {

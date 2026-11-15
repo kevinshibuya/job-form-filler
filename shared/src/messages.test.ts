@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, SaveItemSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema } from './messages.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -40,12 +40,12 @@ describe('EnumFieldSchema', () => {
 })
 
 describe('HostRequestSchema', () => {
-  it('accepts a resolve request', () => {
-    const req = HostRequestSchema.parse({
-      requestId: 'r1', method: 'resolve',
+  it('rejects the single resolve request, which the two Resolution requests replaced', () => {
+    const gone = 'resolve'
+    expect(HostRequestSchema.safeParse({
+      requestId: 'r1', method: gone,
       params: { epoch: 7, url: 'https://boards.greenhouse.io/x', hostname: 'boards.greenhouse.io', company: 'X', jobText: 'hi', fields: [] },
-    })
-    expect(req.method).toBe('resolve')
+    }).success).toBe(false)
   })
 
   it('rejects an unknown method', () => {
@@ -74,6 +74,35 @@ describe('HostRequestSchema', () => {
     })
     if (parsed.method !== 'generate') throw new Error('wrong branch')
     expect(parsed.params.description).toBe('D')
+  })
+})
+
+describe('Resolution in two requests', () => {
+  const params = { epoch: 7, url: 'https://boards.greenhouse.io/x', hostname: 'boards.greenhouse.io', company: null, jobText: '', fields: [] }
+  const resolution = { handle, tier: 'auto', value: 'ada@example.com', source: 'profile', key: 'email', answerId: null, reason: 'recognizer:email' }
+
+  it('accepts resolve.first and resolve.mapping with the same Scan params', () => {
+    for (const method of ['resolve.first', 'resolve.mapping'] as const) {
+      const parsed = HostRequestSchema.parse({ requestId: `r-${method}`, method, params })
+      expect(parsed.method).toBe(method)
+    }
+  })
+
+  it('rejects either request without its fields', () => {
+    const { fields: _fields, ...noFields } = params
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'resolve.first', params: noFields }).success).toBe(false)
+    expect(HostRequestSchema.safeParse({ requestId: 'r2', method: 'resolve.mapping', params: noFields }).success).toBe(false)
+  })
+
+  it('shapes the resolve.first reply as resolutions plus pending handles', () => {
+    expect(ResolveFirstResultSchema.safeParse({ epoch: 7, resolutions: [resolution], pending: [handle] }).success).toBe(true)
+    expect(ResolveFirstResultSchema.safeParse({ epoch: 7, resolutions: [resolution] }).success).toBe(false)
+  })
+
+  it('shapes the resolve.mapping reply as resolutions plus the Mapping error', () => {
+    expect(ResolveMappingResultSchema.safeParse({ epoch: 7, resolutions: [resolution], llmError: null }).success).toBe(true)
+    expect(ResolveMappingResultSchema.safeParse({ epoch: 7, resolutions: [], llmError: { kind: 'rate_limit', message: 'limit' } }).success).toBe(true)
+    expect(ResolveMappingResultSchema.safeParse({ epoch: 7, resolutions: [] }).success).toBe(false)
   })
 })
 

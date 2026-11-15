@@ -3,7 +3,8 @@ import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, 
 import { isProfileKey } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
-import { FieldRow } from './FieldRow'
+import { FieldRow, WaitingRow } from './FieldRow'
+import { offersGeneration } from './generationOffer'
 import { buildRows, refOf, type Row } from './group'
 import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
@@ -12,11 +13,11 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { pickResumeTarget } from './resumeTarget'
-import { runScan, ScanError, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
-import { ScanStatus, type ScanUiState } from './ScanStatus'
+import { MAPPING_LOST, runMapping, runScan, ScanError, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
-import { createSessionStore, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, type Session, type SessionStore } from './sessions'
+import { createSessionStore, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
 import { registrableDomain, sameSite } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
@@ -93,10 +94,18 @@ interface SessionRuntime {
   /** A3: what the page that just navigated away had; the re-scan's detection
    *  compares against it. */
   navRescan: { prevFields: number } | null
+  /** Bumped when a Scan of this session starts. A Mapping reply settles only
+   *  while the Scan that asked for it is still the newest: a newer Scan starts
+   *  without waiting for it, and the older reply then changes nothing. */
+  scanSeq: number
+  /** The epoch of the Scan whose Mapping request is in flight from THIS panel,
+   *  or null. A Session whose rows wait on any other epoch waits on a request
+   *  that is gone: the panel that sent it closed, or a newer Scan dropped it. */
+  mappingEpoch: number | null
 }
 
 const newRuntime = (gen: number): SessionRuntime => ({
-  gen, epoch: 0, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
+  gen, epoch: 0, scanSeq: 0, mappingEpoch: null, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
   generateAll: null, generatePaused: null,
 })
 
@@ -118,13 +127,68 @@ const SCAN_ABORTED = 'jff:scan-aborted'
  */
 const swallow = (): undefined => undefined
 
+/**
+ * B3: a resolution whose batched auto-fill the page REJECTED is not "filled" —
+ * demote it to needs_input carrying the fill reason, so the row drops to
+ * needs-input styling, REASON_HINT renders the hint (choice-needs-user-click →
+ * "Select this answer on the page yourself."), and the user gets Generate/Fill
+ * to recover. Page-sourced rows are never in `failed` (the batch skips them),
+ * so `already on page` is untouched.
+ *
+ * B1c: the batch fill is authoritative for EVERY ref it put a value on, not
+ * just the ones the page rewrote. `committed` is the page's canonical text
+ * where it canonicalized ('bra' → 'Brazil') and NULL where the page took the
+ * sent value verbatim — both mean "this is what the page holds now". Seeding
+ * only the canonicalized half is how a verbatim fill stayed absent here and let
+ * S4's carry re-seed the row (and the save diff) with a stale answer for a field
+ * the page had just filled. The row, the save diff and the choice highlight all
+ * speak the page's language.
+ *
+ * Both Resolution steps settle through here, each over its own Fill.
+ */
+function settleFill(resolutions: Resolution[], fill: CollectedFill): { settled: Resolution[]; committedEdits: Record<string, string> } {
+  const failedFillReason = new Map(fill.failed.map((f) => [refOf(f.handle), f.reason]))
+  const settled = resolutions.map((r) =>
+    failedFillReason.has(refOf(r.handle))
+      ? { ...r, tier: 'needs_input' as const, reason: failedFillReason.get(refOf(r.handle))! }
+      : r)
+  const sentValue = new Map(settled.map((r) => [refOf(r.handle), r.value]))
+  const committedEdits: Record<string, string> = {}
+  for (const f of fill.filled) {
+    const ref = refOf(f.handle)
+    // A null `committed` with no resolution value behind it is unreachable
+    // through the batch (it only fills resolutions whose value is a non-empty
+    // string). If it ever happens we have NO evidence of what the page holds,
+    // so seed nothing: a '' here would blank the row AND suppress the carry,
+    // asserting an emptiness nobody observed.
+    const value = f.committed ?? sentValue.get(ref) ?? null
+    if (value !== null) committedEdits[ref] = value
+  }
+  return { settled, committedEdits }
+}
+
+/** A9/B3 status semantics: `filled` = PAGE-ACCEPTED batched fills, straight
+ *  from the frames' JFF_FILL reports — never inferred from tiers, so a failed
+ *  batch can never inflate it. `already on page` = page-sourced values the
+ *  engine never wrote. The remaining counts run over the DEMOTED array so the
+ *  four numbers always describe the rows on screen. */
+function countsOf(filled: number, settled: Resolution[]): ScanCounts {
+  return {
+    filled,
+    alreadyOnPage: settled.filter((r) => r.tier === 'auto' && r.source === 'page').length,
+    proposed: settled.filter((r) => r.tier === 'proposed').length,
+    needsInput: settled.filter((r) => r.tier === 'needs_input').length,
+  }
+}
+const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ kind: 'done', ...countsOf(filled, settled) })
+
 /** Everything a scan produced. A navigation makes ALL of it describe a page that
  *  is gone, and the ref-keyed halves are meaningless across a re-enumeration
  *  (`fid` restarts at 0). What RIDES the session — company, jobText, answers,
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], election: null, edits: {}, filledRefs: [], generatedRefs: [],
+  fields: [], resolutions: [], waiting: [], election: null, edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -401,8 +465,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  that is per-session IN-FLIGHT: none of it belongs to the incoming session.
    *  The status line comes back from the session's own persisted `lastOutcome`,
    *  which is why that field is part of the stored shape. */
-  const display = (s: Session | null): void => {
+  const display = (stored: Session | null): void => {
+    // Rows wait only on a Mapping request this panel still has in flight. One
+    // that is gone (the panel closed before it answered) will never answer.
+    const lost = stored !== null && stored.waiting.length > 0
+      && runtimeOf(stored.tabId).mappingEpoch !== stored.epoch
+    const s = lost ? settleWaiting(stored, MAPPING_LOST) : stored
     showSession(s)
+    if (lost && s !== null) store.save(s)
     if (s !== null) seedEpoch(s)
     lastOutcomeRef.current = s?.lastOutcome ?? null
     setScanStatus(s?.lastOutcome ?? null)
@@ -427,6 +497,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const resolutions = session?.resolutions ?? []
   const edits = session?.edits ?? {}
   const generatedRefs = session?.generatedRefs ?? []
+  const draftWarnings = session?.draftWarnings ?? {}
   const filledRefs = session?.filledRefs ?? []
   const election = session?.election ?? null
   const company = session?.company ?? ''
@@ -435,7 +506,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const reuseOverrides = session?.reuseOverrides ?? {}
   const parked = session?.parked ?? false
 
-  const { main, foreign } = buildRows(fields, resolutions, election?.frameId ?? null)
+  const { main, listed, foreign } = buildRows(fields, resolutions, election?.frameId ?? null, session?.waiting ?? [])
   // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
   // the stored resume — recomputed over the CURRENT fields so a post-resume
   // re-enumeration can never leave the button on a stale fid.
@@ -870,6 +941,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // Every write below is conditional on this still being the current (tab,
     // generation) pair — and lands in THIS tab's session either way.
     const sc = { target, gen: rt.gen }
+    // From here this is the session's newest Scan: an older one's Mapping
+    // reply, still in flight, will find the sequence moved on and drop.
+    const seq = ++rt.scanSeq
     try {
       // A queued re-scan for a session that is not on screen must prove the
       // session is still there and still eligible: a row that was removed or
@@ -927,7 +1001,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (!alive(sc)) return
         const hit = chk.ok ? (chk.result.applied ?? null) : null
         if (hit !== null) {
-          await applyToSession(target, sc.gen, (s) => ({ ...s, appliedHit: { markedAt: hit.markedAt } }))
+          // This Scan moved the sequence on, so an older Mapping reply still out
+          // will drop: rows it left waiting are settled here, as on failure.
+          await applyToSession(target, sc.gen, (s) => ({ ...settleWaiting(s, MAPPING_LOST), appliedHit: { markedAt: hit.markedAt } }))
           if (inScope(sc)) setScanStatus(null)
           return
         }
@@ -1006,46 +1082,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // swap is not that — the results are still true of tab 7, so they go to
       // tab 7's row instead of the screen.
       if (!alive(sc)) return
-      // B3: a resolution whose batched auto-fill the page REJECTED is not
-      // "filled" — demote it to needs_input carrying the fill reason, so the
-      // row drops to needs-input styling, REASON_HINT renders the hint
-      // (choice-needs-user-click → "Select this answer on the page yourself."),
-      // and the user gets Generate/Fill to recover. Page-sourced rows are never
-      // in `failed` (the loop skips them), so `already on page` is untouched.
-      const failedFillReason = new Map(out.fill.failed.map((f) => [refOf(f.handle), f.reason]))
-      const settled = out.resolutions.map((r) =>
-        failedFillReason.has(refOf(r.handle))
-          ? { ...r, tier: 'needs_input' as const, reason: failedFillReason.get(refOf(r.handle))! }
-          : r)
-      // B1c: the batch fill is authoritative for EVERY ref it put a value on, not
-      // just the ones the page rewrote. `committed` is the page's canonical text
-      // where it canonicalized ('bra' → 'Brazil') and NULL where the page took the
-      // sent value verbatim — both mean the same thing, "this is what the page
-      // holds now". Seeding only the canonicalized half is how a verbatim fill
-      // stayed absent here and let S4's carry re-seed the row (and the save diff)
-      // with a stale answer for a field the page had just filled. The row, the
-      // save diff and the choice highlight all speak the page's language.
-      const sentValue = new Map(settled.map((r) => [refOf(r.handle), r.value]))
-      const committedEdits: Record<string, string> = {}
-      for (const f of out.fill.filled) {
-        const ref = refOf(f.handle)
-        // A null `committed` with no resolution value behind it is unreachable
-        // through runScan (it only batch-fills resolutions whose value is a
-        // non-empty string). If it ever happens we have NO evidence of what the
-        // page holds, so seed nothing: a '' here would blank the row AND suppress
-        // the carry, asserting an emptiness nobody observed.
-        const value = f.committed ?? sentValue.get(ref) ?? null
-        if (value !== null) committedEdits[ref] = value
-      }
-      // A9/B3 status semantics: `filled` = PAGE-ACCEPTED batched fills, straight
-      // from the frames' JFF_FILL reports — never inferred from tiers, so a
-      // failed batch can never inflate it. `already on page` = page-sourced
-      // values the engine never wrote. The remaining counts run over the
-      // DEMOTED array so the four numbers always describe the rows on screen.
-      const filled = out.fill.filled.length
-      const alreadyOnPage = settled.filter((r) => r.tier === 'auto' && r.source === 'page').length
-      const proposed = settled.filter((r) => r.tier === 'proposed').length
-      const needsInput = settled.filter((r) => r.tier === 'needs_input').length
+      const first = settleFill(out.resolutions, out.fill)
       // Precedence: captcha > empty > llm failure > done. A captcha'd page may
       // also be field-less; the captcha is the actionable fact.
       const outcome: ScanUiState =
@@ -1054,23 +1091,67 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // contributes two reports but is still one frame on the page.
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
         : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
-        : { kind: 'done', filled, alreadyOnPage, proposed, needsInput }
-      if (inScope(sc)) { lastOutcomeRef.current = outcome; setScanStatus(outcome) }
+        : doneOutcome(out.fill.filled.length, first.settled)
+      // The first step has filled what needed no model. While Mapping runs, the
+      // pending Fields are waiting rows and the status line counts them apart
+      // from the first step's rows. That is also what is stored: a Session
+      // reopened after the reply was lost settles them (`display`).
+      const owesMapping = outcome.kind === 'done' && out.pending.length > 0
+      const onScreen: ScanUiState = owesMapping
+        ? { kind: 'matching', ...countsOf(out.fill.filled.length, first.settled), waiting: out.pending.length }
+        : outcome
+      // Marked in flight BEFORE the waiting rows are written: a write to a
+      // background Session awaits the store, and a swap back to it in that
+      // window must not settle rows whose request is still out.
+      if (owesMapping) rt.mappingEpoch = out.epoch
+      if (inScope(sc)) { lastOutcomeRef.current = onScreen; setScanStatus(onScreen) }
       // S4: the ONE projection. Everything ref-keyed dies with the page the scan
       // replaced; the label-keyed carry re-attaches onto whatever refs the new
       // enumeration handed the same questions, and `committedEdits` outranks it.
       // The background settle runs the SAME function inside store.mutate — a
       // second implementation would be a second copy of the never-guess rules.
       await applyToSession(target, sc.gen, (s) => ({
-        ...projectAnswers(s, out.fields, settled, committedEdits),
+        ...projectAnswers(s, out.fields, first.settled, first.committedEdits),
+        waiting: owesMapping ? out.pending.map(refOf) : [],
         election: out.election,
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
         jobText: out.jobText !== '' ? out.jobText : s.jobText,
-        lastOutcome: outcome,
+        lastOutcome: onScreen,
       }))
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
+      // The second step runs OUTSIDE the scan latch: it is not awaited here, so
+      // the latch frees as soon as this scan's first step has settled, and a
+      // newer Scan starts without waiting on Mapping.
+      if (owesMapping) {
+        const isCurrent = (): boolean =>
+          mountedRef.current && alive(sc) && rt.scanSeq === seq && rt.epoch === out.epoch
+        void (async () => {
+          const mapped = await runMapping({
+            port, sendToTab: (frameId, message) => sendToTab(target, frameId, message), hostname, url, company: co,
+          }, out, isCurrent)
+          // Dropped by the epoch the Scan carries: a newer Scan owns the rows.
+          if (mapped === null || !isCurrent()) return
+          const second = settleFill(mapped.resolutions, mapped.fill)
+          const all = [...first.settled, ...second.settled]
+          const settledOutcome: ScanUiState = mapped.llmError !== null
+            ? { kind: 'failed', reason: hostErrorText(mapped.llmError), counts: countsOf(out.fill.filled.length + mapped.fill.filled.length, all) }
+            : doneOutcome(out.fill.filled.length + mapped.fill.filled.length, all)
+          const pendingRefs = new Set(out.pending.map(refOf))
+          if (inScope(sc)) { lastOutcomeRef.current = settledOutcome; setScanStatus(settledOutcome) }
+          // Merged onto the rows as they stand now: what the user typed into a
+          // first-step row while Mapping ran is still in `edits`, untouched.
+          await applyToSession(target, sc.gen, (s) => (s.epoch !== out.epoch ? s : {
+            ...mergeMapping(s, pendingRefs, second.settled, second.committedEdits),
+            frameReports: [...s.frameReports, ...mapped.frameReports],
+            lastOutcome: settledOutcome,
+          }))
+          if (mapped.llmError !== null && inScope(sc)) setHostError(hostErrorText(mapped.llmError))
+        })().catch(swallow).finally(() => {
+          if (rt.mappingEpoch === out.epoch) rt.mappingEpoch = null
+        })
+      }
       // A3: detection is only ever a PROMPT, and only for the session ON SCREEN
       // — a background tab has no panel to prompt in. Best-effort page text; a
       // dead relay just means the field-count heuristic decides alone.
@@ -1103,7 +1184,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const relayRow: FrameReport = { frameId: -1, url: null, fields: null, error: reason }
       const reports = e instanceof ScanError ? [...e.frameReports, relayRow] : [relayRow]
       if (inScope(sc)) { lastOutcomeRef.current = outcome; setScanStatus(outcome) }
-      await applyToSession(target, sc.gen, (s) => ({ ...s, lastOutcome: outcome, frameReports: reports }))
+      // This Scan dropped any older Mapping request still out, so rows an older
+      // Scan left waiting will never be answered.
+      await applyToSession(target, sc.gen, (s) => ({ ...settleWaiting(s, MAPPING_LOST), lastOutcome: outcome, frameReports: reports }))
     } finally {
       scanningRef.current = false
       if (mountedRef.current) {
@@ -1305,7 +1388,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  row / no port / already running), 'aborted' (the page died mid-flight),
    *  or the host error kind — the batch loop dispatches on it. */
   const generateOne = async (ref: string): Promise<'ok' | 'skipped' | 'aborted' | HostErrorKind> => {
-    const row = main.find((r) => r.ref === ref && r.resolution.tier === 'needs_input')  // foreign rows never generate
+    const row = main.find((r) => r.ref === ref && offersGeneration(r))  // foreign rows never generate
     const port = portRef.current
     const sc = scopeNow()
     if (row === undefined || port === null || sc === null || generatingRefs.has(ref)) return 'skipped'
@@ -1313,7 +1396,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // never land in edits (spec D3).
     setGeneratingRefs((s) => new Set(s).add(ref))
     try {
-      const r = await port.request<{ draft: string }>('generate', {
+      const r = await port.request<{ draft: string; unsupportedClaims?: string[] }>('generate', {
         handle: row.resolution.handle,
         questionRaw: row.field.label ?? '',
         description: row.field.description,
@@ -1327,13 +1410,19 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (!alive(sc)) return 'aborted'
       if (r.ok) {
         const draft = r.result.draft
+        const unsupported = r.result.unsupportedClaims ?? []
         // S4: a settled draft is carried with provenance 'generated', which is
-        // what re-enters generatedRefs on the next step.
-        await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
-          ...s,
-          edits: { ...s.edits, [ref]: draft },
-          generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
-        }, ref, draft, 'generated'))
+        // what re-enters generatedRefs on the next step. Its Draft check
+        // warning replaces whatever the row's previous Draft carried.
+        await applyToSession(sc.target, sc.gen, (s) => {
+          const { [ref]: _previous, ...draftWarnings } = s.draftWarnings
+          return rememberAnswer({
+            ...s,
+            edits: { ...s.edits, [ref]: draft },
+            generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
+            draftWarnings: unsupported.length === 0 ? draftWarnings : { ...draftWarnings, [ref]: unsupported },
+          }, ref, draft, 'generated')
+        })
         return 'ok'
       }
       setHostError(hostErrorText(r.error))
@@ -1348,10 +1437,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   /** B4 eligibility: needs-input, labelled, nothing drafted/edited yet, not
    *  currently generating. Foreign rows are structurally absent from `main`. */
   const generateEligible = main.filter((r) =>
-    r.resolution.tier === 'needs_input'
-    // A keyed row is a fact. It is saved, never drafted, so it stays out of the
-    // batch exactly as it stays out of the per-row Generate button.
-    && r.resolution.key === null
+    // The same rows the per-row Generate button shows on: a Needs input Prose
+    // Field on a text Control. One click never drafts a fact about the user.
+    offersGeneration(r)
     && (r.field.label ?? '').trim() !== ''
     && (edits[r.ref] ?? '').trim() === ''
     && !generatedRefs.includes(r.ref)
@@ -1835,7 +1923,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                     )
                   : (
                     <>
-              {main.length > 0 && (
+              {listed.length > 0 && (
                 <section className="mt-4" data-jff-rows="1">
                   {(generateEligible.length > 0 || generateAll !== null) && (
                     <div className="mb-2" data-jff-generate-all="1">
@@ -1857,21 +1945,26 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                     </div>
                   )}
                   <ul className="m-0 grid list-none gap-2 p-0">
-                    {main.map((row) => (
-                      <FieldRow
-                        key={row.ref} row={row} edited={edits[row.ref] ?? null}
-                        onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
-                        onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
-                        pageValue={snapshot[row.ref] ?? null}
-                        generating={generatingRefs.has(row.ref)}
-                        filled={filledRefs.includes(row.ref)}
-                        acting={acting !== null && acting.ref === row.ref ? acting.action : null}
-                        locked={acting !== null}
-                        resumeTarget={row.ref === resumeTargetRef}
-                        resumeName={resumeName}
-                        onFillResume={onFillResume}
-                      />
-                    ))}
+                    {listed.map((entry) => {
+                      if (entry.kind === 'waiting') return <WaitingRow key={entry.ref} field={entry.field} />
+                      const { row } = entry
+                      return (
+                        <FieldRow
+                          key={row.ref} row={row} edited={edits[row.ref] ?? null}
+                          onEdit={onEdit} onAccept={onAccept} onGenerate={onGenerate} onFill={onFill}
+                          onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
+                          pageValue={snapshot[row.ref] ?? null}
+                          unsupportedClaims={draftWarnings[row.ref] ?? []}
+                          generating={generatingRefs.has(row.ref)}
+                          filled={filledRefs.includes(row.ref)}
+                          acting={acting !== null && acting.ref === row.ref ? acting.action : null}
+                          locked={acting !== null}
+                          resumeTarget={row.ref === resumeTargetRef}
+                          resumeName={resumeName}
+                          onFillResume={onFillResume}
+                        />
+                      )
+                    })}
                   </ul>
                 </section>
               )}
