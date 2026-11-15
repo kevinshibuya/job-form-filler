@@ -84,6 +84,15 @@ export const ResolutionSourceSchema = z.enum([
 ])
 export type ResolutionSource = z.infer<typeof ResolutionSourceSchema>
 
+/**
+ * What Mapping says a Field it matched to nothing asks for. A Prose Field asks
+ * for opinion, motivation or narrative, and is the only kind Generation drafts.
+ * A Personal-fact Field asks something true or false about the user, who
+ * answers it.
+ */
+export const FieldClassSchema = z.enum(['prose', 'personal_fact'])
+export type FieldClass = z.infer<typeof FieldClassSchema>
+
 export const ResolutionSchema = z.object({
   handle: FieldHandleSchema,
   tier: ResolutionTierSchema,
@@ -93,5 +102,11 @@ export const ResolutionSchema = z.object({
   answerId: z.number().int().nullable(),
   /** Machine-ish trace shown in the panel, e.g. "recognizer:email". */
   reason: z.string(),
+  /**
+   * Set only on a Field Mapping matched to neither a Known key nor a Saved
+   * answer. Absent everywhere else, and an absent label is read as
+   * `personal_fact`: a Field nobody labelled prose is the user's to answer.
+   */
+  fieldClass: FieldClassSchema.optional(),
 })
 export type Resolution = z.infer<typeof ResolutionSchema>
