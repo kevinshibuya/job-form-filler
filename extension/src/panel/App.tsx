@@ -1097,6 +1097,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const onScreen: ScanUiState = owesMapping
         ? { kind: 'matching', ...countsOf(out.fill.filled.length, first.settled), waiting: out.pending.length }
         : outcome
+      // Marked in flight BEFORE the waiting rows are written: a write to a
+      // background Session awaits the store, and a swap back to it in that
+      // window must not settle rows whose request is still out.
+      if (owesMapping) rt.mappingEpoch = out.epoch
       if (inScope(sc)) { lastOutcomeRef.current = onScreen; setScanStatus(onScreen) }
       // S4: the ONE projection. Everything ref-keyed dies with the page the scan
       // replaced; the label-keyed carry re-attaches onto whatever refs the new
@@ -1120,7 +1124,6 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (owesMapping) {
         const isCurrent = (): boolean =>
           mountedRef.current && alive(sc) && rt.scanSeq === seq && rt.epoch === out.epoch
-        rt.mappingEpoch = out.epoch
         void (async () => {
           const mapped = await runMapping({
             port, sendToTab: (frameId, message) => sendToTab(target, frameId, message), hostname, url, company: co,
