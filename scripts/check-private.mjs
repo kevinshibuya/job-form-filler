@@ -23,10 +23,9 @@ export const SKIP_PATHS = new Set(['package-lock.json'])
 
 /** Exact strings a captured third-party page legitimately carries. */
 export const ALLOWED_LITERALS = new Set([
-  // Greenhouse's own browser key and a Figma contact address, both served to
-  // every visitor of the public pages the greenhouse-apply fixtures came from.
+  // Greenhouse's own browser key, served to every visitor of its public
+  // application pages; earlier fixtures in this repo's history carry it.
   'AIzaSyBeoz4WOjOsy8ZJFIkkQBvL8BZQCzLplHQ',
-  'accommodations-ext@figma.com',
   'git@github.com',
   'noreply@github.com',
   'noreply@anthropic.com',

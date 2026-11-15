@@ -184,7 +184,7 @@ always passes through the user's hands before filling.
 
 **Company-specificity guard**: every saved answer is tagged `reusable` or
 `company_specific` at save time (panel suggests, user confirms). `company_specific`
-answers ("Why Figma?") never auto-fill or propose verbatim — they only seed the
+answers ("Why Acme?") never auto-fill or propose verbatim — they only seed the
 [Generate] draft as reference material.
 
 ## Data model (SQLite, one file on disk)
@@ -259,7 +259,7 @@ modes under a subscription if left generic:
 - **Host logic** (waterfall, DB, prompt building, schema validation, error taxonomy)
   is plain Node — unit tests without Chrome.
 - **Enumerator/filler** tested against captured real-form HTML fixtures — start with
-  job-finder's `e2e/fixtures/greenhouse-apply/` (Figma/Gusto/Lyft forms), grow the
+  job-finder's `e2e/fixtures/greenhouse-apply/` (three hosted employers' forms), grow the
   set from forms encountered in real use.
 - **Live smoke** = applying to a real job with the panel open (which is also just
   using the tool). Lesson from job-finder: fixture-green is not live-green — SPA
