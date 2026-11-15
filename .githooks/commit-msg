@@ -1,0 +1,3 @@
+#!/bin/sh
+# Refuses a commit message that carries personal data.
+exec node "$(git rev-parse --show-toplevel)/scripts/check-private.mjs" --message "$1"

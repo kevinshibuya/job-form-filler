@@ -199,6 +199,14 @@ flowchart LR
 
 **Per-ATS knowledge goes in code, not in learned rules.** The [v1 design](docs/specs/2026-07-27-job-form-filler-design.md) bet on one generic engine with no per-platform adapters. The [2026-09-03 spec](docs/specs/2026-09-03-per-ats-architecture-design.md) gives each ATS a module of its own, so a Greenhouse fix cannot regress Ashby and an unknown ATS still gets the generic path. Rules taught at runtime were rejected because Manifest V3 forbids a content script from loading new code. The first Ashby rule, written from a remembered screenshot, could have silently stopped Ashby from uploading a resume, so a rule now waits for a Capture of the real DOM. [ADR 0007](docs/adr/0007-per-ats-knowledge-lives-in-code.md)
 
+## Keeping personal data out
+
+The tool fills forms with real answers, and the repo is public, so the two never meet. Your profile, résumé and stored answers live in `~/.job-form-filler/`, outside the tree. Tests and screenshots use one invented person, Ada Lovelace (`ada@example.com`, `+1 555 0100`).
+
+`scripts/check-private.mjs` enforces it. `npm install` points git at `.githooks`, which run it before every commit and push, over each commit's added lines, message and author address. It blocks home-directory paths, addresses on real domains, credential-shaped strings, and any string listed in `~/.job-form-filler/private-strings.txt`, a denylist that stays on your machine: one string per line, your email, phone and anything else only you would recognise. CI runs the same rules without the denylist.
+
+A page saved from a real application becomes a fixture only through `node scripts/sanitize-capture.mjs <captured.html> <fixture.html>`, which empties the form and replaces what the guard would refuse.
+
 ## How it was made
 
 Each feature started as a spec in `docs/specs`, became a plan of tasks in `docs/plans`, and was built task by task by agents in Claude Code, with each task gated on its own tests. I reviewed every branch and ran manual passes on real application forms before merging. The working rules are in [CLAUDE.md](CLAUDE.md) and the decisions in [docs/adr](docs/adr).

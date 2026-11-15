@@ -1,0 +1,3 @@
+#!/bin/sh
+# Scans every commit a push would publish, not only the tip.
+exec node "$(git rev-parse --show-toplevel)/scripts/check-private.mjs" --pre-push "$1"
