@@ -21,6 +21,22 @@ export const GROUP_ATTR = 'data-jff-group'
 
 const NO_BINDING: LabelBinding = { text: null, source: 'none', element: null }
 
+/** An Option that reads as the user agreeing to or acknowledging something. */
+const AGREEMENT_RE = /\b(agree|accept|consent|acknowledg|certif|authori[sz]e|confirm)\w*|\b(terms|privacy (policy|notice))\b/i
+
+/**
+ * Consent boxes a page happens to put under one fieldset or [role=group]: no
+ * two share a name, and every Option reads as an agreement. They stay lone
+ * Consent checkboxes, so a consent is never stored or ticked again on another
+ * form. Boxes that share a name are a real multi-choice question whatever
+ * they say.
+ */
+function isConsentCluster(members: HTMLInputElement[]): boolean {
+  const names = members.map(nameOf).filter((n) => n !== '')
+  if (new Set(names).size < names.length) return false
+  return members.every((b) => AGREEMENT_RE.test(optionLabelOf(b)))
+}
+
 /** How far above a box the question may sit. Lever puts it six levels up. */
 const QUESTION_MAX_LEVELS = 8
 
@@ -144,7 +160,8 @@ function bucket<K>(boxes: HTMLInputElement[], keyOf: (b: HTMLInputElement) => K 
  * found only by climbing joins a box to a group that a name or a declared
  * label already formed (Lever's nameless "Custom" pronoun box), but never makes
  * a group out of lone boxes: two consent boxes under one heading stay two
- * Consent checkboxes.
+ * Consent checkboxes. So do consent boxes under one declared label
+ * (isConsentCluster).
  */
 export function groupCheckboxes(boxes: HTMLInputElement[]): Map<HTMLInputElement, CheckboxGroup> {
   const groups = new Groups(boxes)
@@ -160,7 +177,7 @@ export function groupCheckboxes(boxes: HTMLInputElement[]): Map<HTMLInputElement
 
   const out = new Map<HTMLInputElement, CheckboxGroup>()
   for (const members of groups.members(boxes).values()) {
-    if (members.length < 2) continue
+    if (members.length < 2 || isConsentCluster(members)) continue
     const group: CheckboxGroup = { boxes: members, binding: questionOf(members, declared, climbed) }
     for (const b of members) out.set(b, group)
   }

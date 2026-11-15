@@ -1136,7 +1136,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           const second = settleFill(mapped.resolutions, mapped.fill)
           const all = [...first.settled, ...second.settled]
           const settledOutcome: ScanUiState = mapped.llmError !== null
-            ? { kind: 'failed', reason: hostErrorText(mapped.llmError) }
+            ? { kind: 'failed', reason: hostErrorText(mapped.llmError), counts: countsOf(out.fill.filled.length + mapped.fill.filled.length, all) }
             : doneOutcome(out.fill.filled.length + mapped.fill.filled.length, all)
           const pendingRefs = new Set(out.pending.map(refOf))
           if (inScope(sc)) { lastOutcomeRef.current = settledOutcome; setScanStatus(settledOutcome) }

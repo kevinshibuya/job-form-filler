@@ -114,6 +114,46 @@ describe('Enumeration reports a checkbox group as one Field', () => {
     ])
   })
 
+  it('consent boxes under one fieldset legend stay lone checkboxes', () => {
+    const fields = scanHtml(`
+      <form><fieldset><legend>Before you submit</legend>
+        <label><input type="checkbox" name="consent[store]"> I consent to Acme storing my data</label>
+        <label><input type="checkbox" name="consent[marketing]"> I agree to receive marketing emails</label>
+      </fieldset></form>`)
+    expect(fields.map((f) => [f.kind, f.label])).toEqual([
+      ['checkbox', 'I consent to Acme storing my data'], ['checkbox', 'I agree to receive marketing emails'],
+    ])
+  })
+
+  it('consent boxes under one [role=group] label stay lone checkboxes', () => {
+    const fields = scanHtml(`
+      <form><div role="group" aria-label="Agreements">
+        <label><input type="checkbox" name="terms"> I accept the terms</label>
+        <label><input type="checkbox" name="privacy"> I have read the privacy policy</label>
+      </div></form>`)
+    expect(fields.map((f) => f.kind)).toEqual(['checkbox', 'checkbox'])
+  })
+
+  it('a declared group with one non-agreement Option is still one Field', () => {
+    const fields = scanHtml(`
+      <fieldset><legend>How may we reach you?</legend>
+        <label><input type="checkbox" name="by_email"> I agree to be contacted by email</label>
+        <label><input type="checkbox" name="by_phone"> Phone</label>
+      </fieldset>`)
+    expect(fields).toHaveLength(1)
+    expect(fields[0]!.kind).toBe('checkboxgroup')
+  })
+
+  it('agreement-worded boxes that share a name are still one Field', () => {
+    const fields = scanHtml(`
+      <fieldset><legend>Policies</legend>
+        <label><input type="checkbox" name="pol" value="a"> I accept the code of conduct</label>
+        <label><input type="checkbox" name="pol" value="b"> I accept the travel policy</label>
+      </fieldset>`)
+    expect(fields).toHaveLength(1)
+    expect(fields[0]!.kind).toBe('checkboxgroup')
+  })
+
   it('two nameless consent boxes under one heading stay two lone checkboxes', () => {
     const fields = scanHtml(`
       <form><h3>Agreements</h3>
