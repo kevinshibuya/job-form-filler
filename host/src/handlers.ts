@@ -18,7 +18,7 @@ import { readProjectNotes } from './llm/projects.js'
 import { reviewDraft } from './llm/reviewDraft.js'
 import { runFactsExtract } from './llm/factsExtract.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
-import { resolveFields, resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
+import { resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
 import { log } from './log.js'
 import type { ResolvedModels } from './llm/models.js'
 
@@ -105,9 +105,6 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         setAnswerBank(db, shaped)
         return ok(req.requestId, getAnswerBank(db))
       }
-
-      case 'resolve':
-        return ok(req.requestId, await resolveFields(waterfallDeps(deps), req.params))
 
       // No model: the host never hands this step a runner.
       case 'resolve.first':

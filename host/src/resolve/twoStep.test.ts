@@ -36,7 +36,7 @@ const params = (fields: EnumField[]) => ({
 type FirstResult = { epoch: number; resolutions: Resolution[]; pending: FieldHandle[] }
 type MappingResult = { epoch: number; resolutions: Resolution[]; llmError: { kind: string; message: string } | null }
 
-async function send<T>(method: 'resolve' | 'resolve.first' | 'resolve.mapping', fields: EnumField[], requestId: string = crypto.randomUUID()): Promise<T> {
+async function send<T>(method: 'resolve.first' | 'resolve.mapping', fields: EnumField[], requestId: string = crypto.randomUUID()): Promise<T> {
   const r: HostResponse = await handleRequest(deps, { requestId, method, params: params(fields) } as HostRequest)
   if (!r.ok) throw new Error(`${method} failed: ${r.error.kind} ${r.error.message}`)
   return r.result as T
@@ -130,7 +130,7 @@ describe('resolve.first', () => {
 })
 
 describe('resolve.mapping', () => {
-  it('returns for the pending Fields the Resolutions resolve gives them', async () => {
+  it('returns a Resolution for each pending Field it carries, in the order it carries them', async () => {
     const reuseId = upsertAnswer(db, {
       questionNormalized: 'years of react', questionRaw: 'Years of React?', answer: '6 years', language: 'en', reusability: 'reusable',
     })
@@ -151,9 +151,7 @@ describe('resolve.mapping', () => {
     expect(mapped.resolutions[1]).toMatchObject({ handle: handleOf(pending[1]!), tier: 'proposed', source: 'llm_reuse', value: '6 years', answerId: reuseId })
     expect(mapped.resolutions[2]).toMatchObject({ handle: handleOf(pending[2]!), tier: 'needs_input', value: null, reason: 'custom' })
     expect(mapped.llmError).toBeNull()
-
-    const whole = await send<MappingResult>('resolve', pending)
-    expect(mapped).toEqual(whole)
+    expect(mapped.epoch).toBe(5)
   })
 
   it('answers on a host that never served a resolve.first', async () => {
@@ -217,8 +215,8 @@ describe('the replay log and the two requests of one Scan', () => {
   })
 })
 
-describe('resolve runs the two steps one after the other', () => {
-  it('returns the first step’s Resolutions and Mapping’s, in Field order', async () => {
+describe('the two requests of one Scan resolve every Field', () => {
+  it('give every Field exactly one Resolution: the first step’s, or Mapping’s for a pending Field', async () => {
     upsertAnswer(db, {
       questionNormalized: 'how many years of react do you have', questionRaw: 'How many years of React do you have?',
       answer: '6 years', language: 'en', reusability: 'reusable',
@@ -228,15 +226,19 @@ describe('resolve runs the two steps one after the other', () => {
       { ref: '0:13', decision: 'custom', knownKey: null, answerId: null },
     ])
     const fields = scan()
-    const whole = await send<MappingResult>('resolve', fields)
-
     const first = await send<FirstResult>('resolve.first', fields)
     const pending = fields.filter((f) => first.pending.some((h) => h.fid === f.fid))
     const mapped = await send<MappingResult>('resolve.mapping', pending)
 
-    const byFid = new Map([...first.resolutions, ...mapped.resolutions].map((x) => [x.handle.fid, x]))
-    expect(whole.resolutions).toEqual(fields.map((f) => byFid.get(f.fid)))
-    expect(whole.llmError).toEqual(mapped.llmError)
-    expect(whole.epoch).toBe(5)
+    const all = [...first.resolutions, ...mapped.resolutions]
+    expect(all.map((x) => x.handle).sort((a, b) => a.fid - b.fid)).toEqual(fields.map(handleOf))
+    expect(mapped.resolutions.map((x) => x.handle)).toEqual(first.pending)
+    const byFid = new Map(all.map((x) => [x.handle.fid, x]))
+    expect(byFid.get(7)).toMatchObject({ tier: 'auto', source: 'saved_answer', value: '6 years' })
+    expect(byFid.get(12)).toMatchObject({ tier: 'proposed', source: 'llm_key', key: 'salary', value: 'USD 100k' })
+    expect(byFid.get(13)).toMatchObject({ tier: 'needs_input', reason: 'custom' })
+    expect(mapped.llmError).toBeNull()
+    expect([first.epoch, mapped.epoch]).toEqual([5, 5])
+    expect(codexComplete).toHaveBeenCalledTimes(1)
   })
 })
