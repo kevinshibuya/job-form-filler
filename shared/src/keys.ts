@@ -19,6 +19,22 @@ export type ProfileKey = (typeof PROFILE_KEYS)[number]
 export type AnswerBankKey = (typeof ANSWER_BANK_KEYS)[number]
 export type FieldKey = ProfileKey | AnswerBankKey
 
+/**
+ * What kind of thing a Known key holds. The type decides which Controls the key
+ * may answer (host/src/resolve/controlKinds.ts). `place` has no key yet; it is
+ * listed so the rule can say what a place answers.
+ */
+export const VALUE_TYPES = ['text', 'link', 'phone', 'yes_no', 'place'] as const
+export type ValueType = (typeof VALUE_TYPES)[number]
+
+export const VALUE_TYPE_OF: Readonly<Record<FieldKey, ValueType>> = {
+  firstName: 'text', lastName: 'text', fullName: 'text', preferredName: 'text',
+  email: 'text', phone: 'phone', location: 'text',
+  linkedin: 'link', github: 'link', portfolio: 'link',
+  workAuth: 'yes_no', sponsorshipNeeded: 'yes_no', relocate: 'yes_no',
+  salary: 'text', notice: 'text', earliestStart: 'text', remotePreference: 'text', pronouns: 'text',
+}
+
 const FIELD_KEY_SET: ReadonlySet<string> = new Set<string>(FIELD_KEYS)
 const PROFILE_KEY_SET: ReadonlySet<string> = new Set<string>(PROFILE_KEYS)
 
