@@ -25,6 +25,7 @@ describe('ScanStatus', () => {
     [{ kind: 'empty', frames: 7 }, '⚠ Scanned 7 frames, found no form fields. Open the application form, then Scan again.'],
     [{ kind: 'captcha' }, '⚠ CAPTCHA active — nothing was filled.'],
     [{ kind: 'failed', reason: 'boom' }, '✕ Scan failed: boom'],
+    [{ kind: 'failed', reason: 'boom', counts: { filled: 2, alreadyOnPage: 0, proposed: 1, needsInput: 3 } }, '2 filled, 0 already on page, 1 proposed, 3 need input · ✕ Matching failed: boom'],
     [{ kind: 'action_failed', reason: 'Fill failed: frame gone' }, '✕ Fill failed: frame gone'],
     [{ kind: 'superseded' }, 'Page changed — finishing the old scan before rescanning…'],
   ])('renders the spec copy for %j', (status, copy) => {

@@ -16,7 +16,9 @@ export type ScanUiState =
   | ({ kind: 'matching'; waiting: number } & ScanCounts)
   | { kind: 'empty'; frames: number }
   | { kind: 'captcha' }
-  | { kind: 'failed'; reason: string }
+  // `counts` is set when Mapping failed after the first step filled: those
+  // fills stay on the page, so the line keeps counting them.
+  | { kind: 'failed'; reason: string; counts?: ScanCounts }
   | { kind: 'action_failed'; reason: string }
   // A scan the page outlived. Its resolve cannot be cancelled (host-protocol
   // change, deferred), so the panel says why it is waiting instead of going blank.
@@ -36,7 +38,9 @@ function copyFor(s: ScanUiState): string {
     case 'matching': return `${countsCopy(s)}, ${s.waiting} still being matched…`
     case 'empty': return `⚠ Scanned ${s.frames} frames, found no form fields. Open the application form, then Scan again.`
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'
-    case 'failed': return `✕ Scan failed: ${s.reason}`
+    case 'failed': return s.counts === undefined
+      ? `✕ Scan failed: ${s.reason}`
+      : `${countsCopy(s.counts)} · ✕ Matching failed: ${s.reason}`
     case 'action_failed': return `✕ ${s.reason}`
     case 'superseded': return 'Page changed — finishing the old scan before rescanning…'
   }

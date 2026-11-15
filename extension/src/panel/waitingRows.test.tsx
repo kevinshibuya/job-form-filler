@@ -112,6 +112,8 @@ describe('rows still being matched say so', () => {
     }
     expect(document.querySelector('[data-jff-banner="error"]')?.textContent).toMatch(/rate limit/i)
     expect(statusText()).not.toMatch(/still being matched/)
+    // The first step's fills are still on the page, and the line still counts them.
+    expect(statusText()).toMatch(/^2 filled, .* · ✕ Matching failed: /)
   })
 
   it('does the same for a reply that carries a model error', async () => {
