@@ -240,6 +240,39 @@ describe('FieldRow — kind-aware editors (A9)', () => {
     expect(document.querySelector('[data-jff-editor="options"]')).toBeNull()
   })
 
+  // PR #36 final pass: an accepted row still asked to be accepted, and a row
+  // its own Fill had filled kept the Needs input accent.
+  it.each(['option-pick', 'salary-check', 'missing-language:en', 'missing-language:pt'])(
+    'the %s hint asks for an action: shown while Proposed, gone once accepted', (reason) => {
+      const f = field({ kind: 'combobox', options: ['Yes, I am open', 'No'] })
+      const { unmount } = render(<ul><FieldRow row={row(f, resolution({ tier: 'proposed', reason }))} {...props} /></ul>)
+      expect(document.querySelector('[data-jff-hint]')).not.toBeNull()
+      unmount()
+      render(<ul><FieldRow row={row(f, resolution({ tier: 'auto', reason }))} {...props} /></ul>)
+      expect(document.querySelector('[data-jff-hint]')).toBeNull()
+    })
+
+  it('a standing note stays on a decided row: no country named, and outside the application frame', () => {
+    const { unmount } = render(<ul><FieldRow row={row(field(), resolution({ tier: 'auto', reason: 'no-country-named' }))} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-hint]')).not.toBeNull()
+    unmount()
+    render(<ul><FieldRow row={row(field(), resolution({ tier: 'needs_input', reason: 'other-frame', value: 'x' }))} {...props} filled /></ul>)
+    expect(document.querySelector('[data-jff-hint]')).not.toBeNull()
+  })
+
+  it('a Needs input row its own Fill put on the page takes the filled accent, keeps its tier and its Fill button', () => {
+    const r = row(field({ kind: 'combobox', options: ['Yes – now', 'No'] }), resolution({ tier: 'needs_input', value: 'Yes – now', reason: 'no-matching-option' }))
+    const { unmount } = render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('li')!.className).toContain('border-l-amber-500')
+    unmount()
+    render(<ul><FieldRow row={r} {...props} filled /></ul>)
+    const li = document.querySelector('li')!
+    expect(li.className).toContain('border-l-green-600')
+    expect(li.className).not.toContain('border-l-amber-500')
+    expect(li.getAttribute('data-jff-tier')).toBe('needs_input')
+    expect(screen.getByRole('button', { name: 'Fill' })).toBeTruthy()
+  })
+
   it('a dropdown with more than 12 Options, or a filled row, lists no buttons', () => {
     const many = Array.from({ length: 13 }, (_, i) => `Option ${i}`)
     const r = row(field({ kind: 'combobox', options: many }), resolution({ tier: 'needs_input', value: null, source: null }))

@@ -57,6 +57,19 @@ describe('a Fill that misses after a Scan', () => {
     expect(host.page[0]).toBe('No')
   })
 
+  // PR #36 final pass: a row filled once kept reading "on the page" after a
+  // second Fill missed.
+  it('a second Fill that misses takes back "on the page" and shows the miss again', async () => {
+    await mountScanned()
+    fireEvent.change(screen.getByLabelText(RELOCATE), { target: { value: 'No' } })
+    fireEvent.click(within(row(RELOCATE)).getByRole('button', { name: 'Fill' }))
+    expect(await within(row(RELOCATE)).findByText('on the page')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(RELOCATE), { target: { value: 'Perhaps' } })
+    fireEvent.click(within(row(RELOCATE)).getByRole('button', { name: 'Fill' }))
+    await waitFor(() => { expect(within(row(RELOCATE)).queryByText('on the page')).toBeNull() })
+    expect(hintOf(RELOCATE)).toBe(NO_MATCH_PICK_HINT)
+  })
+
   it('a Saved answer of prose on a dropdown whose Options were not known at Scan ends as Needs input with the picker, and the page holds nothing', async () => {
     host.firstValues = { 0: PROSE }
     await mountScanned()

@@ -1394,6 +1394,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       ...s,
       fields: withReadOptions(s.fields, { filled: [], failed: [{ handle: row.resolution.handle, options: miss.options }] }),
       resolutions: s.resolutions.map((r) => (refOf(r.handle) === row.ref ? { ...r, tier: 'needs_input' as const, reason: miss.reason } : r)),
+      // A miss takes back an earlier "on the page": the page no longer holds what the row says.
+      filledRefs: s.filledRefs.filter((x) => x !== row.ref),
     }))
     if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `${action} failed: ${miss.reason}` })
   }

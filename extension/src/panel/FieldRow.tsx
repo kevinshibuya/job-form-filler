@@ -160,6 +160,9 @@ function DraftWarning({ claims }: { claims: string[] }) {
   )
 }
 
+/** Hints that describe the answer, not ask for an action: they stay on a decided row. */
+const STANDING_NOTES: ReadonlySet<string> = new Set(['no-country-named', 'other-frame'])
+
 /** A picker lists its Options as buttons up to this many; past it, the datalist alone. */
 const OPTION_LIST_MAX = 12
 
@@ -202,12 +205,18 @@ export function FieldRow(p: FieldRowProps) {
   const factValue = (p.pageValue ?? edited ?? resolution.value ?? '').trim()
   const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
     && !answersPerCountry(resolution.key!, factValue) && !ENTERED_IN_EDITOR.has(VALUE_TYPE_OF[resolution.key!])
-  const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
+  // What the row shows: a Needs input row its own Fill put on the page reads
+  // filled (badge, accent, hints, Options). `data-jff-tier` and the actions
+  // stay the Resolution's.
+  const shownTier: ResolutionTier = filled && resolution.tier === 'needs_input' ? 'auto' : resolution.tier
+  const rowClass = `${ROW_BASE} ${TIER_ACCENT[shownTier]}`
   // A Needs input row that is not a Prose Field asks about the user, unless it
   // already says why it is theirs (a failed Mapping, a failed Fill).
   const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
-  // A value this row's Fill put on the page supersedes the miss it reported.
-  const hint = filled ? undefined
+  // A hint that asks for an action shows only while the row is still to be
+  // decided; a standing note about the answer stays on a decided row.
+  const decided = shownTier === 'auto'
+  const hint = decided && !STANDING_NOTES.has(resolution.reason) ? undefined
     : resolution.reason === 'no-matching-option' && field.options.length > 0
     ? NO_MATCH_PICK_HINT
     : REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
@@ -235,7 +244,7 @@ export function FieldRow(p: FieldRowProps) {
           data-jff-tier-badge="1"
           className={`rounded-full border border-neutral-200 px-1.5 text-[11px] dark:border-neutral-700 ${MUTED}`}
         >
-          {filled && resolution.tier === 'needs_input' ? TIER_BADGE.auto : TIER_BADGE[resolution.tier]}
+          {TIER_BADGE[shownTier]}
         </span>
         {p.foreign === true && (
           <span data-jff-frame-badge="1" className={`rounded-full border border-amber-300 px-1.5 text-[11px] dark:border-amber-600 ${MUTED}`}>
@@ -301,7 +310,7 @@ export function FieldRow(p: FieldRowProps) {
           </datalist>
           {/* A datalist looks like a text box until hovered: a row still to be
               decided lists a few Options as the segmented editor's buttons. */}
-          {resolution.tier !== 'auto' && !filled && field.options.length <= OPTION_LIST_MAX && (
+          {shownTier !== 'auto' && field.options.length <= OPTION_LIST_MAX && (
             <div className="mt-1 flex flex-col gap-1" role="group" aria-label="Options" data-jff-editor="options">
               {field.options.map((opt) => {
                 const selected = norm(value) === norm(opt)
