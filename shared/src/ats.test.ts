@@ -105,12 +105,20 @@ describe('the list of ATSes: tracking parameters for the Canonical URL', () => {
 })
 
 describe('ATS modules', () => {
-  it.each(['greenhouse', 'ashby', 'lever'] as const)('%s has a module with no Job posting text or junk rule', (id) => {
+  it.each(['greenhouse', 'ashby', 'lever'] as const)('%s has a module with no junk rule', (id) => {
     const mod = atsModule(id)
     expect(mod).not.toBe(GENERIC_MODULE)
     expect(mod.id).toBe(id)
-    expect(mod.jobText).toBeUndefined()
     expect(mod.junkRule).toBeUndefined()
+  })
+
+  // #52: Lever's Job posting text sits on the posting's page. No module names
+  // text on the form's own page.
+  it('gives Lever a Job posting page rule and no text on the form page, and Greenhouse and Ashby no Job posting text', () => {
+    expect(atsModule('lever').jobText?.postingPage).toBeTypeOf('function')
+    expect(atsModule('lever').jobText?.onFormPage).toBeUndefined()
+    expect(atsModule('greenhouse').jobText).toBeUndefined()
+    expect(atsModule('ashby').jobText).toBeUndefined()
   })
 
   it('gives Lever a label rule, and Greenhouse and Ashby none', () => {
