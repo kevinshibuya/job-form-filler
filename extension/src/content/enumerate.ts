@@ -1,4 +1,4 @@
-import type { EnumField, WidgetKind } from '@jff/shared'
+import type { AtsModule, EnumField, WidgetKind } from '@jff/shared'
 import {
   ariaGroupLabel, countUnreachableWidgets, descriptionFor, groupLabelFor, isSoleControl, kindOf,
   labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements, type LabelBinding,
@@ -85,6 +85,8 @@ export interface EnumerateOptions {
   measure?: MeasureFn
   /** Injected in Task 14; defaults to "nothing is demographic" so this task stands alone. */
   isDemographic?: (el: Element) => boolean
+  /** The frame's ATS module (spec #41). Absent means the generic module. */
+  atsModule?: AtsModule
 }
 
 const FID_ATTR = 'data-jff-fid'
@@ -235,7 +237,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
 
       // groupLabelFor, NOT labelFor: the wrapping <label> of the first radio is
       // that OPTION's text ("Remote"), never the group's ("Work model").
-      const binding = groupLabelFor(el)
+      const binding = groupLabelFor(el, opts.atsModule)
       const choice = selfHidden(m) ? detectChoice(el) : null
       const group: EnumField = choice !== null
         ? {
@@ -298,7 +300,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
     if (kind === 'checkbox' && selfHidden(m)) {
       const choice = detectChoice(el)
       if (choice !== null) {
-        const binding = labelFor(el)
+        const binding = labelFor(el, opts.atsModule)
         el.setAttribute(FID_ATTR, String(fid))
         fields.push({
           frameId: -1, fid, epoch: opts.epoch,
@@ -323,7 +325,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       options = comboboxOptions(el)
     }
 
-    const binding = labelFor(el)
+    const binding = labelFor(el, opts.atsModule)
     el.setAttribute(FID_ATTR, String(fid))
     fields.push({
       frameId: -1, fid, epoch: opts.epoch,

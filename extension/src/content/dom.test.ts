@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import type { AtsModule } from '@jff/shared'
 import { walkElements, countUnreachableWidgets, labelFor, groupLabelFor, optionLabelOf, requiredFromBinding, descriptionFor, DESCRIPTION_MAX_CHARS } from './dom'
 import { ASHBY_COMBOBOX, ASHBY_YESNO_EN, SHARED_WRAPPER_FIRST_LAST, ASHBY_RADIO_FIELDSET, ASHBY_CONSENT_SINGLE, ASHBY_ESSAY_WITH_DESCRIPTION, ASHBY_COMBOBOX_WITH_DESCRIPTION, ASHBY_REQUIRED_BY_CLASS, ASHBY_OPTIONAL_FIELD, STAR_REQUIRED_FIELD } from './fixtures/ashby'
 
@@ -307,5 +308,46 @@ describe('descriptionFor', () => {
     document.body.innerHTML = '<div><div class="description">Nearby text</div><input id="nb" aria-label="Q"></div>'
     const el = document.getElementById('nb')!
     expect(descriptionFor(el, labelFor(el))).toBeNull()
+  })
+})
+
+describe('an ATS module\'s label rule', () => {
+  // A rule that answers for anything inside a `.question` block, from its `.q`.
+  const mod: AtsModule = {
+    id: 'lever',
+    labelRule: (control) => {
+      const block = control.closest('.question')?.querySelector('.q') ?? null
+      return block === null ? null : { text: block.textContent ?? '', element: block }
+    },
+  }
+
+  it('is tried first, before an explicit label, and records that the label came from the module', () => {
+    document.body.innerHTML = '<div class="question"><div class="q">The question</div><label for="x">Polluted</label><input id="x"></div>'
+    const control = document.getElementById('x')!
+    expect(labelFor(control, mod)).toEqual({ text: 'The question', source: 'module', element: document.querySelector('.q') })
+    expect(labelFor(control)).toMatchObject({ text: 'Polluted', source: 'explicit' })
+  })
+
+  it('answers for a radio group\'s question, while each Option keeps its own text', () => {
+    document.body.innerHTML = `<div class="question"><div class="q">Work model</div><fieldset><legend>Polluted</legend>
+      <label><input type="radio" name="wm" id="r1"> Remote</label></fieldset></div>`
+    const radio = document.getElementById('r1')!
+    expect(groupLabelFor(radio, mod)).toMatchObject({ text: 'Work model', source: 'module' })
+    expect(optionLabelOf(radio)).toBe('Remote')
+  })
+
+  it('is never asked for a checkbox, which keeps its own text', () => {
+    document.body.innerHTML = '<div class="question"><div class="q">Consent</div><label><input type="checkbox" id="c"> Email me</label></div>'
+    expect(labelFor(document.getElementById('c')!, mod)).toMatchObject({ text: 'Email me', source: 'wrapping' })
+  })
+
+  it('lets the generic order run when it finds nothing', () => {
+    document.body.innerHTML = '<label for="x">Email</label><input id="x">'
+    expect(labelFor(document.getElementById('x')!, mod)).toMatchObject({ text: 'Email', source: 'explicit' })
+  })
+
+  it('changes nothing for a module with no rule', () => {
+    document.body.innerHTML = '<div class="question"><div class="q">The question</div><input id="x" placeholder="Type your response"></div>'
+    expect(labelFor(document.getElementById('x')!, { id: 'greenhouse' })).toMatchObject({ text: 'Type your response', source: 'placeholder' })
   })
 })

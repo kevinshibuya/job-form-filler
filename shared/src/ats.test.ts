@@ -90,13 +90,18 @@ describe('the list of ATSes: tracking parameters for the Canonical URL', () => {
 })
 
 describe('ATS modules', () => {
-  it.each(['greenhouse', 'ashby', 'lever'] as const)('%s has a module with no label, Job posting text or junk rule', (id) => {
+  it.each(['greenhouse', 'ashby', 'lever'] as const)('%s has a module with no Job posting text or junk rule', (id) => {
     const mod = atsModule(id)
     expect(mod).not.toBe(GENERIC_MODULE)
     expect(mod.id).toBe(id)
-    expect(mod.labelRule).toBeUndefined()
     expect(mod.jobText).toBeUndefined()
     expect(mod.junkRule).toBeUndefined()
+  })
+
+  it('gives Lever a label rule, and Greenhouse and Ashby none', () => {
+    expect(atsModule('lever').labelRule).toBeTypeOf('function')
+    expect(atsModule('greenhouse').labelRule).toBeUndefined()
+    expect(atsModule('ashby').labelRule).toBeUndefined()
   })
 
   it('gives Ashby and Lever their empty-state hint, word for word, and Greenhouse none', () => {

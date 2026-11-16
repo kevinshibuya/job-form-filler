@@ -1,4 +1,4 @@
-import { ContentMessageSchema, FillReportSchema, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
+import { atsModule, ContentMessageSchema, FillReportSchema, findAts, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
 import { fillFields, fillResume } from './fill'
@@ -34,6 +34,9 @@ async function handle(raw: unknown): Promise<unknown> {
       root: document,
       epoch: msg.epoch,
       isDemographic: (el) => isDemographic(el),
+      // Each frame finds its own ATS from its own hostname (spec #41): an
+      // embedded Lever form in a company's page is Lever's, the page is not.
+      atsModule: atsModule(findAts(location.hostname)?.id),
     })
     // Validate our OWN reply. This is the consumer ScanResultSchema was written for
     // (Task 2): enumerator drift that emits a malformed field would otherwise reach
