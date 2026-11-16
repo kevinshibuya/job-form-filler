@@ -255,11 +255,11 @@ describe('with the Lever module, every Lever question carries its own label', ()
 })
 
 describe('the non-Lever fixtures', () => {
-  const OWN_MODULE: Record<string, string> = { 'based-in-yes-no': 'ashby' }
+  const OWN_MODULE: Record<string, string> = { 'based-in-yes-no': 'ashby', 'recruitee-file-inputs': 'recruitee' }
   const others = REAL_FIXTURES.filter((name) => !name.startsWith('lever-'))
 
-  it('are the six Greenhouse pages and the Ashby page', () => {
-    expect(others).toHaveLength(7)
+  it('are the six Greenhouse pages, the Ashby page and the Recruitee page', () => {
+    expect(others).toHaveLength(8)
   })
 
   it.each(others)('%s keeps every label with its own module', (name) => {

@@ -53,8 +53,9 @@ describe('keepField', () => {
   })
 
   it('keeps a hidden file input whose only label was an upload wording, though it now has no label (#46)', () => {
-    expect(keepField(field({ kind: 'file', visible: false, label: null, uploadWordingOnly: true }))).toBe(true)
-    expect(keepField(field({ kind: 'text', visible: false, label: null, uploadWordingOnly: true }))).toBe(false)
+    // Greenhouse's "Attach" pickers carry an id; #55 keeps only a picker that says what it is for.
+    expect(keepField(field({ kind: 'file', visible: false, label: null, idAttr: 'resume', uploadWordingOnly: true }))).toBe(true)
+    expect(keepField(field({ kind: 'text', visible: false, label: null, idAttr: 'resume', uploadWordingOnly: true }))).toBe(false)
   })
 
   it('drops a hidden picker with no label, no name and no id whose only file signal is its accept (#54)', () => {
@@ -64,8 +65,19 @@ describe('keepField', () => {
     expect(keepField({ ...autofill, name: 'attachment' })).toBe(true)
     expect(keepField({ ...autofill, required: true })).toBe(true)
     expect(keepField({ ...autofill, label: 'Resume' })).toBe(true)
-    expect(keepField({ ...autofill, uploadWordingOnly: true })).toBe(true)
+    // #55: upload wording alone does not keep it either.
+    expect(keepField({ ...autofill, uploadWordingOnly: true })).toBe(false)
     expect(keepField({ ...autofill, visible: true })).toBe(true)
+  })
+
+  it('drops a hidden picker with no name, no id and no required mark whose only label source was its upload button\'s words (#55)', () => {
+    const recorder = field({ kind: 'file', visible: false, label: null, uploadWordingOnly: true, accept: '.mp4,.mov,.webm' })
+    expect(keepField(recorder)).toBe(false)
+    expect(keepField({ ...recorder, idAttr: 'resume' })).toBe(true)
+    expect(keepField({ ...recorder, name: 'portfolio' })).toBe(true)
+    expect(keepField({ ...recorder, required: true })).toBe(true)
+    expect(keepField({ ...recorder, label: 'Video answer' })).toBe(true)
+    expect(keepField({ ...recorder, visible: true })).toBe(true)
   })
 
   it('keeps a hidden unlabelled cover-letter input on its file signals, though it is no resume target (#37)', () => {
@@ -94,7 +106,10 @@ describe('the junk filter over the real-page fixtures (#46)', () => {
   }
 
   // Pinned from a run on the code before the generic label rules. #54 drops
-  // Ashby's autofill upload (fid 0) and nothing else on any fixture.
+  // Ashby's autofill upload (fid 0) and nothing else on any fixture. #55 drops
+  // the five pickers of Recruitee's video recorder (fids 5 to 9) and nothing
+  // else on any fixture; fid 10, the recorder question's aria-hidden text box,
+  // was dropped before it.
   it.each([
     ['based-in-yes-no', 'ashby', [0], [0]],
     ['greenhouse-accommodation', 'greenhouse', [9, 11, 15, 17], [9, 11, 15, 17]],
@@ -106,6 +121,7 @@ describe('the junk filter over the real-page fixtures (#46)', () => {
     ['lever-marketing-consent', 'lever', [20], []],
     ['lever-pronoun-group', 'lever', [], []],
     ['lever-source-group', 'lever', [], []],
+    ['recruitee-file-inputs', 'recruitee', [5, 6, 7, 8, 9, 10], [5, 6, 7, 8, 9, 10]],
   ] as const)('%s: drops the same Fields as before, with the generic module and with %s\'s', (name, ats, genericDrops, moduleDrops) => {
     for (const [mod, drops] of [[undefined, genericDrops], [atsModule(ats), moduleDrops]] as const) {
       loadRealFixture(name)

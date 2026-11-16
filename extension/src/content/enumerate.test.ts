@@ -493,6 +493,7 @@ describe('generic label rules over the real-page fixtures (#46)', () => {
       'based-in-yes-no': 12, 'greenhouse-accommodation': 18, 'greenhouse-hosted-a': 18, 'greenhouse-hosted-b': 33,
       'greenhouse-hosted-resume-attached': 26, 'greenhouse-hosted-resume-uploading': 26, 'greenhouse-self-id': 43,
       'lever-marketing-consent': 33, 'lever-pronoun-group': 22, 'lever-source-group': 18,
+      'recruitee-file-inputs': 17,
     })
   })
 })

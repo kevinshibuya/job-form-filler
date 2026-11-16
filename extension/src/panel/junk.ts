@@ -27,23 +27,41 @@ export function keepField(f: EnumField): boolean {
   // #46: a picker whose only label was its upload button's words ("Attach")
   // now has no label, and is still the row it was while it had one.
   // #54: an anonymous picker (no label, no name, no id) is not kept on its
-  // accept alone, see fileSignalKeeps.
-  if (f.kind === 'file' && (f.label !== null || f.uploadWordingOnly === true || fileSignalKeeps(f))) return true
+  // accept alone, see fileSignalKeeps. #55: nor on its upload wording alone.
+  if (f.kind === 'file' && (f.label !== null || uploadWordingKeeps(f) || fileSignalKeeps(f))) return true
   return false
 }
 
 /**
- * #54: a hidden, unlabelled file picker's file signals keep it only when it has
- * something to say what it is for: a name, an id or a required mark. Its accept
- * alone says only which files it takes, and every upload on a page takes
- * documents. Ashby's "Autofill from resume" picker has nothing but its accept,
- * while its real Resume upload beside it carries an id and a required mark,
- * so this rule is generic and needs no Ashby module.
+ * #54: a hidden, unlabelled file picker is kept on what it carries only when it
+ * has something to say what it is for: a name, an id or a required mark.
+ */
+function saysWhatItIsFor(f: EnumField): boolean {
+  return f.name !== null || f.idAttr !== null || f.required
+}
+
+/**
+ * #54: a hidden, unlabelled file picker's file signals keep it only when it
+ * says what it is for. Its accept alone says only which files it takes, and
+ * every upload on a page takes documents. Ashby's "Autofill from resume"
+ * picker has nothing but its accept, while its real Resume upload beside it
+ * carries an id and a required mark, so this rule is generic and needs no
+ * Ashby module.
  */
 function fileSignalKeeps(f: EnumField): boolean {
-  const anonymous = f.name === null && f.idAttr === null
-  if (anonymous && !f.required) return false
-  return fileSignalScore(f) > 0
+  return saysWhatItIsFor(f) && fileSignalScore(f) > 0
+}
+
+/**
+ * #46 keeps a hidden picker that lost its only label to its button's words
+ * ("Attach"), as it was kept while the wording was its label. #55: only when
+ * it says what it is for. "Upload a file" says only that it is an upload.
+ * Recruitee's video recorder draws hidden pickers with that aria-label and
+ * nothing else, while its CV upload carries a name, an id and a required mark,
+ * so this rule is generic and needs no Recruitee module.
+ */
+function uploadWordingKeeps(f: EnumField): boolean {
+  return f.uploadWordingOnly === true && saysWhatItIsFor(f)
 }
 
 export function dropJunk(fields: EnumField[]): EnumField[] {

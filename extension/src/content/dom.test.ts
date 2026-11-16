@@ -417,6 +417,19 @@ describe('a file picker takes its group\'s label, never its button\'s words (#46
     expect(labelFor(document.getElementById('f')!).uploadWordingOnly).toBeUndefined()
   })
 
+  it('a fieldset that holds a file picker and other Controls gives the picker its legend by no route (#55)', () => {
+    // Recruitee draws a video recorder's pickers inside the fieldset that holds
+    // every custom question; its legend ("Questions") names none of them.
+    document.body.innerHTML = '<fieldset><legend>Questions</legend>'
+      + '<label for="q">Why Acme?</label><input id="q">'
+      + '<input id="v" type="file"><input id="w" type="file" aria-label="Upload a file"><input id="t"></fieldset>'
+    expect(labelFor(document.getElementById('v')!)).toMatchObject({ text: null, source: 'none' })
+    expect(labelFor(document.getElementById('v')!).uploadWordingOnly).toBeUndefined()
+    expect(labelFor(document.getElementById('w')!)).toMatchObject({ text: null, source: 'none', uploadWordingOnly: true })
+    // The rule is for file pickers only: a text box in the same fieldset still takes the legend.
+    expect(labelFor(document.getElementById('t')!)).toMatchObject({ text: 'Questions', source: 'legend' })
+  })
+
   it('a text box whose label is the word "Attach" keeps it: the wording rule is for file pickers only', () => {
     document.body.innerHTML = '<label for="t">Attach</label><input id="t">'
     expect(labelFor(document.getElementById('t')!)).toMatchObject({ text: 'Attach', source: 'explicit' })

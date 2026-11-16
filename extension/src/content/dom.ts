@@ -305,7 +305,8 @@ function placeholderFor(el: Element): LabelBinding | null {
  *  a question by itself. A checkbox keeps its own text, so the rule is never
  *  asked for one. A file picker asks its group first, and passes over a
  *  source that offers only its upload button's words; with none left it has
- *  no label (#46). A placeholder is the last source for every Control. */
+ *  no label (#46). It never takes the legend of a fieldset it shares with
+ *  other Controls (#55). A placeholder is the last source for every Control. */
 export function labelFor(el: Element, mod?: AtsModule): LabelBinding {
   const kind = kindOf(el)
   const sources: ReadonlyArray<() => LabelBinding | null> = [
@@ -315,7 +316,10 @@ export function labelFor(el: Element, mod?: AtsModule): LabelBinding {
     () => ariaLabelFor(el),
     () => ariaLabelledByFor(el),
     () => wrappingLabelFor(el),
-    () => legendFor(el),
+    // #55: a file picker takes its fieldset's legend only through its group,
+    // when it is the fieldset's only Control. A legend over many Controls
+    // names none of the pickers in it.
+    () => (kind === 'file' ? null : legendFor(el)),
     () => danglingLabelFor(el),
     () => nameForLabelFor(el),
     () => climbLabelFor(el),

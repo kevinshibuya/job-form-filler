@@ -127,6 +127,7 @@ describe('resume target on real-page fixtures', () => {
     ['lever-marketing-consent', 'lever', 0],
     ['lever-pronoun-group', 'lever', 0],
     ['lever-source-group', 'lever', 0],
+    ['recruitee-file-inputs', 'recruitee', 3],
   ] as const)('%s: the Resume target is the same Field as before, with the generic module and with %s\'s', (name, ats, target) => {
     for (const mod of [undefined, atsModule(ats)]) {
       loadRealFixture(name)

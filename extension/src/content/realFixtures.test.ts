@@ -239,6 +239,24 @@ describe('each real-page fixture shows its review finding', () => {
     expect(labelOf(select)).toContain('Male')
   })
 
+  it('recruitee-file-inputs: five file pickers with no name, no id and no label of their own sit in the fieldset of custom questions, beside a labelled CV upload', () => {
+    loadRealFixture('recruitee-file-inputs')
+    const pickers = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+    const anonymous = pickers.filter((p) => !p.name && !p.id && !p.required)
+    expect(anonymous).toHaveLength(5)
+    const questions = anonymous[0]!.closest('fieldset')!
+    expect(text(questions.querySelector('legend'))).toBe('Questions')
+    for (const picker of anonymous) {
+      expect(picker.closest('fieldset')).toBe(questions)
+      expect(['', 'Upload a file']).toContain(labelOf(picker))
+    }
+    expect(questions.querySelectorAll(CONTROL).length).toBeGreaterThan(anonymous.length)
+    const cv = pickers.find((p) => p.name === 'candidate.cv')!
+    expect(cv.required).toBe(true)
+    expect(labelOf(cv)).toMatch(/^CV or resume/)
+    expect(cv.closest('fieldset')).toBeNull()
+  })
+
   it('greenhouse-accommodation: a Control whose label asks about accommodation', () => {
     loadRealFixture('greenhouse-accommodation')
     const controls = Array.from(document.querySelectorAll(CONTROL))
