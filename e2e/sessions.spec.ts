@@ -146,9 +146,13 @@ test('the onboarding gate blocks scanning until the real setup flow completes (O
     await expect(panel.locator('[data-jff-ob-finish]')).toBeEnabled()
     await panel.locator('[data-jff-ob-finish]').click()
 
-    // The gate's one sanctioned exit: the wall goes, the auto-scan fires without
-    // a second click, and it SETTLES (plain-form.html has fields and no captcha).
+    // The gate's one sanctioned exit: the wall goes and Scan unlocks, but
+    // Finish scans nothing (the displayed tab may be any page). The Scan click
+    // starts the scan, and it SETTLES (plain-form.html has fields and no captcha).
     await expect(panel.locator('[data-jff-onboarding]')).toHaveCount(0, { timeout: 60_000 })
+    await expect(panel.locator('[data-jff-rows]')).toHaveCount(0)
+    await expect(panel.getByRole('button', { name: 'Scan' })).toBeEnabled({ timeout: 60_000 })
+    await panel.getByRole('button', { name: 'Scan' }).click()
     await expect(panel.locator('[data-jff-status]'))
       .toHaveAttribute('data-jff-status', 'done', { timeout: 60_000 })
 
