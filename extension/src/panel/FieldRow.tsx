@@ -1,9 +1,10 @@
-import type { EnumField, ResolutionTier } from '@jff/shared'
-import { norm } from '@jff/shared'
+import type { EnumField, FieldKey, ResolutionTier, ValueType } from '@jff/shared'
+import { VALUE_TYPE_OF, norm, storedValue, yesNoOf } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
 import { scoreResumeField } from './resumeTarget'
+import { OPTION_PICK, OPTION_PICK_FAILED } from './optionPick'
 import { MAPPING_LOST } from './scan'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from './ui'
 
@@ -21,10 +22,51 @@ export const REASON_HINT: Record<string, string> = {
   'other-frame': 'Outside the application frame. Fill puts your value there; nothing is generated or saved for it.',
   'combobox-no-listbox': 'Open this dropdown on the page yourself and pick the value.',
   // Widget-agnostic on purpose: this reason is shared by combobox, select and
-  // radio-group no-match failures (review fix, minors item 16).
+  // radio-group no-match failures (review fix, minors item 16). A row whose
+  // Options are known says NO_MATCH_PICK_HINT instead.
   'no-matching-option': 'No option matches this value. Try different text.',
+  // The verified commit (spec #6, D1 and D2): the menu stayed open or the page
+  // dropped the Option, and a menu another Control left open would not close.
+  'no-commit': 'The page did not keep the option. Pick it on the page yourself.',
+  'listbox-left-open': 'Another dropdown on the page stayed open. Close it, then Fill again.',
+  // The country selector beside a phone box (#30): the phone box is left as it was.
+  'phone-country-no-match': 'No country beside the phone box matches your number. Pick it on the page, then type the number.',
+  'phone-country-not-set': 'The page did not keep the country beside the phone box. Pick it on the page, then type the number.',
+  'phone-country-unknown': 'Your number\'s country code is not one the tool knows. Pick the country on the page, then type the number.',
   [MAPPING_LOST]: 'Matching did not finish. Answer this yourself, or Scan again.',
+  // Ticket #29: questions answered for the country they name.
+  'names-region': 'The question names a region, not countries. Answer it yourself.',
+  'no-country-named': 'The question names no country. This is the answer for your own country.',
+  // Ticket #31: the model picked one of the page's Options after a Fill missed (ADR 0008).
+  [OPTION_PICK]: 'The model picked this option for your stored answer. Accept it or pick another.',
+  [OPTION_PICK_FAILED]: 'None of the page\'s options matches this value, and the model pick failed. Pick one.',
+  // Ticket #33: a salary is always Proposed, and a per-language Value offered
+  // in the other language says which one is missing.
+  'salary-check': 'Check the figure against this role before it goes on the page.',
+  'missing-language:en': 'You have no English answer stored. This is your Portuguese one: translate it before you accept.',
+  'missing-language:pt': 'You have no Portuguese answer stored. This is your English one: translate it before you accept.',
 }
+
+/**
+ * Keys whose Value is entered in the Profile editor only: a salary's amount,
+ * currency and period, and a text per language. What a row holds is the
+ * Value in words for one page, not the stored form, so a row never offers to
+ * store it.
+ */
+const ENTERED_IN_EDITOR: ReadonlySet<ValueType> = new Set(['amount', 'per_language'])
+
+/**
+ * A yes or a no answered for the country a question names is not the Value of
+ * its key: `workAuth` is a list of countries, `sponsorshipNeeded` stores
+ * nothing, and a residence question's yes is not a country. Such a row never
+ * offers to store what it holds.
+ */
+function answersPerCountry(key: FieldKey, value: string): boolean {
+  return key === 'workAuth' || key === 'sponsorshipNeeded' || (VALUE_TYPE_OF[key] === 'place' && yesNoOf(value) !== null)
+}
+
+/** A Fill that found no matching Option on a row whose Options are known: the picker is right below. */
+export const NO_MATCH_PICK_HINT = 'None of the page\'s options matches this value. Pick one.'
 
 /** Under a Personal-fact row: why it offers no Generation. */
 export const PERSONAL_FACT_HINT = 'A question about you. Answer it yourself.'
@@ -118,6 +160,12 @@ function DraftWarning({ claims }: { claims: string[] }) {
   )
 }
 
+/** Hints that describe the answer, not ask for an action: they stay on a decided row. */
+const STANDING_NOTES: ReadonlySet<string> = new Set(['no-country-named', 'other-frame'])
+
+/** A picker lists its Options as buttons up to this many; past it, the datalist alone. */
+const OPTION_LIST_MAX = 12
+
 type EditorKind = 'segmented' | 'picker' | 'combobox-empty' | 'file' | 'textarea' | 'checkboxes' | 'consent'
 
 function editorKindOf(row: Row): EditorKind {
@@ -127,7 +175,7 @@ function editorKindOf(row: Row): EditorKind {
   if (field.kind === 'checkbox') return 'consent'
   if ((field.kind === 'choice' || field.kind === 'radiogroup')
     && field.options.length > 0 && field.options.length <= SEGMENTED_MAX_OPTIONS) return 'segmented'
-  if (field.options.length > 0) return 'picker' // >5-option sets, selects, harvested comboboxes
+  if (field.options.length > 0) return 'picker' // >5-option sets, selects, dropdowns a Fill has read
   if (field.kind === 'combobox') return 'combobox-empty'
   return 'textarea'
 }
@@ -148,17 +196,30 @@ export function FieldRow(p: FieldRowProps) {
   const backedByStore = resolution.source === 'profile'
     || resolution.source === 'answer_bank'
     || resolution.source === 'llm_key'
-  const alreadyStored = resolution.key !== null && (p.facts[resolution.key] ?? '').trim() !== ''
-  const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
+  // Old text of a typed key is no Value (shared/src/typedValues.ts), so the
+  // row still offers to store one.
+  const alreadyStored = resolution.key !== null && storedValue(resolution.key, (p.facts[resolution.key] ?? '').trim()) !== null
   // The value a save would actually store: page beats panel edit beats engine,
   // the same precedence buildSaveItems and App.onSaveFact use. Reading `value`
   // here would disable the button for every row the user answered on the page.
   const factValue = (p.pageValue ?? edited ?? resolution.value ?? '').trim()
-  const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
+  const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
+    && !answersPerCountry(resolution.key!, factValue) && !ENTERED_IN_EDITOR.has(VALUE_TYPE_OF[resolution.key!])
+  // What the row shows: a Needs input row its own Fill put on the page reads
+  // filled (badge, accent, hints, Options). `data-jff-tier` and the actions
+  // stay the Resolution's.
+  const shownTier: ResolutionTier = filled && resolution.tier === 'needs_input' ? 'auto' : resolution.tier
+  const rowClass = `${ROW_BASE} ${TIER_ACCENT[shownTier]}`
   // A Needs input row that is not a Prose Field asks about the user, unless it
   // already says why it is theirs (a failed Mapping, a failed Fill).
   const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
-  const hint = REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
+  // A hint that asks for an action shows only while the row is still to be
+  // decided; a standing note about the answer stays on a decided row.
+  const decided = shownTier === 'auto'
+  const hint = decided && !STANDING_NOTES.has(resolution.reason) ? undefined
+    : resolution.reason === 'no-matching-option' && field.options.length > 0
+    ? NO_MATCH_PICK_HINT
+    : REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
 
   if (resolution.tier === 'skipped') {
     return (
@@ -183,7 +244,7 @@ export function FieldRow(p: FieldRowProps) {
           data-jff-tier-badge="1"
           className={`rounded-full border border-neutral-200 px-1.5 text-[11px] dark:border-neutral-700 ${MUTED}`}
         >
-          {TIER_BADGE[resolution.tier]}
+          {TIER_BADGE[shownTier]}
         </span>
         {p.foreign === true && (
           <span data-jff-frame-badge="1" className={`rounded-full border border-amber-300 px-1.5 text-[11px] dark:border-amber-600 ${MUTED}`}>
@@ -202,6 +263,12 @@ export function FieldRow(p: FieldRowProps) {
       )}
 
       {claims.length > 0 && <DraftWarning claims={claims} />}
+
+      {resolution.standsFor !== undefined && resolution.tier !== 'needs_input' && (
+        <p data-jff-stands-for="1" className={`mt-0.5 line-clamp-3 text-[12px] ${MUTED}`}>
+          Stands for your stored answer: <span className="font-medium">{resolution.standsFor}</span>
+        </p>
+      )}
 
       {editor === 'checkboxes' && (
         <CheckboxGroupEditor
@@ -241,6 +308,24 @@ export function FieldRow(p: FieldRowProps) {
           <datalist id={`opts-${ref}`}>
             {field.options.map((o) => <option key={o} value={o} />)}
           </datalist>
+          {/* A datalist looks like a text box until hovered: a row still to be
+              decided lists a few Options as the segmented editor's buttons. */}
+          {shownTier !== 'auto' && field.options.length <= OPTION_LIST_MAX && (
+            <div className="mt-1 flex flex-col gap-1" role="group" aria-label="Options" data-jff-editor="options">
+              {field.options.map((opt) => {
+                const selected = norm(value) === norm(opt)
+                return (
+                  <button
+                    key={opt} type="button" aria-pressed={selected}
+                    className={`${BTN} w-full text-left ${selected ? 'border-blue-600 font-semibold text-blue-700 dark:border-blue-400 dark:text-blue-300' : ''}`}
+                    onClick={() => onEdit(ref, opt)}
+                  >
+                    {opt}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </>
       )}
 

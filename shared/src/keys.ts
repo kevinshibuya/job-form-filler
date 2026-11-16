@@ -5,7 +5,8 @@
 
 export const PROFILE_KEYS = [
   'firstName', 'lastName', 'fullName', 'preferredName',
-  'email', 'phone', 'location', 'linkedin', 'github', 'portfolio',
+  'email', 'phone', 'location', 'city', 'region', 'country',
+  'linkedin', 'github', 'portfolio', 'currentCompany', 'currentTitle',
 ] as const
 
 export const ANSWER_BANK_KEYS = [
@@ -21,18 +22,26 @@ export type FieldKey = ProfileKey | AnswerBankKey
 
 /**
  * What kind of thing a Known key holds. The type decides which Controls the key
- * may answer (host/src/resolve/controlKinds.ts). `place` has no key yet; it is
- * listed so the rule can say what a place answers.
+ * may answer (host/src/resolve/controlKinds.ts). A `place` is a city, a region
+ * or a country; `location` is not one: it stays the one-line display text for a
+ * free-text location box. A `place_list` is a list of countries: `workAuth`,
+ * which answers yes/no questions about the countries a label names.
+ * `sponsorshipNeeded` is a yes or a no derived from `workAuth`, never stored.
+ * An `amount` is a salary: an amount with its currency and period. A
+ * `per_language` text holds one Value for English and one for Portuguese.
  */
-export const VALUE_TYPES = ['text', 'link', 'phone', 'yes_no', 'place'] as const
+export const VALUE_TYPES = ['text', 'link', 'phone', 'yes_no', 'place', 'place_list', 'amount', 'per_language'] as const
 export type ValueType = (typeof VALUE_TYPES)[number]
 
 export const VALUE_TYPE_OF: Readonly<Record<FieldKey, ValueType>> = {
   firstName: 'text', lastName: 'text', fullName: 'text', preferredName: 'text',
   email: 'text', phone: 'phone', location: 'text',
+  city: 'place', region: 'place', country: 'place',
   linkedin: 'link', github: 'link', portfolio: 'link',
-  workAuth: 'yes_no', sponsorshipNeeded: 'yes_no', relocate: 'yes_no',
-  salary: 'text', notice: 'text', earliestStart: 'text', remotePreference: 'text', pronouns: 'text',
+  currentCompany: 'text', currentTitle: 'text',
+  workAuth: 'place_list', sponsorshipNeeded: 'yes_no', relocate: 'yes_no',
+  salary: 'amount', notice: 'per_language', earliestStart: 'per_language', remotePreference: 'per_language',
+  pronouns: 'text',
 }
 
 const FIELD_KEY_SET: ReadonlySet<string> = new Set<string>(FIELD_KEYS)

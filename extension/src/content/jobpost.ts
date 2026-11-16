@@ -12,8 +12,11 @@ const HEURISTIC_TIERS = [
   'article, main, [role="main"]',
 ]
 
+/** What a reader sees of an element: never the source of a style, script, noscript or template. */
 function textOf(el: Element): string {
-  return (el.textContent ?? '').replace(/\s+/g, ' ').trim()
+  const copy = el.cloneNode(true) as Element
+  for (const n of Array.from(copy.querySelectorAll('script, style, noscript, template'))) n.remove()
+  return (copy.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
 
 export function captureJobText(

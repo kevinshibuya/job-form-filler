@@ -32,3 +32,51 @@ export function sameSite(a: string, b: string): boolean {
   const da = registrableDomain(a)
   return da !== '' && da === registrableDomain(b)
 }
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
+const UUID_WHOLE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The posting ids a URL carries: runs of four or more digits and UUIDs in its
+ * path, and query values that are wholly one of those. A port, a mixed token
+ * (an SSO code) or a slug is no id.
+ */
+function postingIds(url: string): Set<string> {
+  let u: URL
+  try { u = new URL(url) } catch { return new Set() }
+  let path = u.pathname
+  try { path = decodeURIComponent(path) } catch { /* the raw path still names its ids */ }
+  const out = new Set<string>()
+  for (const m of path.match(UUID) ?? []) out.add(m.toLowerCase())
+  for (const m of path.replace(UUID, ' ').match(/\d{4,}/g) ?? []) out.add(m)
+  for (const v of u.searchParams.values()) {
+    const t = v.trim()
+    if (/^\d{4,}$/.test(t) || UUID_WHOLE.test(t)) out.add(t.toLowerCase())
+  }
+  return out
+}
+
+/**
+ * One application: the same site (sameSite), and not a different posting. A
+ * multi-tenant ATS host is one registrable domain for every company, so two
+ * URLs that both carry posting ids and share none are two postings. A step
+ * that keeps the id (a confirmation page), or a URL with no id (a board list,
+ * a wizard step), stays the same application.
+ */
+export function sameApplication(url: string, startUrl: string): boolean {
+  if (!sameSite(url, startUrl)) return false
+  const a = postingIds(url)
+  const b = postingIds(startUrl)
+  if (a.size === 0 || b.size === 0) return true
+  for (const id of a) if (b.has(id)) return true
+  return false
+}
+
+/** Where an application started, as a person reads it: the host and path ("jobs.acme.com/apply"), or '' when unparseable. */
+export function placeOf(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.hostname}${u.pathname.replace(/\/+$/, '')}`
+  } catch { return '' }
+}
+

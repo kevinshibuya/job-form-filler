@@ -15,9 +15,9 @@ const input = {
 
 describe('buildProfileSummary', () => {
   it('renders only the keys that have values, as label: value lines', () => {
-    const out = buildProfileSummary({ firstName: 'Ada', email: 'k@x.com', github: '' }, { salary: 'R$ 18.000/mo' })
+    const out = buildProfileSummary({ firstName: 'Ada', email: 'k@x.com', github: '' }, { salary: '{"amount":18000,"currency":"BRL","period":"month"}' })
     expect(out).toContain('firstName: Ada')
-    expect(out).toContain('salary: R$ 18.000/mo')
+    expect(out).toContain('salary: 18000 BRL per month')
     expect(out).not.toContain('github')
   })
 })

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { isProfileKey } from '@jff/shared'
+import { isProfileKey, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow, WaitingRow } from './FieldRow'
@@ -12,13 +12,15 @@ import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
+import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
+import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget } from './resumeTarget'
-import { MAPPING_LOST, runMapping, runScan, ScanError, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
 import { createSessionStore, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
-import { registrableDomain, sameSite } from './site'
+import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
@@ -146,10 +148,18 @@ const swallow = (): undefined => undefined
  *
  * Both Resolution steps settle through here, each over its own Fill.
  */
+/** What putting one value on the page came to: a hit, or a miss with the
+ *  page's reason, either with the Options a choice Fill read. */
+type PageFill =
+  | { ok: true; committed: string | null; options?: string[] }
+  | { ok: false; reason: string; options?: string[] }
+
 function settleFill(resolutions: Resolution[], fill: CollectedFill): { settled: Resolution[]; committedEdits: Record<string, string> } {
   const failedFillReason = new Map(fill.failed.map((f) => [refOf(f.handle), f.reason]))
+  // A row read with no Value (ticket #34) put nothing on the page: it stays as
+  // Resolution left it, and its Options reach the Field through withReadOptions.
   const settled = resolutions.map((r) =>
-    failedFillReason.has(refOf(r.handle))
+    failedFillReason.has(refOf(r.handle)) && r.value !== null
       ? { ...r, tier: 'needs_input' as const, reason: failedFillReason.get(refOf(r.handle))! }
       : r)
   const sentValue = new Map(settled.map((r) => [refOf(r.handle), r.value]))
@@ -167,6 +177,20 @@ function settleFill(resolutions: Resolution[], fill: CollectedFill): { settled: 
   return { settled, committedEdits }
 }
 
+/**
+ * The model picks a batched Fill owes (ADR 0008): one per miss on a Field
+ * whose stored Value is identified (optionPick.pickOwed).
+ */
+function picksOwed(resolutions: Resolution[], fields: EnumField[], fill: CollectedFill): PickRequest[] {
+  const byRef = new Map(resolutions.map((r) => [refOf(r.handle), r]))
+  const fieldOf = new Map(fields.map((f) => [refOf(f), f]))
+  return fill.failed.flatMap((miss) => {
+    const r = byRef.get(refOf(miss.handle))
+    const owed = r === undefined ? null : pickOwed(r, fieldOf.get(refOf(miss.handle)), miss)
+    return owed === null ? [] : [owed]
+  })
+}
+
 /** A9/B3 status semantics: `filled` = PAGE-ACCEPTED batched fills, straight
  *  from the frames' JFF_FILL reports — never inferred from tiers, so a failed
  *  batch can never inflate it. `already on page` = page-sourced values the
@@ -180,6 +204,21 @@ function countsOf(filled: number, settled: Resolution[]): ScanCounts {
     needsInput: settled.filter((r) => r.tier === 'needs_input').length,
   }
 }
+/**
+ * A status line whose Proposed and Needs input counts describe the rows as
+ * they stand now: a model pick turns a Needs input row Proposed after the
+ * Scan's step has settled (ADR 0008). `filled` stays the Fill reports' count.
+ */
+function withRowCounts(o: ScanUiState, rows: Resolution[], moreFilled = 0): ScanUiState {
+  const proposed = rows.filter((r) => r.tier === 'proposed').length
+  const needsInput = rows.filter((r) => r.tier === 'needs_input').length
+  if (o.kind === 'done' || o.kind === 'matching') return { ...o, filled: o.filled + moreFilled, proposed, needsInput }
+  if (o.kind === 'failed' && o.counts !== undefined) {
+    return { ...o, counts: { ...o.counts, filled: o.counts.filled + moreFilled, proposed, needsInput } }
+  }
+  return o
+}
+
 const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ kind: 'done', ...countsOf(filled, settled) })
 
 /** Everything a scan produced. A navigation makes ALL of it describe a page that
@@ -231,6 +270,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // The GLOBAL single-flight latch: tab switching must never multiply the paid
   // `claude -p` resolves.
   const scanningRef = useRef(false)
+  /** The tab the running scan is for; null while none runs. */
+  const scanTargetRef = useRef<number | null>(null)
   // S7: re-scans the latch could not run yet, oldest first. Membership is the
   // ORDER; `pendingRescan` on the runtime is the validity bit.
   const rescanQueueRef = useRef<number[]>([])
@@ -258,6 +299,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [hostError, setHostError] = useState<string | null>(null)
   const [booted, setBooted] = useState(false)
   const [scanNonce, setScanNonce] = useState(0)
+  /** The onboarding wall was shown: the first scan effect after Finish scans nothing. */
+  const wallShownRef = useRef(false)
   const [scanning, setScanning] = useState(false)
   const [view, setView] = useState<'session' | 'editor' | 'applications'>('session')
   const [facts, setFacts] = useState<Record<string, string>>({})
@@ -629,7 +672,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (s === null) return null
       if (ev.frameId !== 0 && ev.frameId !== s.election?.frameId) return null
       lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() })
-      const same = ev.url === '' || s.site === '' || sameSite(ev.url, s.startUrl)
+      const same = ev.url === '' || s.site === '' || sameApplication(ev.url, s.startUrl)
       if (!same) {
         if (s.parked) return null
         rt.gen = nextGen()
@@ -654,11 +697,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
     const record = (): void => { lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() }) }
 
-    // Lifecycle table: a session is created lazily on a Scan click OR a
-    // navigation. A brand-new one has `site === ''`, so the empty-start exception
-    // below classifies this nav as same-site and the re-scan captures the start
-    // url — exactly the path a never-scanned tab needs.
-    const s = sessionRef.current ?? newSession(ev.tabId)
+    // Lifecycle table: a session starts only on the user's act (a Scan click)
+    // and then follows its tab. A tab with no session ignores its navigations,
+    // as a background tab does: a new tab's first commit, or the next posting
+    // after Discard, waits for Scan instead of scanning a page not yet there.
+    // The one exception is a scan already running for this tab that has not
+    // yet made its session: the navigation belongs to that Scan, and the new
+    // page is re-scanned as it would be on a session's own tab.
+    const s = sessionRef.current
+      ?? (scanningRef.current && scanTargetRef.current === ev.tabId ? newSession(ev.tabId) : null)
+    if (s === null) return
     // S5 classification: a wizard step is the TOP frame or the ELECTED frame.
     // Any other subframe is page furniture (ads, chat widgets, payment iframes)
     // and must not touch the session.
@@ -670,7 +718,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // change — it must not park, unpark or rewrite `site`. A session that never
     // scanned (`site === ''`) has nothing to compare against, so the nav is
     // same-site and the next scan captures the start url.
-    const same = ev.url === '' || s.site === '' || sameSite(ev.url, s.startUrl)
+    const same = ev.url === '' || s.site === '' || sameApplication(ev.url, s.startUrl)
 
     if (!same) {
       // Idempotent: a second hop deeper into the same detour stays parked.
@@ -932,6 +980,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // Busy state and re-entry guard flip TOGETHER, before any await: between them
     // the scan is already committed while the button would still read 'Scan'.
     scanningRef.current = true
+    scanTargetRef.current = target
     setScanning(true)
     // B8: at most ONE [data-jff-applied] node ever renders. Clearing the
     // transient post-mark confirmation HERE closes the post-mark → Scan →
@@ -967,6 +1016,20 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // The session exists BEFORE the applied.check (ordering rule 2b): a badge
       // hit needs a row to land in, or A4's primary fresh-tab scenario writes the
       // badge into a session that does not exist yet and never renders it.
+      // A page off the web (a new tab, chrome://, a file) is never a posting,
+      // and a session minted for it would park on the real posting's load.
+      if (existing === null && !/^https?:/i.test(url)) {
+        if (inScope(sc)) setScanStatus(null)
+        return
+      }
+      // A tab that moved to another application while the panel was closed
+      // (navigations are heard only while it is open) parks, as a navigation
+      // there would have: its session is not this page's.
+      if (existing !== null && existing.startUrl !== '' && url !== '' && !sameApplication(url, existing.startUrl)) {
+        await applyToSession(target, sc.gen, (s) => ({ ...s, parked: true }))
+        if (inScope(sc)) setScanStatus(null)
+        return
+      }
       if (existing === null) {
         // A2: the FIRST scanned page of this application is the posting URL
         // applied.mark records — wizard step 2's URL is not the posting.
@@ -1111,7 +1174,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // The background settle runs the SAME function inside store.mutate — a
       // second implementation would be a second copy of the never-guess rules.
       await applyToSession(target, sc.gen, (s) => ({
-        ...projectAnswers(s, out.fields, first.settled, first.committedEdits),
+        // The Options the first step's Fill read: a dropdown it opened now offers them.
+        ...projectAnswers(s, withReadOptions(out.fields, out.fill), first.settled, first.committedEdits),
         waiting: owesMapping ? out.pending.map(refOf) : [],
         election: out.election,
         unreachable: out.unreachableWidgets,
@@ -1121,6 +1185,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         lastOutcome: onScreen,
       }))
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
+      const pickStillCurrent = (): boolean => mountedRef.current && alive(sc) && rt.epoch === out.epoch
+      runPicks(target, sc.gen, picksOwed(out.resolutions, out.fields, out.fill), pickStillCurrent)
       // The second step runs OUTSIDE the scan latch: it is not awaited here, so
       // the latch frees as soon as this scan's first step has settled, and a
       // newer Scan starts without waiting on Mapping.
@@ -1142,11 +1208,23 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           if (inScope(sc)) { lastOutcomeRef.current = settledOutcome; setScanStatus(settledOutcome) }
           // Merged onto the rows as they stand now: what the user typed into a
           // first-step row while Mapping ran is still in `edits`, untouched.
-          await applyToSession(target, sc.gen, (s) => (s.epoch !== out.epoch ? s : {
-            ...mergeMapping(s, pendingRefs, second.settled, second.committedEdits),
-            frameReports: [...s.frameReports, ...mapped.frameReports],
-            lastOutcome: settledOutcome,
-          }))
+          // Counted over the rows as they stand: a model pick that landed on a
+          // first-step row while Mapping ran made it Proposed.
+          const recounted: { outcome: ScanUiState | null } = { outcome: null }
+          await applyToSession(target, sc.gen, (s) => {
+            if (s.epoch !== out.epoch) return s
+            const merged = mergeMapping(s, pendingRefs, second.settled, second.committedEdits)
+            recounted.outcome = withRowCounts(settledOutcome, merged.resolutions)
+            return {
+              ...merged,
+              fields: withReadOptions(merged.fields, mapped.fill),
+              frameReports: [...s.frameReports, ...mapped.frameReports],
+              lastOutcome: recounted.outcome,
+            }
+          })
+          const shownAfterMapping = recounted.outcome
+          if (shownAfterMapping !== null && inScope(sc)) { lastOutcomeRef.current = shownAfterMapping; setScanStatus(shownAfterMapping) }
+          runPicks(target, sc.gen, picksOwed(mapped.resolutions, out.pending, mapped.fill), isCurrent)
           if (mapped.llmError !== null && inScope(sc)) setHostError(hostErrorText(mapped.llmError))
         })().catch(swallow).finally(() => {
           if (rt.mappingEpoch === out.epoch) rt.mappingEpoch = null
@@ -1189,6 +1267,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       await applyToSession(target, sc.gen, (s) => ({ ...settleWaiting(s, MAPPING_LOST), lastOutcome: outcome, frameReports: reports }))
     } finally {
       scanningRef.current = false
+      scanTargetRef.current = null
       if (mountedRef.current) {
         setScanning(false)
         // The latch is free: hand it to the oldest queued re-scan, in ANY
@@ -1260,36 +1339,104 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // O3: a profile PROVEN incomplete renders OnboardingView instead of scan UI
     // — no scan may fire. 'unknown' scans anyway: a dead host must never brick
     // an existing user (they see the normal panel plus the host banner).
-    if (completeness === 'incomplete') return
+    if (completeness === 'incomplete') { wallShownRef.current = true; return }
+    // Finish leaves the wall for whatever tab is displayed, which may be any
+    // page: the first scan after it waits for the Scan click.
+    if (wallShownRef.current) { wallShownRef.current = false; setScanStatus(null); return }
     void onScan()
   }, [booted, scanNonce, gateOpen, completeness])
 
   /** Put one value on the page. Shared by Accept and Fill; what they additionally
    *  CONFIRM is the only difference between them. THROWS if the relay or the
-   *  frame refused the fill — callers must not confirm anything on a throw.
-   *  Returns the page-accepted canonical text when it differs from what was
-   *  sent (B1c: 'bra' commits 'Brazil'), else null. */
-  const fillOne = async (target: number, row: Row, value: string): Promise<string | null> => {
-    if (value === '') return null
+   *  frame refused the message as a whole — callers must not confirm anything
+   *  on a throw. A field the page refused comes back as a miss with its reason.
+   *  Either outcome carries the Options a choice Fill read on the page. A hit's
+   *  `committed` is the page-accepted canonical text when it differs from what
+   *  was sent (B1c: 'bra' commits 'Brazil'), else null. */
+  const fillOne = async (target: number, row: Row, value: string): Promise<PageFill> => {
+    if (value === '') return { ok: true, committed: null }
     const { replies } = await sendToTab(target, row.field.frameId, {
-      type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }],
+      // The row's candidate words go with its own Value only; an edited Value
+      // is matched by its text (fillEntry).
+      type: 'JFF_FILL', epoch: row.field.epoch, fills: [fillEntry(row.resolution, value)],
     })
     const p = replies[0]?.payload as { ok?: boolean; error?: string; fill?: FillReport } | undefined
     if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the fill')
+    const isMine = (h: FillReport['filled'][number]['handle']): boolean =>
+      h.frameId === row.resolution.handle.frameId && h.fid === row.resolution.handle.fid
+    const optionsOf = (o: string[] | undefined): { options?: string[] } => (o === undefined ? {} : { options: o })
     // An `ok` ENVELOPE is not a filled field: the content script answers ok:true
     // with a per-field `failed` list (no-matching-option, element-not-found,
     // click-rejected, unsupported-widget). Confirming on that is how a row got
-    // marked "on the page" while the page never took the value.
+    // marked "on the page" while the page never took the value. One fill was
+    // sent, so any failure listed is this row's.
     const failed = p.fill?.failed ?? []
-    if (failed.length > 0) throw new Error(failed[0]!.reason)
+    if (failed.length > 0) {
+      const miss = failed.find((f) => isMine(f.handle)) ?? failed[0]!
+      return { ok: false, reason: miss.reason, ...optionsOf(miss.options) }
+    }
     // Codex-review hardening: an ok envelope whose report mentions this fill
     // in NEITHER list is not a success — confirming on it is the "marked on
     // the page while the page never took the value" bug in a new coat.
-    const mine = p.fill?.filled.find((f) =>
-      f.handle.frameId === row.resolution.handle.frameId && f.handle.fid === row.resolution.handle.fid) ?? null
+    const mine = p.fill?.filled.find((f) => isMine(f.handle)) ?? null
     if (mine === null) throw new Error('fill unreported')
-    return mine.committed
+    return { ok: true, committed: mine.committed, ...optionsOf(mine.options) }
   }
+
+  /**
+   * A Fill the page refused never leaves its row as it was: the row becomes
+   * Needs input with the page's reason, and the Options the Fill read join the
+   * Field, so the row offers them as a picker. The status line names the
+   * failed action too.
+   */
+  const settleMiss = async (sc: { target: number; gen: number }, row: Row, action: 'Accept' | 'Fill', miss: Extract<PageFill, { ok: false }>): Promise<void> => {
+    await applyToSession(sc.target, sc.gen, (s) => ({
+      ...s,
+      fields: withReadOptions(s.fields, { filled: [], failed: [{ handle: row.resolution.handle, options: miss.options }] }),
+      resolutions: s.resolutions.map((r) => (refOf(r.handle) === row.ref ? { ...r, tier: 'needs_input' as const, reason: miss.reason } : r)),
+      // A miss takes back an earlier "on the page": the page no longer holds what the row says.
+      filledRefs: s.filledRefs.filter((x) => x !== row.ref),
+    }))
+    if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `${action} failed: ${miss.reason}` })
+  }
+
+  /**
+   * The model picks a Fill's misses owe (ADR 0008), each landing on its row
+   * when it answers: Proposed with the Option, unchanged on none, or a message
+   * that the pick failed. Not awaited by a Scan: its rows already show the
+   * miss and the picker while the model runs. A pick whose Scan is no longer
+   * current lands nowhere.
+   */
+  const runPicks = (target: number, gen: number, owed: PickRequest[], stillCurrent: () => boolean): void => {
+    for (const req of owed) {
+      void (async () => {
+        const outcome = await requestPick(portRef.current, req)
+        if (!stillCurrent()) return
+        await landPickOn({ target, gen }, req, outcome)
+      })().catch(swallow)
+    }
+  }
+
+  /** One pick's outcome onto its row, and the status line's counts with it. */
+  const landPickOn = async (sc: { target: number; gen: number }, req: PickRequest, outcome: PickOutcome): Promise<void> => {
+    // A box, not a `let`: the write happens inside the mutate callback.
+    const recounted: { outcome: ScanUiState | null } = { outcome: null }
+    await applyToSession(sc.target, sc.gen, (s) => {
+      const next = landPick(s, req, outcome)
+      if (next === s || s.lastOutcome === null) return next
+      recounted.outcome = withRowCounts(s.lastOutcome, next.resolutions)
+      return { ...next, lastOutcome: recounted.outcome }
+    })
+    const shown = recounted.outcome
+    if (shown !== null && inScope(sc)) {
+      lastOutcomeRef.current = shown
+      setScanStatus((st) => (st !== null && st.kind === 'action_failed' ? st : shown))
+    }
+  }
+
+  /** The Options a Fill read on a hit join the Field as well. */
+  const readOn = (s: Session, row: Row, hit: Extract<PageFill, { ok: true }>): EnumField[] =>
+    withReadOptions(s.fields, { filled: [{ handle: row.resolution.handle, options: hit.options }], failed: [] })
 
   const onAccept = async (ref: string): Promise<void> => {
     const row = main.find((r) => r.ref === ref && r.resolution.tier === 'proposed')      // onAccept
@@ -1302,22 +1449,50 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // a dead page — its verdict must reach neither the status line nor the rows.
     setActing({ ref, action: 'accept' })
     try {
-      const committed = await fillOne(sc.target, row, value)
+      const out = await fillOne(sc.target, row, value)
       if (!alive(sc)) return
+      // Accept never fails in silence: the miss lands on the row itself. A
+      // miss of the row's own stored Value is then handed to the model pick.
+      if (!out.ok) {
+        await settleMiss(sc, row, 'Accept', out)
+        const owed = pickOwed(row.resolution, row.field, out, value)
+        if (owed === null) return
+        const outcome = await requestPick(portRef.current, owed)
+        if (!alive(sc)) return
+        await landPickOn(sc, owed, outcome)
+        return
+      }
+      const { committed } = out
       // Promote the TIER only. Writing `value` back onto the resolution would make
       // engine === final in buildSaveItems and silently drop every user correction
       // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
       // S4: what the PAGE took is the answer worth carrying — committed text wins.
-      await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
-        ...s,
-        edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
-        resolutions: s.resolutions.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)),
-      }, ref, committed ?? value, 'user'))
+      // The status line counts the accepted row as filled and no longer Proposed.
+      const recounted: { outcome: ScanUiState | null } = { outcome: null }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        const resolutions = s.resolutions.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r))
+        recounted.outcome = s.lastOutcome === null ? null : withRowCounts(s.lastOutcome, resolutions, 1)
+        return rememberAnswer({
+          ...s,
+          fields: readOn(s, row, out),
+          edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
+          resolutions,
+          lastOutcome: recounted.outcome ?? s.lastOutcome,
+        }, ref, committed ?? value, 'user')
+      })
+      const shown = recounted.outcome
+      if (shown !== null && inScope(sc)) {
+        lastOutcomeRef.current = shown
+        setScanStatus((st) => (st !== null && st.kind === 'action_failed' ? st : shown))
+      }
       // Accepting an AI key match IS the user confirmation the spec's
       // learned_mappings flow needs: promote it to a deterministic mapping.
       if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
         void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
       }
+      // Accepting a model-picked Option for a keyed Field remembers it as a
+      // Learned wording, so the same wording fills itself next time (ticket #35).
+      sendLearnedWording(portRef.current, wordingToLearn(row.resolution, knownOptions(row.field, out.options), committed ?? value, 'accept'))
       if (inScope(sc)) clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
@@ -1340,13 +1515,28 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // would wear a dead page's "on the page" badge without this.
     setActing({ ref, action: 'fill' })
     try {
-      const committed = await fillOne(sc.target, row, value)
+      const out = await fillOne(sc.target, row, value)
       if (!alive(sc)) return
+      if (!out.ok) {
+        await settleMiss(sc, row, 'Fill', out)
+        // A miss of the row's own stored Value is handed to the model pick, as
+        // after a Scan, unless the row already missed that way: its pick was
+        // asked then. Not awaited: the row shows the miss and its Options while
+        // the model runs.
+        const owed = row.resolution.reason === NO_MATCH ? null : pickOwed(row.resolution, row.field, out, value)
+        if (owed !== null) runPicks(sc.target, sc.gen, [owed], () => mountedRef.current && alive(sc))
+        return
+      }
+      const { committed } = out
       await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
         ...s,
+        fields: readOn(s, row, out),
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         filledRefs: s.filledRefs.includes(ref) ? s.filledRefs : [...s.filledRefs, ref],
       }, ref, committed ?? value, 'user'))
+      // An Option the user picked after a miss on a keyed Field is remembered
+      // the same way (ticket #35).
+      sendLearnedWording(portRef.current, wordingToLearn(row.resolution, knownOptions(row.field, out.options), committed ?? value, 'fill'))
       if (inScope(sc)) clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
@@ -1544,8 +1734,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (port === null) return
     // Same precedence buildSaveItems uses, so a fact the user corrected on the
     // page is the one that gets stored.
-    const value = (session?.snapshot[ref] ?? edits[ref] ?? row.resolution.value ?? '').trim()
-    if (value === '') return
+    const typed = (session?.snapshot[ref] ?? edits[ref] ?? row.resolution.value ?? '').trim()
+    if (typed === '') return
+    // A key with a typed form is stored in it: "Sim" as yes, a phone without
+    // its spaces. What it refuses is said here, never sent.
+    const shaped = toStoredText(key, typed)
+    if (!shaped.ok) {
+      setScanStatus({ kind: 'action_failed', reason: `Save to profile failed: ${shaped.reason}` })
+      return
+    }
+    const value = shaped.text
 
     setActing({ ref, action: 'save_fact' })
     try {
@@ -1607,10 +1805,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const b = await port.request('answerBank.set', { values: bank })
     if (!b.ok) { setHostError(hostErrorText(b.error)); return }
     setFacts((f) => ({ ...f, ...profile, ...bank }))
-    // The gate's one sanctioned exit; the nonce re-fires the (blocked) auto-scan
-    // effect exactly once.
+    // The gate's one sanctioned exit. It scans nothing: the displayed tab may
+    // be any page, so the first scan waits for the Scan click.
     setCompleteness('complete')
-    setScanNonce((n) => n + 1)
   }
 
   /** S5: end the session and delete its row. Un-debounced by construction —
@@ -1916,7 +2113,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                   ? (
                       <div className="mt-4" data-jff-parked="1">
                         <p className={MUTED}>
-                          Session parked — return to {session.site} to continue. Scanning is paused on this page.
+                          Session parked — return to {placeOf(session.startUrl) || session.site} to continue. Scanning is paused on this page.
                         </p>
                         <div className="mt-2">{discardButton}</div>
                       </div>

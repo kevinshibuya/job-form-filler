@@ -117,7 +117,9 @@ _Avoid_: field key, fact key, key
 
 **Value type**:
 What kind of thing a Known key holds: text, link, phone, yes/no, place, list of
-places or amount. It decides which Controls the key can answer.
+places, amount (a salary, with its currency and period) or text per language
+(one in English and one in Portuguese). It decides which Controls the key can
+answer.
 _Avoid_: data type, format
 
 ### Answers and drafting
@@ -133,8 +135,9 @@ context.
 _Avoid_: CV
 
 **Answer bank**:
-The store of standing factual answers: work authorization, sponsorship,
-relocation, salary, notice, start date, remote preference, pronouns.
+The store of standing factual answers: work authorization (the countries where
+the user may work), relocation, salary, notice, start date, remote preference,
+pronouns. Sponsorship is answered from work authorization and never stored.
 _Avoid_: facts, standing answers
 
 **Saved answer**:
@@ -231,8 +234,8 @@ _Avoid_: applied banner, warning
 ### Setup and surfaces
 
 **Onboarding**:
-The one-time gate that blocks Scanning until a Resume, name, email and phone
-exist. Its completeness is complete, incomplete or unknown.
+The one-time gate that blocks Scanning until a Resume, name, email, phone and
+country exist. Its completeness is complete, incomplete or unknown.
 _Avoid_: setup, first run
 
 **Self-check**:

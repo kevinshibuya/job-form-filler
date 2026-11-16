@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -16,6 +16,8 @@ export interface HostChild {
   stderr: string[]
   /** Lets a Mapping reply held by `holdMapping` go. A no-op otherwise. */
   releaseMapping(): void
+  /** How many Option pick prompts the stand-in model has received. */
+  picks(): number
   stop(): Promise<void>
 }
 
@@ -27,8 +29,13 @@ function encode(value: unknown): Buffer {
   return Buffer.concat([head, body])
 }
 
-export async function startHost(opts: { mode?: string; codexMode?: string; holdMapping?: boolean } = {}): Promise<HostChild> {
+export async function startHost(
+  opts: { mode?: string; codexMode?: string; holdMapping?: boolean; pick?: string } = {},
+): Promise<HostChild> {
   const home = await mkdtemp(join(tmpdir(), 'jff-home-'))
+  // The fake codex appends a line here for every Option pick it receives, and
+  // answers the pick with the first Option containing `opts.pick`.
+  const pickLog = join(home, 'picks.log')
   // The fake codex polls for this file before it answers a Mapping call.
   const releaseFile = join(home, 'release-mapping')
   // The host reads config.json out of JFF_HOME; point claudePath at the fake CLI
@@ -48,6 +55,8 @@ export async function startHost(opts: { mode?: string; codexMode?: string; holdM
       JFF_FAKE_CLAUDE_MODE: opts.mode ?? 'ok',
       JFF_FAKE_CODEX_MODE: opts.codexMode ?? 'ok',
       JFF_FAKE_CODEX_HOLD: opts.holdMapping === true ? releaseFile : '',
+      JFF_FAKE_CODEX_PICK: opts.pick ?? '',
+      JFF_FAKE_CODEX_PICK_LOG: pickLog,
     },
   })
 
@@ -87,6 +96,7 @@ export async function startHost(opts: { mode?: string; codexMode?: string; holdM
     dbPath: join(home, 'db.sqlite'),
     stderr,
     releaseMapping() { writeFileSync(releaseFile, '') },
+    picks() { return existsSync(pickLog) ? readFileSync(pickLog, 'utf8').split('\n').filter((l) => l !== '').length : 0 },
     request(req) {
       return new Promise((resolveReq) => {
         pending.set(req.requestId, resolveReq)

@@ -1,15 +1,29 @@
 import { useState, type ChangeEvent } from 'react'
 import { ANSWER_BANK_KEYS, PROFILE_KEYS } from '@jff/shared'
-import { profileCompleteness, REQUIRED_FACTS } from './completeness'
-import { FactFields } from './ProfileEditor'
+import { missingFacts, profileCompleteness, REQUIRED_FACTS } from './completeness'
+import { FactFields, useFactDraft } from './ProfileEditor'
 import { BTN_PRIMARY, MUTED } from './ui'
 
 /** Every key any REQUIRED_FACTS alternative mentions gets the * marker. */
 const REQUIRED_MARKED: ReadonlySet<string> = new Set(REQUIRED_FACTS.flat(2))
 
+/** "a, b and c" */
+const listed = (words: readonly string[]): string =>
+  words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words.at(-1)!}`
+
+/** The line under Finish: what is still missing, by name. */
+function missingLine(missing: readonly string[]): string {
+  const facts = missing.filter((m) => m !== 'resume')
+  const parts = [
+    ...(missing.includes('resume') ? ['a resume'] : []),
+    ...(facts.length === 0 ? [] : [`your ${listed(facts)}`]),
+  ]
+  return `To finish, add ${parts.join(' and ')}.`
+}
+
 /**
  * O2: the hard gate's front door. Upload CV → auto-extract pre-fills EMPTY
- * fields (non-PDF stores the blob, user types) → review all 18 keys with the
+ * fields (non-PDF stores the blob, user types) → review every Known key with the
  * core ones marked → Finish persists and unlocks scanning. ProfileEditor stays
  * the post-onboarding edit path; the rendering is shared via FactFields.
  */
@@ -21,11 +35,13 @@ export function OnboardingView({ values, loaded, resumeName, onUpload, onExtract
   onExtract: (cvText: string) => Promise<Record<string, string> | null>
   onFinish: (profile: Record<string, string>, bank: Record<string, string>) => Promise<void>
 }) {
-  const [draft, setDraft] = useState<Record<string, string>>(values)
+  const facts = useFactDraft(values)
   const [busy, setBusy] = useState<'upload' | 'finish' | null>(null)
-  const complete = profileCompleteness(draft, resumeName !== null, loaded) === 'complete'
-
-  const set = (k: string, v: string): void => setDraft((d) => ({ ...d, [k]: v }))
+  // The gate reads the draft as a write would store it: a phone still in old
+  // text, or typed without its plus sign, is missing, so Finish never fails a save.
+  const complete = profileCompleteness(facts.stored, resumeName !== null, loaded) === 'complete'
+    && Object.keys(facts.problems).length === 0
+  const missing = missingFacts(facts.stored, resumeName !== null)
 
   const pick = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
     const file = e.target.files?.[0]
@@ -35,44 +51,28 @@ export function OnboardingView({ values, loaded, resumeName, onUpload, onExtract
       const cvText = await onUpload(file)
       // O2: a non-PDF stores the blob but skips auto-extract — the user types.
       if (cvText === null) return
-      const facts = await onExtract(cvText)
-      if (facts === null) return
+      const extracted = await onExtract(cvText)
+      if (extracted === null) return
       // Pre-fill EMPTY fields only; typed values always win (same rule as
-      // ProfileEditor's "Generate from CV", spec D5).
-      setDraft((d) => {
-        const next = { ...d }
-        for (const [k, v] of Object.entries(facts)) {
-          if ((next[k] ?? '').trim() === '') next[k] = v
-        }
-        return next
-      })
+      // ProfileEditor's "Generate from CV", spec D5). A Resume phone that is
+      // not in international form becomes the hint the phone proposal reads.
+      facts.merge(extracted)
     } finally {
       setBusy(null)
     }
   }
 
-  const collect = (keys: readonly string[]): Record<string, string> => {
-    const out: Record<string, string> = {}
-    for (const k of keys) {
-      const v = draft[k] ?? ''
-      // Same rule as ProfileEditor: a key never loaded is omitted, so finishing
-      // a partially-loaded editor can never wipe a stored fact.
-      if (v !== '' || k in values) out[k] = v
-    }
-    return out
-  }
-
   const finish = async (): Promise<void> => {
     if (!complete || busy !== null) return
     setBusy('finish')
-    try { await onFinish(collect(PROFILE_KEYS), collect(ANSWER_BANK_KEYS)) } finally { setBusy(null) }
+    try { await onFinish(facts.collect(PROFILE_KEYS), facts.collect(ANSWER_BANK_KEYS)) } finally { setBusy(null) }
   }
 
   return (
     <section className="mt-3" data-jff-onboarding="1">
       <h2 className="mb-0.5 text-[13px] font-semibold">Welcome — set up your profile</h2>
       <p className={`mb-2.5 ${MUTED}`}>
-        Scanning stays locked until the basics every application needs are stored: your resume, name, email and phone.
+        Scanning stays locked until the basics every application needs are stored: your resume, name, email, phone and country.
       </p>
       <label className={`my-2 block ${MUTED}`} data-jff-ob-resume="1">
         Resume {resumeName === null ? '(none stored) *' : `(${resumeName})`}
@@ -84,7 +84,7 @@ export function OnboardingView({ values, loaded, resumeName, onUpload, onExtract
         />
       </label>
       {busy === 'upload' && <p className={MUTED}>Reading your CV…</p>}
-      <FactFields draft={draft} onChange={set} required={REQUIRED_MARKED} idPrefix="ob" />
+      <FactFields facts={facts} required={REQUIRED_MARKED} idPrefix="ob" />
       <p className={`mb-1.5 text-[12px] ${MUTED}`}>* required to finish setup</p>
       <button
         type="button" className={BTN_PRIMARY} data-jff-ob-finish="1"
@@ -93,7 +93,9 @@ export function OnboardingView({ values, loaded, resumeName, onUpload, onExtract
       >
         {busy === 'finish' ? 'Saving…' : 'Finish setup'}
       </button>
-      {!complete && <p className={`mt-1.5 text-[12px] ${MUTED}`}>Add a resume, your name, email and phone to finish.</p>}
+      {loaded && missing.length > 0 && (
+        <p className={`mt-1.5 text-[12px] ${MUTED}`} data-jff-ob-missing="1">{missingLine(missing)}</p>
+      )}
     </section>
   )
 }

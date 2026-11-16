@@ -16,7 +16,7 @@ For the questions nothing stored can answer, it spawns the `claude` CLI to write
 
 ## What works today
 
-- Block scanning until a resume, name, email and phone are stored. Evidence: `extension/src/panel/completeness.test.ts`, the onboarding test in `e2e/sessions.spec.ts`.
+- Block scanning until a resume, name, email, phone and country are stored. Evidence: `extension/src/panel/completeness.test.ts`, the onboarding test in `e2e/sessions.spec.ts`.
 - Scan a page, pick the frame that holds the application and send only its fields on. Evidence: `extension/src/panel/election.test.ts`, `e2e/election.spec.ts` with a cross-origin iframe.
 - Fill name, email, phone and other known facts from deterministic recognizers, with no model call. Evidence: `host/src/resolve/waterfall.test.ts`, and `e2e/full-loop.spec.ts` asserts the values on the page.
 - Skip demographic and EEO questions and stop on an active CAPTCHA. Evidence: `extension/src/content/classify.test.ts`, the EEO and CAPTCHA tests in `e2e/foundation.spec.ts`.
@@ -180,9 +180,9 @@ flowchart LR
   Panel["Side panel<br/>React"]
   IDB[("IndexedDB<br/>resume file")]
   Host["Native host<br/>Node"]
-  DB[("SQLite<br/>profile, answers,<br/>applied jobs")]
+  DB[("SQLite<br/>profile, answers,<br/>learned wordings,<br/>applied jobs")]
   Claude["claude CLI<br/>drafts"]
-  Codex["codex CLI<br/>mapping, review,<br/>resume facts"]
+  Codex["codex CLI<br/>mapping, Option pick,<br/>review, resume facts"]
 
   Panel -- "scan and fill requests" --> SW
   SW -- "one message per frame" --> CS
@@ -206,7 +206,7 @@ flowchart LR
 | `host/src/llm/` | CLI runners, mapping, Draft generation and review, the per-task model registry |
 | `host/src/db/` | SQLite schema and repositories |
 | `host/scripts/install.mjs` | Installer: wrapper script, host config, Chrome manifest |
-| `shared/src/` | Message schemas in zod, the eighteen Known keys, text normalisation |
+| `shared/src/` | Message schemas in zod, the twenty-three Known keys, text normalisation |
 | `e2e/` | Playwright specs, fake `claude` and `codex`, fixture forms |
 | `scripts/` | The private-data guard, the capture sanitiser and the live probe |
 | `docs/` | ADRs, specs, plans, and the README image script |
@@ -221,7 +221,7 @@ flowchart LR
 
 **A second model reviews every Draft in the same request.** The review runs before the Draft reaches the user, not as a pass they have to ask for. When the reviewer fails, the unreviewed Draft ships with a warning, because a rate-limited reviewer should not cost the user the answer they waited for. [ADR 0004](docs/adr/0004-draft-then-review-with-fallback.md)
 
-**Each model task pins its model id.** Claude writes the Drafts and Codex runs mapping, review and resume facts. The CLI default follows whatever the user last picked, and it had quietly moved the product onto the slowest and most expensive model with nobody deciding it. Every call now names its model in `host/src/llm/models.ts`. The price is prompts tuned per vendor, two sign-ins to keep alive and a doubled fake-CLI matrix in the browser tests. [ADR 0005](docs/adr/0005-claude-for-prose-codex-for-structure.md)
+**Each model task pins its model id.** Claude writes the Drafts and Codex runs mapping, the Option pick, review and resume facts. The CLI default follows whatever the user last picked, and it had quietly moved the product onto the slowest and most expensive model with nobody deciding it. Every call now names its model in `host/src/llm/models.ts`. The price is prompts tuned per vendor, two sign-ins to keep alive and a doubled fake-CLI matrix in the browser tests. [ADR 0005](docs/adr/0005-claude-for-prose-codex-for-structure.md)
 
 **The mapping schema has no value field.** The tool promises never to invent an answer, and a model allowed to return one eventually will. So the model can only say which stored key answers a field, and every value written on Fill comes from the store. The mapping step loses the ability to offer an answer even when it would be right. [ADR 0006](docs/adr/0006-anti-fabrication-is-structural.md)
 

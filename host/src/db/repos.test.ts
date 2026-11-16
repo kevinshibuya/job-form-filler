@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   openDb, getProfile, setProfile, getAnswerBank, setAnswerBank, getStoredValue,
   findExactAnswer, listReusableAnswers, listReferenceAnswers, getAnswerById,
   upsertAnswer, touchAnswer, getLearnedMapping, saveLearnedMapping,
   getSelector, saveSelector, insertApplication, getCachedResponse, putCachedResponse,
-  pruneRequestLog,
+  pruneRequestLog, saveLearnedWording, getLearnedWordings,
 } from './repos.js'
 
 let db: Database.Database
@@ -81,6 +84,37 @@ describe('learned mappings and selectors', () => {
     saveSelector(db, 'jobs.acme.com', 'job_description', '.jd-body')
     expect(getSelector(db, 'jobs.acme.com', 'job_description')).toBe('.jd-body')
     expect(getSelector(db, 'other.com', 'job_description')).toBeNull()
+  })
+})
+
+describe('learned wordings', () => {
+  it('round-trips the wordings learned for one key and Value, each once, and none for another Value or key', () => {
+    expect(getLearnedWordings(db, 'relocate', 'yes')).toEqual([])
+    saveLearnedWording(db, 'relocate', 'yes', 'Yes, I am open to relocating')
+    saveLearnedWording(db, 'relocate', 'yes', 'Yes, I am open to relocating')
+    saveLearnedWording(db, 'relocate', 'yes', 'Sim, aceito mudar')
+    expect(getLearnedWordings(db, 'relocate', 'yes')).toEqual(['Yes, I am open to relocating', 'Sim, aceito mudar'])
+    expect(getLearnedWordings(db, 'relocate', 'no')).toEqual([])
+    expect(getLearnedWordings(db, 'workAuth', 'yes')).toEqual([])
+  })
+
+  it('a database created before the store existed opens, gains it, and keeps its data', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'jff-repos-')), 'db.sqlite')
+    const old = openDb(path)
+    // The database as it was before ticket #35: no learned_wordings table.
+    old.exec('DROP TABLE learned_wordings')
+    setProfile(old, { email: 'ada@example.com', fullName: 'Ada Lovelace' })
+    setAnswerBank(old, { relocate: 'yes' })
+    upsertAnswer(old, { questionNormalized: 'q', questionRaw: 'Q?', answer: 'A', language: 'en', reusability: 'reusable' })
+    old.close()
+
+    const reopened = openDb(path)
+    expect(getProfile(reopened)).toEqual({ email: 'ada@example.com', fullName: 'Ada Lovelace' })
+    expect(getAnswerBank(reopened)).toEqual({ relocate: 'yes' })
+    expect(findExactAnswer(reopened, 'q', 'en')!.answer).toBe('A')
+    saveLearnedWording(reopened, 'relocate', 'yes', 'Yes, I am open to relocating')
+    expect(getLearnedWordings(reopened, 'relocate', 'yes')).toEqual(['Yes, I am open to relocating'])
+    reopened.close()
   })
 })
 

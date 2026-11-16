@@ -6,6 +6,7 @@ describe('DEFAULT_MODELS', () => {
     expect(DEFAULT_MODELS).toEqual({
       factsExtract: 'gpt-6.1-sol',
       mapping: 'gpt-6.1-sol',
+      optionPick: 'gpt-6.1-sol',
       generate: 'claude-opus-5-5',
       reviewDraft: 'gpt-6.1-sol',
       claudeAuthProbe: 'claude-opus-5-5',
@@ -38,6 +39,16 @@ describe('resolveModels', () => {
     const r = resolveModels({ generate: 'claude-fable-5-1' })
     expect(r.mapping).toBe(DEFAULT_MODELS.mapping)
     expect(r.reviewDraft).toBe(DEFAULT_MODELS.reviewDraft)
+  })
+
+  it('routes the Option pick like Mapping, to the structured-task model', () => {
+    expect(DEFAULT_MODELS.optionPick).toBe(DEFAULT_MODELS.mapping)
+  })
+
+  it('lets the Option pick be overridden on its own', () => {
+    const r = resolveModels({ optionPick: 'gpt-6-astra' })
+    expect(r.optionPick).toBe('gpt-6-astra')
+    expect(r.mapping).toBe(DEFAULT_MODELS.mapping)
   })
 
   it('drops an empty-string override', () => {

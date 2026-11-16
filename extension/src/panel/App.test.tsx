@@ -25,7 +25,7 @@ const SELF_CHECK = {
 }
 
 /** O3: the default test persona is ONBOARDED. Gate tests opt out explicitly. */
-const ONBOARDED = { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User' }
+const ONBOARDED = { email: 'fake@example.com', phone: '+15550100', fullName: 'Fake User', country: 'Canada' }
 
 /**
  * jsdom's Blob has no `arrayBuffer()`, so `saveResume(new File(...))` throws here
@@ -954,15 +954,18 @@ describe('App per-field fill failures', () => {
     })
   }
 
-  it('does not promote a proposed row whose fill the page refused', async () => {
+  it('does not promote a proposed row whose fill the page refused: it becomes Needs input with the reason', async () => {
     await renderScanned()
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     await waitFor(() => {
       expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed')
     })
-    // Still Proposed: promoting to Filled would tell the user a lie about the page.
-    expect(document.querySelector('li[data-jff-tier="proposed"]')).not.toBeNull()
+    // Never Filled: promoting it would tell the user a lie about the page. And
+    // never left Proposed in silence: the row itself says why (ticket #28).
     expect(document.querySelector('li[data-jff-tier="auto"]')).toBeNull()
+    expect(document.querySelector('li[data-jff-tier="proposed"]')).toBeNull()
+    const refused = [...document.querySelectorAll('li[data-jff-tier="needs_input"]')].find((li) => li.textContent?.includes('Work model'))!
+    expect(refused.querySelector('[data-jff-hint]')?.textContent).toBe('No option matches this value. Try different text.')
     expect(screen.getByText(/Accept failed: no-matching-option/)).toBeTruthy()
   })
 
@@ -1034,7 +1037,12 @@ describe('App per-field fill failures', () => {
     expect(fill.disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Generate with AI' }) as HTMLButtonElement).disabled).toBe(true)
     release!()
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Fill' }) as HTMLButtonElement).disabled).toBe(false))
+    // The refused Accept turned its row Needs input, so it has a Fill of its own now.
+    await waitFor(() => {
+      const fills = screen.getAllByRole('button', { name: 'Fill' }) as HTMLButtonElement[]
+      expect(fills).toHaveLength(2)
+      expect(fills.every((b) => !b.disabled)).toBe(true)
+    })
   })
 })
 
@@ -1609,6 +1617,36 @@ describe('App — onboarding gate (O1/O3)', () => {
     expect(scanCount()).toBe(0)
   })
 
+  it('a Profile stored before the country key is incomplete: Onboarding asks for the country before the next Scan', async () => {
+    // A resume is stored (the suite's beforeEach), and the Profile has a name,
+    // email, phone and a location line, but no country.
+    const calls: { method: string; params: unknown }[] = []
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      calls.push({ method, params })
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.get') {
+        return { requestId, ok: true, result: { email: 'ada@example.com', phone: '+15550100', fullName: 'Ada Lovelace', location: 'London, UK' } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await screen.findByText('Welcome — set up your profile')
+    expect(scanCount()).toBe(0)
+    const country = screen.getByLabelText(/^Country/) as HTMLInputElement
+    expect(country.value).toBe('') // never derived from the location line
+    expect(document.querySelector('[data-jff-onboarding]')!.textContent).toMatch(/country/)
+    fireEvent.change(country, { target: { value: 'United Kingdom' } })
+    const finish = screen.getByRole('button', { name: 'Finish setup' })
+    await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(finish)
+    await waitFor(() => expect(document.querySelector('[data-jff-onboarding]')).toBeNull())
+    expect(scanCount()).toBe(0)
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan' }))
+    await waitFor(() => expect(scanCount()).toBe(1))
+    const set = calls.find((c) => c.method === 'profile.set')
+    expect((set?.params as { values: Record<string, string> }).values).toMatchObject({ country: 'United Kingdom' })
+  })
+
   it('a dead host is unknown: normal panel + banner, never the onboarding wall', async () => {
     await clearResume()
     window.__jffHostBridge = async ({ requestId }): Promise<HostResponse> =>
@@ -1717,7 +1755,8 @@ describe('App — onboarding gate (O1/O3)', () => {
     expect(document.querySelector('[data-jff-onboarding]')).toBeNull()
   })
 
-  it('Finish persists the facts and unlocks exactly one scan', async () => {
+  // PR #36 manual pass: Finish scanned whatever tab was displayed (a search page).
+  it('Finish persists the facts and unlocks Scan, but scans nothing until it is clicked', async () => {
     await clearResume()
     const calls: string[] = []
     window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
@@ -1731,13 +1770,20 @@ describe('App — onboarding gate (O1/O3)', () => {
       { target: { files: [new File(['cv'], 'cv.txt', { type: 'text/plain' })] } })
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
-    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '+15550100' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)
     await waitFor(() => expect(calls).toContain('profile.set'))
     await waitFor(() => expect(document.querySelector('[data-jff-onboarding]')).toBeNull())
+    await new Promise((r) => setTimeout(r, 100))
+    expect(scanCount()).toBe(0)
+    expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).not.toBe('connecting')
+    const scan = await screen.findByRole('button', { name: 'Scan' })
+    await waitFor(() => expect((scan as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(scan)
     await waitFor(() => expect(scanCount()).toBe(1))
   })
 
@@ -1754,8 +1800,9 @@ describe('App — onboarding gate (O1/O3)', () => {
       { target: { files: [new File(['cv'], 'cv.txt', { type: 'text/plain' })] } })
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
-    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '+15550100' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)
@@ -2133,7 +2180,7 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await commit(7, SSO)
 
     await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
-    expect(screen.getByText('Session parked — return to acme.com to continue. Scanning is paused on this page.')).toBeTruthy()
+    expect(screen.getByText('Session parked — return to jobs.acme.com/apply to continue. Scanning is paused on this page.')).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Scan' }) as HTMLButtonElement).disabled).toBe(true)
     expect(document.querySelector('[data-jff-rows]')).toBeNull()
     await waitFor(() => { expect(row(7)?.parked).toBe(true) })
@@ -2229,6 +2276,104 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await waitFor(() => { expect(sessionAttr()).toBe('none') })
     expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
     expect(state.marks).toHaveLength(0)
+  })
+
+  // PR #36 manual pass: a new tab scanned its own blank page, minted a session
+  // for it, and the posting it then loaded parked that session.
+  it('a new tab off the web starts no session; the posting it loads waits for a Scan click', async () => {
+    let tab = { id: 7, url: 'chrome://newtab/', title: 'New Tab' }
+    tabsGet().mockImplementation(async () => tab)
+    installScan(() => tab.url)
+    render(<App />)
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(scanCount()).toBe(0)
+    expect(row(7)).toBeUndefined()
+
+    tab = { id: 7, url: APPLY_A, title: 'Engineer at Acme' }
+    await commit(7, APPLY_A)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(scanCount()).toBe(0)
+    expect(row(7)).toBeUndefined()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(APPLY_A) })
+    expect(row(7)?.parked).toBe(false)
+  })
+
+  it('after Discard, a navigation on the tab starts no scan', async () => {
+    installScan()
+    await mountScanned()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard session' }))
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    const scansBefore = scanCount()
+    await commit(7, JOB_B)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(scanCount()).toBe(scansBefore)
+    expect(row(7)).toBeUndefined()
+  })
+
+  // PR #36 manual pass 2: a parked session crossed to another company's
+  // posting on the same ATS host and auto-filled it.
+  const GH_A = 'https://job-boards.greenhouse.io/acme/jobs/8038026003'
+  const GH_B = 'https://job-boards.greenhouse.io/globex/jobs/8209762'
+  const fillCount = (): number => relayTargets('JFF_FILL').length
+
+  it('a different posting on the same host, after a detour, stays parked and scans nothing until Discard and Scan', async () => {
+    let tab = { id: 7, url: GH_A, title: 'Engineer at Acme' }
+    tabsGet().mockImplementation(async () => tab)
+    installScan(() => tab.url)
+    await mountScanned()
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(GH_A) })
+    tab = { id: 7, url: 'https://www.google.com/search?q=jobs', title: 'Search' }
+    await commit(7, tab.url)
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    const scans = scanCount()
+    const fills = fillCount()
+
+    tab = { id: 7, url: GH_B, title: 'Designer at Globex' }
+    await commit(7, GH_B)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(document.querySelector('[data-jff-parked]')).not.toBeNull()
+    expect(scanCount()).toBe(scans)
+    expect(fillCount()).toBe(fills)
+    expect(row(7)?.startUrl).toBe(GH_A)
+    // On one ATS host the site names nothing: the message names the posting.
+    expect(screen.getByText('Session parked — return to job-boards.greenhouse.io/acme/jobs/8038026003 to continue. Scanning is paused on this page.')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard session' }))
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(GH_B) })
+  })
+
+  it('a different posting on the same host parks; the same posting\'s confirmation page re-scans', async () => {
+    let tab = { id: 7, url: GH_A, title: 'Engineer at Acme' }
+    tabsGet().mockImplementation(async () => tab)
+    installScan(() => tab.url)
+    await mountScanned()
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(GH_A) })
+    const scans = scanCount()
+    tab = { id: 7, url: `${GH_A}/confirmation`, title: 'Thanks' }
+    await commit(7, tab.url)
+    await waitFor(() => { expect(scanCount()).toBe(scans + 1) })
+    expect(document.querySelector('[data-jff-parked]')).toBeNull()
+
+    tab = { id: 7, url: GH_B, title: 'Designer at Globex' }
+    await commit(7, GH_B)
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    expect(scanCount()).toBe(scans + 1)
+  })
+
+  it('a stored session whose tab moved to another posting while the panel was closed parks and scans nothing', async () => {
+    tabsGet().mockImplementation(async () => ({ id: 7, url: GH_B, title: 'Designer at Globex' }))
+    installScan(() => GH_B)
+    storageRows()['jff:session:7'] = capForStorage({ ...newSession(7, GH_A), fields: [field(0, 'Email')], resolutions: [resolutionFor(0)] })
+    render(<App />)
+    await waitFor(() => { expect(sessionAttr()).toBe('7') })
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    expect(scanCount()).toBe(0)
   })
 
   it('never marks job A once the same tab moved on to job B (Task 5 boundary defect)', async () => {
@@ -3250,7 +3395,10 @@ describe('App — session concurrency (S7)', () => {
 
 describe('App — Save to profile (a fact is stored, never drafted)', () => {
   /** One keyed GitHub row, needs_input, with nothing stored under the key. */
-  function installKeyedScan(calls: { m: string; p: unknown }[], setFails = false): void {
+  function installKeyedScan(
+    calls: { m: string; p: unknown }[], setFails = false,
+    row: { label: string; key: 'github' | 'relocate'; bank?: Record<string, string> } = { label: 'GitHub', key: 'github' },
+  ): void {
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
@@ -3258,7 +3406,7 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
         return {
           ok: true,
           replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: true, scan: { epoch: 1, fields: [
-            { frameId: -1, fid: 0, epoch: 1, label: 'GitHub', name: null, idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false },
+            { frameId: -1, fid: 0, epoch: 1, label: row.label, name: null, idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false },
           ], unreachableWidgets: 0, activeCaptcha: false } } }],
           failures: [],
         }
@@ -3272,6 +3420,7 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       calls.push({ m: method, p: params })
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'answerBank.get') return { requestId, ok: true, result: row.bank ?? {} }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'profile.set' && setFails) {
         return { requestId, ok: false, error: { kind: 'bad_request', message: 'fact value over 500 characters: github' } }
@@ -3279,7 +3428,7 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
       if (method === 'resolve.first' || method === 'resolve.mapping') {
         return { requestId, ok: true, result: answerTwoStep(method, params, [{
           handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input' as const,
-          value: null, source: null, key: 'github' as const, answerId: null, reason: 'recognizer:github',
+          value: null, source: null, key: row.key, answerId: null, reason: `recognizer:${row.key}`,
         }])! }
       }
       return { requestId, ok: true, result: {} }
@@ -3301,6 +3450,32 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
     expect(calls.some((c) => c.m === 'save')).toBe(false)
     // Stored now, so the button retires rather than offering an overwrite.
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save to profile' })).toBeNull())
+  })
+
+  // Ticket #27: old text of a typed key is no Value, so the row offers to
+  // store one, and stores it in the key's form.
+  const RELOCATE_ROW = { label: 'Willing to relocate?', key: 'relocate' as const, bank: { relocate: 'Yes, anywhere in Europe' } }
+
+  it('a relocate whose stored text is old offers Save to profile, and "Sim" is stored as yes', async () => {
+    const calls: { m: string; p: unknown }[] = []
+    installKeyedScan(calls, false, RELOCATE_ROW)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(screen.getByLabelText('Willing to relocate?'), { target: { value: 'Sim' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save to profile' }))
+    await waitFor(() => expect(calls.filter((c) => c.m === 'answerBank.set')).toHaveLength(1))
+    expect(calls.find((c) => c.m === 'answerBank.set')!.p).toEqual({ values: { relocate: 'yes' } })
+  })
+
+  it('a relocate that is not a yes or a no is refused on the row and never sent', async () => {
+    const calls: { m: string; p: unknown }[] = []
+    installKeyedScan(calls, false, RELOCATE_ROW)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(screen.getByLabelText('Willing to relocate?'), { target: { value: 'Only within Europe' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save to profile' }))
+    await waitFor(() => expect(screen.getByText(/yes or a no/)).toBeTruthy())
+    expect(calls.some((c) => c.m === 'answerBank.set')).toBe(false)
   })
 
   it('a refused profile.set from the editor keeps the editor open and shows the error', async () => {

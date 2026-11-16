@@ -31,6 +31,19 @@ describe('captureJobText', () => {
     expect(captureJobText(document, null).text).toContain('LONGER')
   })
 
+  // PR #36 manual pass: a Google results page put CSS into the job text.
+  it('never reads the text of a style, script, noscript or template', () => {
+    document.body.innerHTML = `<main><style>.a{color:red}</style><script>var x=1</script><noscript>enable js</noscript><template>tpl</template><p>${long('POSTING')}</p></main>`
+    const r = captureJobText(document, null)
+    expect(r.text).toContain('POSTING')
+    for (const junk of ['color:red', 'var x', 'enable js', 'tpl']) expect(r.text).not.toContain(junk)
+  })
+
+  it('a container whose length comes only from a stylesheet holds no job text', () => {
+    document.body.innerHTML = `<main><style>${'.a{color:red} '.repeat(60)}</style><p>short</p></main>`
+    expect(captureJobText(document, null).source).toBe('none')
+  })
+
   it('returns source=none when no candidate holds enough text', () => {
     document.body.innerHTML = `<main>too short</main>`
     const r = captureJobText(document, null)

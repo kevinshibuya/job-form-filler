@@ -53,7 +53,7 @@ const TINY_PDF_B64 = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMi
  *  tracks machine load; per-assertion budgets stay the behavioural gate. */
 test.describe.configure({ timeout: 240_000 })
 
-test('election scopes resolve, auto-fill and harvest to the cross-origin application frame', async () => {
+test('election scopes resolve and auto-fill to the cross-origin application frame', async () => {
   const hostSrv = await startFixtureServer('fixtures/ashby-host')
   const embedSrv = await startFixtureServer('fixtures/ashby-embed')
   const ext = await launchWithExtension()
@@ -138,9 +138,8 @@ test('election scopes resolve, auto-fill and harvest to the cross-origin applica
     expect(resolveCalls[0]!.fields.map((f) => f.label)).toContain('First name')
     expect(resolveCalls[0]!.fields.map((f) => f.label)).not.toContain('Newsletter email')
 
-    // A6 under the TYPE-TO-LOAD widget: a bare open-click mounts NOTHING (the
-    // real Ashby shape), so the harvest legitimately returns no options and
-    // the resolve payload carries an empty list — the panel renders the
+    // The TYPE-TO-LOAD widget: a Scan opens no menu (ADR 0009), so the
+    // resolve payload carries an empty list — the panel renders the
     // options-load-on-fill editor instead. The page shows no residue either.
     const combo = resolveCalls[0]!.fields.find((f) => f.kind === 'combobox')!
     expect(combo.options).toEqual([])

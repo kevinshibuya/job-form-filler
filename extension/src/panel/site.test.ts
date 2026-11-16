@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { registrableDomain, sameSite } from './site'
+import { registrableDomain, sameApplication, sameSite } from './site'
 
 describe('registrableDomain / sameSite (S5)', () => {
   it.each([
@@ -35,5 +35,34 @@ describe('registrableDomain / sameSite (S5)', () => {
     expect(sameSite('https://jobs.acme.com/a', 'https://careers.acme.com/b')).toBe(true)
     expect(sameSite('https://acme.com', 'https://acme.io')).toBe(false)
     expect(sameSite('', '')).toBe(false)
+  })
+})
+
+// PR #36 manual pass 2: on a multi-tenant ATS host every company's posting is
+// one registrable domain, so a session crossed to another company's posting.
+describe('sameApplication: same site, and not a different posting', () => {
+  const GH = 'https://job-boards.greenhouse.io/acme/jobs/8038026003'
+  const LEVER = 'https://jobs.lever.co/acme/0a1b2c3d-1111-2222-3333-444455556666'
+  const WD = 'https://acme.wd5.myworkdayjobs.com/en-US/External/job/London/Engineer_JR-0012345'
+  it.each([
+    [GH, 'https://job-boards.greenhouse.io/globex/jobs/8209762', false],
+    [GH, 'https://job-boards.greenhouse.io/acme/jobs/4399058009', false],
+    [GH, `${GH}/confirmation`, true],
+    [GH, `${GH}?gh_src=abc`, true],
+    [GH, 'https://job-boards.greenhouse.io/acme', true],
+    [GH, 'https://www.google.com/search?q=x', false],
+    ['https://jobs.acme.com/apply', 'https://careers.acme.com/apply/step2', true],
+    ['https://jobs.acme.com/apply', 'https://jobs.acme.com/apply/done', true],
+    ['https://jobs.acme.com/apply', 'https://jobs.globex.com/apply', false],
+    ['http://127.0.0.1:53211/wizard-step1.html?tab=a', 'http://127.0.0.1:53211/wizard-step2.html', true],
+    [LEVER, `${LEVER}/apply`, true],
+    [LEVER, 'https://jobs.lever.co/globex/9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff', false],
+    [WD, `${WD}/apply/applyManually`, true],
+    [`${WD}/apply`, 'https://acme.wd5.myworkdayjobs.com/en-US/External/login?redirect=%2Fen-US%2FExternal%2Fjob%2FLondon%2FEngineer_JR-0012345%2Fapply', true],
+    ['https://careers.acme.com/jobs/12345', 'https://jobs.acme.com/apply/12345/step1', true],
+    ['https://careers.acme.com/jobs/12345', 'https://careers.acme.com/auth/callback?code=AbC123456xyz&state=xyz', true],
+    ['https://careers.acme.com/careers?jid=0a1b2c3d-1111-2222-3333-444455556666', 'https://careers.acme.com/careers?jid=9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff', false],
+  ])('%s then %s: %s', (start, next, expected) => {
+    expect(sameApplication(next, start)).toBe(expected)
   })
 })

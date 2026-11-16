@@ -250,10 +250,10 @@ test('the Greenhouse react-select shape fills through the gesture + value-contai
   // No wait for the relay panel to go idle any more, and none is possible: it
   // is bound to tab -1, so it never scans this fixture at all. The wait used to
   // exist because the panel bound to THIS tab and ran its own pipeline against
-  // it — A6's option harvest CLICKS every optionless combobox and restores the
-  // pre-click value, which landed mid-typeahead and re-widened the filtered
-  // menu, failing a widget that works. Unbinding the panel removes the race at
-  // its source instead of waiting it out.
+  // it — the Scan then opened every optionless combobox to read its Options,
+  // which landed mid-typeahead and re-widened the filtered menu, failing a
+  // widget that works. Unbinding the panel removed the race at its source; a
+  // Scan opens no menu at all since ADR 0009.
   const t = await openFixtureTab('react-select-form.html')
   try {
     const epoch = 6

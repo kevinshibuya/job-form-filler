@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EnumFieldSchema, FieldHandleSchema, ResolutionSchema } from './field.js'
+import { CityPartsSchema, EnumFieldSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
 import { FIELD_KEYS } from './keys.js'
 
 // Re-exported so `./messages.js` alone carries the field-identity types it
@@ -48,6 +48,40 @@ export const ResolveParamsSchema = z.object({
 })
 export type ResolveParams = z.infer<typeof ResolveParamsSchema>
 
+export const OptionPickParamsSchema = z.object({
+  label: z.string(),
+  value: z.string().min(1),
+  options: z.array(z.string()).min(1),
+})
+export type OptionPickParams = z.infer<typeof OptionPickParamsSchema>
+
+/**
+ * The reply to `option.pick`: the position (from 0) of one of the Options the
+ * request carried, or null for none. There is no text property, and zod strips
+ * unknown keys: the model can never write a Value (ADR 0006, ADR 0008).
+ */
+export const OptionPickResultSchema = z.object({
+  position: z.number().int().nonnegative().nullable(),
+})
+export type OptionPickResult = z.infer<typeof OptionPickResultSchema>
+
+/**
+ * `wording.learn` (ticket #35): the user accepted, or picked after a miss, the
+ * Option `wording` for a Field answered from the Known key `key`, and
+ * `value` is the Value the Option stood for: the key's Value as the
+ * Resolution gave it, or the yes or no of a derived answer.
+ */
+export const LearnWordingParamsSchema = z.object({
+  key: z.enum(FIELD_KEYS),
+  value: z.string().trim().min(1),
+  wording: z.string().trim().min(1),
+})
+export type LearnWordingParams = z.infer<typeof LearnWordingParamsSchema>
+
+/** The reply to `wording.learn`: false when the Value is not one a wording can be learned for. */
+export const LearnWordingResultSchema = z.object({ learned: z.boolean() })
+export type LearnWordingResult = z.infer<typeof LearnWordingResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -86,6 +120,12 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
       generatedCount: z.number().int().nonnegative(),
     }),
   }),
+  // The model pick (ADR 0008), made at Fill time after a miss: the Field's
+  // label, the stored Value it was meant to fill, and the Options the Fill
+  // read. Nothing else from the Profile travels with it.
+  z.object({ requestId: z.string().min(1), method: z.literal('option.pick'), params: OptionPickParamsSchema }),
+  // A Learned wording: an Option the user accepted for a keyed Field.
+  z.object({ requestId: z.string().min(1), method: z.literal('wording.learn'), params: LearnWordingParamsSchema }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('mapping.confirm'), params: z.object({ label: z.string(), fieldKey: z.enum(FIELD_KEYS) }) }),
@@ -166,7 +206,17 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('JFF_SCAN'), epoch: z.number().int().nonnegative() }),
   z.object({
     type: z.literal('JFF_FILL'), epoch: z.number().int().nonnegative(),
-    fills: z.array(z.object({ handle: FieldHandleSchema, value: z.string() })),
+    // `candidates`: the candidate words of the row's Value (Resolution.candidates).
+    // Absent once the user edited the Value: an edited Value matches by its own text.
+    // `phone`: the parts of a phone Value (Resolution.phone), on the same terms.
+    // `city`: the stored country's names beside a city (Resolution.city), likewise.
+    // No `value`: a read (ticket #34). The Fill reads the Control's Options,
+    // changes nothing on the page, and reports them as a miss does, with the
+    // reason OPTIONS_READ.
+    fills: z.array(z.object({
+      handle: FieldHandleSchema, value: z.string().optional(), candidates: z.array(z.string()).optional(),
+      phone: PhonePartsSchema.optional(), city: CityPartsSchema.optional(),
+    })),
   }),
   z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_PICK'), epoch: z.number().int().nonnegative() }),
@@ -184,14 +234,6 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
     mimeType: z.string(),
     dataBase64: z.string(),
   }),
-  z.object({
-    // A6: open the listed comboboxes, read their mounted options, close and
-    // restore. ELECTED-frame-only is the PANEL's decision (it addresses the
-    // frame directly); the content script enforces only the epoch gate.
-    type: z.literal('JFF_HARVEST'),
-    epoch: z.number().int().nonnegative(),
-    fids: z.array(z.number().int().nonnegative()),
-  }),
 ])
 export type ContentMessage = z.infer<typeof ContentMessageSchema>
 
@@ -208,14 +250,29 @@ export const ScanResultSchema = z.object({
 })
 export type ScanResult = z.infer<typeof ScanResultSchema>
 
+/**
+ * The Options a Fill of a choice Control read on the page, on a hit and on a
+ * miss (ADR 0009: a Scan opens no menu, so a dropdown's Options are first known
+ * here). Absent on a text Control, and on a dropdown that showed none before
+ * anything was typed into it.
+ */
+const FillOptionsSchema = z.array(z.string()).optional()
+
 export const FillReportSchema = z.object({
   epoch: z.number().int(),
   /** B1c: `committed` carries the page-accepted canonical text when it differs
    *  from the requested value ('bra' legitimately commits 'Brazil'), else null.
    *  The panel canonicalizes the row value from it. */
-  filled: z.array(z.object({ handle: FieldHandleSchema, committed: z.string().nullable() })),
-  failed: z.array(z.object({ handle: FieldHandleSchema, reason: z.string() })),
+  filled: z.array(z.object({ handle: FieldHandleSchema, committed: z.string().nullable(), options: FillOptionsSchema })),
+  failed: z.array(z.object({ handle: FieldHandleSchema, reason: z.string(), options: FillOptionsSchema })),
 })
 export type FillReport = z.infer<typeof FillReportSchema>
 
 export const STALE_EPOCH = 'stale_epoch' as const
+
+/**
+ * The reason a Fill entry sent with no Value reports: the Control's Options
+ * were read and nothing on the page changed (ticket #34). The Options travel
+ * with it, as on a miss, and are absent when the Control showed none.
+ */
+export const OPTIONS_READ = 'options-read' as const
