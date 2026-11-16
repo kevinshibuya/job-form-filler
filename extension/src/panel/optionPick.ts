@@ -8,7 +8,7 @@ export const OPTION_PICK = 'option-pick'
 export const OPTION_PICK_FAILED = 'option-pick-failed'
 
 /** The one Fill miss a pick can help with: the page offered Options and none matched. */
-const NO_MATCH = 'no-matching-option'
+export const NO_MATCH = 'no-matching-option'
 
 /** What an `option.pick` request carries, and the Field it is for. */
 export interface PickRequest {

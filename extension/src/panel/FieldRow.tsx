@@ -160,6 +160,9 @@ function DraftWarning({ claims }: { claims: string[] }) {
   )
 }
 
+/** A picker lists its Options as buttons up to this many; past it, the datalist alone. */
+const OPTION_LIST_MAX = 12
+
 type EditorKind = 'segmented' | 'picker' | 'combobox-empty' | 'file' | 'textarea' | 'checkboxes' | 'consent'
 
 function editorKindOf(row: Row): EditorKind {
@@ -294,6 +297,24 @@ export function FieldRow(p: FieldRowProps) {
           <datalist id={`opts-${ref}`}>
             {field.options.map((o) => <option key={o} value={o} />)}
           </datalist>
+          {/* A datalist looks like a text box until hovered: a row still to be
+              decided lists a few Options as the segmented editor's buttons. */}
+          {resolution.tier !== 'auto' && field.options.length <= OPTION_LIST_MAX && (
+            <div className="mt-1 flex flex-col gap-1" role="group" aria-label="Options" data-jff-editor="options">
+              {field.options.map((opt) => {
+                const selected = norm(value) === norm(opt)
+                return (
+                  <button
+                    key={opt} type="button" aria-pressed={selected}
+                    className={`${BTN} w-full text-left ${selected ? 'border-blue-600 font-semibold text-blue-700 dark:border-blue-400 dark:text-blue-300' : ''}`}
+                    onClick={() => onEdit(ref, opt)}
+                  >
+                    {opt}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </>
       )}
 

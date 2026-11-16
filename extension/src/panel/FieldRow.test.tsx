@@ -211,6 +211,32 @@ describe('FieldRow — kind-aware editors (A9)', () => {
     expect(document.querySelector('[data-jff-editor="picker"]')).not.toBeNull()
   })
 
+  // PR #36 manual pass 2: the datalist picker looks like a text box until it
+  // is hovered, so a tester saw "Pick one" with nothing to pick from.
+  it('a Needs input dropdown with a few Options lists them as buttons, and a click emits the Option', () => {
+    const opts = ['No – not required', 'Yes – in the future', 'Yes – now', 'N/A']
+    const onEdit = vi.fn()
+    const r = row(field({ kind: 'combobox', options: opts }), resolution({ tier: 'needs_input', value: 'Yes', reason: 'no-matching-option' }))
+    render(<ul><FieldRow row={r} {...props} onEdit={onEdit} /></ul>)
+    const list = document.querySelector('[data-jff-editor="options"]')!
+    const buttons = [...list.querySelectorAll('button')]
+    expect(buttons.map((b) => b.textContent)).toEqual(opts)
+    fireEvent.click(buttons[2]!)
+    expect(onEdit).toHaveBeenCalledWith('0:1', 'Yes – now')
+    expect(document.querySelector('[data-jff-editor="picker"]')).not.toBeNull()
+  })
+
+  it('a dropdown with more than 12 Options, or a filled row, lists no buttons', () => {
+    const many = Array.from({ length: 13 }, (_, i) => `Option ${i}`)
+    const r = row(field({ kind: 'combobox', options: many }), resolution({ tier: 'needs_input', value: null, source: null }))
+    const { unmount } = render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-editor="options"]')).toBeNull()
+    unmount()
+    const filled = row(field({ kind: 'combobox', options: ['Brazil', 'Portugal', 'Spain', 'Italy', 'France', 'Chile'] }), resolution({ tier: 'auto', value: 'Brazil' }))
+    render(<ul><FieldRow row={filled} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-editor="options"]')).toBeNull()
+  })
+
   it('annotates an empty-options combobox as a dropdown whose options load on fill', () => {
     const r = row(field({ kind: 'combobox', options: [] }), resolution({ tier: 'needs_input', value: null, source: null }))
     render(<ul><FieldRow row={r} {...props} /></ul>)

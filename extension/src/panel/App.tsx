@@ -12,7 +12,7 @@ import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
-import { landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
+import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
@@ -1493,7 +1493,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     try {
       const out = await fillOne(sc.target, row, value)
       if (!alive(sc)) return
-      if (!out.ok) { await settleMiss(sc, row, 'Fill', out); return }
+      if (!out.ok) {
+        await settleMiss(sc, row, 'Fill', out)
+        // A miss of the row's own stored Value is handed to the model pick, as
+        // after a Scan, unless the row already missed that way: its pick was
+        // asked then. Not awaited: the row shows the miss and its Options while
+        // the model runs.
+        const owed = row.resolution.reason === NO_MATCH ? null : pickOwed(row.resolution, row.field, out, value)
+        if (owed !== null) runPicks(sc.target, sc.gen, [owed], () => mountedRef.current && alive(sc))
+        return
+      }
       const { committed } = out
       await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
         ...s,

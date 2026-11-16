@@ -206,3 +206,51 @@ describe('an Accept that misses', () => {
     expect(host.picks).toHaveLength(1)
   })
 })
+
+// PR #36 manual pass 2: the post-Scan Fill was blocked by another open menu;
+// the user's own Fill then missed, and no pick was ever asked.
+describe('a manual Fill that misses on the row\'s own stored Value', () => {
+  const SPONSOR = 'Will you now or in the future require sponsorship to work in the United States?'
+  const WORDED = [
+    'No – I am authorized and will not require sponsorship',
+    'Yes – I am authorized now, but will require sponsorship in the future',
+    'Yes – I am not currently authorized and will require sponsorship',
+    'N/A – I am not located in the U.S.',
+  ]
+  beforeEach(() => {
+    host.fields = [field(0, SPONSOR, { kind: 'combobox' })]
+    host.firstValues = { 0: 'Yes' }
+    host.firstPatch = { 0: { key: 'sponsorshipNeeded', source: 'answer_bank', reason: 'recognizer:sponsorshipNeeded' } }
+    host.offers = { 0: WORDED }
+    host.refuse = { 0: 'listbox-left-open' }
+  })
+
+  const fillAgain = async (): Promise<void> => {
+    await waitFor(() => { expect(tierOf(SPONSOR)).toBe('needs_input') })
+    expect(host.picks).toEqual([])
+    host.refuse = {}
+    fireEvent.click(within(row(SPONSOR)).getByRole('button', { name: 'Fill' }))
+  }
+
+  it('is handed to the pick, and a picked Option is Proposed with the Value it stands for, nothing on the page', async () => {
+    host.pick = () => ({ position: 2 })
+    await mountScanned()
+    await fillAgain()
+    await waitFor(() => { expect(host.picks).toHaveLength(1) })
+    expect(host.picks[0]).toEqual({ label: SPONSOR, value: 'Yes', options: WORDED })
+    await waitFor(() => { expect(tierOf(SPONSOR)).toBe('proposed') })
+    expect(standsForOf(SPONSOR)).toContain('Yes')
+    expect(host.page[0]).toBeUndefined()
+  })
+
+  it('with no pick it stays Needs input with the Options, and a second Fill asks no second pick', async () => {
+    await mountScanned()
+    await fillAgain()
+    await waitFor(() => { expect(host.picks).toHaveLength(1) })
+    expect(tierOf(SPONSOR)).toBe('needs_input')
+    expect(pickerOptions(SPONSOR)).toEqual(WORDED)
+    fireEvent.click(within(row(SPONSOR)).getByRole('button', { name: 'Fill' }))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(host.picks).toHaveLength(1)
+  })
+})
