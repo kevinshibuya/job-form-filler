@@ -1,4 +1,4 @@
-import type { WidgetKind } from '@jff/shared'
+import type { AtsModule, WidgetKind } from '@jff/shared'
 
 type Scope = Document | ShadowRoot
 
@@ -84,7 +84,7 @@ export function kindOf(el: Element): WidgetKind | null {
 export type LabelSource =
   | 'explicit' | 'aria-label' | 'aria-labelledby' | 'wrapping' | 'legend'
   | 'dangling' | 'name-for' | 'climb' | 'placeholder'
-  | 'group-legend' | 'group-aria' | 'none'
+  | 'group-legend' | 'group-aria' | 'module' | 'none'
 
 /**
  * A label binding, not just a string. `element` is the node whose textContent
@@ -220,8 +220,28 @@ function climbLabelFor(el: Element): LabelBinding | null {
   return null
 }
 
-export function labelFor(el: Element): LabelBinding {
+/**
+ * The ATS module's label rule, tried before anything the page declares (spec
+ * #41). It records `module` as its source on the binding; the source does not
+ * travel with the Field. Null when the module has no rule or the rule finds
+ * nothing, and the generic order runs as it would with no module.
+ */
+function moduleLabelFor(el: Element, mod: AtsModule | undefined): LabelBinding | null {
+  const found = mod?.labelRule?.(el) ?? null
+  return found === null ? null : { text: found.text, source: 'module', element: found.element }
+}
+
+/** A Control's label. `mod` is the frame's ATS module: its label rule answers
+ *  first for a Control that is a question by itself. A checkbox keeps its own
+ *  text, so the rule is never asked for one. */
+export function labelFor(el: Element, mod?: AtsModule): LabelBinding {
   const scope = scopeOf(el)
+
+  const kind = kindOf(el)
+  if (kind !== 'checkbox' && kind !== 'radiogroup') {
+    const fromModule = moduleLabelFor(el, mod)
+    if (fromModule !== null) return fromModule
+  }
 
   if (el.id !== '') {
     const l = scope.querySelector(`label[for="${escapeId(el.id)}"]`)
@@ -284,10 +304,14 @@ export function ariaGroupLabel(group: Element): LabelBinding | null {
 /**
  * The label of a WHOLE radio group. Never consults the wrapping <label> of an
  * individual radio: that is the OPTION's text ("Remote"), not the group's
- * ("Work model"). Group-level signals only: fieldset legend, then a
- * [role="group"] container's aria-label / aria-labelledby.
+ * ("Work model"). The ATS module's label rule first, then group-level signals
+ * only: fieldset legend, then a [role="group"] container's aria-label /
+ * aria-labelledby.
  */
-export function groupLabelFor(el: Element): LabelBinding {
+export function groupLabelFor(el: Element, mod?: AtsModule): LabelBinding {
+  const fromModule = moduleLabelFor(el, mod)
+  if (fromModule !== null) return fromModule
+
   const legend = el.closest('fieldset')?.querySelector('legend') ?? null
   const legendText = clean(legend?.textContent)
   if (legend !== null && legendText !== '') return { text: legendText, source: 'group-legend', element: legend }

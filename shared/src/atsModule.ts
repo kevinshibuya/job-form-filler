@@ -15,8 +15,17 @@ import { ashby } from './atsModules/ashby.js'
 import { greenhouse } from './atsModules/greenhouse.js'
 import { lever } from './atsModules/lever.js'
 
-/** Given a Control's element, the element that holds its question's text, or null. */
-export type LabelRule = (control: Element) => Element | null
+/** A question's text as a module reads it, and the element it sits in. */
+export interface ModuleLabel {
+  readonly text: string
+  readonly element: Element
+}
+
+/** Given a Control's element, its question's text and where it sits, or null
+ *  when the rule has nothing to say and the generic order runs. Enumeration
+ *  tries it first for a Control that is a question by itself and for a radio
+ *  group's question, never for a checkbox. */
+export type LabelRule = (control: Element) => ModuleLabel | null
 
 /** Where the Job posting text sits on a page: a CSS selector, as a picked spot is. */
 export type JobTextSpot = string
