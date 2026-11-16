@@ -1,4 +1,6 @@
-export const MIN_JOB_TEXT = 400
+import { MIN_JOB_TEXT } from '@jff/shared'
+
+export { MIN_JOB_TEXT }
 const MAX_JOB_TEXT = 50_000
 
 /** Hard ceiling on a pending element pick. A JFF_PICK promise that never settles
