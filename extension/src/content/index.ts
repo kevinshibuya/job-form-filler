@@ -30,7 +30,7 @@ async function handle(raw: unknown): Promise<unknown> {
 
   // A SCAN establishes the epoch for this frame. Everything else must match it.
   if (msg.type === 'JFF_SCAN') {
-    const { fields, unreachableWidgets } = enumerateFields({
+    const { fields, unreachableWidgets, attachedUploads } = enumerateFields({
       root: document,
       epoch: msg.epoch,
       isDemographic: (el) => isDemographic(el),
@@ -40,7 +40,7 @@ async function handle(raw: unknown): Promise<unknown> {
     // the host's Resolution requests and fail there as an opaque bad_request, with no way
     // to tell which frame produced it.
     const scan = ScanResultSchema.safeParse({
-      epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document),
+      epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document), attachedUploads,
     })
     if (!scan.success) return { ok: false, error: 'bad_scan' }
     installSnapshotListeners(document, (snap) => {

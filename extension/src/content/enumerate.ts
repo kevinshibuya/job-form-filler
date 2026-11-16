@@ -1,6 +1,6 @@
 import type { EnumField, WidgetKind } from '@jff/shared'
 import {
-  countUnreachableWidgets, descriptionFor, groupLabelFor, isSoleControl, kindOf,
+  ariaGroupLabel, countUnreachableWidgets, descriptionFor, groupLabelFor, isSoleControl, kindOf,
   labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements, type LabelBinding,
 } from './dom'
 import { isDemographicField } from './demographic'
@@ -154,7 +154,29 @@ function requiredOf(el: Element, binding: LabelBinding): boolean {
     || requiredFromBinding(binding)
 }
 
-export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; unreachableWidgets: number } {
+/**
+ * #37: the labels of upload groups that show an attached file. Greenhouse
+ * removes a group's file input once a file is chosen: it shows a progress bar
+ * while the upload runs, then the file name. In neither state is a Field left
+ * to say the resume is already there, and a Scan re-reads the page right after
+ * its own upload, while the bar is still up. Read by structure (a labelled
+ * [role="group"] holding a `.file-upload__filename` or a
+ * `.file-upload__progressbar`, and no file input), never by the remove
+ * button's wording, which is localized.
+ */
+export function attachedUploads(root: Document | ShadowRoot): string[] {
+  const out: string[] = []
+  for (const el of walkElements(root)) {
+    if (el.getAttribute('role') !== 'group') continue
+    if (el.querySelector('.file-upload__filename, .file-upload__progressbar') === null) continue
+    if (el.querySelector('input[type="file"]') !== null) continue
+    const label = ariaGroupLabel(el)?.text ?? null
+    if (label !== null) out.push(label)
+  }
+  return out
+}
+
+export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; unreachableWidgets: number; attachedUploads: string[] } {
   const measure = opts.measure ?? defaultMeasure
   const isDemographic = opts.isDemographic ?? (() => false)
   setEpoch(opts.epoch)
@@ -317,7 +339,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
     fid++
   }
 
-  return { fields, unreachableWidgets: countUnreachableWidgets(opts.root) }
+  return { fields, unreachableWidgets: countUnreachableWidgets(opts.root), attachedUploads: attachedUploads(opts.root) }
 }
 
 /** Resolve a handle back to a live element, piercing open shadow roots. */

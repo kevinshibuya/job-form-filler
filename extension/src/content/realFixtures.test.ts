@@ -72,10 +72,11 @@ function headingLevel(el: Element): number {
 beforeEach(() => { document.documentElement.innerHTML = '<head></head><body></body>' })
 
 describe('loadRealFixture', () => {
-  it('holds the eight real-page fixtures', () => {
+  it('holds the ten real-page fixtures', () => {
     expect([...REAL_FIXTURES].sort()).toEqual([
       'based-in-yes-no', 'greenhouse-accommodation', 'greenhouse-hosted-a', 'greenhouse-hosted-b',
-      'greenhouse-self-id', 'lever-marketing-consent', 'lever-pronoun-group', 'lever-source-group',
+      'greenhouse-hosted-resume-attached', 'greenhouse-hosted-resume-uploading', 'greenhouse-self-id',
+      'lever-marketing-consent', 'lever-pronoun-group', 'lever-source-group',
     ])
   })
 
@@ -195,6 +196,28 @@ describe('each real-page fixture shows its review finding', () => {
       const reachable = Array.from(group.querySelectorAll(CONTROL)).filter((c) => c !== phone && c.getAttribute('aria-hidden') !== 'true')
       expect(reachable.map((c) => [c.getAttribute('role'), labelOf(c)])).toEqual([['combobox', 'Country*']])
     }
+  })
+
+  it('greenhouse-hosted-resume-uploading: while the upload runs, the resume group holds a progress bar, no file input and no file name', () => {
+    loadRealFixture('greenhouse-hosted-resume-uploading')
+    const resume = document.querySelector('[role="group"][aria-labelledby="upload-label-resume"]')!
+    expect(resume.querySelector('.file-upload__progressbar')).not.toBeNull()
+    expect(resume.querySelector('input[type="file"]')).toBeNull()
+    expect(resume.querySelector('.file-upload__filename')).toBeNull()
+    expect(document.querySelector('[role="group"][aria-labelledby="upload-label-cover_letter"] input#cover_letter')).not.toBeNull()
+  })
+
+  it('greenhouse-hosted-resume-attached: the resume group shows the file name and no file input; the cover letter group keeps its input', () => {
+    loadRealFixture('greenhouse-hosted-resume-attached')
+    const resume = document.querySelector('[role="group"][aria-labelledby="upload-label-resume"]')!
+    expect(text(byId('upload-label-resume'))).toBe('Resume/CV*')
+    expect(resume.querySelector('input[type="file"]')).toBeNull()
+    expect(text(resume.querySelector('.file-upload__filename'))).toBe('ada-lovelace-resume.pdf')
+    expect(document.getElementById('resume')).toBeNull()
+    const cover = document.querySelector('[role="group"][aria-labelledby="upload-label-cover_letter"]')!
+    expect(text(byId('upload-label-cover_letter'))).toBe('Cover Letter')
+    expect(cover.querySelector('input[type="file"]')?.id).toBe('cover_letter')
+    expect(cover.querySelector('.file-upload__filename')).toBeNull()
   })
 
   it('greenhouse-accommodation: a Control whose label asks about accommodation', () => {
