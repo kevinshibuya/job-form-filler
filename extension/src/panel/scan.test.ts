@@ -865,7 +865,7 @@ describe('the two Resolution steps', () => {
     return { port, calls }
   }
   const pending = [field(0, 1, { frameId: 0, epoch: 3, label: 'Why us?' }), field(0, 2, { frameId: 0, epoch: 3, label: 'Salary' })]
-  const scan = { epoch: 3, jobText: 'JD', pending }
+  const scan = { epoch: 3, ats: 'generic' as const, jobText: 'JD', pending }
   const res = (fid: number, patch: Partial<Resolution>): Resolution => ({
     handle: { frameId: 0, fid, epoch: 3 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom', ...patch,
   })

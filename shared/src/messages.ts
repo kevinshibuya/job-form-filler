@@ -45,6 +45,10 @@ export const ResolveParamsSchema = z.object({
   company: z.string().nullable(),
   jobText: z.string(),
   fields: z.array(EnumFieldSchema),
+  /** The Scan's ATS (an `AtsOrGeneric`), for the host's log only: the host
+   *  branches on nothing. Optional, and any string, so a panel and a host a
+   *  release apart still talk; an absent one reads as `generic`. */
+  ats: z.string().min(1).max(64).optional(),
 })
 export type ResolveParams = z.infer<typeof ResolveParamsSchema>
 

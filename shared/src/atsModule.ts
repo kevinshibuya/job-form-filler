@@ -9,7 +9,7 @@
  * module, or no ATS at all, gets it.
  */
 
-import type { AtsId } from './ats.js'
+import type { AtsOrGeneric } from './ats.js'
 import type { EnumField } from './field.js'
 import { ashby } from './atsModules/ashby.js'
 import { greenhouse } from './atsModules/greenhouse.js'
@@ -40,7 +40,7 @@ export interface JobTextRule {
 export type JunkRule = (field: EnumField) => boolean
 
 export interface AtsModule {
-  readonly id: AtsId | 'generic'
+  readonly id: AtsOrGeneric
   readonly labelRule?: LabelRule
   readonly jobText?: JobTextRule
   readonly junkRule?: JunkRule

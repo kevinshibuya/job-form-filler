@@ -1,3 +1,4 @@
+import { atsModule, type AtsOrGeneric } from '@jff/shared'
 import type { FrameReport } from './scan'
 import { MUTED } from './ui'
 
@@ -14,7 +15,9 @@ export type ScanUiState =
   // The first step has settled and Mapping still runs: the counts describe the
   // rows on screen, and the waiting rows are counted apart from them.
   | ({ kind: 'matching'; waiting: number } & ScanCounts)
-  | { kind: 'empty'; frames: number }
+  // `ats`: the Scan's ATS, whose module may say where its form is. Absent on
+  // an outcome stored before the ATS travelled with the Scan.
+  | { kind: 'empty'; frames: number; ats?: AtsOrGeneric }
   | { kind: 'captcha' }
   // `counts` is set when Mapping failed after the first step filled: those
   // fills stay on the page, so the line keeps counting them.
@@ -36,7 +39,11 @@ function copyFor(s: ScanUiState): string {
     case 'resolving': return `Matching ${s.fields} fields… (an AI call can take a minute)`
     case 'done': return `✓ ${countsCopy(s)}`
     case 'matching': return `${countsCopy(s)}, ${s.waiting} still being matched…`
-    case 'empty': return `⚠ Scanned ${s.frames} frames, found no form fields. Open the application form, then Scan again.`
+    case 'empty': {
+      const sentence = `⚠ Scanned ${s.frames} frames, found no form fields. Open the application form, then Scan again.`
+      const hint = atsModule(s.ats).emptyStateHint
+      return hint === undefined ? sentence : `${sentence} ${hint}`
+    }
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'
     case 'failed': return s.counts === undefined
       ? `✕ Scan failed: ${s.reason}`

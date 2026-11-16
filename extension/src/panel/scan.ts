@@ -1,4 +1,8 @@
-import type { CityParts, ContentMessage, EnumField, FieldHandle, FillReport, HostErrorKind, PhoneParts, Resolution, ResolveFirstResult, ResolveMappingResult } from '@jff/shared'
+import {
+  atsIdOf, atsModule,
+  type AtsModule, type AtsOrGeneric, type CityParts, type ContentMessage, type EnumField, type FieldHandle, type FillReport,
+  type HostErrorKind, type PhoneParts, type Resolution, type ResolveFirstResult, type ResolveMappingResult,
+} from '@jff/shared'
 import { electFrame } from './election'
 import { refOf } from './group'
 import { dropJunk } from './junk'
@@ -62,6 +66,47 @@ export interface ScanDeps {
   hostname?: string
   url?: string
   company?: string | null
+  /** The ATS module of a Scan's ATS. Defaults to the shared registry; a test
+   *  hands the Scan a module with a rule no real module has yet. */
+  moduleFor?: (ats: AtsOrGeneric) => AtsModule
+}
+
+/** An address's hostname, or '' when it has none (`about:blank`, a srcdoc
+ *  frame, an unparseable string). */
+function hostOf(url: string | null | undefined): string {
+  if (url == null || url === '') return ''
+  try { return new URL(url).hostname } catch { return '' }
+}
+
+/**
+ * The ATS of a Scan (spec #41), from the list's own `findAts`, so the page
+ * script and the Side panel cannot disagree. With an elected frame it is that
+ * frame's address, or the tab's hostname when the frame has no address. With
+ * none, the zero-Field case, it is the first known ATS among the tab's
+ * hostname and the frames' addresses, which is what makes an Ashby iframe on a
+ * company's page Ashby. A form on the company's own domain with no iframe is
+ * generic.
+ */
+export function scanAts(
+  tabHostname: string, elected: { url: string | null } | null, frameUrls: readonly (string | null)[],
+): AtsOrGeneric {
+  if (elected !== null) {
+    const own = hostOf(elected.url)
+    return atsIdOf(own !== '' ? own : tabHostname)
+  }
+  for (const host of [tabHostname, ...frameUrls.map(hostOf)]) {
+    const ats = atsIdOf(host)
+    if (ats !== 'generic') return ats
+  }
+  return 'generic'
+}
+
+/** A module's junk rule, run after the generic filter on the elected frame's
+ *  Fields only: a Field in another frame is never the module's to drop. */
+function dropModuleJunk(fields: EnumField[], electedFrameId: number | null, mod: AtsModule): EnumField[] {
+  const rule = mod.junkRule
+  if (rule === undefined || electedFrameId === null) return fields
+  return fields.filter((f) => f.frameId !== electedFrameId || !rule(f))
 }
 
 /** A7's verdict, flattened for the panel: WHICH frame is the application, how
@@ -105,6 +150,8 @@ const emptyFill = (): CollectedFill => ({ filled: [], failed: [] })
 
 export interface ScanOutcome {
   epoch: number
+  /** The Scan's ATS: what both Resolution requests carry and the Session keeps. */
+  ats: AtsOrGeneric
   fields: EnumField[]
   /** The first step's Resolutions: everything that needed no model. */
   resolutions: Resolution[]
@@ -174,6 +221,10 @@ async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; fram
 }
 
 export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
+  const tabHostname = deps.hostname ?? ''
+  const moduleFor = deps.moduleFor ?? atsModule
+  const noElectionAts = (reports: FrameReport[]): AtsOrGeneric =>
+    scanAts(tabHostname, null, reports.map((r) => r.url))
   // PHASE 0 — first enumeration, with ONE delayed retry on an all-empty result.
   let { epoch, frameCount, enumd } = await injectAndEnumerate(deps)
   if (enumd.fields.length === 0) {
@@ -182,7 +233,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       // the delay, so a second pass can find fields with the flag back to false —
       // and the scan would then fill past a challenge we already saw.
       return {
-        epoch, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
+        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: true,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
@@ -204,13 +255,15 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     if (enumd.fields.length === 0) {
       // An empty page must cost zero host round-trips: no selector.get, no resolve.
       return {
-        epoch, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
+        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: enumd.activeCaptcha,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
     }
   }
   let { fields, unreachableWidgets, activeCaptcha, reports } = enumd
+  const urlOfFrame = (frameId: number): string | null =>
+    reports.find((r) => r.frameId === frameId && r.url !== null)?.url ?? null
   let attachedByFrame = enumd.attachedUploads
   // A5: the content script enumerated and stamped EVERYTHING (snapshot + fid
   // numbering unchanged); the panel drops junk before anything costs money or
@@ -222,14 +275,17 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   // scoped to the elected frame. Scored over KEPT fields: junk (the hidden
   // reCAPTCHA textarea) must not be able to tilt the election.
   let election = electFrame(kept)
+  // Spec #41: the elected frame names the Scan's ATS, and that ATS's module
+  // drops what it knows to be noise, from the elected frame only.
+  const atsOf = (): AtsOrGeneric => election === null
+    ? noElectionAts(reports)
+    : scanAts(tabHostname, { url: urlOfFrame(election.frameId) }, [])
+  let ats = atsOf()
+  kept = dropModuleJunk(kept, election?.frameId ?? null, moduleFor(ats))
   const electedOf = (fs: EnumField[]): EnumField[] =>
     election === null ? fs : fs.filter((f) => f.frameId === election!.frameId)
   const electionOut = (): ElectionOutcome | null =>
-    election === null ? null : {
-      frameId: election.frameId,
-      score: election.score,
-      url: reports.find((r) => r.frameId === election!.frameId && r.url !== null)?.url ?? null,
-    }
+    election === null ? null : { frameId: election.frameId, score: election.score, url: urlOfFrame(election.frameId) }
   // #37: only the elected frame's attach counts, like its file fields.
   const electedAttached = (): string[] =>
     election === null ? [] : attachedByFrame.get(election.frameId) ?? []
@@ -256,7 +312,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
     if (activeCaptcha) {
       // An active challenge means the extension does nothing at all on this page.
-      return { epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
     // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
@@ -296,23 +352,26 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       // the fresh kept set. The application frame only gains signal from its
       // own resume-parse, so a flip means the form itself changed.
       election = electFrame(kept)
+      // The second read is a new page as far as the module knows: ask again.
+      ats = atsOf()
+      kept = dropModuleJunk(kept, election?.frameId ?? null, moduleFor(ats))
 
       if (activeCaptcha) {
         // Uploading a resume is a common trigger for an ATS challenge. Re-reading
         // activeCaptcha and then filling anyway would be worse than never re-reading
         // it: same blast radius, plus a paid resolve call.
-        return { epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
       if (fields.length === 0) {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
-        return { epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
     }
 
     if (kept.length === 0) {
       // Only junk on the page: resolve is NEVER called with zero real fields.
-      return { epoch, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
     // PHASE 2 — the host is asked about the ELECTED frame only. Foreign fields
@@ -321,6 +380,11 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     // and the Saved answers already know reaches the page without waiting on
     // Mapping. The Fields it leaves pending go out in `runMapping`.
     const resolveFields = electedOf(kept)
+    if (resolveFields.length === 0) {
+      // A module's junk rule took every elected Field: resolve is NEVER called
+      // with zero real fields.
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+    }
     deps.onProgress({ phase: 'resolving', fields: resolveFields.length })
     const resolved = await deps.port.request<ResolveFirstResult>('resolve.first', {
       epoch,
@@ -329,10 +393,11 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       company: deps.company ?? null,
       jobText,
       fields: resolveFields,
+      ats,
     })
     if (!resolved.ok) {
       return {
-        epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText,
+        epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText,
         llmError: resolved.error, frameReports: reports,
       }
     }
@@ -342,7 +407,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     reports = [...reports, ...batch.reports]
 
     return {
-      epoch, fields: kept,
+      epoch, ats, fields: kept,
       resolutions: resolved.result.resolutions,
       pending: resolveFields.filter((f) => pendingRefs.has(refOf(f))),
       fill: batch.fill,
@@ -455,7 +520,7 @@ export interface MappingOutcome {
  * one superseded is dropped there: null, and no Fill.
  */
 export async function runMapping(
-  deps: MappingDeps, scan: Pick<ScanOutcome, 'epoch' | 'jobText' | 'pending'>, isCurrent: () => boolean,
+  deps: MappingDeps, scan: Pick<ScanOutcome, 'epoch' | 'ats' | 'jobText' | 'pending'>, isCurrent: () => boolean,
 ): Promise<MappingOutcome | null> {
   const failed = (llmError: { kind: HostErrorKind; message: string }): MappingOutcome => ({
     resolutions: scan.pending.map((f) => ({
@@ -474,6 +539,7 @@ export async function runMapping(
       company: deps.company ?? null,
       jobText: scan.jobText,
       fields: scan.pending,
+      ats: scan.ats,
     })
   } catch (e) {
     return isCurrent() ? failed({ kind: 'unreachable', message: e instanceof Error ? e.message : String(e) }) : null

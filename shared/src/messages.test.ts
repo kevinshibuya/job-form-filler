@@ -88,6 +88,16 @@ describe('Resolution in two requests', () => {
     }
   })
 
+  it('carries the Scan\'s ATS on either request, and accepts a request with none', () => {
+    for (const method of ['resolve.first', 'resolve.mapping'] as const) {
+      const parsed = HostRequestSchema.parse({ requestId: `r-${method}`, method, params: { ...params, ats: 'greenhouse' } })
+      expect(parsed.params).toMatchObject({ ats: 'greenhouse' })
+      const without = HostRequestSchema.parse({ requestId: `r0-${method}`, method, params })
+      expect((without.params as { ats?: string }).ats).toBeUndefined()
+    }
+    expect(HostRequestSchema.safeParse({ requestId: 'r3', method: 'resolve.first', params: { ...params, ats: '' } }).success).toBe(false)
+  })
+
   it('rejects either request without its fields', () => {
     const { fields: _fields, ...noFields } = params
     expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'resolve.first', params: noFields }).success).toBe(false)

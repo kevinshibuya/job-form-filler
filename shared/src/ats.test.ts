@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ATS_LIST, companyFromTitle, companySlugFrom, findAts, type Ats } from './ats.js'
+import { ATS_LIST, atsIdOf, companyFromTitle, companySlugFrom, findAts, isAtsOrGeneric, type Ats } from './ats.js'
 import { GENERIC_MODULE, atsModule } from './atsModule.js'
 
 // Ticket #42: the one list of ATSes (spec #41). Finding an ATS from a hostname,
@@ -52,6 +52,21 @@ const entry = (hostname: string): Ats => {
   if (ats === null) throw new Error(`no ATS for ${hostname}`)
   return ats
 }
+
+describe('the list of ATSes: the id a Scan carries', () => {
+  it('is the entry\'s id, or generic for a hostname on no entry', () => {
+    expect(atsIdOf('jobs.lever.co')).toBe('lever')
+    expect(atsIdOf('careers.example.com')).toBe('generic')
+    expect(atsIdOf('')).toBe('generic')
+  })
+
+  it('reads a stored value as an id only when the list or generic names it', () => {
+    expect(isAtsOrGeneric('ashby')).toBe(true)
+    expect(isAtsOrGeneric('generic')).toBe(true)
+    expect(isAtsOrGeneric('teamtailor')).toBe(false)
+    expect(isAtsOrGeneric(undefined)).toBe(false)
+  })
+})
 
 describe('the list of ATSes: how an ATS writes the Company', () => {
   it.each([
