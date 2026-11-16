@@ -20,7 +20,7 @@ let decide: (ref: string) => Decision
 beforeEach(() => {
   db = openDb(':memory:')
   setProfile(db, {
-    firstName: 'Ada', lastName: 'Lovelace', fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+1 555 0100',
+    firstName: 'Ada', lastName: 'Lovelace', fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+15550100',
     location: 'Berlin, Germany', city: 'Berlin', country: 'Germany',
   })
   decide = () => ({ decision: 'custom' })
@@ -97,13 +97,12 @@ describe('candidate words on a Resolution', () => {
     for (const r of [email, city, location]) expect(r!.candidates ?? []).toEqual([])
   })
 
-  it('the old free text of relocate, work authorization and sponsorship carries none', async () => {
-    setAnswerBank(db, { relocate: 'yes', workAuth: 'yes', sponsorshipNeeded: 'no' })
+  it('the old free text of work authorization and sponsorship carries none', async () => {
+    setAnswerBank(db, { workAuth: 'yes', sponsorshipNeeded: 'no' })
     const rows = await resolve('resolve.first',
-      field('Are you willing to relocate?', 'text'),
       field('Are you legally authorized to work here?', 'text'),
       field('Will you require visa sponsorship?', 'text'))
-    expect(rows.map((r) => r!.key)).toEqual(['relocate', 'workAuth', 'sponsorshipNeeded'])
+    expect(rows.map((r) => r!.key)).toEqual(['workAuth', 'sponsorshipNeeded'])
     for (const r of rows) expect(r!.candidates ?? []).toEqual([])
   })
 

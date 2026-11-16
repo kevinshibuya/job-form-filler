@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  candidatesForKey, isCheckboxGroup, isConsentCheckbox, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
+  candidatesForKey, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
   type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -98,6 +98,26 @@ function keyValueFor(f: EnumField, stored: string): string | null {
   return isCheckboxGroup(f) ? optionEqualTo(stored, f.options) : stored
 }
 
+/**
+ * What a Known key holds for this Field. A stored text that is not its key's
+ * canonical form is `old`: no Value, so the Field is Needs input with the
+ * reason `no-value` (shared/src/typedValues.ts). A Value is formatted for the
+ * Field: a yes or a no in the language of its label, as Saved answers detect
+ * it.
+ */
+type KeyValue = { kind: 'value'; value: string } | { kind: 'old' } | { kind: 'none' }
+
+function keyValueOf(db: Database.Database, f: EnumField, key: FieldKey): KeyValue {
+  const stored = getStoredValue(db, key)
+  if (stored === null) return { kind: 'none' }
+  if (isOldText(key, stored)) return { kind: 'old' }
+  const value = displayValue(key, stored, detectLanguage(f.label ?? ''))
+  return value === null ? { kind: 'none' } : { kind: 'value', value }
+}
+
+/** The reason suffix of a key with no Value: none stored, or only old text. */
+const noValue = (kv: KeyValue): string => (kv.kind === 'old' ? 'no-value' : 'no-stored-value')
+
 interface StepResult {
   byRef: Map<string, Resolution>
 }
@@ -142,8 +162,8 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     // On a checkbox group a key answers only with an Option equal to its stored
     // Value. With none, the group goes on as if the key had not matched.
     if (key !== null && isCheckboxGroup(f)) {
-      const stored = getStoredValue(db, key)
-      const option = stored === null ? null : keyValueFor(f, stored)
+      const kv = keyValueOf(db, f, key)
+      const option = kv.kind === 'value' ? keyValueFor(f, kv.value) : null
       if (option !== null) {
         byRef.set(ref, res(f, {
           tier: 'auto', source: isProfileKey(key) ? 'profile' : 'answer_bank',
@@ -154,11 +174,11 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
       key = null
     }
     if (key !== null) {
-      const value = getStoredValue(db, key)
-      if (value !== null) {
+      const kv = keyValueOf(db, f, key)
+      if (kv.kind === 'value') {
         byRef.set(ref, res(f, {
           tier: 'auto', source: isProfileKey(key) ? 'profile' : 'answer_bank',
-          key, value, reason: `recognizer:${key}`,
+          key, value: kv.value, reason: `recognizer:${key}`,
         }))
       } else {
         // B5c: the recognizer intercepts BEFORE tier 3, so a saved answer under
@@ -171,7 +191,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
             answerId: hit.id, reason: 'exact-match:key-fallback',
           }))
         } else {
-          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `recognizer:${key}:no-stored-value` }))
+          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `recognizer:${key}:${noValue(kv)}` }))
         }
       }
       continue
@@ -250,13 +270,13 @@ async function mappingStep(
           byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:wrong-control` }))
           continue
         }
-        const stored = getStoredValue(db, key)
-        const value = stored === null ? null : keyValueFor(f, stored)
+        const kv = keyValueOf(db, f, key)
+        const value = kv.kind === 'value' ? keyValueFor(f, kv.value) : null
         if (value !== null) {
           byRef.set(ref, res(f, { tier: 'proposed', source: 'llm_key', key, value, reason: `llm-key:${key}` }))
           continue
         }
-        if (stored !== null) {
+        if (kv.kind === 'value') {
           // A group that offers no Option equal to the stored Value.
           byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:no-offered-option` }))
           continue
@@ -275,7 +295,7 @@ async function mappingStep(
             answerId: hit.id, reason: `exact-match:key-fallback${out.partial}`,
           }))
         } else {
-          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `llm-key:${key}:no-stored-value` }))
+          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `llm-key:${key}:${noValue(kv)}` }))
         }
         continue
       }

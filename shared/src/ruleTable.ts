@@ -220,17 +220,49 @@ export function yesNoCandidates(value: string): string[] {
   return []
 }
 
+/** The yes or the no a word of the table says, in either language; null for any other text. */
+export function yesNoOf(word: string): 'yes' | 'no' | null {
+  for (const answer of ['yes', 'no'] as const) {
+    if (has(RULE_LANGUAGES.flatMap((l) => RULE_TABLE[l][answer]), word)) return answer
+  }
+  return null
+}
+
+/** Every word the closed list has for one country, in both languages. */
+const countryWords = (code: string): string[] => RULE_LANGUAGES.flatMap((l) => RULE_TABLE[l].countries[code] ?? [])
+
+/**
+ * The ISO 3166 code of the country the Value names, found by any of its names
+ * or short forms in either language; null for a place outside the closed list.
+ */
+export function countryCode(value: string): string | null {
+  return Object.keys(RULE_TABLE.en.countries).find((code) => has(countryWords(code), value)) ?? null
+}
+
 /**
  * Every name and short form of the country the Value names, in both
  * languages. The Value is found by any of those words; a place that is not in
  * the closed list gets none.
  */
 export function countryCandidates(value: string): string[] {
-  for (const code of Object.keys(RULE_TABLE.en.countries)) {
-    const words = RULE_LANGUAGES.flatMap((l) => RULE_TABLE[l].countries[code] ?? [])
-    if (has(words, value)) return unique(words)
-  }
-  return []
+  const code = countryCode(value)
+  return code === null ? [] : unique(countryWords(code))
+}
+
+/**
+ * The international calling code of each country in the closed list, digits
+ * only, keyed by the same ISO 3166 code. A phone in international form is a
+ * plus sign, one of these and the national number.
+ */
+export const CALLING_CODES: Readonly<Record<string, string>> = {
+  ae: '971', ao: '244', ar: '54', at: '43', au: '61', bd: '880', be: '32', bg: '359', bo: '591', br: '55',
+  ca: '1', ch: '41', cl: '56', cn: '86', co: '57', cr: '506', cv: '238', cy: '357', cz: '420', de: '49',
+  dk: '45', do: '1', ec: '593', ee: '372', eg: '20', es: '34', fi: '358', fr: '33', gb: '44', gr: '30',
+  gt: '502', hk: '852', hr: '385', hu: '36', id: '62', ie: '353', il: '972', in: '91', is: '354', it: '39',
+  jp: '81', ke: '254', kr: '82', lt: '370', lu: '352', lv: '371', ma: '212', mt: '356', mx: '52', my: '60',
+  mz: '258', ng: '234', nl: '31', no: '47', nz: '64', pa: '507', pe: '51', ph: '63', pk: '92', pl: '48',
+  pt: '351', py: '595', qa: '974', ro: '40', rs: '381', ru: '7', sa: '966', se: '46', sg: '65', si: '386',
+  sk: '421', th: '66', tr: '90', tw: '886', ua: '380', us: '1', uy: '598', ve: '58', vn: '84', za: '27',
 }
 
 /** The candidate words of a Value by its Value type. A place is read as a country. */
@@ -243,11 +275,13 @@ export function candidatesFor(type: ValueType, value: string): string[] {
 /**
  * The Known keys whose Value carries candidate words, with the rule that
  * renders it. A key outside this map gets none, whatever its Value type: the
- * old free text of `workAuth`, `sponsorshipNeeded` and `relocate` is not a
- * yes/no Value yet.
+ * old free text of `workAuth` and `sponsorshipNeeded` is not a yes/no Value
+ * yet. A `relocate` Value reaches here as the yes or no word of the Field's
+ * language, and old text as nothing (typedValues.ts).
  */
 const CANDIDATES_BY_KEY: Partial<Record<FieldKey, (value: string) => string[]>> = {
   country: countryCandidates,
+  relocate: yesNoCandidates,
 }
 
 /** The candidate words a Resolution of `key` carries for its Value. */

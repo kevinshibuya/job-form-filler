@@ -50,7 +50,7 @@ beforeEach(() => {
   codexComplete.mockReset()
   codexComplete.mockImplementation(async () => [])
   setProfile(db, {
-    firstName: 'Ada', lastName: 'Lovelace', email: 'ada@example.com', phone: '+1 555 0100',
+    firstName: 'Ada', lastName: 'Lovelace', email: 'ada@example.com', phone: '+15550100',
     linkedin: 'https://linkedin.com/in/ada', github: 'https://github.com/ada',
   })
   setAnswerBank(db, { salary: 'USD 100k' })
@@ -101,7 +101,7 @@ describe('resolve.first', () => {
     expect(byFid.get(1)).toMatchObject({ tier: 'auto', source: 'profile', key: 'firstName', value: 'Ada' })
     expect(byFid.get(2)).toMatchObject({ tier: 'auto', source: 'profile', key: 'lastName', value: 'Lovelace' })
     expect(byFid.get(3)).toMatchObject({ tier: 'auto', source: 'profile', key: 'email', value: 'ada@example.com' })
-    expect(byFid.get(4)).toMatchObject({ tier: 'auto', source: 'profile', key: 'phone', value: '+1 555 0100' })
+    expect(byFid.get(4)).toMatchObject({ tier: 'auto', source: 'profile', key: 'phone', value: '+15550100' })
     expect(byFid.get(5)).toMatchObject({ tier: 'auto', source: 'profile', key: 'linkedin', value: 'https://linkedin.com/in/ada' })
     expect(byFid.get(6)).toMatchObject({ tier: 'auto', source: 'profile', key: 'github', value: 'https://github.com/ada' })
     expect(byFid.get(7)).toMatchObject({ tier: 'auto', source: 'saved_answer', value: '6 years', reason: 'exact-match' })

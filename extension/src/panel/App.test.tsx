@@ -25,7 +25,7 @@ const SELF_CHECK = {
 }
 
 /** O3: the default test persona is ONBOARDED. Gate tests opt out explicitly. */
-const ONBOARDED = { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User', country: 'Canada' }
+const ONBOARDED = { email: 'fake@example.com', phone: '+15550100', fullName: 'Fake User', country: 'Canada' }
 
 /**
  * jsdom's Blob has no `arrayBuffer()`, so `saveResume(new File(...))` throws here
@@ -1617,7 +1617,7 @@ describe('App — onboarding gate (O1/O3)', () => {
       calls.push({ method, params })
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'profile.get') {
-        return { requestId, ok: true, result: { email: 'ada@example.com', phone: '+1 555 0100', fullName: 'Ada Lovelace', location: 'London, UK' } }
+        return { requestId, ok: true, result: { email: 'ada@example.com', phone: '+15550100', fullName: 'Ada Lovelace', location: 'London, UK' } }
       }
       return { requestId, ok: true, result: {} }
     }
@@ -1758,7 +1758,7 @@ describe('App — onboarding gate (O1/O3)', () => {
       { target: { files: [new File(['cv'], 'cv.txt', { type: 'text/plain' })] } })
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
-    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '+15550100' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
@@ -1782,7 +1782,7 @@ describe('App — onboarding gate (O1/O3)', () => {
       { target: { files: [new File(['cv'], 'cv.txt', { type: 'text/plain' })] } })
     await waitFor(() => expect(screen.getByText(/cv\.txt/)).toBeTruthy())
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
-    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '+15550100' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
@@ -3279,7 +3279,10 @@ describe('App — session concurrency (S7)', () => {
 
 describe('App — Save to profile (a fact is stored, never drafted)', () => {
   /** One keyed GitHub row, needs_input, with nothing stored under the key. */
-  function installKeyedScan(calls: { m: string; p: unknown }[], setFails = false): void {
+  function installKeyedScan(
+    calls: { m: string; p: unknown }[], setFails = false,
+    row: { label: string; key: 'github' | 'relocate'; bank?: Record<string, string> } = { label: 'GitHub', key: 'github' },
+  ): void {
     const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
     send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
@@ -3287,7 +3290,7 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
         return {
           ok: true,
           replies: [{ frameId: 0, url: 'https://jobs.acme.com/apply', payload: { ok: true, scan: { epoch: 1, fields: [
-            { frameId: -1, fid: 0, epoch: 1, label: 'GitHub', name: null, idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false },
+            { frameId: -1, fid: 0, epoch: 1, label: row.label, name: null, idAttr: null, kind: 'text', options: [], required: false, visible: true, currentValue: null, demographic: false },
           ], unreachableWidgets: 0, activeCaptcha: false } } }],
           failures: [],
         }
@@ -3301,6 +3304,7 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       calls.push({ m: method, p: params })
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'answerBank.get') return { requestId, ok: true, result: row.bank ?? {} }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'profile.set' && setFails) {
         return { requestId, ok: false, error: { kind: 'bad_request', message: 'fact value over 500 characters: github' } }
@@ -3308,7 +3312,7 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
       if (method === 'resolve.first' || method === 'resolve.mapping') {
         return { requestId, ok: true, result: answerTwoStep(method, params, [{
           handle: { frameId: 0, fid: 0, epoch: 1 }, tier: 'needs_input' as const,
-          value: null, source: null, key: 'github' as const, answerId: null, reason: 'recognizer:github',
+          value: null, source: null, key: row.key, answerId: null, reason: `recognizer:${row.key}`,
         }])! }
       }
       return { requestId, ok: true, result: {} }
@@ -3330,6 +3334,32 @@ describe('App — Save to profile (a fact is stored, never drafted)', () => {
     expect(calls.some((c) => c.m === 'save')).toBe(false)
     // Stored now, so the button retires rather than offering an overwrite.
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save to profile' })).toBeNull())
+  })
+
+  // Ticket #27: old text of a typed key is no Value, so the row offers to
+  // store one, and stores it in the key's form.
+  const RELOCATE_ROW = { label: 'Willing to relocate?', key: 'relocate' as const, bank: { relocate: 'Yes, anywhere in Europe' } }
+
+  it('a relocate whose stored text is old offers Save to profile, and "Sim" is stored as yes', async () => {
+    const calls: { m: string; p: unknown }[] = []
+    installKeyedScan(calls, false, RELOCATE_ROW)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(screen.getByLabelText('Willing to relocate?'), { target: { value: 'Sim' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save to profile' }))
+    await waitFor(() => expect(calls.filter((c) => c.m === 'answerBank.set')).toHaveLength(1))
+    expect(calls.find((c) => c.m === 'answerBank.set')!.p).toEqual({ values: { relocate: 'yes' } })
+  })
+
+  it('a relocate that is not a yes or a no is refused on the row and never sent', async () => {
+    const calls: { m: string; p: unknown }[] = []
+    installKeyedScan(calls, false, RELOCATE_ROW)
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('done'))
+    fireEvent.change(screen.getByLabelText('Willing to relocate?'), { target: { value: 'Only within Europe' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save to profile' }))
+    await waitFor(() => expect(screen.getByText(/yes or a no/)).toBeTruthy())
+    expect(calls.some((c) => c.m === 'answerBank.set')).toBe(false)
   })
 
   it('a refused profile.set from the editor keeps the editor open and shows the error', async () => {

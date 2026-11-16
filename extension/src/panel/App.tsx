@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { isProfileKey } from '@jff/shared'
+import { isProfileKey, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow, WaitingRow } from './FieldRow'
@@ -1546,8 +1546,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (port === null) return
     // Same precedence buildSaveItems uses, so a fact the user corrected on the
     // page is the one that gets stored.
-    const value = (session?.snapshot[ref] ?? edits[ref] ?? row.resolution.value ?? '').trim()
-    if (value === '') return
+    const typed = (session?.snapshot[ref] ?? edits[ref] ?? row.resolution.value ?? '').trim()
+    if (typed === '') return
+    // A key with a typed form is stored in it: "Sim" as yes, a phone without
+    // its spaces. What it refuses is said here, never sent.
+    const shaped = toStoredText(key, typed)
+    if (!shaped.ok) {
+      setScanStatus({ kind: 'action_failed', reason: `Save to profile failed: ${shaped.reason}` })
+      return
+    }
+    const value = shaped.text
 
     setActing({ ref, action: 'save_fact' })
     try {

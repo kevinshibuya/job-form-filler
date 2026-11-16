@@ -18,7 +18,7 @@ let mapping: ReturnType<typeof vi.fn>
 let decide: (ref: string) => Decision
 
 const ADA = {
-  firstName: 'Ada', lastName: 'Lovelace', fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+1 555 0100',
+  firstName: 'Ada', lastName: 'Lovelace', fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+15550100',
   location: 'London, UK', city: 'London', region: 'Greater London', country: 'United Kingdom',
   currentCompany: 'Analytical Engines Ltd', currentTitle: 'Mathematician',
 }

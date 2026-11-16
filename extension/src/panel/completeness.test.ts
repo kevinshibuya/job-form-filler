@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { profileCompleteness, REQUIRED_FACTS } from './completeness'
+import { missingFacts, profileCompleteness, REQUIRED_FACTS } from './completeness'
 
-const FULL = { email: 'k@x.dev', phone: '+1 555 0100', fullName: 'Ada Lovelace', country: 'United Kingdom' }
+const FULL = { email: 'k@x.dev', phone: '+15550100', fullName: 'Ada Lovelace', country: 'United Kingdom' }
 
 describe('profileCompleteness (O1)', () => {
   it('incomplete: a resume, a name, email and phone but no country', () => {
@@ -17,13 +17,13 @@ describe('profileCompleteness (O1)', () => {
 
   it('complete: firstName+lastName satisfies the name group', () => {
     expect(profileCompleteness(
-      { email: 'k@x.dev', phone: '1', firstName: 'Ada', lastName: 'Lovelace', country: 'United Kingdom' }, true, true,
+      { email: 'k@x.dev', phone: '+15550100', firstName: 'Ada', lastName: 'Lovelace', country: 'United Kingdom' }, true, true,
     )).toBe('complete')
   })
 
   it('incomplete: firstName WITHOUT lastName does not satisfy the name group', () => {
     expect(profileCompleteness(
-      { email: 'k@x.dev', phone: '1', firstName: 'Ada', country: 'United Kingdom' }, true, true,
+      { email: 'k@x.dev', phone: '+15550100', firstName: 'Ada', country: 'United Kingdom' }, true, true,
     )).toBe('incomplete')
   })
 
@@ -33,6 +33,18 @@ describe('profileCompleteness (O1)', () => {
 
   it.each(['email', 'phone', 'country'] as const)('incomplete: missing %s', (k) => {
     expect(profileCompleteness({ ...FULL, [k]: '' }, true, true)).toBe('incomplete')
+  })
+
+  it('counts a phone only in international form: a Profile whose phone is old text is incomplete', () => {
+    expect(profileCompleteness({ ...FULL, phone: '(555) 010-0100' }, true, true)).toBe('incomplete')
+    expect(profileCompleteness({ ...FULL, phone: '+1 555 0100' }, true, true)).toBe('incomplete')
+    expect(profileCompleteness({ ...FULL, phone: '+15550100' }, true, true)).toBe('complete')
+  })
+
+  it('names what is missing, the phone among it when it is old text', () => {
+    expect(missingFacts(FULL, true)).toEqual([])
+    expect(missingFacts({ ...FULL, phone: '(555) 010-0100' }, true)).toEqual(['phone'])
+    expect(missingFacts({}, false)).toEqual(['resume', 'email', 'phone', 'name', 'country'])
   })
 
   it('whitespace-only values do not count', () => {
@@ -60,7 +72,7 @@ describe('profileCompleteness (O1)', () => {
       for (const alt of group) {
         // Every other group satisfied by its first alternative; this one by `alt`.
         const facts: Record<string, string> = {}
-        REQUIRED_FACTS.forEach((g, j) => { for (const k of (j === i ? alt : g[0]!)) facts[k] = 'x' })
+        REQUIRED_FACTS.forEach((g, j) => { for (const k of (j === i ? alt : g[0]!)) facts[k] = k === 'phone' ? '+15550100' : 'x' })
         expect(profileCompleteness(facts, true, true)).toBe('complete')
         // …and this group alone is enough to fail the whole record (outer AND).
         for (const k of alt) delete facts[k]

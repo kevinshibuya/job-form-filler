@@ -162,7 +162,7 @@ export function createFakeHostPort(): HostPort {
         // seam-built panel (e2e foundation, dev clicking around) lands on the
         // normal flow, not the onboarding gate. Gate tests install their own
         // __jffHostBridge with an empty profile.
-        'profile.get': { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User', country: 'Canada' },
+        'profile.get': { email: 'fake@example.com', phone: '+15550100', fullName: 'Fake User', country: 'Canada' },
         // A1: the canned persona has applied to NOTHING — the revisit badge
         // (Task 7) reads `applied` off this shape, so the miss must be an
         // explicit null, never a missing key answering {}.

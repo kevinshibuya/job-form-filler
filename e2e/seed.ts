@@ -23,7 +23,7 @@ import type { LaunchedExtension } from './ext'
 /** The minimum `profileCompleteness` accepts, as one shared persona. */
 export const ONBOARDED_PROFILE: Readonly<Record<string, string>> = {
   email: 'ada@example.com',
-  phone: '+1 555 0100',
+  phone: '+15550100',
   fullName: 'Ada Lovelace',
   country: 'United Kingdom',
 }

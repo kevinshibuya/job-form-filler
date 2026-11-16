@@ -140,9 +140,11 @@ describe('candidates by Value type and by Known key', () => {
     expect(candidatesFor('text', 'Germany')).toEqual([])
   })
 
-  it('attaches candidates to `country` alone', () => {
+  it('attaches candidates to `country` and `relocate` alone', () => {
     expect(candidatesForKey('country', 'Germany')).toEqual(countryCandidates('Germany'))
-    for (const key of FIELD_KEYS.filter((k) => k !== 'country')) {
+    expect(candidatesForKey('relocate', 'Sim')).toEqual(yesNoCandidates('yes'))
+    expect(candidatesForKey('relocate', 'Germany')).toEqual([])
+    for (const key of FIELD_KEYS.filter((k) => k !== 'country' && k !== 'relocate')) {
       expect(candidatesForKey(key, 'Germany'), key).toEqual([])
       expect(candidatesForKey(key, 'yes'), key).toEqual([])
     }

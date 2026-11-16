@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import {
-  FACT_MAX_CHARS, isFieldKey, isProfileKey, normalizeFactValue,
-  type HostErrorKind, type HostRequest, type HostResponse, type SelfCheck,
+  FACT_MAX_CHARS, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
+  type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type SelfCheck,
 } from '@jff/shared'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
@@ -27,13 +27,17 @@ import type { ResolvedModels } from './llm/models.js'
 // A fact is one line. Normalise every incoming value, then refuse anything still
 // over the cap rather than truncating: a value that long is prose that took a
 // wrong turn, and silently storing half of it is worse than saying no.
-// Returns the cleaned map, or the error message when a value is too long.
+// A key with a typed form stores its canonical text or is refused
+// (shared/src/typedValues.ts). Callers have already checked every key is a
+// Known key. Returns the cleaned map, or the error message for the first refusal.
 function shapeFactValues(values: Record<string, string>): Record<string, string> | string {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(values)) {
     const n = normalizeFactValue(v)
     if (n.length > FACT_MAX_CHARS) return `fact value over ${FACT_MAX_CHARS} characters: ${k}`
-    out[k] = n
+    const stored = toStoredText(k as FieldKey, n)
+    if (!stored.ok) return stored.reason
+    out[k] = stored.text
   }
   return out
 }

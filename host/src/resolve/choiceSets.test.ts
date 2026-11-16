@@ -21,7 +21,7 @@ let decide: (ref: string) => Decision
 
 beforeEach(() => {
   db = openDb(':memory:')
-  setProfile(db, { fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+1 555 0100' })
+  setProfile(db, { fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+15550100' })
   decide = () => ({ decision: 'custom' })
   mapping = vi.fn(async (prompt: string) => {
     const refs = [...prompt.matchAll(/^- ref=(\S+)/gm)].map((m) => m[1]!)

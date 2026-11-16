@@ -1,5 +1,5 @@
 import type { EnumField, ResolutionTier } from '@jff/shared'
-import { norm } from '@jff/shared'
+import { norm, storedValue } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
@@ -148,7 +148,9 @@ export function FieldRow(p: FieldRowProps) {
   const backedByStore = resolution.source === 'profile'
     || resolution.source === 'answer_bank'
     || resolution.source === 'llm_key'
-  const alreadyStored = resolution.key !== null && (p.facts[resolution.key] ?? '').trim() !== ''
+  // Old text of a typed key is no Value (shared/src/typedValues.ts), so the
+  // row still offers to store one.
+  const alreadyStored = resolution.key !== null && storedValue(resolution.key, (p.facts[resolution.key] ?? '').trim()) !== null
   const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
   // The value a save would actually store: page beats panel edit beats engine,
   // the same precedence buildSaveItems and App.onSaveFact use. Reading `value`
