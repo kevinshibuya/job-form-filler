@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import {
   FACT_MAX_CHARS, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
-  type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type SelfCheck,
+  type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type ResolveParams, type SelfCheck,
 } from '@jff/shared'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
@@ -78,6 +78,13 @@ export async function handleRequest(deps: HandlerDeps, req: HostRequest): Promis
   return response
 }
 
+/** One log line per Resolution request, naming the Scan's ATS (spec #41) so a
+ *  log reads without the page. The ATS is logged and nothing branches on it:
+ *  every ATS gets the same answer. A request with none is generic. */
+function logResolution(method: 'resolve.first' | 'resolve.mapping', params: ResolveParams): void {
+  log('info', method, { ats: params.ats ?? 'generic', epoch: params.epoch, fields: params.fields.length })
+}
+
 function safe<T>(fn: () => T): { ok: true; value: T } | { ok: false; error: unknown } {
   try { return { ok: true, value: fn() } } catch (error) { return { ok: false, error } }
 }
@@ -115,9 +122,11 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
 
       // No model: the host never hands this step a runner.
       case 'resolve.first':
+        logResolution(req.method, req.params)
         return ok(req.requestId, resolveFirst(db, req.params))
 
       case 'resolve.mapping':
+        logResolution(req.method, req.params)
         return ok(req.requestId, await resolveMapping(waterfallDeps(deps), req.params))
 
       case 'generate': {

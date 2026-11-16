@@ -792,3 +792,23 @@ describe('attached uploads ride the Session (#37)', () => {
     expect(parseStoredSession({ ...newSession(7), attachedUploads: [1] })).toBeNull()
   })
 })
+
+describe('the Scan\'s ATS rides the Session (spec #41)', () => {
+  it('a new Session is generic', () => {
+    expect(newSession(7).ats).toBe('generic')
+  })
+
+  it('keeps the ATS a Session was stored with', () => {
+    expect(parseStoredSession({ ...newSession(7), ats: 'lever' })?.ats).toBe('lever')
+  })
+
+  it('a Session saved without an ATS loads as generic', () => {
+    const { ats: _gone, ...old } = newSession(7)
+    expect(parseStoredSession(old)?.ats).toBe('generic')
+  })
+
+  it('an ATS the list does not name loads as generic, and a value that is no string is refused', () => {
+    expect(parseStoredSession({ ...newSession(7), ats: 'teamtailor' })?.ats).toBe('generic')
+    expect(parseStoredSession({ ...newSession(7), ats: 3 })).toBeNull()
+  })
+})

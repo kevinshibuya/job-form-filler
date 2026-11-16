@@ -86,6 +86,19 @@ export function findAts(hostname: string): Ats | null {
   return ATS_LIST.find((ats) => ats.hosts.some((h) => host === h || host.endsWith(`.${h}`))) ?? null
 }
 
+/** The ATS of a Scan: an id on the list, or `generic` for a site on none. */
+export type AtsOrGeneric = AtsId | 'generic'
+
+/** `findAts` as the id a Scan carries: `generic` for a hostname on no entry. */
+export function atsIdOf(hostname: string): AtsOrGeneric {
+  return findAts(hostname)?.id ?? 'generic'
+}
+
+/** Whether a stored or received value names an ATS on the list, or `generic`. */
+export function isAtsOrGeneric(value: unknown): value is AtsOrGeneric {
+  return value === 'generic' || ATS_LIST.some((ats) => ats.id === value)
+}
+
 /** Path segments that sit where a board's slug would and are never the Company. */
 const BOARD_WORDS = new Set(['embed', 'jobs', 'boards', 'job-boards', 'api'])
 

@@ -34,6 +34,18 @@ describe('ScanStatus', () => {
     expect(statusEl()!.getAttribute('data-jff-status')).toBe(status.kind)
   })
 
+  it.each<[ScanUiState, string]>([
+    [{ kind: 'empty', frames: 2, ats: 'ashby' }, ' On Ashby the form is under the "Application" tab. Open it, then Scan again.'],
+    [{ kind: 'empty', frames: 2, ats: 'lever' }, ' On Lever the form opens from "Apply for this job". Open it, then Scan again.'],
+    [{ kind: 'empty', frames: 2, ats: 'greenhouse' }, ''],
+    [{ kind: 'empty', frames: 2, ats: 'generic' }, ''],
+    [{ kind: 'empty', frames: 2 }, ''],
+  ])('follows the empty state with its ATS\'s hint, when it has one: %j', (status, hint) => {
+    render(<ScanStatus status={status} reports={[]} />)
+    expect(statusEl()!.querySelector('p')!.textContent)
+      .toBe(`⚠ Scanned 2 frames, found no form fields. Open the application form, then Scan again.${hint}`)
+  })
+
   it('shows per-frame diagnostics on an empty outcome', () => {
     render(<ScanStatus status={{ kind: 'empty', frames: 2 }} reports={[okReport, badReport]} />)
     const details = document.querySelector('[data-jff-diagnostics]')

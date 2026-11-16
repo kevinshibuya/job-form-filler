@@ -227,7 +227,7 @@ const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ k
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
+  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], ats: 'generic', edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -1154,7 +1154,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         out.activeCaptcha ? { kind: 'captcha' }
         // DISTINCT frames: a frame that errored first-pass and replied on the retry
         // contributes two reports but is still one frame on the page.
-        : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
+        // The ATS rides along so the empty state can say where its form is.
+        : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size, ats: out.ats }
         : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
         : doneOutcome(out.fill.filled.length, first.settled)
       // The first step has filled what needed no model. While Mapping runs, the
@@ -1181,6 +1182,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         waiting: owesMapping ? out.pending.map(refOf) : [],
         election: out.election,
         attachedUploads: out.attachedUploads,
+        ats: out.ats,
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,

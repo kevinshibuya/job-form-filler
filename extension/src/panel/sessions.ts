@@ -1,4 +1,4 @@
-import { normalizeQuestion, type EnumField, type FieldKey, type Resolution } from '@jff/shared'
+import { isAtsOrGeneric, normalizeQuestion, type AtsOrGeneric, type EnumField, type FieldKey, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
@@ -47,6 +47,9 @@ export interface Session {
   /** #37: the elected frame's attached uploads, by label, so the resume row
    *  is recomputed from the same evidence the scan acted on. */
   attachedUploads: string[]
+  /** The last settled Scan's ATS (spec #41). A row stored before it was kept
+   *  reads as generic. */
+  ats: AtsOrGeneric
   frameReports: FrameReport[]
   lastOutcome: ScanUiState | null
   appliedHit: { markedAt: string } | null
@@ -103,6 +106,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     activeCaptcha: false,
     election: null,
     attachedUploads: [],
+    ats: 'generic',
     frameReports: [],
     lastOutcome: null,
     appliedHit: null,
@@ -356,9 +360,12 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.draftWarnings !== undefined && !isDraftWarnings(raw.draftWarnings)) return null
     // A row stored before attached uploads were read has none (#37).
     if (raw.attachedUploads !== undefined && (!Array.isArray(raw.attachedUploads) || !allStrings(raw.attachedUploads))) return null
+    // A row stored before the ATS was kept, or naming one a later list dropped, is generic.
+    if (raw.ats !== undefined && typeof raw.ats !== 'string') return null
     return {
       ...(raw as unknown as Session),
       waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
+      ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
     }
   } catch {
     return null
