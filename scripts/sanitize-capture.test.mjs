@@ -173,6 +173,19 @@ describe('sanitizeCapture finds the Company', () => {
     expect(slugOnly).toContain('Why Acme, and why Hooli?')
   })
 
+  it('reads it the way the list of ATSes says Greenhouse, Ashby and Lever write it', () => {
+    const ashbyTitle = sanitizeCapture(pageTitled('Senior Engineer @ Initech'))
+    expect(ashbyTitle).toContain('Why Acme, and why Hooli?')
+    const ashbySlug = sanitizeCapture(pageTitled('Apply', `<link rel="canonical" href="${web}jobs.ashbyhq.com/initech/123">`))
+    expect(ashbySlug).toContain('Why Acme, and why Hooli?')
+    const greenhouseSlug = sanitizeCapture(pageTitled('Apply', `<meta property="og:url" content="${web}boards.greenhouse.io/initech/jobs/1">`))
+    expect(greenhouseSlug).toContain('Why Acme, and why Hooli?')
+    const embedded = sanitizeCapture(pageTitled('Apply', `<meta property="og:url" content="${web}boards.greenhouse.io/embed/job_app?for=initech">`))
+    expect(embedded).toContain('Why Acme, and why Hooli?')
+    const ownBoard = sanitizeCapture(pageTitled('Apply', `<meta property="og:url" content="/initech/jobs/42">`))
+    expect(ownBoard).toContain('Why Acme, and why Hooli?')
+  })
+
   it('takes extra names from the caller', () => {
     const clean = sanitizeCapture(pageTitled('Initech - Engineer'), [], { companies: ['Hooli'] })
     expect(clean).toContain('Why Acme, and why Acme?')
