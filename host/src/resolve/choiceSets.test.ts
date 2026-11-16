@@ -21,7 +21,7 @@ let decide: (ref: string) => Decision
 
 beforeEach(() => {
   db = openDb(':memory:')
-  setProfile(db, { fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+1 555 0100' })
+  setProfile(db, { fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+15550100' })
   decide = () => ({ decision: 'custom' })
   mapping = vi.fn(async (prompt: string) => {
     const refs = [...prompt.matchAll(/^- ref=(\S+)/gm)].map((m) => m[1]!)
@@ -193,7 +193,8 @@ describe('pronouns', () => {
     const f = group('Pronouns', ['He/him', 'They/them', 'Prefer not to say'])
     expect(await first(f)).toBe(PENDING)
     expect(mapping).not.toHaveBeenCalled()
-    expect(await mapped(f)).toMatchObject({ tier: 'needs_input', key: null, value: null })
+    // The row names the pronouns key, so an Option accepted for it is learned (ticket #35).
+    expect(await mapped(f)).toMatchObject({ tier: 'needs_input', key: 'pronouns', value: null })
     expect(mapping).toHaveBeenCalledTimes(1)
   })
 

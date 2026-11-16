@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema } from './messages.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -141,16 +141,41 @@ describe('ContentMessageSchema', () => {
     })
     expect(msg.type).toBe('JFF_FILL')
   })
-})
 
-describe('ContentMessageSchema — JFF_HARVEST (A6)', () => {
-  it('accepts a harvest request', () => {
-    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3, fids: [0, 4, 9] }).success).toBe(true)
+  it('carries the candidate words of a Value with its fill, and keeps them through parsing', () => {
+    const msg = ContentMessageSchema.parse({
+      type: 'JFF_FILL', epoch: 7,
+      fills: [{ handle, value: 'Germany', candidates: ['Germany', 'Alemanha'] }, { handle, value: 'Ada' }],
+    })
+    expect(msg.type === 'JFF_FILL' && msg.fills.map((f) => f.candidates)).toEqual([['Germany', 'Alemanha'], undefined])
   })
 
-  it('rejects a harvest request without fids or with a negative epoch', () => {
-    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3 }).success).toBe(false)
-    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: -1, fids: [] }).success).toBe(false)
+  it('rejects candidate words that are not strings', () => {
+    expect(ContentMessageSchema.safeParse({
+      type: 'JFF_FILL', epoch: 7, fills: [{ handle, value: 'Germany', candidates: [1] }],
+    }).success).toBe(false)
+  })
+})
+
+describe('ResolutionSchema — candidate words (#26)', () => {
+  const base = { handle, tier: 'auto', value: 'Germany', source: 'profile', key: 'country', answerId: null, reason: 'recognizer:country' }
+
+  it('carries the candidate words of its Value through parsing', () => {
+    const parsed = ResolveFirstResultSchema.parse({
+      epoch: 7, resolutions: [{ ...base, candidates: ['Germany', 'Alemanha'] }], pending: [],
+    })
+    expect(parsed.resolutions[0]!.candidates).toEqual(['Germany', 'Alemanha'])
+  })
+
+  it('accepts a Resolution with no candidate words', () => {
+    expect(ResolveFirstResultSchema.parse({ epoch: 7, resolutions: [base], pending: [] }).resolutions[0]!.candidates).toBeUndefined()
+  })
+})
+
+describe('ContentMessageSchema — a Scan opens no menu (ADR 0009)', () => {
+  it('rejects the removed message that opened dropdowns for a Scan, as any unknown one', () => {
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3, fids: [0, 4, 9] }).success).toBe(false)
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_NOPE', epoch: 3 }).success).toBe(false)
   })
 })
 
@@ -185,6 +210,22 @@ describe('FillReportSchema — committed canonical text (B1c)', () => {
       failed: [],
     })
     expect(r.success).toBe(true)
+  })
+
+  it('carries the Options a choice Fill read, on a hit and on a miss', () => {
+    const r = FillReportSchema.parse({
+      epoch: 7,
+      filled: [{ handle, committed: null, options: ['Yes', 'No'] }],
+      failed: [{ handle, reason: 'no-matching-option', options: ['Yes', 'No'] }],
+    })
+    expect(r.filled[0]!.options).toEqual(['Yes', 'No'])
+    expect(r.failed[0]!.options).toEqual(['Yes', 'No'])
+  })
+
+  it('accepts entries with no Options, as a text Fill reports them', () => {
+    const r = FillReportSchema.parse({ epoch: 7, filled: [{ handle, committed: null }], failed: [{ handle, reason: 'value-rejected' }] })
+    expect(r.filled[0]!.options).toBeUndefined()
+    expect(r.failed[0]!.options).toBeUndefined()
   })
 
   it('rejects the old bare-handle filled shape', () => {
@@ -241,5 +282,37 @@ describe('SaveItemSchema', () => {
       },
     })
     expect(r.success).toBe(false)
+  })
+})
+
+describe('option.pick — the model picks one of the page\'s Options (#31, ADR 0008)', () => {
+  const pick = { label: 'Are you open to relocation?', value: 'Yes', options: ['Yes, I am', 'No, I am not'] }
+
+  it('accepts a request carrying the label, the stored Value and the Options', () => {
+    const r = HostRequestSchema.safeParse({ requestId: 'r1', method: 'option.pick', params: pick })
+    expect(r.success).toBe(true)
+  })
+
+  it('refuses a request with no Options to pick from', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'option.pick', params: { ...pick, options: [] } }).success).toBe(false)
+  })
+
+  it('the reply is a position or none, and carries no text', () => {
+    expect(OptionPickResultSchema.parse({ position: 1 })).toEqual({ position: 1 })
+    expect(OptionPickResultSchema.parse({ position: null })).toEqual({ position: null })
+    expect(OptionPickResultSchema.parse({ position: 0, value: 'Yes, definitely', text: 'x' })).toEqual({ position: 0 })
+    expect(OptionPickResultSchema.safeParse({ position: 'Yes' }).success).toBe(false)
+    expect(OptionPickResultSchema.safeParse({ position: -1 }).success).toBe(false)
+    expect(OptionPickResultSchema.safeParse({ position: 1.5 }).success).toBe(false)
+  })
+})
+
+describe('ResolutionSchema — the stored Value a picked Option stands for (#31)', () => {
+  it('round-trips standsFor', () => {
+    const r = ResolutionSchema.parse({
+      handle, tier: 'proposed', value: 'Yes, I am', source: 'answer_bank', key: 'relocate', answerId: null,
+      reason: 'option-pick', standsFor: 'Yes',
+    })
+    expect(r.standsFor).toBe('Yes')
   })
 })

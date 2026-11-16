@@ -3,6 +3,7 @@
 export type LlmTask =
   | 'factsExtract'
   | 'mapping'
+  | 'optionPick'
   | 'generate'
   | 'reviewDraft'
   | 'claudeAuthProbe'
@@ -13,6 +14,8 @@ export type LlmTask =
 export const DEFAULT_MODELS: Readonly<Record<LlmTask, string>> = Object.freeze({
   factsExtract: 'gpt-6.1-sol',
   mapping: 'gpt-6.1-sol',
+  // Routed like Mapping: a structured choice among closed alternatives.
+  optionPick: 'gpt-6.1-sol',
   generate: 'claude-opus-5-5',
   reviewDraft: 'gpt-6.1-sol',
   claudeAuthProbe: 'claude-opus-5-5',

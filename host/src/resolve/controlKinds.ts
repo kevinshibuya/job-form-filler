@@ -1,4 +1,4 @@
-import { VALUE_TYPE_OF, type FieldKey, type ValueType } from '@jff/shared'
+import { normalizeQuestion, VALUE_TYPE_OF, type FieldKey, type ValueType } from '@jff/shared'
 
 /**
  * Which Controls a Known key may answer, decided by the key's Value type.
@@ -16,7 +16,23 @@ const ANSWERS: Readonly<Record<ValueType, ReadonlySet<string>>> = {
   link: new Set(TEXT_CONTROLS),
   phone: new Set(TEXT_CONTROLS),
   yes_no: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
-  place: new Set(),
+  place: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
+  // A list of countries answers yes/no questions about the countries a label
+  // names, so it takes the Controls a yes or a no does.
+  place_list: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
+  // A salary is typed into a box; no Option list says an amount with its
+  // currency and period.
+  amount: new Set(TEXT_CONTROLS),
+  // A notice period, a start date or a remote preference may be an Option too,
+  // matched at Fill like any other Value.
+  per_language: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
+}
+
+const CHOICE_SET: ReadonlySet<string> = new Set(CHOICE_CONTROLS)
+
+/** True for a Control that offers Options to choose one from. */
+export function isChoiceControl(kind: string): boolean {
+  return CHOICE_SET.has(kind)
 }
 
 /**
@@ -33,8 +49,52 @@ export function canHold(kind: string, key: FieldKey): boolean {
   return ANSWERS[VALUE_TYPE_OF[key]].has(kind) || (ALSO_ANSWERS[key]?.has(kind) ?? false)
 }
 
-/** The key itself when the Control can hold it, else null: a hit on the wrong
- *  Control is not a hit. */
-export function keyFor(kind: string, key: FieldKey | null): FieldKey | null {
-  return key !== null && canHold(kind, key) ? key : null
+
+// Matched against normalizeQuestion() output: lower case, accents stripped.
+const YES_NO_OPTION = /^(yes|no|sim|nao)\b/
+const YES_NO_QUESTION = /^(are|is|do|does|did|have|has|can|could|will|would|were|was)\b|^(voce|vc)\s+(mora|reside|vive|esta|possui|tem|pode)\b|^(mora|reside|vive)\b/
+
+/**
+ * A Field that asks a yes/no question: its Options are all a yes or a no, or
+ * its label opens the way a yes/no question does ("Do you live in…",
+ * "Você mora…"). Such a Field may mention a country or a city, but it never
+ * asks for one.
+ */
+export function isYesNoQuestion(label: string, options: readonly string[]): boolean {
+  if (options.length > 0 && options.every((o) => YES_NO_OPTION.test(normalizeQuestion(o)))) return true
+  return YES_NO_QUESTION.test(normalizeQuestion(label))
+}
+
+/** The parts of a Field the rule reads. */
+export interface FieldShape {
+  kind: string
+  label: string | null
+  options: readonly string[]
+}
+
+/**
+ * True when the Field takes a yes or a no: a choice Control, or a text box
+ * under a yes/no question. A text box that asks for anything else (an
+ * address, "type relocating") never receives a bare yes.
+ */
+export function takesYesNo(f: FieldShape): boolean {
+  return isChoiceControl(f.kind) || isYesNoQuestion(f.label ?? '', f.options)
+}
+
+/**
+ * `canHold` for one Field: its Control must hold the key's Value, a place
+ * never answers a yes/no question, and a yes or a no answers only a Field that
+ * takes one, whichever way the key was found.
+ */
+export function fieldCanHold(f: FieldShape, key: FieldKey): boolean {
+  if (!canHold(f.kind, key)) return false
+  const type = VALUE_TYPE_OF[key]
+  if (type === 'yes_no' || type === 'place_list') return takesYesNo(f)
+  return type !== 'place' || !isYesNoQuestion(f.label ?? '', f.options)
+}
+
+/** The key itself when the Field can hold it, else null: a hit on the wrong
+ *  Control, or a place on a yes/no question, is not a hit. */
+export function keyForField(f: FieldShape, key: FieldKey | null): FieldKey | null {
+  return key !== null && fieldCanHold(f, key) ? key : null
 }

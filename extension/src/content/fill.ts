@@ -1,10 +1,25 @@
-import { norm, optionSetLabels, type FieldHandle, type FillReport } from '@jff/shared'
+import { OPTIONS_READ, norm, optionSetLabels, phoneParts, type CityParts, type FieldHandle, type FillReport, type PhoneParts } from '@jff/shared'
 import { groupBoxesOf } from './checkboxGroup'
-import { optionLabelOf, scopeOf } from './dom'
+import { pickCityOption } from './cityTypeahead'
+import { isSoleControl, optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
-import { attributableListbox, mountedListboxes } from './harvest'
+import { attributableListbox, mountedListboxes } from './listbox'
+import { matchOption, type OptionMatch } from './optionMatch'
+import { namesPhoneCountry, phoneSelectorsOf, pickCountryOption } from './phoneSelector'
+import { waitForPageReady, waitForSettle } from './settle'
 
-type FillOutcome = { ok: true; committed?: string | null } | { ok: false; reason: string }
+/**
+ * `options`: the Options a Fill of a choice Control read on the page, on a hit
+ * and on a miss, so the Side panel can offer them as a picker (ADR 0009: a
+ * Scan opens no menu, so a dropdown's Options are first known here).
+ */
+type FillOutcome =
+  | { ok: true; committed?: string | null; options?: string[] }
+  | { ok: false; reason: string; options?: string[] }
+
+/** The outcome with the Options read on the page attached; none when the page showed none. */
+const withOptions = (out: FillOutcome, options: readonly string[]): FillOutcome =>
+  options.length === 0 ? out : { ...out, options: [...options] }
 
 /**
  * React installs its own `value` setter on the element INSTANCE, so `el.value = x`
@@ -43,29 +58,59 @@ function fillTextual(el: HTMLInputElement | HTMLTextAreaElement, value: string):
   return { ok: true, committed: el.value }
 }
 
-function fillSelect(el: HTMLSelectElement, value: string): FillOutcome {
-  const target = norm(value)
-  const byLabel = Array.from(el.options).find((o) => norm(o.textContent ?? '') === target)
-  const byValue = Array.from(el.options).find((o) => norm(o.value) === target)
-  const opt = byLabel ?? byValue
-  if (opt === undefined) return { ok: false, reason: 'no-matching-option' }
-  setNativeValue(el, opt.value)
-  return { ok: true }
+/** An Option's wording as the page shows it, spacing collapsed. */
+const wording = (s: string): string => s.replace(/\s+/g, ' ').trim()
+
+/** What a filled choice reports: the page's wording of the chosen Option when it
+ *  differs from the Value sent ('Germany' fills 'Alemanha'), else nothing. */
+const committedAs = (shown: string, value: string): FillOutcome =>
+  shown === value ? { ok: true } : { ok: true, committed: shown }
+
+/**
+ * The one member whose Option label equals the Value or a candidate word, else
+ * the one whose `value` attribute does. Two equal labels, or none and two
+ * equal attributes, pick nothing: Fill never guesses between Options.
+ */
+function pickMember<T>(
+  members: readonly T[], labelOf: (m: T) => string, attrOf: (m: T) => string,
+  value: string, candidates: readonly string[],
+): T | null {
+  const byLabel = matchOption(members.map(labelOf), value, candidates)
+  if (byLabel.found === 'one') return members[byLabel.index]!
+  if (byLabel.found === 'many') return null
+  const byAttr = matchOption(members.map(attrOf), value, candidates)
+  return byAttr.found === 'one' ? members[byAttr.index]! : null
 }
 
-function fillRadioGroup(el: HTMLInputElement, value: string): FillOutcome {
-  const scope = scopeOf(el)
+/** The Options of a list as the page words them, blanks dropped: the same
+ *  texts Enumeration reports for a native select. */
+const wordings = (texts: readonly string[]): string[] => texts.map(wording).filter((t) => t !== '')
+
+function fillSelect(el: HTMLSelectElement, value: string, candidates: readonly string[]): FillOutcome {
+  const options = wordings(Array.from(el.options, (o) => o.textContent ?? ''))
+  const opt = pickMember(Array.from(el.options), (o) => o.textContent ?? '', (o) => o.value, value, candidates)
+  if (opt === null) return withOptions({ ok: false, reason: 'no-matching-option' }, options)
+  setNativeValue(el, opt.value)
+  return withOptions(committedAs(wording(opt.textContent ?? ''), value), options)
+}
+
+/** The radios of the group a radio belongs to: same name, same scope. */
+function radioMembersOf(el: HTMLInputElement): HTMLInputElement[] {
   const name = el.getAttribute('name')
-  const members = name === null || name === ''
+  return name === null || name === ''
     ? [el]
-    : Array.from(scope.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`))
-  const target = norm(value)
-  const hit = members.find((m) => norm(optionLabelOf(m)) === target) ?? members.find((m) => norm(m.value) === target)
-  if (hit === undefined) return { ok: false, reason: 'no-matching-option' }
+    : Array.from(scopeOf(el).querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`))
+}
+
+function fillRadioGroup(el: HTMLInputElement, value: string, candidates: readonly string[]): FillOutcome {
+  const members = radioMembersOf(el)
+  const options = wordings(members.map(optionLabelOf))
+  const hit = pickMember(members, optionLabelOf, (m) => m.value, value, candidates)
+  if (hit === null) return withOptions({ ok: false, reason: 'no-matching-option' }, options)
   // A React-controlled radio needs a REAL click; assigning .checked does nothing.
   hit.click()
-  if (!hit.checked) return { ok: false, reason: 'click-rejected' }
-  return { ok: true }
+  if (!hit.checked) return withOptions({ ok: false, reason: 'click-rejected' }, options)
+  return withOptions(committedAs(wording(optionLabelOf(hit)), value), options)
 }
 
 /**
@@ -185,7 +230,17 @@ export async function fillChoice(
   el: HTMLInputElement,
   detection: ChoiceDetection,
   value: string,
+  candidates: readonly string[] = [],
 ): Promise<FillOutcome> {
+  // With candidate words the Value is first turned into the page's wording of
+  // the one Option it names; the steps below then fill that Option.
+  if (candidates.length > 0) {
+    const m = matchOption(detection.options, value, candidates)
+    if (m.found !== 'one') return { ok: false, reason: 'no-matching-option' }
+    const shown = detection.options[m.index]!
+    const out = await fillChoice(el, detection, shown)
+    return out.ok ? committedAs(wording(shown), value) : out
+  }
   const { wrapper, buttons, options } = detection
   const members = choiceMembers(el, wrapper)
   const target = norm(value)
@@ -263,12 +318,29 @@ export async function fillChoice(
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /** How long the combobox may take to mount options after our OPEN click (the
- *  fast path for widgets that mount on click, mirrors HARVEST_LISTBOX_TIMEOUT_MS). */
+ *  fast path for widgets that mount on click). */
 const COMBOBOX_WAIT_MS = 500
 /** …and after our typeahead keystrokes. Real Ashby options come from a
  *  debounced network fetch; 500ms was never enough (spec D1). */
 const COMBOBOX_TYPE_WAIT_MS = 2000
 const COMBOBOX_POLL_MS = 50
+/** How long a committed Option's menu may take to close before the commit is
+ *  called failed (spec D1). */
+export const COMMIT_SETTLE_MS = 500
+/** How long a menu another Control left open may take to close after Escape
+ *  and blur, before this Fill refuses to open its own (spec D2). */
+export const CLOSE_WAIT_MS = 500
+/** The ceiling on the settle wait between two consecutive choice Fills (D3). */
+export const CHOICE_GAP_SETTLE_MS = 300
+
+/**
+ * A Value that is a paragraph of prose (a line break, or longer than any
+ * Option's wording runs) is never typed into a dropdown: a Saved answer
+ * written for a free-text question matches no Option, and typing it would
+ * only feed the page's search a sentence.
+ */
+const PROSE_MIN_LENGTH = 100
+const isProse = (value: string): boolean => /\n/.test(value.trim()) || value.trim().length >= PROSE_MIN_LENGTH
 
 /**
  * C2: react-select (Greenhouse) opens its menu ONLY on a real pointer gesture —
@@ -349,10 +421,81 @@ function visibleCommittedText(
   return null
 }
 
+/** A menu is visible while it is mounted and not hidden by attribute or
+ *  computed style. A hidden but mounted menu (a closed intl-tel-input flag
+ *  list) is never a menu left open. */
+const menuVisible = (lb: Element | null): boolean =>
+  lb !== null && lb.isConnected && !(lb instanceof HTMLElement && isDisplayHidden(lb))
+
+/** The id tokens a control points at through aria-controls and aria-owns. */
+const ownedIds = (el: Element): string[] =>
+  [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')]
+    .flatMap((v) => (v ?? '').split(/\s+/))
+    .filter((t) => t !== '')
+
+/** The element that owns a listbox by aria-controls or aria-owns, if any. */
+function ownerOf(lb: Element): Element | null {
+  if (lb.id === '') return null
+  const id = lb.id.replace(/"/g, '\\"')
+  const scope = lb.getRootNode() as Document | ShadowRoot
+  return scope.querySelector(`[aria-controls~="${id}"], [aria-owns~="${id}"]`)
+}
+
+/**
+ * A blur the page hears. With the Side panel focused, the page has no focus
+ * and Blink sends it no focus events, so `blur()` alone is never heard: the
+ * blur and focusout are then dispatched as the user's leaving would send them.
+ */
+function blurHeard(el: Element): void {
+  if (!(el instanceof HTMLElement)) return
+  const heard = el.ownerDocument.hasFocus() && el.ownerDocument.activeElement === el
+  el.blur()
+  if (heard) return
+  el.dispatchEvent(new FocusEvent('blur'))
+  el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+}
+
+/** Backs out of a menu the way a user does: an Escape press (keydown and keyup), then leaving the control. */
+function backOut(el: Element): void {
+  const key = { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }
+  el.dispatchEvent(new KeyboardEvent('keydown', key))
+  el.dispatchEvent(new KeyboardEvent('keyup', key))
+  blurHeard(el)
+}
+
+/**
+ * D2: before a Fill opens its control, a menu another Control left visible is
+ * closed — Escape to the element that owns it (else the active element), then
+ * a blur — and the Fill waits up to CLOSE_WAIT_MS for it to go. The control's
+ * OWN menu is not a foreign one: a widget whose list stays mounted is opened
+ * as before. Returns false when a foreign menu is still visible.
+ */
+async function closeForeignMenus(el: Element): Promise<boolean> {
+  const own = new Set(ownedIds(el))
+  const foreign = [...mountedListboxes(document, el)].filter((lb) => menuVisible(lb) && !own.has(lb.id))
+  if (foreign.length === 0) return true
+  for (const lb of foreign) {
+    const owner = ownerOf(lb) ?? document.activeElement
+    if (owner === null) continue
+    backOut(owner)
+  }
+  const deadline = Date.now() + CLOSE_WAIT_MS
+  for (;;) {
+    if (!foreign.some(menuVisible)) return true
+    if (Date.now() >= deadline) return false
+    await wait(COMBOBOX_POLL_MS)
+  }
+}
+
+/** The control that reports the menu's state: the element itself, or the
+ *  closest `[role=combobox]` around it. */
+const expandedOwner = (el: Element): Element =>
+  el.getAttribute('role') === 'combobox' ? el : (el.closest('[role="combobox"]') ?? el)
+
 /**
  * B1: interact ONLY with a listbox attributable to this control — aria-owns/
  * aria-controls, or one that appeared in response to OUR interaction (the same
- * attributableListbox rule the harvest defined; the document-wide fallback was
+ * attributableListbox rule in listbox.ts; the document-wide fallback was
  * the cross-combobox bug). The open gesture stays (C2 widened the bare click
  * into the full pointer+mouse sequence), then the typeahead is ALWAYS
  * driven when there is an input to type into: real Ashby comboboxes ("Start
@@ -371,18 +514,50 @@ function visibleCommittedText(
  * (more options still mounting) must never be mistaken for a settled,
  * unambiguous one. Exact matches stay eager: first poll wins, no settling
  * wait.
- * Success iff the page committed the CLICKED OPTION's text; the requested
- * value no longer has to equal it ('bra' legitimately commits 'Brazil'), and
- * `committed` reports the canonical text when it differs. Every failure path
+ * D1: the Option is committed with the same pointer sequence that opens the
+ * menu, and the commit is verified in two steps: the menu CLOSED within
+ * COMMIT_SETTLE_MS, then EVIDENCE that the page kept the Option. A typed text
+ * that merely equals the Option is never evidence by itself: it has to survive
+ * a blur, because a discarded typeahead is cleared on blur and a commit is
+ * not. Either step failing is `no-commit`. Success means the page committed
+ * the CLICKED OPTION's text; the requested value no longer has to equal it
+ * ('bra' legitimately commits 'Brazil'), and `committed` reports the
+ * canonical text when it differs. Every failure path
  * restores the pre-fill snapshot (never a clear to ''), waits a frame, THEN
  * closes via Escape+blur — the restore write is itself an input event, and
  * fired after Escape it would re-open the dropdown just closed. A type-to-load
  * page may still refetch options on that restore event; the residual is
  * page-side and is eyeballed at the manual gate (review fix, majors item 5).
  */
-async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
+/** How a Fill other than a plain dropdown's drives `fillCombobox`. */
+interface ComboboxHow {
+  /**
+   * Chooses the Option itself in place of the equality and substring tiers: a
+   * phone's country selector words its Options "United States +1", and a city
+   * typeahead's results name the city with its region and country.
+   */
+  pick?: (options: readonly string[]) => OptionMatch
+  /**
+   * The phone Fill's: true when the control shows the phone's country. The
+   * Fill calls it only on a control that did not show it before the commit, so
+   * a true after the commit is a change, and evidence the page kept the pick.
+   */
+  shows?: () => boolean
+  /**
+   * The city Fill's: the results of a search arrive one by one, so a pick is
+   * taken only once they stay the same across two polls, and a miss reports
+   * the results the search returned as the Options.
+   */
+  search?: boolean
+}
+
+async function fillCombobox(
+  el: Element, value: string, candidates: readonly string[], how: ComboboxHow = {},
+): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
   const snapshot = input === null ? null : input.value
+  // D2: never open a second menu while another Control's is still up.
+  if (!await closeForeignMenus(el)) return { ok: false, reason: 'listbox-left-open' }
   const before = mountedListboxes(document, el)
   // C2: the full pointer+mouse open gesture, dispatched on the control itself
   // (bubbling from the input reaches the react-select control wrapper).
@@ -406,33 +581,48 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   const MIN_SUBSTRING_LEN = 3
 
   let sawListbox = false
-  const waitForHit = async (waitMs: number, breakOnOptions: boolean): Promise<HTMLElement | null> => {
+  // Two Options equal to the Value or its candidate words: no pick, and no
+  // typeahead either, since the page offers both.
+  let ambiguous = false
+  // The Options the menu showed on the open gesture, before anything was
+  // typed: what the page offers, reported with the outcome. A list filtered by
+  // our own typing is not that list, so the typeahead never updates it.
+  let offered: string[] = []
+  const waitForHit = async (waitMs: number, breakOnOptions: boolean, readsOffer = false): Promise<HTMLElement | null> => {
     const deadline = Date.now() + waitMs
     for (;;) {
       const m = lookup()
       sawListbox = sawListbox || m.mounted
-      const exact = m.options.find((o) => norm(o.textContent ?? '') === target)
-      if (exact !== undefined) return exact
+      const texts = m.options.map((o) => o.textContent ?? '')
+      if (readsOffer || (how.search === true && texts.length > 0)) offered = wordings(texts)
+      // Exact tier: the one Option equal to the Value or a candidate word
+      // (#26). Candidate words match by equality only, never by the
+      // substring tier below.
+      const exact = how.pick === undefined ? matchOption(texts, value, candidates) : how.pick(texts)
+      if (exact.found === 'many') { ambiguous = true; return null }
+      const key = optionsKey(m.options)
+      const settled = key === prevOptionsKey
+      prevOptionsKey = key
+      if (exact.found === 'one' && (how.search !== true || settled)) return m.options[exact.index]!
+      // A search's pick awaiting its second, identical poll.
+      const pendingPick = exact.found === 'one'
 
       // B1b ladder. Ambiguity (or a too-short target) fails closed: clicking
       // one of several substring candidates would be a guess, and a wrong
       // option is worse than asking. A unique candidate is only RETURNED once
       // it survives two consecutive polls unchanged — `settled` below.
       let uniquePartial: HTMLElement | null = null
-      if (target.length >= MIN_SUBSTRING_LEN) {
+      if (how.pick === undefined && target.length >= MIN_SUBSTRING_LEN) {
         const partial = m.options.filter((o) => norm(o.textContent ?? '').includes(target))
         uniquePartial = partial.length === 1 ? partial[0]! : null
       }
-      const key = optionsKey(m.options)
-      const settled = key === prevOptionsKey
-      prevOptionsKey = key
       if (uniquePartial !== null && settled) return uniquePartial
 
       // Options are mounted and there is no candidate even awaiting its settle
       // confirmation: waiting longer adds nothing — the typeahead is the next
       // move. A PENDING unique candidate (not yet settled) is worth one more
       // poll even on this fast path, so it is exempted from the early break.
-      if (breakOnOptions && m.options.length > 0 && uniquePartial === null) return null
+      if (breakOnOptions && m.options.length > 0 && uniquePartial === null && !pendingPick) return null
       if (Date.now() >= deadline) return null
       await wait(COMBOBOX_POLL_MS)
     }
@@ -442,52 +632,166 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
     // Restore FIRST: B1a always types, so the restore write is itself an input
     // event — fired after Escape it would re-open the dropdown we just closed.
     // Order: restore ('' only ever written when '' WAS the snapshot) → one
-    // frame for the page to react → Escape + blur (harvest's close recipe).
+    // frame for the page to react → Escape + blur, the way a user backs out.
     if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
     await nextFrame()
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    if (el instanceof HTMLElement) el.blur()
-    return { ok: false, reason }
+    backOut(el)
+    return withOptions({ ok: false, reason }, offered)
   }
   // B1d: "never opened/attributed" is a different user problem than "your value
   // is not in the list" — the hint copy diverges (Plan-3 Decision 6 debt).
   const noHitReason = (): string => (sawListbox ? 'no-matching-option' : 'combobox-no-listbox')
 
-  let hit = await waitForHit(COMBOBOX_WAIT_MS, true)
+  let hit = await waitForHit(COMBOBOX_WAIT_MS, true, true)
   if (hit === null) {
-    if (input === null) return failClosed(noHitReason())
+    if (ambiguous) return failClosed('no-matching-option')
+    if (input === null || value === '' || isProse(value)) return failClosed(noHitReason())
     // B1a: ALWAYS drive the typeahead when typing is possible.
     input.focus()
     setNativeValue(input, value)
     hit = await waitForHit(COMBOBOX_TYPE_WAIT_MS, false)
-    if (hit === null) return failClosed(noHitReason())
+    if (hit === null) return failClosed(ambiguous ? 'no-matching-option' : noHitReason())
   }
 
   const optionText = norm(hit.textContent ?? '')
+  const hitListbox = hit.closest('[role="listbox"]')
   // C2 hardening: snapshot the candidate leaves' texts BEFORE the commit
   // click, so the fallback can demand a CHANGE into the option text.
   const preTexts = new WeakMap<HTMLElement, string>()
   if (input !== null) {
     for (const node of commitScopeLeaves(input)) preTexts.set(node, node.textContent ?? '')
   }
-  hit.click()
+  // What the input held right before the commit: the typed text on the
+  // typeahead path, the pre-fill value when the open gesture found the Option.
+  const preCommit = input === null ? null : input.value
+  // Whether the Option was selected before the commit: the phone Fill takes a
+  // change to selected as evidence on a non-input control.
+  const preSelected = hit.getAttribute('aria-selected')
+  // D1: the commit gesture is the open gesture (a strict superset of a click),
+  // for the reason C2 widened the open: react-select ignores a bare click.
+  dispatchOpenGesture(hit)
   await nextFrame()
-  // B1c: EXACT normalized equality against the CLICKED OPTION's text, never
-  // `includes`: a widget that committed 'United States Minor Outlying Islands'
-  // after a 'United States' click would still false-pass an includes check —
-  // the misfill-reported-as-success class stays dead.
-  // Non-input widgets report their textContent TRIMMED (review fix, minors 17)
-  // — the normalized-equality verdict is unaffected either way.
-  let committed = input !== null ? input.value : (el.textContent ?? '').trim()
-  // C2 (Greenhouse): a successful react-select commit leaves input.value EMPTY
-  // — the committed text lives in the widget's visible value container. Only
-  // an EMPTY input consults the structural fallback; a non-empty input.value
-  // stays authoritative, so the Ashby arm's verification is untouched (B1c).
-  if (input !== null && committed === '') {
-    committed = visibleCommittedText(input, optionText, preTexts) ?? ''
+
+  // Step 1, CLOSED: the listbox the Option came from and any listbox now
+  // attributable to the control are gone or hidden, or the control reports
+  // aria-expanded="false". Re-querying attribution catches a widget that
+  // re-rendered a fresh, still-open menu in place of the old one.
+  const closed = (): boolean =>
+    expandedOwner(el).getAttribute('aria-expanded') === 'false'
+    || (!menuVisible(hitListbox) && !menuVisible(attributableListbox(document, el, before)))
+  const closeBy = Date.now() + COMMIT_SETTLE_MS
+  while (!closed()) {
+    if (Date.now() >= closeBy) return failClosed('no-commit')
+    await wait(COMBOBOX_POLL_MS)
   }
-  if (norm(committed) !== optionText) return failClosed('no-matching-option')
-  return { ok: true, committed: committed === value ? null : committed }
+
+  // Step 2, EVIDENCE. B1c: EXACT normalized equality against the CLICKED
+  // OPTION's text, never `includes`: a widget that committed 'United States
+  // Minor Outlying Islands' after a 'United States' click would still
+  // false-pass an includes check.
+  if (input === null) {
+    // Non-input widgets report their textContent TRIMMED (review fix, minors 17).
+    const shown = (el.textContent ?? '').trim()
+    if (norm(shown) === optionText) return withOptions({ ok: true, committed: shown === value ? null : shown }, offered)
+    if (how.shows !== undefined) {
+      const selected = preSelected !== 'true' && hit.getAttribute('aria-selected') === 'true'
+      if (selected || how.shows()) return withOptions({ ok: true, committed: null }, offered)
+    }
+    return failClosed('no-commit')
+  }
+  let committed: string | null = null
+  if (input.value === '') {
+    // (a) C2 (Greenhouse): react-select CLEARS its input and renders the
+    // Option in a visible value container.
+    committed = visibleCommittedText(input, optionText, preTexts)
+    // A phone's country dropdown may show a flag and the code, never the Option's text.
+    if (committed === null && how.shows?.() === true) committed = value
+  } else if (norm(input.value) === optionText && input.value !== preCommit) {
+    // (b) The widget rewrote the input into the Option's text.
+    committed = input.value
+  } else if (norm(input.value) === optionText) {
+    // (c) The input already held the Option's text. Only a blur tells a commit
+    // (kept) from a discarded typeahead (cleared).
+    if (document.activeElement !== input) input.focus()
+    blurHeard(input)
+    await nextFrame()
+    if (norm(input.value) === optionText) committed = input.value
+  }
+  if (committed === null) return failClosed('no-commit')
+  return withOptions({ ok: true, committed: committed === value ? null : committed }, offered)
+}
+
+/* ------------------------------------------------- the phone's country selector */
+
+/**
+ * True when a country selector shows the phone's country: a native select by
+ * its selected Option; a button by its title, accessible name or text (an
+ * intl-tel-input button reads "Change country, selected X (+NN)"); a typeahead
+ * by the visible text around it, inside the widest wrapper that holds no other
+ * control, never by what is typed in its input.
+ */
+function showsCountry(sel: Element, parts: PhoneParts): boolean {
+  if (sel instanceof HTMLSelectElement) return namesPhoneCountry(sel.selectedOptions[0]?.textContent ?? '', parts)
+  if (!(sel instanceof HTMLInputElement)) {
+    const code = new RegExp(`\\+\\s?${parts.callingCode}(?!\\d)`)
+    const attrs = [sel.getAttribute('title') ?? '', sel.getAttribute('aria-label') ?? '']
+    return attrs.some((t) => namesPhoneCountry(t, parts) || code.test(t)) || namesPhoneCountry((sel.textContent ?? '').trim(), parts)
+  }
+  let scope: Element | null = null
+  for (let a = sel.parentElement, depth = 0; a !== null && depth < 5 && isSoleControl(a, sel); depth++, a = a.parentElement) scope = a
+  if (scope === null) return false
+  return Array.from(scope.querySelectorAll<HTMLElement>('*')).some((node) =>
+    node !== sel && node.children.length === 0
+    && node.closest('[role="listbox"], label, legend') === null
+    && !isDisplayHidden(node)
+    && namesPhoneCountry((node.textContent ?? '').trim(), parts))
+}
+
+/** Sets one country selector to the phone's country and checks the page kept it. */
+async function setCountrySelector(sel: Element, parts: PhoneParts): Promise<FillOutcome> {
+  // Already on the phone's country (a page that geolocates, or syncs one
+  // selector from the other): nothing to set.
+  if (showsCountry(sel, parts)) return { ok: true }
+  const pick = (texts: readonly string[]): OptionMatch => pickCountryOption(texts, parts)
+  if (sel instanceof HTMLSelectElement) {
+    const options = Array.from(sel.options)
+    const m = pick(options.map((o) => o.textContent ?? ''))
+    if (m.found !== 'one') return { ok: false, reason: 'no-matching-option' }
+    const opt = options[m.index]!
+    setNativeValue(sel, opt.value)
+    return opt.selected ? { ok: true } : { ok: false, reason: 'no-commit' }
+  }
+  // The typeahead, when the open list names no Option, searches the country's first name.
+  return fillCombobox(sel, parts.countryNames[0] ?? '', [], { pick, shows: () => showsCountry(sel, parts) })
+}
+
+/** A selector's failure as the phone Field reports it. */
+const phoneReason = (reason: string): string =>
+  reason === 'no-matching-option' ? 'phone-country-no-match'
+  : reason === 'listbox-left-open' ? reason
+  : 'phone-country-not-set'
+
+/**
+ * The phone Field with country selectors attached: each selector is set to the
+ * phone's country and checked, then the national number is typed. The parts
+ * come with the Fill (Resolution.phone); a Value the user edited travels
+ * without them and is taken apart here, with no stored country to prefer. A
+ * selector that cannot be set fails the Field and leaves the phone box as it
+ * was. The Options of a selector are never reported: they are not the phone
+ * Field's.
+ */
+async function fillPhone(el: HTMLInputElement, value: string, selectors: readonly Element[], given: PhoneParts | undefined): Promise<FillOutcome> {
+  const parts = given ?? phoneParts(value, null)
+  if (parts === null) return { ok: false, reason: 'phone-country-unknown' }
+  const snapshot = el.value
+  const restore = (): void => { if (el.value !== snapshot) setNativeValue(el, snapshot) }
+  for (const sel of selectors) {
+    const out = await setCountrySelector(sel, parts)
+    if (!out.ok) { restore(); return { ok: false, reason: phoneReason(out.reason) } }
+  }
+  const typed = fillTextual(el, parts.nationalNumber)
+  if (!typed.ok) { restore(); return typed }
+  return { ok: true }
 }
 
 /** DataTransfer is the only way to populate a file input programmatically. */
@@ -500,12 +804,84 @@ export function fillFile(el: Element, file: File): FillOutcome {
   return { ok: true }
 }
 
-export async function fillOne(el: Element, value: string): Promise<FillOutcome> {
+/** The error texts an uploader shows: an alert, or an element whose id or class says error or invalid. */
+const ERROR_TEXT = '[role="alert"], [id*="error" i], [class*="error" i], [class*="invalid" i]'
+
+/** The uploader around a file input: its group or fieldset, else a few levels up. */
+function uploaderOf(el: Element): Element {
+  const group = el.closest('[role="group"], fieldset')
+  if (group !== null) return group
+  let scope: Element = el
+  for (let i = 0; i < 3 && scope.parentElement !== null && scope.parentElement.tagName !== 'BODY'; i++) scope = scope.parentElement
+  return scope
+}
+
+const errorTexts = (scope: Element): Map<Element, string> =>
+  new Map(Array.from(scope.querySelectorAll(ERROR_TEXT)).map((e) => [e, (e.textContent ?? '').trim()] as const).filter(([, t]) => t !== ''))
+
+/**
+ * Puts a file on a file input and checks the page kept it: an error text the
+ * uploader shows after the attach settles, and did not show before, is a
+ * refusal (`file-not-kept`). An uploader that removes itself on success
+ * (replacing the input with the file name) shows none.
+ */
+export async function attachFile(el: Element, file: File): Promise<FillOutcome> {
+  const scope = uploaderOf(el)
+  const before = errorTexts(scope)
+  const out = fillFile(el, file)
+  if (!out.ok) return out
+  // Let the ATS's async resume auto-parse finish BEFORE anything else is filled.
+  await waitForSettle(el.ownerDocument)
+  for (const [node, text] of errorTexts(scope)) {
+    if (before.get(node) !== text) return { ok: false, reason: 'file-not-kept' }
+  }
+  return { ok: true }
+}
+
+/**
+ * The resume Fill of a Scan: waits until a young page is ready to take a
+ * write (a reload's re-scan runs at its navigation commit, before the ATS has
+ * its upload targets), then finds the file input and attaches the file.
+ */
+export async function fillResume(
+  root: Document, fid: number, file: File, ready: () => Promise<void> = () => waitForPageReady(root),
+): Promise<FillOutcome> {
+  await ready()
+  const el = elementByFid(root, fid)
+  if (el === null) return { ok: false, reason: 'element-not-found' }
+  return attachFile(el, file)
+}
+
+/** The parts a Fill is given beside the Value (Resolution.phone and Resolution.city). */
+export interface FillParts {
+  phone?: PhoneParts
+  city?: CityParts
+}
+
+/**
+ * A city typeahead: the city alone is typed, and the result that names the
+ * city and the stored country is committed with the checks every dropdown Fill
+ * has. Several such results, or none, are a miss that returns the results and
+ * clears the typed text.
+ */
+const fillCityTypeahead = (el: Element, city: string, parts: CityParts): Promise<FillOutcome> =>
+  fillCombobox(el, city, [], { pick: (texts) => pickCityOption(texts, city, parts), search: true })
+
+/**
+ * `candidates` are the candidate words of the Value (Resolution.candidates):
+ * on a choice Control the Fill picks the one Option equal to the Value or to
+ * one of them. A text Control, a lone checkbox and a checkbox group ignore them.
+ */
+export async function fillOne(
+  el: Element, value: string, candidates: readonly string[] = [], parts: FillParts = {},
+): Promise<FillOutcome> {
   // Hard rail: this extension NEVER activates a submit control.
   if (el.tagName === 'BUTTON' || (el instanceof HTMLInputElement && ['submit', 'button', 'reset', 'image'].includes(el.type))) {
     return { ok: false, reason: 'unsupported-widget' }
   }
-  if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') return fillCombobox(el, value)
+  if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') {
+    return parts.city === undefined ? fillCombobox(el, value, candidates) : fillCityTypeahead(el, value, parts.city)
+  }
   // A checkbox group, stamped by the enumerator on every one of its boxes.
   const group = groupBoxesOf(el)
   if (group !== null) return fillCheckboxGroup(group, value)
@@ -516,28 +892,87 @@ export async function fillOne(el: Element, value: string): Promise<FillOutcome> 
   // choices into fillRadioGroup.
   if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox') && selfHidden(defaultMeasure(el))) {
     const choice = detectChoice(el)
-    if (choice !== null) return fillChoice(el, choice, value)
+    if (choice !== null) return withOptions(await fillChoice(el, choice, value, candidates), wordings(choice.options))
   }
-  if (el instanceof HTMLSelectElement) return fillSelect(el, value)
-  if (el instanceof HTMLInputElement && el.type === 'radio') return fillRadioGroup(el, value)
+  if (el instanceof HTMLSelectElement) return fillSelect(el, value, candidates)
+  if (el instanceof HTMLInputElement && el.type === 'radio') return fillRadioGroup(el, value, candidates)
   if (el instanceof HTMLInputElement && el.type === 'checkbox') return fillCheckbox(el, value)
   if (el instanceof HTMLInputElement && el.type === 'file') return { ok: false, reason: 'file-needs-blob' }
+  // A phone box with its country selector: the selector is set, then the national number typed.
+  const attached = phoneSelectorsOf(el)
+  if (el instanceof HTMLInputElement && attached !== null) return fillPhone(el, value, attached.selectors, parts.phone)
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return fillTextual(el, value)
   return { ok: false, reason: 'unsupported-widget' }
 }
 
+/**
+ * A read (ticket #34): the Control's Options, and nothing on the page changed.
+ * A dropdown is opened, read and closed through the dropdown Fill itself, with
+ * a pick that takes no Option and no Value to type: the same foreign-menu
+ * check before it opens, the same attributable listbox, the same restore and
+ * Escape on the way out. A dropdown that shows nothing until text is typed
+ * reports none. A radio group, a checkbox group, a choice widget and a native
+ * select are read where they stand, with no click and no change. Any other
+ * Control has no Options to read. The outcome is always a miss whose reason is
+ * OPTIONS_READ, unless a foreign menu would not close.
+ */
+export async function readOne(el: Element): Promise<FillOutcome> {
+  const read = (options: readonly string[]): FillOutcome => withOptions({ ok: false, reason: OPTIONS_READ }, wordings(options))
+  if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') {
+    const out = await fillCombobox(el, '', [], { pick: () => ({ found: 'none' }) })
+    if (!out.ok && out.reason === 'listbox-left-open') return out
+    return read(out.options ?? [])
+  }
+  const group = groupBoxesOf(el)
+  if (group !== null) return read(group.map(optionLabelOf))
+  if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox') && selfHidden(defaultMeasure(el))) {
+    const choice = detectChoice(el)
+    if (choice !== null) return read(choice.options)
+  }
+  if (el instanceof HTMLSelectElement) return read(Array.from(el.options, (o) => o.textContent ?? ''))
+  if (el instanceof HTMLInputElement && el.type === 'radio') return read(radioMembersOf(el).map(optionLabelOf))
+  return read([])
+}
+
+/** A Control a choice Fill drives: a dropdown, a native select, a radio or a
+ *  checkbox (choice widgets and checkbox groups ride on the latter two), or a
+ *  phone box whose country selector the Fill opens. */
+function isChoiceControl(el: Element): boolean {
+  return phoneSelectorsOf(el) !== null
+    || el.getAttribute('role') === 'combobox'
+    || el.getAttribute('aria-haspopup') === 'listbox'
+    || el instanceof HTMLSelectElement
+    || (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))
+}
+
+/**
+ * Fills run strictly one after another (D3). Between two consecutive choice
+ * Fills the page gets a settle wait — quiet for 100 ms, at most
+ * CHOICE_GAP_SETTLE_MS — so a menu still animating shut is not overlapped.
+ */
 export async function fillFields(
   root: Document,
-  fills: { handle: FieldHandle; value: string }[],
+  fills: { handle: FieldHandle; value?: string; candidates?: readonly string[]; phone?: PhoneParts; city?: CityParts }[],
 ): Promise<Omit<FillReport, 'epoch'>> {
-  const filled: { handle: FieldHandle; committed: string | null }[] = []
-  const failed: { handle: FieldHandle; reason: string }[] = []
+  const filled: FillReport['filled'] = []
+  const failed: FillReport['failed'] = []
+  let previousWasChoice = false
   for (const f of fills) {
     const el = elementByFid(root, f.handle.fid)
-    if (el === null) { failed.push({ handle: f.handle, reason: 'element-not-found' }); continue }
-    const out = await fillOne(el, f.value)
-    if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null })
-    else failed.push({ handle: f.handle, reason: out.reason })
+    if (el === null) {
+      failed.push({ handle: f.handle, reason: 'element-not-found' })
+      previousWasChoice = false
+      continue
+    }
+    const choice = isChoiceControl(el)
+    if (choice && previousWasChoice) await waitForSettle(root, { quietMs: 100, maxMs: CHOICE_GAP_SETTLE_MS })
+    previousWasChoice = choice
+    const parts: FillParts = { ...(f.phone === undefined ? {} : { phone: f.phone }), ...(f.city === undefined ? {} : { city: f.city }) }
+    // An entry with no Value is a read: the Options, and nothing changed.
+    const out = f.value === undefined ? await readOne(el) : await fillOne(el, f.value, f.candidates ?? [], parts)
+    const options = out.options === undefined ? {} : { options: out.options }
+    if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null, ...options })
+    else failed.push({ handle: f.handle, reason: out.reason, ...options })
   }
   return { filled, failed }
 }

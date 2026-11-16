@@ -62,9 +62,10 @@ export function buildMappingPrompt(input: MappingInput): string {
     const desc = f.description === undefined || f.description === ''
       ? ''
       : ` ${fence('field_description', f.description, CAPS.description)}`
-    // A6: a combobox is a CLOSED widget whose harvest may have caught only the
-    // mounted subset — the model must pick from options when they fit but must
-    // not treat an absent option as proof the answer is free-text.
+    // A combobox is a CLOSED widget whose Options the Scan never reads (ADR
+    // 0009): it lists only what the page mounted unopened, often nothing. The
+    // model must pick from options when they fit but must not treat an absent
+    // option as proof the answer is free-text.
     const kindNote = f.kind === 'combobox' ? ' (closed set; options may be partial)' : ''
     return `- ref=${refOf(f)} kind=${f.kind}${kindNote} required=${f.required} ${fence('field_label', f.label ?? '', CAPS.label)}${desc}${opts}`
   }).join('\n')
@@ -94,6 +95,9 @@ export function buildMappingPrompt(input: MappingInput): string {
     '',
     'For EVERY ref above return exactly one entry:',
     '- decision="known_key" with knownKey set, when the field asks for one of the known factual keys.',
+    '  location is the one-line place for a free-text box; a field that asks for a city, a region',
+    '  or a country takes city, region or country. A yes/no question about where the applicant',
+    '  lives is not a place: it is custom.',
     '- decision="reuse_answer" with answerId set, when a stored answer above already answers this exact field.',
     '- decision="custom" for anything else. A custom entry also sets fieldClass:',
     '  - fieldClass="prose" when the field asks for opinion, motivation or narrative in free text,',

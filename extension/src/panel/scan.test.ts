@@ -110,8 +110,9 @@ function depsWithFields(fields: ReturnType<typeof field>[], resolveTier: 'auto' 
   return { ...made, resolveCalls }
 }
 
-/** File scope on purpose: BOTH the A7 election describe and the A6 harvest
- *  describe use `twoFrameDeps`, and it closes over `topFields`/`appFields`. */
+/** File scope on purpose: BOTH the A7 election describe and the describe of
+ *  a Scan that opens no menu use `twoFrameDeps`, and it closes over
+ *  `topFields`/`appFields`. */
 const topFields = [field(0, 0, { label: 'Newsletter email', name: 'email' })]
 const appFields = (extra: EnumField[] = []) => [
   field(1, 0, { label: 'First name' }),
@@ -124,7 +125,8 @@ function twoFrameDeps(over: {
   app?: EnumField[]
   resume?: boolean
   pasted?: string
-  harvestReply?: unknown
+  /** fids of the application frame the first step leaves for Mapping. */
+  pending?: number[]
 } = {}) {
   const made = makeDeps()
   let epoch = 0
@@ -146,9 +148,6 @@ function twoFrameDeps(over: {
       }
     }
     if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
-    if (message.type === 'JFF_HARVEST') {
-      return { replies: [{ frameId: 1, payload: over.harvestReply ?? { ok: true, options: {} } }], failures: [] }
-    }
     return { replies: [{ frameId: frameId ?? 0, payload: { ok: true, fill: { epoch, filled: [], failed: [] } } }], failures: [] }
   })
   const resolveCalls: { fields: EnumField[] }[] = []
@@ -162,14 +161,15 @@ function twoFrameDeps(over: {
           ok: true,
           result: {
             epoch,
-            resolutions: p.fields.map((f) => ({
+            resolutions: p.fields.filter((f) => !(over.pending ?? []).includes(f.fid)).map((f) => ({
               handle: { frameId: f.frameId, fid: f.fid, epoch }, tier: 'auto',
               value: 'V', source: 'profile', key: null, answerId: null, reason: 'test',
             })),
-            pending: [],
+            pending: p.fields.filter((f) => (over.pending ?? []).includes(f.fid)).map((f) => ({ frameId: f.frameId, fid: f.fid, epoch })),
           },
         }
       }
+      if (method === 'resolve.mapping') return { ok: true, result: { epoch, resolutions: [], llmError: null } }
       return { ok: true, result: {} }
     }),
     onDisconnect: () => undefined,
@@ -433,6 +433,21 @@ describe('runScan', () => {
     ])
   })
 
+  // PR #36 final pass: a resume the page refused was dropped in silence.
+  it('a resume the page refused is reported in frameReports, and the scan goes on to resolve', async () => {
+    const base = makeDeps()
+    const inner = base.deps.sendToTab
+    const { deps } = makeDeps({
+      sendToTab: vi.fn(async (frameId, message) => {
+        if (message.type === 'JFF_FILL_RESUME') return { replies: [{ frameId: 0, payload: { ok: false, error: 'file-not-kept' } }], failures: [] }
+        return inner(frameId, message)
+      }),
+    })
+    const out = await runScan(deps)
+    expect(out.frameReports.some((r) => r.error === 'resume upload failed: file-not-kept')).toBe(true)
+    expect((deps.port.request as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[0] === 'resolve.first')).toBe(true)
+  })
+
   it('reports a failed auto-fill send in frameReports instead of discarding the scan', async () => {
     const { deps } = makeDeps({
       getResume: async () => null,
@@ -674,75 +689,35 @@ describe('runScan — A7 frame election', () => {
   })
 })
 
-describe('runScan — A6 combobox harvest', () => {
+describe('runScan — a Scan opens no menu (ADR 0009)', () => {
   const comboApp = [
     field(1, 0, { label: 'First name' }),
     field(1, 1, { label: 'Country', kind: 'combobox', options: [] }),
-    field(1, 2, { label: 'Gender', kind: 'combobox', options: [], demographic: true }),
-    field(1, 3, { label: 'Level', kind: 'combobox', options: ['Junior', 'Senior'] }),
-    field(1, 4, { label: 'Resume', kind: 'file', required: true }),
+    field(1, 2, { label: 'Level', kind: 'combobox', options: ['Junior', 'Senior'] }),
+    field(1, 3, { label: 'Resume', kind: 'file', required: true }),
   ]
 
-  it('harvests only elected, non-demographic, empty-options comboboxes and merges BEFORE resolve', async () => {
-    const { deps, sent, resolveCalls } = twoFrameDeps({
-      app: comboApp,
-      harvestReply: { ok: true, options: { 1: ['Brazil', 'Portugal'] } },
-    })
+  it('sends no message that opens a dropdown, and a dropdown whose Options load on open reaches Resolution with none', async () => {
+    const { deps, sent, resolveCalls } = twoFrameDeps({ app: comboApp, resume: true })
     const out = await runScan(deps)
-    const harvests = sent.filter((m) => m.type === 'JFF_HARVEST') as { fids: number[] }[]
-    expect(harvests).toHaveLength(1)
-    expect(harvests[0]!.fids).toEqual([1]) // never the demographic one, never the pre-optioned one
-    // merged into the resolve payload (the prompt sees the closed set)…
-    const resolvedCombo = resolveCalls[0]!.fields.find((f) => f.fid === 1)!
-    expect(resolvedCombo.options).toEqual(['Brazil', 'Portugal'])
-    // …and into the returned fields for rendering.
-    expect(out.fields.find((f) => f.frameId === 1 && f.fid === 1)!.options).toEqual(['Brazil', 'Portugal'])
+    // Enumerate, read the job text, upload the resume, enumerate again, fill: nothing else touches the page.
+    expect(new Set(sent.map((m) => m.type))).toEqual(new Set(['JFF_SCAN', 'JFF_JOBTEXT', 'JFF_FILL_RESUME', 'JFF_FILL']))
+    expect(resolveCalls[0]!.fields.find((f) => f.fid === 1)).toMatchObject({ label: 'Country', kind: 'combobox', options: [] })
+    expect(out.fields.find((f) => f.frameId === 1 && f.fid === 1)!.options).toEqual([])
+    // A dropdown that listed its Options without being opened keeps them.
+    expect(resolveCalls[0]!.fields.find((f) => f.fid === 2)!.options).toEqual(['Junior', 'Senior'])
   })
 
-  it('sends the harvest to the ELECTED frame only', async () => {
-    const { deps } = twoFrameDeps({ app: comboApp, harvestReply: { ok: true, options: {} } })
-    await runScan(deps)
-    const call = vi.mocked(deps.sendToTab).mock.calls
-      .find((c) => (c[1] as ContentMessage).type === 'JFF_HARVEST')!
-    expect(call[0]).toBe(1)
-  })
-
-  it('skips the harvest message entirely when nothing qualifies', async () => {
-    const { deps, sent } = twoFrameDeps() // default appFields: no comboboxes
-    await runScan(deps)
-    expect(sent.map((m) => m.type)).not.toContain('JFF_HARVEST')
-  })
-
-  it('a dead harvest relay degrades to empty options and the scan survives with evidence', async () => {
-    const made = twoFrameDeps({ app: comboApp })
-    const inner = made.deps.sendToTab
-    made.deps.sendToTab = vi.fn(async (frameId, message) => {
-      if (message.type === 'JFF_HARVEST') throw new Error('frame vanished mid-harvest')
-      return inner(frameId, message)
-    })
+  it('Mapping still receives that Field, by its label and with no Options', async () => {
+    const made = twoFrameDeps({ app: comboApp, pending: [1] })
     const out = await runScan(made.deps)
-    expect(out.resolutions.length).toBeGreaterThan(0) // the paid resolve still happened
-    expect(out.fields.find((f) => f.frameId === 1 && f.fid === 1)!.options).toEqual([])
-    expect(out.frameReports.some((r) => r.error !== null && r.error.includes('harvest failed'))).toBe(true)
-  })
-
-  it('a refused harvest reply (stale epoch) merges nothing and fails nothing', async () => {
-    const { deps, resolveCalls } = twoFrameDeps({ app: comboApp, harvestReply: { ok: false, error: 'stale_epoch' } })
-    const out = await runScan(deps)
-    expect(resolveCalls).toHaveLength(1)
-    expect(out.fields.find((f) => f.frameId === 1 && f.fid === 1)!.options).toEqual([])
-  })
-
-  it('runs harvest AFTER the resume re-enumeration and before resolve', async () => {
-    const { deps, sent, resolveCalls } = twoFrameDeps({
-      app: comboApp, resume: true,
-      harvestReply: { ok: true, options: { 1: ['Brazil'] } },
-    })
-    await runScan(deps)
-    const types = sent.map((m) => m.type)
-    expect(types.indexOf('JFF_HARVEST')).toBeGreaterThan(types.lastIndexOf('JFF_SCAN'))
-    expect(types.indexOf('JFF_HARVEST')).toBeGreaterThan(types.indexOf('JFF_FILL_RESUME'))
-    expect(resolveCalls[0]!.fields.find((f) => f.fid === 1)!.options).toEqual(['Brazil'])
+    expect(out.pending.map((f) => f.fid)).toEqual([1])
+    await runMapping({ port: made.deps.port, sendToTab: made.deps.sendToTab }, out, () => true)
+    const calls = vi.mocked(made.deps.port.request).mock.calls.filter((c) => c[0] === 'resolve.mapping')
+    expect(calls).toHaveLength(1)
+    expect((calls[0]![1] as { fields: EnumField[] }).fields).toEqual([
+      expect.objectContaining({ fid: 1, label: 'Country', kind: 'combobox', options: [] }),
+    ])
   })
 })
 

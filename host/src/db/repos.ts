@@ -1,6 +1,6 @@
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
-import { isProfileKey, type FieldKey } from '@jff/shared'
+import { isProfileKey, norm, type FieldKey } from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
 import { migrate } from './schema.js'
 
@@ -156,6 +156,24 @@ export function saveLearnedMapping(db: Database.Database, labelNormalized: strin
     `INSERT INTO learned_mappings (label_normalized, field_key, confirmed_at) VALUES (?, ?, ?)
      ON CONFLICT(label_normalized) DO UPDATE SET field_key = excluded.field_key, confirmed_at = excluded.confirmed_at`,
   ).run(labelNormalized, key, new Date().toISOString())
+}
+
+/**
+ * Stores a Learned wording for a key and the canonical Value it stood for.
+ * The same wording, compared through `norm`, is kept once.
+ */
+export function saveLearnedWording(db: Database.Database, key: FieldKey, value: string, wording: string): void {
+  db.prepare(
+    `INSERT INTO learned_wordings (field_key, value, wording, wording_normalized, learned_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(field_key, value, wording_normalized) DO NOTHING`,
+  ).run(key, value, wording.trim(), norm(wording), new Date().toISOString())
+}
+
+/** The wordings learned for a key and a canonical Value, oldest first. */
+export function getLearnedWordings(db: Database.Database, key: FieldKey, value: string): string[] {
+  const rows = db.prepare(`SELECT wording FROM learned_wordings WHERE field_key = ? AND value = ? ORDER BY rowid ASC`)
+    .all(key, value) as { wording: string }[]
+  return rows.map((r) => r.wording)
 }
 
 export function getSelector(db: Database.Database, hostname: string, purpose: string): string | null {

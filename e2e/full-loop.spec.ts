@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import DatabaseCtor from 'better-sqlite3'
 import { launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
-import { seedOnboardedProfile, seedResume } from './seed'
+import { seedAnswerBank, seedOnboardedProfile, seedResume } from './seed'
 import { startFixtureServer } from './static-server'
 import { startHost } from './hostBridge'
 
@@ -60,7 +60,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
 
   try {
     // O3 era: this is no longer just fill fodder — the panel REFUSES to scan
-    // until the profile is complete (email, phone, a name AND a stored resume),
+    // until the profile is complete (email, phone, a name, a country AND a stored resume),
     // so an unseeded run lands on the onboarding wall and nothing below ever
     // runs. `seedOnboardedProfile` supplies the host-side half straight into
     // SQLite (the panel is what is under test; it must not be asked to store its
@@ -122,10 +122,11 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     await expect(target.locator('#hard_bug')).toHaveValue(/production TypeScript/)
 
     // The user overrides that draft by typing on the PAGE (snapshot must beat the
-    // panel edit), corrects a factual select, types into the unlabelled mystery
-    // field (which must NOT be saved), then submits.
+    // panel edit), answers a factual select and a fact the profile lacks, types
+    // into the unlabelled mystery field (which must NOT be saved), then submits.
     await target.fill('#hard_bug', 'answered by hand on the page')
     await target.selectOption('#work_auth', { index: 1 })
+    await target.fill('#linkedin-input', 'https://www.linkedin.com/in/ada-lovelace')
     await target.fill('#mystery', 'unlabelled, must never be saved')
     await target.click('#submit_app')
     await expect(target.locator('#application-confirmation')).toBeVisible()
@@ -162,16 +163,20 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     expect(apps[0]!).toMatchObject({ company: 'Acme', generated_count: 1 })
     expect(apps[0]!.url).toContain('fixture-form.html')
 
-    // ...and "Save to profile" is what does write it. The row carries key
-    // 'workAuth' and nothing is stored under it yet, so the button is offered.
+    // ...and "Save to profile" is what does write a fact. The LinkedIn row
+    // carries key 'linkedin' and nothing is stored under it yet, so the button
+    // is offered. The work authorization row is not: its key is the list of
+    // countries, entered only in the Profile editor (ticket #29).
     const authRow = panel.locator('li', { hasText: 'Work Authorization' })
-    await authRow.locator('[data-jff-save-fact="1"]').click()
-    await expect(authRow.locator('[data-jff-save-fact="1"]')).toHaveCount(0, { timeout: 30_000 })
+    await expect(authRow.locator('[data-jff-save-fact="1"]')).toHaveCount(0)
+    const linkedinRow = panel.locator('li', { hasText: 'LinkedIn Profile' })
+    await linkedinRow.locator('[data-jff-save-fact="1"]').click()
+    await expect(linkedinRow.locator('[data-jff-save-fact="1"]')).toHaveCount(0, { timeout: 30_000 })
 
     const db2 = new DatabaseCtor(host.dbPath, { readonly: true })
-    const bank2 = db2.prepare('SELECT key, value FROM answer_bank').all() as { key: string; value: string }[]
+    const profile2 = db2.prepare('SELECT key, value FROM profile').all() as { key: string; value: string }[]
     db2.close()
-    expect(bank2).toContainEqual({ key: 'workAuth', value: 'I am authorized to work for any employer in the US.' })
+    expect(profile2).toContainEqual({ key: 'linkedin', value: 'https://www.linkedin.com/in/ada-lovelace' })
 
     // Protocol hygiene: the host never wrote anything but frames to stdout, and it
     // logged to stderr. A stray console.log would have corrupted every response.
@@ -282,6 +287,87 @@ test('fills identity Fields before Mapping answers', async () => {
     expect(ext.consoleErrors).toEqual([])
   } finally {
     host.releaseMapping()
+    await ext.close()
+    await host.stop()
+    await fixtures.stop()
+  }
+})
+
+/**
+ * Ticket #35 closes the loop of spec #6 (testing decision 4): a Fill misses,
+ * the stand-in model picks one of the page's Options, the user accepts it, and
+ * that Option is remembered as a Learned wording. The form is then loaded again,
+ * so the committed Option cannot be read back as a Value already on the page,
+ * with no answers saved in between, and the next Scan fills the Field from the
+ * Learned wording: the stand-in model receives no second pick.
+ */
+test('an accepted Option is remembered as a Learned wording, and the next Scan fills it with no pick', async () => {
+  const fixtures = await startFixtureServer()
+  const host = await startHost({ pick: 'open to relocating' })
+  const ext = await launchWithExtension()
+  const LABEL = 'Are you open to relocation?'
+  const OPEN = 'Yes, I am open to relocating'
+
+  /** A panel bridged to the real host, pinned to the form's tab. It auto-scans on open. */
+  const openPanel = async (tabId: number) => {
+    const panel = await ext.context.newPage()
+    await panel.exposeFunction('__jffHostBridge', (req: { requestId: string; method: string; params: unknown }) => host.request(req))
+    await panel.goto(panelUrl(ext.extensionId, `?jffFakeHost=1&tabId=${tabId}`))
+    await expect(panel.locator('[data-jff-banner="ok"]')).toBeVisible()
+    return panel
+  }
+  const learned = () => {
+    const db = new DatabaseCtor(host.dbPath, { readonly: true })
+    try {
+      return db.prepare('SELECT field_key, value, wording FROM learned_wordings').all()
+    } finally {
+      db.close()
+    }
+  }
+
+  try {
+    seedOnboardedProfile(host.dbPath)
+    // The stored yes: the rule table says it as "Yes" or "Sim", and the form
+    // offers neither.
+    seedAnswerBank(host.dbPath, { relocate: 'yes' })
+    await seedResume(ext)
+
+    const target = await ext.context.newPage()
+    await target.goto(`${fixtures.origin}/relocate-form.html`)
+    const tabId = await tabIdForUrl(ext, 'relocate-form.html')
+
+    // FIRST SCAN: the Fill misses, the stand-in model picks, the row is Proposed.
+    const panel = await openPanel(tabId)
+    const row = panel.locator('[data-jff-rows] li', { hasText: LABEL })
+    await expect(row).toHaveAttribute('data-jff-tier', 'proposed', { timeout: 60_000 })
+    await expect(row.locator('[data-jff-stands-for]')).toContainText('Yes')
+    await expect(target.locator('#relocate')).toHaveValue('')
+    expect(host.picks()).toBe(1)
+
+    // ACCEPT: the Option reaches the page and is stored as a Learned wording
+    // for the relocate key and the yes it stood for.
+    await row.getByRole('button', { name: 'Accept' }).click()
+    await expect(target.locator('#relocate')).toHaveValue('open')
+    await expect(row).toHaveAttribute('data-jff-tier', 'auto')
+    await expect.poll(learned, { timeout: 30_000 }).toEqual([{ field_key: 'relocate', value: 'yn:yes', wording: OPEN }])
+    await panel.close()
+
+    // LOAD THE FORM AGAIN: nothing is on the page, and no answer was saved.
+    await target.goto(`${fixtures.origin}/relocate-form.html?load=2`)
+    await expect(target.locator('#relocate')).toHaveValue('')
+
+    // SECOND SCAN: the Field auto-fills from the Learned wording.
+    const again = await openPanel(tabId)
+    await expect(target.locator('#relocate')).toHaveValue('open', { timeout: 60_000 })
+    await expect(again.locator('[data-jff-rows] li', { hasText: LABEL })).toHaveAttribute('data-jff-tier', 'auto')
+    // The stand-in model received no second pick.
+    expect(host.picks()).toBe(1)
+    const db = new DatabaseCtor(host.dbPath, { readonly: true })
+    const answers = db.prepare('SELECT COUNT(*) AS n FROM qa_memory').get() as { n: number }
+    db.close()
+    expect(answers.n).toBe(0)
+    expect(ext.consoleErrors).toEqual([])
+  } finally {
     await ext.close()
     await host.stop()
     await fixtures.stop()

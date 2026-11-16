@@ -5,6 +5,7 @@ import {
 } from './dom'
 import { isDemographicField } from './demographic'
 import { GROUP_ATTR, groupCheckboxes, groupOptions, groupRequired, groupValue } from './checkboxGroup'
+import { phoneSelectorsOf } from './phoneSelector'
 
 export interface Measure {
   display: string
@@ -135,6 +136,18 @@ function currentValueOf(el: Element, kind: WidgetKind): string | null {
 }
 
 /** Native requiredness OR the ATS conventions carried by the bound label. */
+/** Input modes that bring up a keyboard of digits. */
+const NUMERIC_INPUT_MODES: ReadonlySet<string> = new Set(['numeric', 'decimal'])
+
+/**
+ * A text box that takes only numbers: a number input, or one that asks for a
+ * keyboard of digits. Resolution offers such a Control a salary's amount alone.
+ */
+function takesOnlyNumbers(el: Element): boolean {
+  if ((el as HTMLInputElement).type?.toLowerCase() === 'number') return true
+  return NUMERIC_INPUT_MODES.has((el.getAttribute('inputmode') ?? '').trim().toLowerCase())
+}
+
 function requiredOf(el: Element, binding: LabelBinding): boolean {
   return (el as HTMLInputElement).required === true
     || el.getAttribute('aria-required') === 'true'
@@ -166,11 +179,14 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
   const boxes = elements.filter((el): el is HTMLInputElement =>
     kindOf(el) === 'checkbox' && !(selfHidden(measureOnce(el)) && detectChoice(el) !== null))
   const checkboxGroups = groupCheckboxes(boxes)
+  // A country selector attached to a phone box is part of the phone Field, so
+  // neither it nor anything inside it is a Field of its own (phoneSelector.ts).
+  const attachedToPhone = new Set(elements.flatMap((el) => phoneSelectorsOf(el)?.internals ?? []))
   const isVisible = (m: Measure): boolean => !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden' || m.clipped)
 
   for (const el of elements) {
     const kind = kindOf(el)
-    if (kind === null) continue
+    if (kind === null || attachedToPhone.has(el)) continue
 
     const m = measureOnce(el)
     // HONEST visibility for every kind, file included: the blanket file
@@ -296,6 +312,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       demographic: isDemographicField(binding.text, isDemographic(el)),
       description: descriptionFor(el, binding) ?? undefined,
       accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
+      ...(kind === 'text' ? { numeric: takesOnlyNumbers(el) } : {}),
     })
     fid++
   }

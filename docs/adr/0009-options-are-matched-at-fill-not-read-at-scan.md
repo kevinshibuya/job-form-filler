@@ -13,3 +13,8 @@ key or Saved answer answers the Field without seeing its Options, and Fill opens
 the menu, reads them, matches and commits. A miss returns as Needs input with the
 Options now known. The cost is that a wrong match is discovered at Fill instead
 of at Scan, and that Mapping classifies such a Field from its label alone.
+
+The Fill that follows a Scan may also open a menu only to read it: a row with no
+Value to fill (a region label, a prose Saved answer, a pronoun group) is read so
+the model can pick one of its Options (#34). That read belongs to the Fill, not
+to the Scan, and nothing is committed by it.

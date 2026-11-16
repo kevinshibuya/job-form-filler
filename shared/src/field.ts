@@ -44,6 +44,11 @@ export const EnumFieldSchema = FieldHandleSchema.extend({
    *  resume scorer can read it (+1 for pdf/doc). File kinds only; optional so
    *  a stale content script simply omits it. */
   accept: z.string().optional(),
+  /** Text boxes only: true when the Control takes only numbers (a number
+   *  input, or one that asks for a numeric keyboard), so a salary is offered
+   *  to it as the amount alone. Optional so a stale content script simply
+   *  omits it, and an absent mark reads as false. */
+  numeric: z.boolean().optional(),
 })
 export type EnumField = z.infer<typeof EnumFieldSchema>
 
@@ -93,6 +98,35 @@ export type ResolutionSource = z.infer<typeof ResolutionSourceSchema>
 export const FieldClassSchema = z.enum(['prose', 'personal_fact'])
 export type FieldClass = z.infer<typeof FieldClassSchema>
 
+/**
+ * A phone in international form taken apart for a Fill that sets the country
+ * selector beside a phone box: the calling code and the national number,
+ * digits only, and every name of the phone's country in both languages. The
+ * phone's country is the stored `country` when its calling code is the
+ * phone's, else the one country in the closed list with that code; when
+ * several share it, `countryNames` is empty.
+ */
+export const PhonePartsSchema = z.object({
+  callingCode: z.string().regex(/^\d+$/),
+  nationalNumber: z.string().regex(/^\d+$/),
+  countryNames: z.array(z.string()),
+})
+export type PhoneParts = z.infer<typeof PhonePartsSchema>
+
+/**
+ * What a Fill of a city typeahead needs beside the city it types: every name of
+ * the stored `country` in both languages, so the Fill can pick the result that
+ * names both the city and the country. Empty when no country is stored: then
+ * only a result equal to the city alone is picked. `region` is the stored
+ * region, absent when none: it decides among several results that name the
+ * city and the country.
+ */
+export const CityPartsSchema = z.object({
+  countryNames: z.array(z.string()),
+  region: z.string().optional(),
+})
+export type CityParts = z.infer<typeof CityPartsSchema>
+
 export const ResolutionSchema = z.object({
   handle: FieldHandleSchema,
   tier: ResolutionTierSchema,
@@ -108,5 +142,41 @@ export const ResolutionSchema = z.object({
    * `personal_fact`: a Field nobody labelled prose is the user's to answer.
    */
   fieldClass: FieldClassSchema.optional(),
+  /**
+   * The words a page may use for the Value, in English and Portuguese, from
+   * the rule table (ruleTable.ts). Fill picks the one Option equal to the Value
+   * or to one of these. Absent when the Value has none: after ticket #26 only
+   * a `country` Value carries them.
+   */
+  candidates: z.array(z.string()).optional(),
+  /**
+   * The parts of a phone Value (PhonePartsSchema), on a Resolution of the
+   * `phone` key whose Value is the stored phone and whose calling code the
+   * closed list knows. Absent everywhere else.
+   */
+  phone: PhonePartsSchema.optional(),
+  /**
+   * The names of the stored country (CityPartsSchema), on a Resolution of the
+   * `city` key whose Value is the stored city and whose Control is a
+   * type-to-search dropdown. Absent on a text box and everywhere else.
+   */
+  city: CityPartsSchema.optional(),
+  /**
+   * On a row whose Option the model picked after a Fill missed (ADR 0008):
+   * the stored Value the picked Option stands for. The row is Proposed and
+   * `value` is the page's Option. Absent everywhere else.
+   */
+  standsFor: z.string().optional(),
+  /**
+   * On a Needs input row with no Value to fill but a stored Value the Field is
+   * known to ask for: what the model pick is asked with once a Fill has read
+   * the Control's Options (ticket #34). The `workAuth` list on an authorization
+   * or sponsorship Field whose label names a region, the `country` on such a
+   * residence Field, the stored pronouns on a checkbox group that offers no
+   * Option equal to them, the text of a Saved answer that equals none of the
+   * Options known at Scan. Absent everywhere else: a row without it is never
+   * read and makes no model call.
+   */
+  identifiedValue: z.string().min(1).optional(),
 })
 export type Resolution = z.infer<typeof ResolutionSchema>

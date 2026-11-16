@@ -20,7 +20,7 @@ let mapping: ReturnType<typeof vi.fn>
 let decide: (ref: string) => Decision
 
 const ADA = {
-  firstName: 'Ada', fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+1 555 0100',
+  firstName: 'Ada', fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+15550100',
   location: 'London, UK', linkedin: 'https://www.linkedin.com/in/ada-lovelace',
   github: 'https://github.com/ada-lovelace',
 }
@@ -28,7 +28,7 @@ const ADA = {
 beforeEach(() => {
   db = openDb(':memory:')
   setProfile(db, ADA)
-  setAnswerBank(db, { workAuth: 'Yes', pronouns: 'she/her' })
+  setAnswerBank(db, { workAuth: '["gb"]', pronouns: 'she/her' })
   decide = () => ({ decision: 'custom' })
   mapping = vi.fn(async (prompt: string) => {
     const refs = [...prompt.matchAll(/^- ref=(\S+)/gm)].map((m) => m[1]!)
@@ -121,9 +121,19 @@ describe('a Known key answers only a Control that can hold its Value', () => {
 
   it('a yes/no key still answers a radio group, a dropdown, a combobox, yes/no buttons and a text box', async () => {
     for (const kind of ['radiogroup', 'select', 'combobox', 'choice', 'text'] as WidgetKind[]) {
-      const [r] = await first(field('Are you legally authorized to work in Brazil?', kind, { options: kind === 'text' ? [] : YES_NO }))
+      const [r] = await first(field('Are you legally authorized to work in the United Kingdom?', kind, { options: kind === 'text' ? [] : YES_NO }))
       expect(r).toMatchObject({ tier: 'auto', key: 'workAuth', value: 'Yes' })
     }
+  })
+
+  it('a place key answers a text box and every choice Control, and no checkbox group', async () => {
+    setProfile(db, { country: 'United Kingdom' })
+    for (const kind of [...TEXT_CONTROLS, ...CHOICE_CONTROLS]) {
+      const [r] = await first(field('Country', kind, { options: kind === 'text' || kind === 'textarea' ? [] : ['France', 'United Kingdom'] }))
+      expect(r, kind).toMatchObject({ tier: 'auto', key: 'country', value: 'United Kingdom' })
+    }
+    const group = field('Country', 'checkboxgroup', { options: ['France', 'United Kingdom'] })
+    expect(await first(group)).toEqual([PENDING])
   })
 
   it('a Control kind the rule does not list takes no Known key', async () => {
@@ -138,7 +148,9 @@ describe('a Known key answers only a Control that can hold its Value', () => {
   })
 
   it('a yes/no question that mentions where the applicant is based does not receive the location line', async () => {
-    const based = field('Are you based in US or Canada?', 'choice', { options: YES_NO, required: true })
+    // One that names a country is answered from the stored country instead
+    // (countryAnswers.test.ts); this one names a city.
+    const based = field('Are you based in London?', 'choice', { options: YES_NO, required: true })
     expect(await first(based)).toEqual([PENDING])
     const [r] = await mapped(based)
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
@@ -149,10 +161,10 @@ describe('a Known key answers only a Control that can hold its Value', () => {
 
   it('a recognizer hit on the wrong Control goes on to the exact Saved answer match', async () => {
     upsertAnswer(db, {
-      questionNormalized: normalizeQuestion('Are you based in US or Canada?'), questionRaw: 'Are you based in US or Canada?',
+      questionNormalized: normalizeQuestion('Are you based in London?'), questionRaw: 'Are you based in London?',
       answer: 'No', language: 'en', reusability: 'reusable',
     })
-    const [r] = await first(field('Are you based in US or Canada?', 'choice', { options: YES_NO }))
+    const [r] = await first(field('Are you based in London?', 'choice', { options: YES_NO }))
     expect(r).toMatchObject({ tier: 'auto', source: 'saved_answer', key: null, value: 'No' })
     expect(mapping).not.toHaveBeenCalled()
   })
@@ -176,11 +188,39 @@ describe('a Known key answers only a Control that can hold its Value', () => {
   })
 
   it('a Known key Mapping names for a Control that can hold it is still proposed', async () => {
+    // It names no country, so the answer is the one for the stored country.
+    setProfile(db, { country: 'United Kingdom' })
     const auth = field('Can you work for us without restrictions?', 'radiogroup', { options: YES_NO })
     decide = () => ({ decision: 'known_key', knownKey: 'workAuth' })
     expect(await first(auth)).toEqual([PENDING])
     const [r] = await mapped(auth)
     expect(r).toMatchObject({ tier: 'proposed', key: 'workAuth', value: 'Yes' })
+  })
+
+  // PR #36 manual pass: an address box whose label mentions relocating took "Yes".
+  const ADDRESS = 'What is the address from which you plan on working? If you would need to relocate, please type "relocating".'
+
+  it('a yes or a no is typed into a text box only under a yes/no question', async () => {
+    setAnswerBank(db, { relocate: 'yes' })
+    for (const kind of TEXT_CONTROLS) {
+      expect(await first(field(ADDRESS, kind))).toEqual([PENDING])
+      expect(await first(field('Relocation plans (the city you would move to)', kind))).toEqual([PENDING])
+    }
+    const [willing] = await first(field('Are you willing to relocate?', 'text'))
+    expect(willing).toMatchObject({ tier: 'auto', key: 'relocate', value: 'Yes' })
+  })
+
+  it('a yes/no key Mapping names for a text box that asks no yes/no question is refused', async () => {
+    setAnswerBank(db, { relocate: 'yes' })
+    const address = field(ADDRESS, 'text')
+    decide = () => ({ decision: 'known_key', knownKey: 'relocate' })
+    const [r] = await mapped(address)
+    expect(r).toMatchObject({ tier: 'needs_input', reason: 'llm-key:relocate:wrong-control' })
+  })
+
+  it('a page value under a label that asks no yes/no question is harvested with no yes/no key', async () => {
+    const [r] = await first(field('Relocation plans (the city you would move to)', 'text', { currentValue: 'Paris' }))
+    expect(r).toMatchObject({ tier: 'auto', source: 'page', key: null })
   })
 
   it('a Value already on the page carries no Known key its Control cannot hold', async () => {
@@ -236,7 +276,8 @@ describe('a checkbox group takes only the pronouns Known key', () => {
     const pronouns = field('Pronouns', 'checkboxgroup', { options: ['He/him', 'They/them', 'Xe/xem'] })
     expect(await first(pronouns)).toEqual([PENDING])
     const [r] = await mapped(pronouns)
-    expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
+    // The row names the pronouns key, so an Option accepted for it is learned (ticket #35).
+    expect(r).toMatchObject({ tier: 'needs_input', key: 'pronouns', value: null })
     expect(mappingPrompt()).toContain(`ref=${refOf(pronouns)} kind=checkboxgroup`)
     expect(mappingPrompt()).toContain('Xe/xem')
   })

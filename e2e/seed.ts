@@ -3,7 +3,7 @@ import type { LaunchedExtension } from './ext'
 
 /**
  * O3 era: the panel refuses to scan until a profile is COMPLETE — email, phone,
- * a name, AND a stored resume (see `extension/src/panel/completeness.ts`). Every
+ * a name, a country, AND a stored resume (see `extension/src/panel/completeness.ts`). Every
  * pre-onboarding e2e mounted the panel against an empty host home and now lands
  * on the onboarding wall instead of the scan UI. These two helpers put the suite
  * back on the far side of that gate:
@@ -23,8 +23,9 @@ import type { LaunchedExtension } from './ext'
 /** The minimum `profileCompleteness` accepts, as one shared persona. */
 export const ONBOARDED_PROFILE: Readonly<Record<string, string>> = {
   email: 'ada@example.com',
-  phone: '+1 555 0100',
+  phone: '+15550100',
   fullName: 'Ada Lovelace',
+  country: 'United Kingdom',
 }
 
 /**
@@ -47,6 +48,27 @@ export function seedOnboardedProfile(dbPath: string, extra: Record<string, strin
       'INSERT INTO profile (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     )
     for (const [k, v] of Object.entries({ ...ONBOARDED_PROFILE, ...extra })) stmt.run(k, v)
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Direct writes into the host home's `answer_bank` table, on the same terms as
+ * `seedOnboardedProfile`: the table is created as `host/src/db/schema.ts`
+ * creates it, so whichever connection opens the file first, the other finds it.
+ * Values are stored as given, so a typed key takes its canonical text
+ * (`relocate: 'yes'`).
+ */
+export function seedAnswerBank(dbPath: string, values: Record<string, string>): void {
+  const db = new DatabaseCtor(dbPath)
+  try {
+    db.pragma('busy_timeout = 5000')
+    db.exec('CREATE TABLE IF NOT EXISTS answer_bank (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    const stmt = db.prepare(
+      'INSERT INTO answer_bank (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    )
+    for (const [k, v] of Object.entries(values)) stmt.run(k, v)
   } finally {
     db.close()
   }

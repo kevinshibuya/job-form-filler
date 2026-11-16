@@ -30,6 +30,20 @@ CREATE TABLE IF NOT EXISTS learned_mappings (
   confirmed_at     TEXT NOT NULL
 );
 
+-- Learned wordings (ticket #35): an Option's wording the user accepted as
+-- another way of saying a Known key's Value. \`value\` is the Value it was
+-- learned for, in its canonical form (host/src/resolve/learnedWordings.ts); a
+-- wording applies only while the key's Value is that one. User data about the
+-- user's own answers, not ATS knowledge (ADR 0007).
+CREATE TABLE IF NOT EXISTS learned_wordings (
+  field_key          TEXT NOT NULL,
+  value              TEXT NOT NULL,
+  wording            TEXT NOT NULL,
+  wording_normalized TEXT NOT NULL,
+  learned_at         TEXT NOT NULL,
+  PRIMARY KEY (field_key, value, wording_normalized)
+);
+
 CREATE TABLE IF NOT EXISTS learned_selectors (
   hostname TEXT NOT NULL,
   purpose  TEXT NOT NULL,

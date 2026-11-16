@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { enumerateFields, elementByFid, detectChoice, isClipped, CHOICE_MAX_OPTION_CHARS, type MeasureFn } from './enumerate'
 import { fillFields } from './fill'
+import { loadRealFixture } from './fixtures/real'
 import {
   ASHBY_CHOICE_RADIO, ASHBY_COMBOBOX, ASHBY_COMBOBOX_WITH_DESCRIPTION, ASHBY_CONSENT_SINGLE,
   ASHBY_EEO_YESNO, ASHBY_ESSAY_WITH_DESCRIPTION, ASHBY_OPTIONAL_FIELD, ASHBY_RADIO_FIELDSET,
@@ -425,4 +426,59 @@ describe('checkbox groups across a re-scan', () => {
     expect(report.filled).toHaveLength(1)
     expect((document.getElementById('am') as HTMLInputElement).checked).toBe(true)
   })
+})
+
+describe("a phone's country selector is part of the phone Field (#30)", () => {
+  const scan = () => enumerateFields({ root: document, epoch: 4, measure: allVisible }).fields
+  const isSelector = (f: { idAttr: string | null; label: string | null }): boolean =>
+    f.idAttr === 'country' || f.idAttr === 'iti-0__search-input' || /^(country|search)$/i.test(f.label ?? '')
+
+  it('a phone box with a flag dropdown in its wrapper enumerates as one Field, the phone', () => {
+    document.body.innerHTML = `
+      <label for="phone">Phone</label>
+      <div class="wrap">
+        <button type="button" aria-haspopup="listbox" aria-controls="flags">Flag</button>
+        <ul id="flags" role="listbox" hidden><li role="option">Canada +1</li><li role="option">United States +1</li></ul>
+        <input id="phone" type="tel">
+      </div>`
+    expect(scan()).toEqual([expect.objectContaining({ idAttr: 'phone', label: 'Phone', kind: 'text' })])
+  })
+
+  it('greenhouse-self-id: the flag dropdown and the paired Country dropdown are no Field; the phone is one row', () => {
+    loadRealFixture('greenhouse-self-id')
+    const fields = scan()
+    expect(fields.filter((f) => f.idAttr === 'phone')).toHaveLength(1)
+    expect(fields.filter(isSelector)).toEqual([])
+  })
+
+  it('a phone box paired with a country dropdown enumerates as one Field, the phone', () => {
+    for (const name of ['greenhouse-hosted-a', 'greenhouse-hosted-b']) {
+      loadRealFixture(name)
+      const fields = scan()
+      expect(fields.filter((f) => f.idAttr === 'phone')).toEqual([expect.objectContaining({ label: 'Phone' })])
+      expect(fields.filter(isSelector)).toEqual([])
+    }
+  })
+
+  it('a Country dropdown that is not attached to a phone box is still a Field of its own', () => {
+    document.body.innerHTML = `
+      <fieldset><legend>Address</legend>
+        <label for="country">Country</label><select id="country"><option>Canada</option><option>United States</option></select>
+        <label for="city">City</label><input id="city">
+      </fieldset>
+      <label for="phone">Phone</label><input id="phone" type="tel">`
+    const fields = scan()
+    expect(fields.map((f) => f.idAttr)).toEqual(['country', 'city', 'phone'])
+  })
+
+  it('no Value can be offered to a phone\'s country selector: it has no handle, and filling the phone never types into it', async () => {
+    loadRealFixture('greenhouse-hosted-a')
+    const fields = scan()
+    expect(document.getElementById('country')!.hasAttribute('data-jff-fid')).toBe(false)
+    const phone = fields.find((f) => f.idAttr === 'phone')!
+    const report = await fillFields(document, [{ handle: { frameId: 0, fid: phone.fid, epoch: 4 }, value: '+15550100' }])
+    expect((document.getElementById('country') as HTMLInputElement).value).toBe('')
+    expect(report.failed).toEqual([expect.objectContaining({ reason: expect.stringMatching(/^phone-country-/) })])
+    expect((document.getElementById('phone') as HTMLInputElement).value).toBe('')
+  }, 10_000)
 })

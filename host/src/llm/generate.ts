@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { displayValue, isFieldKey } from '@jff/shared'
 import type { CallOpts, ClaudeRunner } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
@@ -20,10 +21,17 @@ export interface GenerationInput {
 
 export const GenerationResponseSchema = z.object({ draft: z.string() })
 
+/**
+ * The stored facts as the model reads them. A typed Value is formatted from
+ * its typed form (a yes as "Yes"); old text of a typed key is no Value and is
+ * left out, as is any row that is not a Known key.
+ */
 export function buildProfileSummary(profile: Record<string, string>, bank: Record<string, string>): string {
   return [...Object.entries(profile), ...Object.entries(bank)]
-    .filter(([, v]) => v.trim() !== '')
-    .map(([k, v]) => `${k}: ${v}`)
+    .flatMap(([k, v]) => {
+      const shown = isFieldKey(k) ? displayValue(k, v) : null
+      return shown === null || shown.trim() === '' ? [] : [`${k}: ${shown}`]
+    })
     .join('\n')
 }
 

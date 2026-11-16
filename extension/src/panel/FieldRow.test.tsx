@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { EnumField, Resolution } from '@jff/shared'
-import { FieldRow, PERSONAL_FACT_HINT, WaitingRow } from './FieldRow'
+import { FieldRow, NO_MATCH_PICK_HINT, PERSONAL_FACT_HINT, WaitingRow } from './FieldRow'
 import type { Row } from './group'
 
 const field = (patch: Partial<EnumField> = {}): EnumField => ({
@@ -205,10 +205,83 @@ describe('FieldRow — kind-aware editors (A9)', () => {
     expect(document.querySelectorAll('datalist option')).toHaveLength(7)
   })
 
-  it('renders harvested combobox options as a picker too', () => {
+  it('renders the Options a Fill read on a dropdown as a picker too', () => {
     const r = row(field({ kind: 'combobox', options: ['Brazil', 'Portugal'] }), resolution({ tier: 'needs_input', value: null, source: null }))
     render(<ul><FieldRow row={r} {...props} /></ul>)
     expect(document.querySelector('[data-jff-editor="picker"]')).not.toBeNull()
+  })
+
+  // PR #36 manual pass 2: the datalist picker looks like a text box until it
+  // is hovered, so a tester saw "Pick one" with nothing to pick from.
+  it('a Needs input dropdown with a few Options lists them as buttons, and a click emits the Option', () => {
+    const opts = ['No – not required', 'Yes – in the future', 'Yes – now', 'N/A']
+    const onEdit = vi.fn()
+    const r = row(field({ kind: 'combobox', options: opts }), resolution({ tier: 'needs_input', value: 'Yes', reason: 'no-matching-option' }))
+    render(<ul><FieldRow row={r} {...props} onEdit={onEdit} /></ul>)
+    const list = document.querySelector('[data-jff-editor="options"]')!
+    const buttons = [...list.querySelectorAll('button')]
+    expect(buttons.map((b) => b.textContent)).toEqual(opts)
+    fireEvent.click(buttons[2]!)
+    expect(onEdit).toHaveBeenCalledWith('0:1', 'Yes – now')
+    expect(document.querySelector('[data-jff-editor="picker"]')).not.toBeNull()
+  })
+
+  // PR #36 manual pass 3: after a manual Fill put an Option on the page, the
+  // row still said no Option matched.
+  it('a Needs input row whose Fill put its value on the page drops the miss hint and reads filled', () => {
+    const opts = ['No – not required', 'Yes – now']
+    const r = row(field({ kind: 'combobox', options: opts }), resolution({ tier: 'needs_input', value: 'Yes – now', reason: 'no-matching-option' }))
+    const { unmount } = render(<ul><FieldRow row={r} {...props} filled={false} /></ul>)
+    expect(document.querySelector('[data-jff-hint]')?.textContent).toBe(NO_MATCH_PICK_HINT)
+    unmount()
+    render(<ul><FieldRow row={r} {...props} filled /></ul>)
+    expect(document.querySelector('[data-jff-hint]')).toBeNull()
+    expect(document.querySelector('[data-jff-tier-badge]')?.textContent).toBe('filled')
+    expect(document.querySelector('[data-jff-editor="options"]')).toBeNull()
+  })
+
+  // PR #36 final pass: an accepted row still asked to be accepted, and a row
+  // its own Fill had filled kept the Needs input accent.
+  it.each(['option-pick', 'salary-check', 'missing-language:en', 'missing-language:pt'])(
+    'the %s hint asks for an action: shown while Proposed, gone once accepted', (reason) => {
+      const f = field({ kind: 'combobox', options: ['Yes, I am open', 'No'] })
+      const { unmount } = render(<ul><FieldRow row={row(f, resolution({ tier: 'proposed', reason }))} {...props} /></ul>)
+      expect(document.querySelector('[data-jff-hint]')).not.toBeNull()
+      unmount()
+      render(<ul><FieldRow row={row(f, resolution({ tier: 'auto', reason }))} {...props} /></ul>)
+      expect(document.querySelector('[data-jff-hint]')).toBeNull()
+    })
+
+  it('a standing note stays on a decided row: no country named, and outside the application frame', () => {
+    const { unmount } = render(<ul><FieldRow row={row(field(), resolution({ tier: 'auto', reason: 'no-country-named' }))} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-hint]')).not.toBeNull()
+    unmount()
+    render(<ul><FieldRow row={row(field(), resolution({ tier: 'needs_input', reason: 'other-frame', value: 'x' }))} {...props} filled /></ul>)
+    expect(document.querySelector('[data-jff-hint]')).not.toBeNull()
+  })
+
+  it('a Needs input row its own Fill put on the page takes the filled accent, keeps its tier and its Fill button', () => {
+    const r = row(field({ kind: 'combobox', options: ['Yes – now', 'No'] }), resolution({ tier: 'needs_input', value: 'Yes – now', reason: 'no-matching-option' }))
+    const { unmount } = render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('li')!.className).toContain('border-l-amber-500')
+    unmount()
+    render(<ul><FieldRow row={r} {...props} filled /></ul>)
+    const li = document.querySelector('li')!
+    expect(li.className).toContain('border-l-green-600')
+    expect(li.className).not.toContain('border-l-amber-500')
+    expect(li.getAttribute('data-jff-tier')).toBe('needs_input')
+    expect(screen.getByRole('button', { name: 'Fill' })).toBeTruthy()
+  })
+
+  it('a dropdown with more than 12 Options, or a filled row, lists no buttons', () => {
+    const many = Array.from({ length: 13 }, (_, i) => `Option ${i}`)
+    const r = row(field({ kind: 'combobox', options: many }), resolution({ tier: 'needs_input', value: null, source: null }))
+    const { unmount } = render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-editor="options"]')).toBeNull()
+    unmount()
+    const filled = row(field({ kind: 'combobox', options: ['Brazil', 'Portugal', 'Spain', 'Italy', 'France', 'Chile'] }), resolution({ tier: 'auto', value: 'Brazil' }))
+    render(<ul><FieldRow row={filled} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-editor="options"]')).toBeNull()
   })
 
   it('annotates an empty-options combobox as a dropdown whose options load on fill', () => {
@@ -282,6 +355,28 @@ describe('FieldRow — foreign rows and hints (A9/B1 seam)', () => {
     const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'no-matching-option' }))
     render(<ul><FieldRow row={r} {...props} /></ul>)
     expect(screen.getByText('No option matches this value. Try different text.')).toBeTruthy()
+  })
+
+  it('a dropdown that missed with its Options read points at the picker below it', () => {
+    const r = row(
+      field({ kind: 'combobox', label: 'Open to relocation?', options: ['Yes', 'No'] }),
+      resolution({ tier: 'needs_input', value: 'Maybe', source: null, key: null, reason: 'no-matching-option' }),
+    )
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-hint]')!.textContent).toBe(NO_MATCH_PICK_HINT)
+    expect([...document.querySelectorAll('datalist option')].map((o) => o.getAttribute('value'))).toEqual(['Yes', 'No'])
+  })
+
+  it('gives no-commit its own wording', () => {
+    const r = row(field({ kind: 'combobox' }), resolution({ tier: 'needs_input', value: 'Yes', source: null, reason: 'no-commit' }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText('The page did not keep the option. Pick it on the page yourself.')).toBeTruthy()
+  })
+
+  it('gives listbox-left-open its own wording', () => {
+    const r = row(field({ kind: 'combobox' }), resolution({ tier: 'needs_input', value: 'Yes', source: null, reason: 'listbox-left-open' }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText('Another dropdown on the page stayed open. Close it, then Fill again.')).toBeTruthy()
   })
 })
 
@@ -443,5 +538,46 @@ describe('WaitingRow: a Field Mapping has not decided yet', () => {
     for (const name of ['Accept', 'Fill', 'Generate with AI']) {
       expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
     }
+  })
+})
+
+// Ticket #29: authorization, sponsorship and residence are answered with a yes
+// or a no for the country a question names. That answer is not the key's
+// Value, so the row never offers to store it.
+describe('FieldRow — a yes or a no answered per country', () => {
+  const ready = { ...props, factsReady: true }
+  const saveBtn = () => screen.queryByRole('button', { name: 'Save to profile' })
+  const perCountry = (key: Resolution['key'], label: string, patch: Partial<Resolution> = {}) => row(
+    field({ label, kind: 'radiogroup', options: ['Yes', 'No'] }),
+    resolution({ tier: 'needs_input', value: null, source: null, key, ...patch }),
+  )
+
+  it('offers no Save to profile on an authorization or a sponsorship row', () => {
+    for (const key of ['workAuth', 'sponsorshipNeeded'] as const) {
+      const { unmount } = render(<ul><FieldRow {...ready} row={perCountry(key, 'Are you authorized to work in Germany?')} pageValue="Yes" /></ul>)
+      expect(saveBtn(), key).toBeNull()
+      unmount()
+    }
+  })
+
+  it('offers no Save to profile when a yes or a no would be stored as a country', () => {
+    const { rerender } = render(<ul><FieldRow {...ready} row={perCountry('country', 'Are you based in EMEA?')} pageValue="No" /></ul>)
+    expect(saveBtn()).toBeNull()
+    // A country typed into a Country row is still offered.
+    rerender(<ul><FieldRow {...ready} row={perCountry('country', 'Country')} pageValue="Portugal" /></ul>)
+    expect(saveBtn()).toBeTruthy()
+  })
+
+  it('says why a row that names a region is left to the user', () => {
+    render(<ul><FieldRow {...ready} row={perCountry('workAuth', 'Are you authorized to work in the EU?', { reason: 'names-region' })} /></ul>)
+    expect(screen.getByText(/names a region/)).toBeTruthy()
+  })
+
+  it('says a proposal for a question that names no country is the answer for the user\'s own country', () => {
+    render(<ul><FieldRow
+      {...ready}
+      row={perCountry('workAuth', 'Are you authorized to work in the country of this role?', { tier: 'proposed', value: 'Yes', source: 'answer_bank', reason: 'no-country-named' })}
+    /></ul>)
+    expect(screen.getByText(/names no country/)).toBeTruthy()
   })
 })
