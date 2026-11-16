@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Relocation question fixture</title></head>
+  <body>
+    <!--
+      Hand-written for ticket #35's browser loop: one yes/no question whose
+      Options say yes and no in the employer's own words, so the rule table's
+      "Yes" matches none of them and the Fill misses. No captcha markup, so the
+      Scan's outcome is `done`. autocomplete="off" keeps the browser from
+      restoring a committed Option when the page is loaded again.
+    -->
+    <h1>Apply: Backend Engineer</h1>
+    <form id="relocate_app" autocomplete="off">
+      <p>
+        <label for="relocate">Are you open to relocation?</label>
+        <select id="relocate" name="relocate" autocomplete="off">
+          <option value="">Select…</option>
+          <option value="open">Yes, I am open to relocating</option>
+          <option value="stay">No, I prefer to stay where I am</option>
+        </select>
+      </p>
+      <button type="submit" id="submit_relocate">Submit application</button>
+    </form>
+  </body>
+</html>

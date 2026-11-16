@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
-import { OPTIONS_READ, norm, type EnumField, type FieldHandle, type HostErrorKind, type HostResponse, type OptionPickParams, type Resolution } from '@jff/shared'
+import {
+  OPTIONS_READ, norm, type EnumField, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type Resolution,
+} from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
 /**
@@ -97,6 +99,8 @@ export interface HeldMappingHost {
   picks: OptionPickParams[]
   /** What `option.pick` answers: a position, or an error. Defaults to none. */
   pick: (p: OptionPickParams) => { position: number | null } | { error: { kind: HostErrorKind; message: string } } | Promise<{ position: number | null }>
+  /** Every `wording.learn` request, in order, as its params (ticket #35). */
+  learned: LearnWordingParams[]
 }
 
 export function installHeldMappingHost(): HeldMappingHost {
@@ -108,7 +112,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       fields: [], firstValues: {}, firstCandidates: {}, firstPatch: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
       held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
-      picks: [], pick: () => ({ position: null }),
+      picks: [], pick: () => ({ position: null }), learned: [],
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -143,6 +147,10 @@ export function installHeldMappingHost(): HeldMappingHost {
         host.picks.push(pp)
         const answer = await host.pick(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'wording.learn') {
+        host.learned.push(params as LearnWordingParams)
+        return { requestId, ok: true, result: { learned: true } }
       }
       return { requestId, ok: true, result: {} }
     }

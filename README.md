@@ -180,7 +180,7 @@ flowchart LR
   Panel["Side panel<br/>React"]
   IDB[("IndexedDB<br/>resume file")]
   Host["Native host<br/>Node"]
-  DB[("SQLite<br/>profile, answers,<br/>applied jobs")]
+  DB[("SQLite<br/>profile, answers,<br/>learned wordings,<br/>applied jobs")]
   Claude["claude CLI<br/>drafts"]
   Codex["codex CLI<br/>mapping, Option pick,<br/>review, resume facts"]
 

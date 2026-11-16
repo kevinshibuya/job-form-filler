@@ -65,6 +65,23 @@ export const OptionPickResultSchema = z.object({
 })
 export type OptionPickResult = z.infer<typeof OptionPickResultSchema>
 
+/**
+ * `wording.learn` (ticket #35): the user accepted, or picked after a miss, the
+ * Option `wording` for a Field answered from the Known key `key`, and
+ * `value` is the Value the Option stood for: the key's Value as the
+ * Resolution gave it, or the yes or no of a derived answer.
+ */
+export const LearnWordingParamsSchema = z.object({
+  key: z.enum(FIELD_KEYS),
+  value: z.string().trim().min(1),
+  wording: z.string().trim().min(1),
+})
+export type LearnWordingParams = z.infer<typeof LearnWordingParamsSchema>
+
+/** The reply to `wording.learn`: false when the Value is not one a wording can be learned for. */
+export const LearnWordingResultSchema = z.object({ learned: z.boolean() })
+export type LearnWordingResult = z.infer<typeof LearnWordingResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -107,6 +124,8 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   // label, the stored Value it was meant to fill, and the Options the Fill
   // read. Nothing else from the Profile travels with it.
   z.object({ requestId: z.string().min(1), method: z.literal('option.pick'), params: OptionPickParamsSchema }),
+  // A Learned wording: an Option the user accepted for a keyed Field.
+  z.object({ requestId: z.string().min(1), method: z.literal('wording.learn'), params: LearnWordingParamsSchema }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('mapping.confirm'), params: z.object({ label: z.string(), fieldKey: z.enum(FIELD_KEYS) }) }),

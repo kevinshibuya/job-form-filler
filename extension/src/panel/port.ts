@@ -177,6 +177,8 @@ export function createFakeHostPort(): HostPort {
         'resolve.mapping': { epoch: 0, resolutions: [], llmError: null },
         // The model pick: the canned model finds no Option, so a miss stays a picker.
         'option.pick': { position: null },
+        // A Learned wording: the canned host keeps nothing.
+        'wording.learn': { learned: false },
         generate: { draft: '' },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },

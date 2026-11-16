@@ -193,7 +193,8 @@ describe('pronouns', () => {
     const f = group('Pronouns', ['He/him', 'They/them', 'Prefer not to say'])
     expect(await first(f)).toBe(PENDING)
     expect(mapping).not.toHaveBeenCalled()
-    expect(await mapped(f)).toMatchObject({ tier: 'needs_input', key: null, value: null })
+    // The row names the pronouns key, so an Option accepted for it is learned (ticket #35).
+    expect(await mapped(f)).toMatchObject({ tier: 'needs_input', key: 'pronouns', value: null })
     expect(mapping).toHaveBeenCalledTimes(1)
   })
 

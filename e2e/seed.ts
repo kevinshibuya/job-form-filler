@@ -53,6 +53,27 @@ export function seedOnboardedProfile(dbPath: string, extra: Record<string, strin
   }
 }
 
+/**
+ * Direct writes into the host home's `answer_bank` table, on the same terms as
+ * `seedOnboardedProfile`: the table is created as `host/src/db/schema.ts`
+ * creates it, so whichever connection opens the file first, the other finds it.
+ * Values are stored as given, so a typed key takes its canonical text
+ * (`relocate: 'yes'`).
+ */
+export function seedAnswerBank(dbPath: string, values: Record<string, string>): void {
+  const db = new DatabaseCtor(dbPath)
+  try {
+    db.pragma('busy_timeout = 5000')
+    db.exec('CREATE TABLE IF NOT EXISTS answer_bank (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    const stmt = db.prepare(
+      'INSERT INTO answer_bank (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    )
+    for (const [k, v] of Object.entries(values)) stmt.run(k, v)
+  } finally {
+    db.close()
+  }
+}
+
 /** The shape `extension/src/panel/resume.ts` persists under key `current`. */
 export interface SeededResume {
   name: string

@@ -11,6 +11,12 @@
 //   JFF_FAKE_CODEX_HOLD=<path>       (ok mode) hold the MAPPING reply until <path>
 //                                    exists; every other call answers at once.
 //                                    The test creates the file to release it.
+//   JFF_FAKE_CODEX_PICK=<text>       (ok mode) the Option pick answers the position
+//                                    of the first Option containing <text>, case
+//                                    ignored; unset, it finds none.
+//   JFF_FAKE_CODEX_PICK_LOG=<path>   append one line to <path> per Option pick
+//                                    prompt, so a test can count the picks the
+//                                    stand-in model received.
 // Deliberately written to parse identically as CommonJS or ESM: the file has no
 // extension, so Node picks the goal symbol itself and this must not care. That
 // rules out `require` and a top-level `return`.
@@ -24,6 +30,8 @@ const claudeMode = process.env.JFF_FAKE_CLAUDE_MODE ?? 'ok'
 
 // Set by body() when the prompt fell through to the mapping branch.
 let isMapping = false
+// Set by body() to the log file an Option pick is recorded in, if any.
+let pickLogged = ''
 
 const body = () => {
   // The codex auth probe from selfCheck.
@@ -40,8 +48,19 @@ const body = () => {
     return { draft: start >= 0 && end > start ? prompt.slice(start + open.length, end) : '' }
   }
 
-  // The Option pick (ADR 0008): the canned model finds none.
-  if (/You match a stored answer to one of the options/.test(prompt)) return { position: null }
+  // The Option pick (ADR 0008): the canned model points at the first Option
+  // containing JFF_FAKE_CODEX_PICK, and finds none without it. Each pick it
+  // receives is logged when JFF_FAKE_CODEX_PICK_LOG names a file.
+  if (/You match a stored answer to one of the options/.test(prompt)) {
+    const log = process.env.JFF_FAKE_CODEX_PICK_LOG ?? ''
+    if (log !== '') pickLogged = log
+    const wanted = (process.env.JFF_FAKE_CODEX_PICK ?? '').toLowerCase()
+    if (wanted === '') return { position: null }
+    for (const m of prompt.matchAll(/^- position=(\d+) <option>([^\n]*)<\/option>$/gm)) {
+      if (m[2].toLowerCase().includes(wanted)) return { position: Number(m[1]) }
+    }
+    return { position: null }
+  }
 
   // Facts extraction: the closed key set, empty is valid.
   if (/You extract job-application facts/.test(prompt)) return {}
@@ -74,6 +93,7 @@ if (mode === 'not_authed') {
 } else {
   import('node:fs').then((fs) => {
     const answer = JSON.stringify(body())
+    if (pickLogged !== '') fs.appendFileSync(pickLogged, 'pick\n', 'utf8')
     const write = () => {
       fs.writeFileSync(outFile, answer, 'utf8')
       process.exit(0)

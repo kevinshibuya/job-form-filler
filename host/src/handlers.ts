@@ -19,6 +19,7 @@ import { reviewDraft } from './llm/reviewDraft.js'
 import { claimsInDraft } from './llm/draftCheck.js'
 import { runFactsExtract } from './llm/factsExtract.js'
 import { runOptionPick } from './llm/optionPick.js'
+import { learnWording } from './resolve/learnedWordings.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
 import { log } from './log.js'
@@ -185,6 +186,13 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         const { label, value, options } = req.params
         const position = await runOptionPick(deps.codex, { label, value, options }, { model: deps.models.optionPick, timeoutMs: 120_000 })
         return ok(req.requestId, { position })
+      }
+
+      // A Learned wording (ticket #35): the Option the user accepted for a
+      // keyed Field, stored with the key and the Value it stood for.
+      case 'wording.learn': {
+        if (!isFieldKey(req.params.key)) return fail(req.requestId, 'bad_request', `unknown key: ${String(req.params.key)}`)
+        return ok(req.requestId, { learned: learnWording(db, req.params) })
       }
 
       case 'selector.get':

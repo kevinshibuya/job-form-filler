@@ -250,7 +250,8 @@ describe('a checkbox group takes only the pronouns Known key', () => {
     const pronouns = field('Pronouns', 'checkboxgroup', { options: ['He/him', 'They/them', 'Xe/xem'] })
     expect(await first(pronouns)).toEqual([PENDING])
     const [r] = await mapped(pronouns)
-    expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
+    // The row names the pronouns key, so an Option accepted for it is learned (ticket #35).
+    expect(r).toMatchObject({ tier: 'needs_input', key: 'pronouns', value: null })
     expect(mappingPrompt()).toContain(`ref=${refOf(pronouns)} kind=checkboxgroup`)
     expect(mappingPrompt()).toContain('Xe/xem')
   })

@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import {
   RULE_TABLE, VALUE_TYPE_OF, candidatesForKey, cityParts, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey,
-  languageValues, phoneParts, salaryOf, salaryWords, yesNoCandidates,
+  languageValues, norm, phoneParts, salaryOf, salaryWords, yesNoCandidates,
   type EnumField, type FieldClass, type FieldKey, type Resolution, type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -13,6 +13,7 @@ import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '
 import { matchOptionSet, optionEqualTo } from './choiceSets.js'
 import { canHold, fieldCanHold, keyForField } from './controlKinds.js'
 import { KEY_OF, NAMES_REGION, countryAnswer, countryQuestionOf, type CountryQuestion } from './countryAnswers.js'
+import { learnedOptionOf, learnedWordingsFor } from './learnedWordings.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
 import { recognize } from './recognizers.js'
 
@@ -85,9 +86,29 @@ function withCityParts(db: Database.Database, f: EnumField, r: Resolution): Reso
   return { ...r, city: cityParts(getStoredValue(db, 'country')) }
 }
 
+/**
+ * A Resolution whose Value is a Known key's own carries, after the rule
+ * table's words, every Learned wording of that key and Value (ticket #35), so
+ * Fill matches the Option the user accepted before with no model pick. A
+ * wording learned for another Value of the key is not among them.
+ */
+function withLearnedWordings(db: Database.Database, r: Resolution): Resolution {
+  if (r.key === null || r.value === null || !KEY_VALUE_SOURCES.has(r.source)) return r
+  const learned = learnedWordingsFor(db, r.key, r.value)
+  if (learned.length === 0) return r
+  const candidates: string[] = []
+  const seen = new Set<string>()
+  for (const w of [...(r.candidates ?? []), ...learned]) {
+    if (seen.has(norm(w))) continue
+    seen.add(norm(w))
+    candidates.push(w)
+  }
+  return { ...r, candidates }
+}
+
 /** The parts a Fill needs beside the Value, added once the Resolution is decided. */
 const withFillParts = (db: Database.Database, f: EnumField, r: Resolution): Resolution =>
-  withCityParts(db, f, withPhoneParts(db, r))
+  withLearnedWordings(db, withCityParts(db, f, withPhoneParts(db, r)))
 
 /**
  * A Field Mapping left unmatched, or never got to answer for: Needs input,
@@ -138,10 +159,12 @@ function fromAnswer(
 
 /**
  * A stored Known key Value as this Control takes it: on a checkbox group only
- * the one Option equal to it, in the page's wording, and null when none is.
+ * the one Option equal to it, or else to one wording learned for it (ticket
+ * #35), in the page's wording, and null when none is.
  */
-function keyValueFor(f: EnumField, stored: string): string | null {
-  return isCheckboxGroup(f) ? optionEqualTo(stored, f.options) : stored
+function keyValueFor(db: Database.Database, f: EnumField, key: FieldKey, stored: string): string | null {
+  if (!isCheckboxGroup(f)) return stored
+  return optionEqualTo(stored, f.options) ?? learnedOptionOf(db, key, stored, f.options)
 }
 
 /**
@@ -220,6 +243,9 @@ interface StepResult {
   byRef: Map<string, Resolution>
 }
 
+/** A stored Value a Field is known to ask for, and the Known key it is the Value of. */
+interface Identified { key: FieldKey; value: string }
+
 /** The identified stored Value of a Resolution patch, when it has one. */
 const identified = (v: string | undefined): Partial<Resolution> => (v === undefined ? {} : { identifiedValue: v })
 
@@ -227,13 +253,14 @@ const identified = (v: string | undefined): Partial<Resolution> => (v === undefi
  * Tiers 0 to 3: everything that needs no model. It is handed no runner, so it
  * cannot call one. A Field it cannot decide comes back in `pending`.
  */
-function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { pending: EnumField[]; identifiedOf: Map<string, string> } {
+function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { pending: EnumField[]; identifiedOf: Map<string, Identified> } {
   const byRef = new Map<string, Resolution>()
   const unresolved: EnumField[] = []
   // Pending checkbox groups whose recognized key has a stored Value no Option
   // equals (ticket #34): Mapping decides them, and whatever it leaves Needs
-  // input still carries that Value for the model pick.
-  const identifiedOf = new Map<string, string>()
+  // input still carries that Value for the model pick, and the key it is the
+  // Value of, so an Option the user accepts for it is learned (ticket #35).
+  const identifiedOf = new Map<string, Identified>()
 
   for (const f of fields) {
     const ref = refOf(f)
@@ -276,8 +303,8 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     // Value. With none, the group goes on as if the key had not matched.
     if (key !== null && isCheckboxGroup(f)) {
       const kv = keyValueOf(db, f, key)
-      const option = kv.kind === 'value' && kv.proposed === undefined ? keyValueFor(f, kv.value) : null
-      if (kv.kind === 'value' && option === null) identifiedOf.set(ref, kv.value)
+      const option = kv.kind === 'value' && kv.proposed === undefined ? keyValueFor(db, f, key, kv.value) : null
+      if (kv.kind === 'value' && option === null) identifiedOf.set(ref, { key, value: kv.value })
       if (option !== null) {
         byRef.set(ref, res(f, {
           tier: 'auto', source: isProfileKey(key) ? 'profile' : 'answer_bank',
@@ -305,8 +332,13 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
             tier: out.tier, source: 'saved_answer', key, value: out.value,
             answerId: hit.id, reason: `exact-match:key-fallback${out.partial}`,
           }))
-        } else if (out !== null) {
-          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `exact-match:key-fallback${out.partial}`, ...identified(out.identifiedValue) }))
+        } else if (hit !== null && out !== null) {
+          // The row names the Saved answer it stands for: a pick asked with it
+          // is about that answer, never learned for the key (ticket #35).
+          byRef.set(ref, res(f, {
+            tier: 'needs_input', key, answerId: hit.id,
+            reason: `exact-match:key-fallback${out.partial}`, ...identified(out.identifiedValue),
+          }))
         } else {
           byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `recognizer:${key}:${noValue(kv)}` }))
         }
@@ -338,7 +370,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
 
 /** Tiers 4 and 5: one Mapping call over the given Fields, and none when empty. */
 async function mappingStep(
-  deps: WaterfallDeps, input: WaterfallInput, unresolved: EnumField[], identifiedOf: ReadonlyMap<string, string>,
+  deps: WaterfallDeps, input: WaterfallInput, unresolved: EnumField[], identifiedOf: ReadonlyMap<string, Identified>,
 ): Promise<StepResult & { llmError: ResolveResult['llmError'] }> {
   const { db } = deps
   const byRef = new Map<string, Resolution>()
@@ -394,7 +426,7 @@ async function mappingStep(
           continue
         }
         const kv = keyValueOf(db, f, key)
-        const value = kv.kind === 'value' ? keyValueFor(f, kv.value) : null
+        const value = kv.kind === 'value' ? keyValueFor(db, f, key, kv.value) : null
         if (value !== null) {
           const reason = kv.kind === 'value' && kv.proposed !== undefined ? kv.proposed : `llm-key:${key}`
           byRef.set(ref, res(f, { tier: 'proposed', source: 'llm_key', key, value, reason }))
@@ -403,7 +435,7 @@ async function mappingStep(
         if (kv.kind === 'value') {
           // A group that offers no Option equal to the stored Value, which is
           // what the model pick is asked with (ticket #34).
-          byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:no-offered-option`, identifiedValue: kv.value }))
+          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `llm-key:${key}:no-offered-option`, identifiedValue: kv.value }))
           continue
         }
         // B5c, defense in depth: every LABELLED field already tried tier 3
@@ -444,10 +476,10 @@ async function mappingStep(
 
     // A group the first step recognized, with a stored Value no Option equals,
     // keeps that Value on whatever Needs input row Mapping left it (ticket #34).
-    for (const [ref, value] of identifiedOf) {
+    for (const [ref, { key, value }] of identifiedOf) {
       const r = byRef.get(ref)
       if (r !== undefined && r.tier === 'needs_input' && r.value === null && r.identifiedValue === undefined) {
-        byRef.set(ref, { ...r, identifiedValue: value })
+        byRef.set(ref, { ...r, key: r.key ?? key, identifiedValue: value })
       }
     }
   }

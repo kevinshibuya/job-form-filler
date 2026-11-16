@@ -13,6 +13,7 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
+import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
@@ -1445,6 +1446,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {
         void portRef.current?.request('mapping.confirm', { label: row.field.label, fieldKey: row.resolution.key })
       }
+      // Accepting a model-picked Option for a keyed Field remembers it as a
+      // Learned wording, so the same wording fills itself next time (ticket #35).
+      sendLearnedWording(portRef.current, wordingToLearn(row.resolution, knownOptions(row.field, out.options), committed ?? value, 'accept'))
       if (inScope(sc)) clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
@@ -1477,6 +1481,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         filledRefs: s.filledRefs.includes(ref) ? s.filledRefs : [...s.filledRefs, ref],
       }, ref, committed ?? value, 'user'))
+      // An Option the user picked after a miss on a keyed Field is remembered
+      // the same way (ticket #35).
+      sendLearnedWording(portRef.current, wordingToLearn(row.resolution, knownOptions(row.field, out.options), committed ?? value, 'fill'))
       if (inScope(sc)) clearActionFailure()
     } catch (e) {
       if (!inScope(sc)) return
