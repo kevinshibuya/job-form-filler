@@ -47,6 +47,9 @@ export interface Session {
   /** #37: the elected frame's attached uploads, by label, so the resume row
    *  is recomputed from the same evidence the scan acted on. */
   attachedUploads: string[]
+  /** #49: the elected frame's document already kept the Resume this extension
+   *  uploaded, so the Resume line reads as already on the page. */
+  resumeUploaded: boolean
   /** The last settled Scan's ATS (spec #41). A row stored before it was kept
    *  reads as generic. */
   ats: AtsOrGeneric
@@ -106,6 +109,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     activeCaptcha: false,
     election: null,
     attachedUploads: [],
+    resumeUploaded: false,
     ats: 'generic',
     frameReports: [],
     lastOutcome: null,
@@ -170,7 +174,7 @@ export function rememberAnswer(
  *
  * Refs are meaningless across a re-enumeration (`fid` restarts at 0), so every
  * ref-keyed assertion dies with the page: `filledRefs`, `generatedRefs`,
- * `draftWarnings`, `snapshot`, `reuseOverrides`, `election`, `attachedUploads` and the old `edits`. What comes back
+ * `draftWarnings`, `snapshot`, `reuseOverrides`, `election`, `attachedUploads`, `resumeUploaded` and the old `edits`. What comes back
  * is derived from the label-keyed carry:
  *  - primary hit: `answers[answerKey(label)]`;
  *  - secondary hit (primary missed and the new resolution has a key): the SINGLE
@@ -236,6 +240,7 @@ export function projectAnswers(
     reuseOverrides: {},
     election: null,
     attachedUploads: [],
+    resumeUploaded: false,
   }
 }
 
@@ -360,11 +365,14 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.draftWarnings !== undefined && !isDraftWarnings(raw.draftWarnings)) return null
     // A row stored before attached uploads were read has none (#37).
     if (raw.attachedUploads !== undefined && (!Array.isArray(raw.attachedUploads) || !allStrings(raw.attachedUploads))) return null
+    // A row stored before the Resume upload was remembered has none (#49).
+    if (raw.resumeUploaded !== undefined && typeof raw.resumeUploaded !== 'boolean') return null
     // A row stored before the ATS was kept, or naming one a later list dropped, is generic.
     if (raw.ats !== undefined && typeof raw.ats !== 'string') return null
     return {
       ...(raw as unknown as Session),
       waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
+      resumeUploaded: raw.resumeUploaded ?? false,
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
     }
   } catch {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema } from './messages.js'
 import { captureField, captureRefusal, captureResolution, withoutQuery } from './capture.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
@@ -400,5 +400,22 @@ describe('what a Capture keeps', () => {
     expect(captureRefusal({ fields: [f], resolutions: [r] })).toBeNull()
     expect(captureRefusal({ fields: [{ ...f, currentValue: 'Ada' }], resolutions: [r] })).toMatch(/current Value/)
     expect(captureRefusal({ fields: [f], resolutions: [{ ...r, candidates: ['x'] } as typeof r] })).toMatch(/candidates/)
+  })
+})
+
+describe('ScanResultSchema — the Resume uploaded once per page load (#49)', () => {
+  const reply = { epoch: 1, fields: [], unreachableWidgets: 0, activeCaptcha: false, attachedUploads: [] }
+
+  it('keeps the flag a page script sends, so its own check does not strip it', () => {
+    expect(ScanResultSchema.parse({ ...reply, resumeUploaded: true }).resumeUploaded).toBe(true)
+    expect(ScanResultSchema.parse({ ...reply, resumeUploaded: false }).resumeUploaded).toBe(false)
+  })
+
+  it('accepts a reply from a stale page script that omits it', () => {
+    expect(ScanResultSchema.parse(reply).resumeUploaded).toBeUndefined()
+  })
+
+  it('refuses a flag that is not a boolean', () => {
+    expect(ScanResultSchema.safeParse({ ...reply, resumeUploaded: 'yes' }).success).toBe(false)
   })
 })

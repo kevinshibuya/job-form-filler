@@ -175,6 +175,9 @@ export interface ScanOutcome {
   /** #37: the elected frame's upload groups that show an attached file, by
    *  label. Empty when nothing was elected or the frame reported none. */
   attachedUploads: string[]
+  /** #49: the elected frame's document already kept a Resume this extension
+   *  uploaded. False when nothing was elected or the frame did not say so. */
+  resumeUploaded: boolean
   unreachableWidgets: number
   activeCaptcha: boolean
   jobText: string
@@ -185,7 +188,7 @@ export interface ScanOutcome {
 interface ScanPayload {
   ok: boolean
   error?: string
-  scan?: { epoch: number; fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean; attachedUploads?: string[] }
+  scan?: { epoch: number; fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean; attachedUploads?: string[]; resumeUploaded?: boolean }
 }
 
 interface Enumeration {
@@ -194,6 +197,8 @@ interface Enumeration {
   activeCaptcha: boolean
   /** frameId -> the labels of that frame's attached uploads (#37). */
   attachedUploads: Map<number, string[]>
+  /** The frames whose document already kept the Resume (#49). */
+  resumeUploaded: Set<number>
   reports: FrameReport[]
 }
 
@@ -205,6 +210,7 @@ async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumer
   let unreachableWidgets = 0
   let activeCaptcha = false
   const attachedUploads = new Map<number, string[]>()
+  const resumeUploaded = new Set<number>()
   for (const r of replies) {
     const p = r.payload as ScanPayload
     if (p?.ok !== true || p.scan === undefined) {
@@ -216,11 +222,13 @@ async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumer
     activeCaptcha = activeCaptcha || p.scan.activeCaptcha
     // A stale content script omits the list: it reads as none.
     attachedUploads.set(r.frameId, p.scan.attachedUploads ?? [])
+    // A stale content script omits the flag too: it reads as not uploaded.
+    if (p.scan.resumeUploaded === true) resumeUploaded.add(r.frameId)
     // The content script cannot know its own frame id, so the panel stamps it here.
     for (const f of p.scan.fields) fields.push({ ...f, frameId: r.frameId, epoch })
     reports.push({ frameId: r.frameId, url: r.url ?? null, fields: p.scan.fields.length, error: null })
   }
-  return { fields, unreachableWidgets, activeCaptcha, attachedUploads, reports }
+  return { fields, unreachableWidgets, activeCaptcha, attachedUploads, resumeUploaded, reports }
 }
 
 async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; frameCount: number; enumd: Enumeration }> {
@@ -270,7 +278,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
       // the delay, so a second pass can find fields with the flag back to false —
       // and the scan would then fill past a challenge we already saw.
       return {
-        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
+        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: true,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
@@ -292,7 +300,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     if (enumd.fields.length === 0) {
       // An empty page must cost zero host round-trips: no selector.get, no resolve.
       return {
-        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
+        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: enumd.activeCaptcha,
         jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
       }
@@ -302,6 +310,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
   const urlOfFrame = (frameId: number): string | null =>
     reports.find((r) => r.frameId === frameId && r.url !== null)?.url ?? null
   let attachedByFrame = enumd.attachedUploads
+  let uploadedFrames = enumd.resumeUploaded
   // A5: the content script enumerated and stamped EVERYTHING (snapshot + fid
   // numbering unchanged); the panel drops junk before anything costs money or
   // touches the page. Raw counts above (retry/empty checks) stay raw on purpose.
@@ -326,6 +335,9 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
   // #37: only the elected frame's attach counts, like its file fields.
   const electedAttached = (): string[] =>
     election === null ? [] : attachedByFrame.get(election.frameId) ?? []
+  // #49: only the elected frame's memory of a Resume upload counts.
+  const electedUploaded = (): boolean =>
+    election !== null && uploadedFrames.has(election.frameId)
 
   // Everything past the enumeration runs under ScanError: a jobtext/resolve/fill
   // relay death must reach the panel WITH the per-frame evidence already collected,
@@ -349,15 +361,16 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
 
     if (activeCaptcha) {
       // An active challenge means the extension does nothing at all on this page.
-      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
     // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
     const resume = await deps.getResume()
     // A8: never `find(kind === 'file')` — score the ELECTED frame's candidates;
     // zero positive scorers means NO upload (the autofill-pane trap). A resume
-    // the page already shows attached means NO upload either (#37).
-    const fileField = pickResumeTarget(electedOf(kept), electedAttached())
+    // the page already shows attached means NO upload either (#37), and so
+    // does one this document already kept from an earlier Scan (#49).
+    const fileField = electedUploaded() ? null : pickResumeTarget(electedOf(kept), electedAttached())
     if (resume !== null && fileField !== null) {
       let resumeError: FrameReport | null = null
       try {
@@ -384,6 +397,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
       unreachableWidgets = again.unreachableWidgets
       activeCaptcha = again.activeCaptcha
       attachedByFrame = again.attachedUploads
+      uploadedFrames = again.resumeUploaded
       reports = resumeError === null ? again.reports : [...again.reports, resumeError]
       // Fids were re-stamped under a new epoch; re-elect deterministically over
       // the fresh kept set. The application frame only gains signal from its
@@ -397,18 +411,18 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
         // Uploading a resume is a common trigger for an ATS challenge. Re-reading
         // activeCaptcha and then filling anyway would be worse than never re-reading
         // it: same blast radius, plus a paid resolve call.
-        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
       if (fields.length === 0) {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
-        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
       }
     }
 
     if (kept.length === 0) {
       // Only junk on the page: resolve is NEVER called with zero real fields.
-      return { epoch, ats, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false, unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
 
     // PHASE 2 — the host is asked about the ELECTED frame only. Foreign fields
@@ -420,7 +434,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     if (resolveFields.length === 0) {
       // A module's junk rule took every elected Field: resolve is NEVER called
       // with zero real fields.
-      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
     }
     deps.onProgress({ phase: 'resolving', fields: resolveFields.length })
     const resolved = await deps.port.request<ResolveFirstResult>('resolve.first', {
@@ -434,7 +448,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     })
     if (!resolved.ok) {
       return {
-        epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText,
+        epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText,
         llmError: resolved.error, frameReports: reports,
       }
     }
@@ -449,7 +463,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
       pending: resolveFields.filter((f) => pendingRefs.has(refOf(f))),
       fill: batch.fill,
       election: electionOut(),
-      attachedUploads: electedAttached(),
+      attachedUploads: electedAttached(), resumeUploaded: electedUploaded(),
       unreachableWidgets, activeCaptcha, jobText,
       llmError: null,
       frameReports: reports,

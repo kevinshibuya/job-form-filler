@@ -268,6 +268,10 @@ export const ScanResultSchema = z.object({
    *  resume. Optional so a stale content script simply omits it, and an absent
    *  list reads as none. */
   attachedUploads: z.array(z.string()).optional(),
+  /** #49: this document already took the Resume once, through an upload it
+   *  kept, so a second Scan sends none. Optional like `attachedUploads`: a
+   *  stale content script omits it, and absent reads as not uploaded. */
+  resumeUploaded: z.boolean().optional(),
 })
 export type ScanResult = z.infer<typeof ScanResultSchema>
 

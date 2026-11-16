@@ -22,6 +22,14 @@ export function probeFrame(): { controlCount: number; url: string } {
   }
 }
 
+/**
+ * #49: whether this document kept a Resume this page script uploaded. It lives
+ * as long as the document: a re-injection runs this file again, but only the
+ * first run's listener answers, so its copy is the one read. A reload makes a
+ * new document and a new first run.
+ */
+let resumeUploaded = false
+
 async function handle(raw: unknown): Promise<unknown> {
   const parsed = ContentMessageSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: 'bad_message' }
@@ -45,6 +53,7 @@ async function handle(raw: unknown): Promise<unknown> {
     // to tell which frame produced it.
     const scan = ScanResultSchema.safeParse({
       epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document), attachedUploads,
+      resumeUploaded,
     })
     if (!scan.success) return { ok: false, error: 'bad_scan' }
     installSnapshotListeners(document, (snap) => {
@@ -64,6 +73,8 @@ async function handle(raw: unknown): Promise<unknown> {
     const file = new File([bytes], msg.fileName, { type: msg.mimeType })
     // Waits for a young page, attaches, settles, and checks the page kept it.
     const out = await fillResume(document, msg.handle.fid, file)
+    // A file the page refused is not remembered: the next Scan tries again.
+    if (out.ok) resumeUploaded = true
     return out.ok ? { ok: true } : { ok: false, error: out.reason }
   }
 

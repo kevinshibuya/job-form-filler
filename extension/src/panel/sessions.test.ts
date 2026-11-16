@@ -793,6 +793,20 @@ describe('attached uploads ride the Session (#37)', () => {
   })
 })
 
+describe('the Resume uploaded once per page load rides the Session (#49)', () => {
+  it('a new Session has it unset, and a re-enumeration clears it with the page it described', () => {
+    expect(newSession(7).resumeUploaded).toBe(false)
+    expect(projectAnswers({ ...newSession(7), resumeUploaded: true }, [], [], {}).resumeUploaded).toBe(false)
+  })
+
+  it('a stored row from before it was kept has it unset, and a malformed flag is refused', () => {
+    const { resumeUploaded: _gone, ...old } = newSession(7)
+    expect(parseStoredSession(old)?.resumeUploaded).toBe(false)
+    expect(parseStoredSession({ ...newSession(7), resumeUploaded: true })?.resumeUploaded).toBe(true)
+    expect(parseStoredSession({ ...newSession(7), resumeUploaded: 'yes' })).toBeNull()
+  })
+})
+
 describe('the Scan\'s ATS rides the Session (spec #41)', () => {
   it('a new Session is generic', () => {
     expect(newSession(7).ats).toBe('generic')
