@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { setNativeValue, fillOne, fillFields, fillFile } from './fill'
 import { enumerateFields, type MeasureFn } from './enumerate'
 import { loadRealFixture } from './fixtures/real'
@@ -1176,4 +1176,107 @@ describe('Fill picks the Option the rule table names (#26)', () => {
     await expect(fillOne(document.getElementById('c')!, 'Estados Unidos', UNITED_STATES))
       .resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
   })
+})
+
+// PR #36 manual pass 2: a page that owns its menu's open flag closes it on an
+// Escape keyup or a blur, never on our keydown. With the Side panel focused,
+// the page receives no focus events, so a plain el.blur() is never heard.
+describe('backing out of a menu the way a user does', () => {
+  /** A combobox whose menu opens on mouseup or typing and closes only on `closeOn`. */
+  function pageOwnedMenu(closeOn: 'keyup' | 'focusout', id = 'c', options = ['Apple', 'Banana']): HTMLInputElement {
+    const wrap = document.createElement('div')
+    wrap.innerHTML = `<input id="${id}" role="combobox" aria-controls="${id}-lb" aria-expanded="false">`
+    document.body.appendChild(wrap)
+    const input = wrap.querySelector('input')!
+    let open = false
+    const render = (): void => {
+      document.getElementById(`${id}-lb`)?.remove()
+      input.setAttribute('aria-expanded', String(open))
+      if (!open) return
+      const lb = document.createElement('ul')
+      lb.id = `${id}-lb`
+      lb.setAttribute('role', 'listbox')
+      for (const t of options) {
+        const li = document.createElement('li')
+        li.setAttribute('role', 'option')
+        li.textContent = t
+        lb.appendChild(li)
+      }
+      wrap.appendChild(lb)
+    }
+    input.addEventListener('mouseup', () => { open = !open; render() })
+    input.addEventListener('input', () => { open = true; render() })
+    if (closeOn === 'keyup') input.addEventListener('keyup', (e) => { if (e.code === 'Escape') { open = false; render() } })
+    else input.addEventListener('focusout', () => { open = false; render() })
+    return input
+  }
+
+  /** The Side panel holds focus: the page has none and hears no focus events. */
+  function unfocusPage(): void {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(() => {})
+    vi.spyOn(HTMLElement.prototype, 'blur').mockImplementation(() => {})
+  }
+
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('a miss leaves no menu open when the page closes it only on an Escape keyup', async () => {
+    const input = pageOwnedMenu('keyup')
+    await expect(fillOne(input, 'Zebra')).resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
+    expect(document.querySelector('[role="listbox"]')).toBeNull()
+  }, 10_000)
+
+  it('a miss leaves no menu open when the page closes it only on a blur it cannot hear', async () => {
+    unfocusPage()
+    const input = pageOwnedMenu('focusout')
+    await expect(fillOne(input, 'Zebra')).resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
+    expect(document.querySelector('[role="listbox"]')).toBeNull()
+  }, 10_000)
+
+  it('a foreign menu that closes only on an Escape keyup is closed, and the Fill goes on', async () => {
+    const foreign = pageOwnedMenu('keyup', 'other')
+    foreign.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    expect(document.getElementById('other-lb')).not.toBeNull()
+    const wrap = document.createElement('div')
+    wrap.innerHTML = '<input id="c" role="combobox">'
+    document.body.appendChild(wrap)
+    const el = wrap.querySelector('input')!
+    el.addEventListener('click', () => {
+      const lb = document.createElement('ul')
+      lb.setAttribute('role', 'listbox')
+      for (const t of ['Brazil', 'Portugal']) {
+        const o = document.createElement('li')
+        o.setAttribute('role', 'option')
+        o.textContent = t
+        o.addEventListener('click', () => { setNativeValue(el, t); lb.remove() })
+        lb.appendChild(o)
+      }
+      wrap.appendChild(lb)
+    })
+    await expect(fillOne(el, 'Portugal')).resolves.toMatchObject({ ok: true })
+    expect(document.getElementById('other-lb')).toBeNull()
+  }, 10_000)
+
+  it('with the page unfocused, a typed text the blur would clear is no commit', async () => {
+    unfocusPage()
+    document.body.innerHTML = '<div id="wrap"><input id="c" role="combobox" aria-controls="lb"></div>'
+    const wrap = document.getElementById('wrap')!
+    const input = document.getElementById('c') as HTMLInputElement
+    input.addEventListener('input', () => {
+      document.getElementById('lb')?.remove()
+      if (input.value === '') return
+      const lb = document.createElement('ul')
+      lb.id = 'lb'
+      lb.setAttribute('role', 'listbox')
+      const li = document.createElement('li')
+      li.setAttribute('role', 'option')
+      li.textContent = "Bachelor's Degree"
+      li.addEventListener('click', () => { document.getElementById('lb')?.remove() })
+      lb.appendChild(li)
+      wrap.appendChild(lb)
+    })
+    input.addEventListener('blur', () => { input.value = '' })
+    await expect(fillOne(input, "Bachelor's Degree")).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
+    expect(input.value).toBe('')
+  }, 10_000)
 })

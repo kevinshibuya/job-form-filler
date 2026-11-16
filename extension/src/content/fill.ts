@@ -442,6 +442,28 @@ function ownerOf(lb: Element): Element | null {
 }
 
 /**
+ * A blur the page hears. With the Side panel focused, the page has no focus
+ * and Blink sends it no focus events, so `blur()` alone is never heard: the
+ * blur and focusout are then dispatched as the user's leaving would send them.
+ */
+function blurHeard(el: Element): void {
+  if (!(el instanceof HTMLElement)) return
+  const heard = el.ownerDocument.hasFocus() && el.ownerDocument.activeElement === el
+  el.blur()
+  if (heard) return
+  el.dispatchEvent(new FocusEvent('blur'))
+  el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+}
+
+/** Backs out of a menu the way a user does: an Escape press (keydown and keyup), then leaving the control. */
+function backOut(el: Element): void {
+  const key = { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }
+  el.dispatchEvent(new KeyboardEvent('keydown', key))
+  el.dispatchEvent(new KeyboardEvent('keyup', key))
+  blurHeard(el)
+}
+
+/**
  * D2: before a Fill opens its control, a menu another Control left visible is
  * closed — Escape to the element that owns it (else the active element), then
  * a blur — and the Fill waits up to CLOSE_WAIT_MS for it to go. The control's
@@ -455,8 +477,7 @@ async function closeForeignMenus(el: Element): Promise<boolean> {
   for (const lb of foreign) {
     const owner = ownerOf(lb) ?? document.activeElement
     if (owner === null) continue
-    owner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    if (owner instanceof HTMLElement) owner.blur()
+    backOut(owner)
   }
   const deadline = Date.now() + CLOSE_WAIT_MS
   for (;;) {
@@ -614,8 +635,7 @@ async function fillCombobox(
     // frame for the page to react → Escape + blur, the way a user backs out.
     if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
     await nextFrame()
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    if (el instanceof HTMLElement) el.blur()
+    backOut(el)
     return withOptions({ ok: false, reason }, offered)
   }
   // B1d: "never opened/attributed" is a different user problem than "your value
@@ -693,7 +713,7 @@ async function fillCombobox(
     // (c) The input already held the Option's text. Only a blur tells a commit
     // (kept) from a discarded typeahead (cleared).
     if (document.activeElement !== input) input.focus()
-    input.blur()
+    blurHeard(input)
     await nextFrame()
     if (norm(input.value) === optionText) committed = input.value
   }
