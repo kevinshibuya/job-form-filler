@@ -3,7 +3,7 @@ import { atsModule, type EnumField } from '@jff/shared'
 import { enumerateFields, type MeasureFn } from '../content/enumerate'
 import { loadRealFixture } from '../content/fixtures/real'
 import { dropJunk } from './junk'
-import { pickResumeTarget, resumeAttached, scoreResumeField } from './resumeTarget'
+import { pickResumeTarget, resumeAttached, resumeOnPage, scoreResumeField } from './resumeTarget'
 
 const file = (fid: number, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: 1, fid, epoch: 1, label: null, name: null, idAttr: null, kind: 'file',
@@ -55,6 +55,21 @@ describe('resumeAttached', () => {
     expect(resumeAttached(['Cover Letter', 'Currículo'])).toBe(true)
     expect(resumeAttached(['Cover Letter'])).toBe(false)
     expect(resumeAttached([])).toBe(false)
+  })
+})
+
+describe('resumeOnPage (#49)', () => {
+  it('is true for a resume the page shows attached, or one this document kept from an earlier Scan', () => {
+    expect(resumeOnPage([], true)).toBe(true)
+    expect(resumeOnPage(['Resume/CV'], false)).toBe(true)
+    expect(resumeOnPage(['Cover Letter'], false)).toBe(false)
+    expect(resumeOnPage([], false)).toBe(false)
+  })
+
+  it('leaves the Put on page target alone: the row keeps it when only the flag is set', () => {
+    const real = file(1, { label: 'Resume/CV', required: true })
+    expect(resumeOnPage([], true)).toBe(true)
+    expect(pickResumeTarget([real], [])).toBe(real)
   })
 })
 

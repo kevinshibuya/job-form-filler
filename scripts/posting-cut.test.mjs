@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { JSDOM } from 'jsdom'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { MIN_JOB_TEXT, postingRoot } from '@jff/shared'
+import { JOB_TEXT_MIN as MIN_JOB_TEXT, postingRoot } from '@jff/shared'
 import { sanitizeCapture } from './sanitize-capture.mjs'
 
 // Every offending sample is assembled at run time, so this file never holds a

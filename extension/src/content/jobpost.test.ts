@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { JOB_TEXT_MIN } from '@jff/shared'
 import { captureJobText, cssPathOf, MIN_JOB_TEXT, startPicker } from './jobpost'
 
 const long = (marker: string): string => `${marker} ` + 'lorem ipsum dolor sit amet '.repeat(30)
@@ -59,6 +60,23 @@ describe('captureJobText', () => {
   it('requires at least MIN_JOB_TEXT characters', () => {
     document.body.innerHTML = `<main>${'a'.repeat(MIN_JOB_TEXT - 1)}</main>`
     expect(captureJobText(document, null).source).toBe('none')
+  })
+
+  // Spec #41: the minimum holds for every source but the user's paste.
+  it('refuses a heuristic result of 50 characters', () => {
+    document.body.innerHTML = `<main>${'a'.repeat(50)}</main>`
+    expect(captureJobText(document, null)).toMatchObject({ source: 'none', text: '' })
+  })
+
+  it('refuses a picked spot that now holds fewer than the minimum, and falls through', () => {
+    document.body.innerHTML = `<div id="jd">${'a'.repeat(50)}</div><main>${long('HEURISTIC')}</main>`
+    const r = captureJobText(document, '#jd')
+    expect(r.source).toBe('heuristic')
+    expect(r.text).toContain('HEURISTIC')
+  })
+
+  it('the minimum is the shared one', () => {
+    expect(MIN_JOB_TEXT).toBe(JOB_TEXT_MIN)
   })
 })
 

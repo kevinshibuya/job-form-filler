@@ -233,7 +233,7 @@ The tool fills forms with real answers, and the repo is public, so the two never
 
 `scripts/check-private.mjs` enforces it. `npm install` points git at `.githooks`, which run it before every commit and push, over each commit's added lines, message and author address. It blocks home-directory paths, addresses on real domains, credential-shaped strings, and any string listed in `~/.job-form-filler/private-strings.txt`, a denylist that stays on your machine: one string per line, your email, phone and anything else only you would recognise. CI runs the same rules without the denylist.
 
-A page saved from a real application becomes a fixture only through `node scripts/sanitize-capture.mjs [--company <name>]... <captured.html> <fixture.html>`. It keeps the application form and nothing else of the page, replaces the posting's prose with placeholder text, renames the employer Acme (read from the page's title and board address; `--company` adds a spelling the page uses elsewhere), empties every address, empties the form and replaces what the guard would refuse.
+A page saved from a real application becomes a fixture only through `node scripts/sanitize-capture.mjs [--company <name>]... <captured.html|capture.json> <fixture.html>`. It takes the raw page file or a Capture, the file "Save a capture" writes, and makes the same fixture from either; any other file it refuses. It keeps the application form and nothing else of the page, replaces the posting's prose with placeholder text, renames the employer Acme (read from the page's title and board address; `--company` adds a spelling the page uses elsewhere), empties every address, empties the form and replaces what the guard would refuse.
 
 ## How it was made
 

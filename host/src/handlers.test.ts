@@ -76,6 +76,26 @@ describe('handleRequest', () => {
     expect(r).toMatchObject({ ok: true, result: { selector: '#jd' } })
   })
 
+  // Spec #41: "Not the job description" makes the host forget a saved spot.
+  it('forgets the saved spot for a site, so it no longer returns one', async () => {
+    await handleRequest(deps, { requestId: 'sc1', method: 'selector.save', params: { hostname: 'x.com', purpose: 'job_description', selector: '#jd' } })
+    await handleRequest(deps, { requestId: 'sc2', method: 'selector.save', params: { hostname: 'y.com', purpose: 'job_description', selector: '#other' } })
+    const r = await handleRequest(deps, { requestId: 'sc3', method: 'selector.clear', params: { hostname: 'x.com', purpose: 'job_description' } })
+    expect(r).toMatchObject({ ok: true, result: { cleared: true } })
+    const after = await handleRequest(deps, { requestId: 'sc4', method: 'selector.get', params: { hostname: 'x.com', purpose: 'job_description' } })
+    expect(after).toMatchObject({ ok: true, result: { selector: null } })
+    // Another site's spot is not touched.
+    expect(getSelector(db, 'y.com', 'job_description')).toBe('#other')
+  })
+
+  it('forgetting a spot on a site with none succeeds and changes nothing', async () => {
+    await handleRequest(deps, { requestId: 'sc5', method: 'selector.save', params: { hostname: 'y.com', purpose: 'job_description', selector: '#other' } })
+    const r = await handleRequest(deps, { requestId: 'sc6', method: 'selector.clear', params: { hostname: 'x.com', purpose: 'job_description' } })
+    expect(r).toMatchObject({ ok: true, result: { cleared: false } })
+    expect(getSelector(db, 'x.com', 'job_description')).toBeNull()
+    expect(getSelector(db, 'y.com', 'job_description')).toBe('#other')
+  })
+
   it('promotes a confirmed mapping to deterministic, normalized', async () => {
     await handleRequest(deps, { requestId: 'g', method: 'mapping.confirm', params: { label: 'Onde voce mora?', fieldKey: 'location' } })
     expect(getLearnedMapping(db, 'onde voce mora')).toBe('location')

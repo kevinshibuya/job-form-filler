@@ -19,14 +19,12 @@
  */
 
 import { ATS_LIST, companyFromTitle, companySlugFrom } from './ats.js'
+import { JOB_TEXT_MIN } from './jobText.js'
 
 export const FIXTURE_COMPANY = 'Acme'
 export const PLACEHOLDER_PROSE = 'Placeholder text where the Job posting described the role.'
 export const PLACEHOLDER_HEADING = 'Placeholder heading'
 
-/** The fewest characters of text the tool takes for a Job posting from any
- *  source but the user's own paste. */
-export const MIN_JOB_TEXT = 400
 
 const SHOW_COMMENT = 0x80
 const SHOW_TEXT = 0x4
@@ -131,8 +129,10 @@ export function cleanForPrivacy(doc: Document): void {
 
 /** The Company's names as this page spells them: the title and board address
  *  each ATS on the list writes, a board on the Company's own site, and the
- *  caller's. Longest first. Read it before cleaning, which drops the head. */
-export function companyNames(doc: Document, extra: readonly string[] = []): string[] {
+ *  caller's. `addresses` are read as the page's own: a Capture keeps its tab's
+ *  address beside a page the privacy step has already emptied of them.
+ *  Longest first. Read it before cleaning, which drops the head. */
+export function companyNames(doc: Document, extra: readonly string[] = [], addresses: readonly string[] = []): string[] {
   const names = new Set<string>()
   const add = (name: string | null | undefined): void => {
     const trimmed = (name ?? '').replace(/\s+/g, ' ').trim()
@@ -149,12 +149,13 @@ export function companyNames(doc: Document, extra: readonly string[] = []): stri
     }
   }
   add(doc.querySelector('meta[property="og:site_name"]')?.getAttribute('content'))
-  const addresses = [
+  const allAddresses = [
     doc.querySelector('meta[property="og:url"]')?.getAttribute('content'),
     doc.querySelector('link[rel="canonical"]')?.getAttribute('href'),
     ...Array.from(doc.querySelectorAll('form')).map((form) => form.getAttribute('action')),
+    ...addresses,
   ]
-  for (const address of addresses) {
+  for (const address of allAddresses) {
     if (!address) continue
     for (const ats of ATS_LIST) add(companySlugFrom(ats, address))
     const slug = RELATIVE_BOARD_PATH.exec(address)?.[1]
@@ -275,7 +276,7 @@ export function postingRoot(doc: Document): Element | null {
   let best: { el: Element; length: number } | null = null
   for (const el of Array.from(doc.body.querySelectorAll(POSTING_CONTAINERS))) {
     const length = readableText(el).length
-    if (length < MIN_JOB_TEXT) continue
+    if (length < JOB_TEXT_MIN) continue
     if (best === null || length > best.length) best = { el, length }
   }
   return best?.el ?? null
@@ -302,7 +303,7 @@ function replaceProse(doc: Document, root: Element): void {
       prose.push(text)
     }
   }
-  const short = MIN_JOB_TEXT - readableText(root).length
+  const short = JOB_TEXT_MIN - readableText(root).length
   if (short <= 0) return
   const sentences = Math.ceil(short / (PLACEHOLDER_PROSE.length + 1))
   const more = Array.from({ length: sentences }, () => PLACEHOLDER_PROSE).join(' ')

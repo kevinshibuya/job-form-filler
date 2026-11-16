@@ -806,7 +806,7 @@ describe('App generation discipline', () => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_PICK') {
-        return await new Promise((r) => { releasePick = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Dead page job description' } } }], failures: [] }) })
+        return await new Promise((r) => { releasePick = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Dead page job description. '.repeat(20) } } }], failures: [] }) })
       }
       if (msg?.kind === 'toContent') return jobTextReply
       return { ok: true }
@@ -852,7 +852,7 @@ describe('App generation discipline', () => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_PICK') {
-        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Old page job description' } } }], failures: [] }
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Old page job description. '.repeat(20) } } }], failures: [] }
       }
       if (msg?.kind === 'toContent') return jobTextReply
       return { ok: true }
@@ -1285,6 +1285,47 @@ describe('App — resume row wiring (A8/A9)', () => {
     await waitFor(() => expect(document.querySelector('[data-jff-editor="file"]')).not.toBeNull())
     expect(screen.queryByRole('button', { name: 'Put on page' })).toBeNull()
     expect(sentTypes).not.toContain('JFF_FILL_RESUME')
+  })
+  // #49: the page script says this document already kept the Resume. The Scan
+  // sends none and the line reads as for a resume on the page, but the row
+  // keeps "Put on page", which still uploads when asked.
+  it('a Resume this document already kept gets no second upload from the Scan, reads as on the page, and "Put on page" still uploads (#49)', async () => {
+    const { saveResume } = await import('./resume')
+    await saveResume(new File([new Uint8Array([1, 2, 3])], 'cv.pdf', { type: 'application/pdf' }), async () => null)
+    const sentTypes: string[] = []
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type !== undefined) sentTypes.push(msg.message.type)
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        return { ok: true, replies: [{ frameId: 0, url: 'https://ats.example/', payload: { ok: true, scan: { epoch: 1, fields: [
+          { frameId: -1, fid: 0, epoch: 1, label: 'First name', name: 'first_name', idAttr: 'first_name', kind: 'text', options: [], required: true, visible: true, currentValue: null, demographic: false },
+          { frameId: -1, fid: 1, epoch: 1, label: 'Resume', name: null, idAttr: 'resume', kind: 'file', options: [], required: true, visible: false, currentValue: null, demographic: false, accept: '.pdf' },
+        ], unreachableWidgets: 0, activeCaptcha: false, attachedUploads: [], resumeUploaded: true } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true } }], failures: [] }
+      return { ok: true }
+    })
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
+        const p = params as { fields: { frameId: number; fid: number }[] }
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map((f) => ({
+          handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'needs_input' as const,
+          value: null, source: null, key: null, answerId: null, reason: 'custom',
+        })))! }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-resume-attached-note]')).not.toBeNull())
+    expect(document.querySelector('[data-jff-resume-attached-note]')!.textContent).toBe(' — resume already on the page')
+    expect(document.querySelector('[data-jff-resume-note]')).toBeNull()
+    expect(sentTypes).not.toContain('JFF_FILL_RESUME')
+    fireEvent.click(await screen.findByRole('button', { name: 'Put on page' }))
+    await waitFor(() => expect(sentTypes.filter((t) => t === 'JFF_FILL_RESUME')).toHaveLength(1))
   })
 })
 

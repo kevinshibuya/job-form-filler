@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { EnumFieldSchema, ResolutionSchema, type EnumField, type Resolution } from './field.js'
+import { JobTextSourceSchema } from './jobText.js'
 
 /**
  * A Capture (spec #41): a cleaned copy of a page and what the Scan decided,
@@ -62,8 +63,9 @@ export const CaptureSaveParamsSchema = z.object({
   resolutions: z.array(CaptureResolutionSchema),
   election: CaptureElectionSchema.nullable(),
   frameReports: z.array(CaptureFrameReportSchema),
-  /** Where the job text came from. Nothing fills it until the ticket that records that source. */
-  jobTextSource: z.string().min(1).max(64).optional(),
+  /** Where the Session's Job posting text came from. Absent when the Session
+   *  was kept before the source was. */
+  jobTextSource: JobTextSourceSchema.optional(),
 })
 export type CaptureSaveParams = z.infer<typeof CaptureSaveParamsSchema>
 

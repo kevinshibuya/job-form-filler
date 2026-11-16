@@ -7,7 +7,7 @@ import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  checkApplied, getAnswerBank, getCachedResponse, getProfile, getSelector,
+  checkApplied, getAnswerBank, getCachedResponse, getProfile, getSelector, clearSelector,
   insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
   markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
   setProfile, upsertAnswer,
@@ -221,6 +221,11 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'selector.save':
         saveSelector(db, req.params.hostname, req.params.purpose, req.params.selector)
         return ok(req.requestId, { selector: req.params.selector })
+
+      // "Not the job description" (spec #41). A site with no saved spot
+      // answers cleared: false and nothing changes.
+      case 'selector.clear':
+        return ok(req.requestId, { cleared: clearSelector(db, req.params.hostname, req.params.purpose) })
 
       case 'mapping.confirm':
         saveLearnedMapping(db, normalizeQuestion(req.params.label), req.params.fieldKey)

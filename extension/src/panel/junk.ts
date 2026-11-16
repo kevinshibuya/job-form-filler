@@ -26,8 +26,24 @@ export function keepField(f: EnumField): boolean {
   // a cover-letter input the scorer vetoes (#37) is still a row to show.
   // #46: a picker whose only label was its upload button's words ("Attach")
   // now has no label, and is still the row it was while it had one.
-  if (f.kind === 'file' && (f.label !== null || f.uploadWordingOnly === true || fileSignalScore(f) > 0)) return true
+  // #54: an anonymous picker (no label, no name, no id) is not kept on its
+  // accept alone, see fileSignalKeeps.
+  if (f.kind === 'file' && (f.label !== null || f.uploadWordingOnly === true || fileSignalKeeps(f))) return true
   return false
+}
+
+/**
+ * #54: a hidden, unlabelled file picker's file signals keep it only when it has
+ * something to say what it is for: a name, an id or a required mark. Its accept
+ * alone says only which files it takes, and every upload on a page takes
+ * documents. Ashby's "Autofill from resume" picker has nothing but its accept,
+ * while its real Resume upload beside it carries an id and a required mark,
+ * so this rule is generic and needs no Ashby module.
+ */
+function fileSignalKeeps(f: EnumField): boolean {
+  const anonymous = f.name === null && f.idAttr === null
+  if (anonymous && !f.required) return false
+  return fileSignalScore(f) > 0
 }
 
 export function dropJunk(fields: EnumField[]): EnumField[] {
