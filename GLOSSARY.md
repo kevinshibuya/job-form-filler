@@ -14,18 +14,21 @@ _Avoid_: job, job post, posting, job description (for the posting itself)
 
 **Company**:
 The employer behind a Job posting, guessed at Scan time and editable by the user.
+It is never the user's own employer, which is a Known key.
 _Avoid_: employer, org
 
 **ATS**:
 The applicant-tracking platform hosting the form, such as Greenhouse, Lever,
-Workday, Gupy or Ashby, or a custom career page.
+Workday, Gupy or Ashby, or a custom career page. The tool knows a fixed list of
+ATSes by their address. Being on that list does not mean having an ATS module.
 _Avoid_: platform, job board
 
 **ATS module**:
 What the tool knows about one ATS, layered over what it knows about every form:
-how to spot the ATS, where its Job posting text sits, which Controls it draws
-its own way, which Fields are noise. An ATS without a module gets the generic
-behaviour. Knowledge reaches a module through code changes, never through use.
+where a Field's label sits, where its Job posting text and Company are found,
+which Controls it draws its own way, which Fields are noise. An ATS without a
+module gets the generic behaviour. Knowledge reaches a module through code
+changes, never through use.
 _Avoid_: adapter, plugin, platform profile, learned rule
 
 **Canonical URL**:
@@ -88,16 +91,10 @@ A Field that asks for a protected attribute, such as gender, race, disability or
 veteran status. It is always Skipped.
 _Avoid_: EEO field, diversity question
 
-**Ignored field**:
-A Field the user hid in the Side panel for the current Session because the
-Scan should not have offered it. It lasts for that Session only and is recorded
-in a Capture.
-_Avoid_: dismissed, hidden field, blocked field
-
 **Capture**:
 A saved record of one Scan the user judged wrong: the page's form structure
-with every typed Value blanked, what the Scan found, what it decided, and every
-Ignored field. It is the evidence a later code change is built and tested on.
+with every typed Value blanked, what the Scan found and what it decided. It is
+the evidence a later code change is built and tested on.
 _Avoid_: snapshot (the Session's page snapshot), export, bug report
 
 **Mapping**:
