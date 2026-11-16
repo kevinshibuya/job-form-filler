@@ -108,5 +108,12 @@ export const ResolutionSchema = z.object({
    * `personal_fact`: a Field nobody labelled prose is the user's to answer.
    */
   fieldClass: FieldClassSchema.optional(),
+  /**
+   * The words a page may use for the Value, in English and Portuguese, from
+   * the rule table (ruleTable.ts). Fill picks the one Option equal to the Value
+   * or to one of these. Absent when the Value has none: after ticket #26 only
+   * a `country` Value carries them.
+   */
+  candidates: z.array(z.string()).optional(),
 })
 export type Resolution = z.infer<typeof ResolutionSchema>

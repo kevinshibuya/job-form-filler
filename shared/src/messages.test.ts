@@ -141,6 +141,35 @@ describe('ContentMessageSchema', () => {
     })
     expect(msg.type).toBe('JFF_FILL')
   })
+
+  it('carries the candidate words of a Value with its fill, and keeps them through parsing', () => {
+    const msg = ContentMessageSchema.parse({
+      type: 'JFF_FILL', epoch: 7,
+      fills: [{ handle, value: 'Germany', candidates: ['Germany', 'Alemanha'] }, { handle, value: 'Ada' }],
+    })
+    expect(msg.type === 'JFF_FILL' && msg.fills.map((f) => f.candidates)).toEqual([['Germany', 'Alemanha'], undefined])
+  })
+
+  it('rejects candidate words that are not strings', () => {
+    expect(ContentMessageSchema.safeParse({
+      type: 'JFF_FILL', epoch: 7, fills: [{ handle, value: 'Germany', candidates: [1] }],
+    }).success).toBe(false)
+  })
+})
+
+describe('ResolutionSchema — candidate words (#26)', () => {
+  const base = { handle, tier: 'auto', value: 'Germany', source: 'profile', key: 'country', answerId: null, reason: 'recognizer:country' }
+
+  it('carries the candidate words of its Value through parsing', () => {
+    const parsed = ResolveFirstResultSchema.parse({
+      epoch: 7, resolutions: [{ ...base, candidates: ['Germany', 'Alemanha'] }], pending: [],
+    })
+    expect(parsed.resolutions[0]!.candidates).toEqual(['Germany', 'Alemanha'])
+  })
+
+  it('accepts a Resolution with no candidate words', () => {
+    expect(ResolveFirstResultSchema.parse({ epoch: 7, resolutions: [base], pending: [] }).resolutions[0]!.candidates).toBeUndefined()
+  })
 })
 
 describe('ContentMessageSchema — JFF_HARVEST (A6)', () => {

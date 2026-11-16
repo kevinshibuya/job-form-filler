@@ -166,7 +166,9 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('JFF_SCAN'), epoch: z.number().int().nonnegative() }),
   z.object({
     type: z.literal('JFF_FILL'), epoch: z.number().int().nonnegative(),
-    fills: z.array(z.object({ handle: FieldHandleSchema, value: z.string() })),
+    // `candidates`: the candidate words of the row's Value (Resolution.candidates).
+    // Absent once the user edited the Value: an edited Value matches by its own text.
+    fills: z.array(z.object({ handle: FieldHandleSchema, value: z.string(), candidates: z.array(z.string()).optional() })),
   }),
   z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_PICK'), epoch: z.number().int().nonnegative() }),

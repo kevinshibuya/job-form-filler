@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  isCheckboxGroup, isConsentCheckbox, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
+  candidatesForKey, isCheckboxGroup, isConsentCheckbox, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
   type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -30,7 +30,22 @@ export interface WaterfallInput {
   fields: EnumField[]
 }
 
+/** Sources whose Value is a Known key's own stored Value. */
+const KEY_VALUE_SOURCES: ReadonlySet<Resolution['source']> = new Set(['profile', 'answer_bank', 'llm_key'])
+
+/**
+ * The candidate words a Resolution carries: those of a Known key's stored
+ * Value, by the rule table. A Saved answer or a page value filed under a key
+ * is not that key's Value and gets none, nor does a Value with no rule.
+ */
+function candidatesOf(patch: Partial<Resolution>): string[] {
+  const { key, value, source } = patch
+  if (key == null || value == null || !KEY_VALUE_SOURCES.has(source ?? null)) return []
+  return candidatesForKey(key, value)
+}
+
 function res(f: EnumField, patch: Partial<Resolution> & { tier: Resolution['tier']; reason: string }): Resolution {
+  const candidates = candidatesOf(patch)
   return {
     handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
     tier: patch.tier, value: patch.value ?? null, source: patch.source ?? null,
@@ -38,6 +53,8 @@ function res(f: EnumField, patch: Partial<Resolution> & { tier: Resolution['tier
     // Only a Field Mapping matched to nothing carries the label; every other
     // Resolution leaves the property out.
     ...(patch.fieldClass === undefined ? {} : { fieldClass: patch.fieldClass }),
+    // Likewise only a Value with candidate words carries them.
+    ...(candidates.length === 0 ? {} : { candidates }),
   }
 }
 

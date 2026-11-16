@@ -59,6 +59,8 @@ export interface HeldMappingHost {
   /** fid → the value the first step fills. Every other Field is left pending,
    *  unless `firstNeedsInput` decides it. */
   firstValues: Record<number, string>
+  /** fid → the candidate words the first step's Resolution carries with its value. */
+  firstCandidates: Record<number, string[]>
   /** fids the first step decides as Needs input (a recognizer with no stored Value). */
   firstNeedsInput: number[]
   /** When true the first step decides every Field and nothing is pending. */
@@ -73,6 +75,10 @@ export interface HeldMappingHost {
   /** fid → what the page holds. */
   page: Record<number, string>
   fills: { epoch: number; fids: number[] }[]
+  /** Every fill the page was sent, in order, as the JFF_FILL message carried it. */
+  sent: { fid: number; value: string; candidates?: string[] }[]
+  /** fid → the reason the page refuses a fill of that Field with. */
+  refuse: Record<number, string>
   scans: number
   /** chrome.storage.session, as the fake holds it. */
   storage: Record<string, unknown>
@@ -84,9 +90,9 @@ export function installHeldMappingHost(): HeldMappingHost {
   beforeEach(async () => {
     window.history.replaceState(null, '', '/?jffFakeHost=1')
     Object.assign(host, {
-      fields: [], firstValues: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
+      fields: [], firstValues: {}, firstCandidates: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
-      held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], scans: 0, storage: {},
+      held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], refuse: {}, scans: 0, storage: {},
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -103,7 +109,10 @@ export function installHeldMappingHost(): HeldMappingHost {
         return { requestId, ok: true, result: {
           epoch: p.epoch,
           resolutions: decided.map((f) => host.firstValues[f.fid] !== undefined
-            ? resolution(f, { tier: 'auto', value: host.firstValues[f.fid]!, source: 'profile', reason: 'recognizer' })
+            ? resolution(f, {
+              tier: 'auto', value: host.firstValues[f.fid]!, source: 'profile', reason: 'recognizer',
+              ...(host.firstCandidates[f.fid] === undefined ? {} : { candidates: host.firstCandidates[f.fid] }),
+            })
             : resolution(f, { tier: 'needs_input', reason: 'recognizer:no-stored-value' })),
           pending: p.fields.filter((f) => !decided.includes(f)).map((f) => ({ frameId: f.frameId, fid: f.fid, epoch: f.epoch })),
         } }
@@ -174,7 +183,7 @@ function fakeChrome(host: HeldMappingHost): unknown {
       onRemoved: { addListener: vi.fn(), removeListener: vi.fn() },
     },
     runtime: {
-      sendMessage: vi.fn(async (msg: { kind?: string; message?: { type?: string; epoch?: number; fills?: { handle: FieldHandle; value: string }[] } }) => {
+      sendMessage: vi.fn(async (msg: { kind?: string; message?: { type?: string; epoch?: number; fills?: { handle: FieldHandle; value: string; candidates?: string[] }[] } }) => {
         if (msg?.kind === 'inject') return { ok: true, frames: [0] }
         const m = msg?.message
         if (msg?.kind === 'toContent' && m?.type === 'JFF_SCAN') {
@@ -182,10 +191,18 @@ function fakeChrome(host: HeldMappingHost): unknown {
           return { ok: true, replies: [{ frameId: 0, url: 'https://jobs.example.com/apply', payload: { ok: true, scan: { epoch: m.epoch, fields: host.fields, unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
         }
         if (msg?.kind === 'toContent' && m?.type === 'JFF_FILL') {
-          // The page takes every value it is sent, and reports it filled.
-          for (const f of m.fills ?? []) host.page[f.handle.fid] = f.value
-          host.fills.push({ epoch: m.epoch ?? -1, fids: (m.fills ?? []).map((f) => f.handle.fid) })
-          return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: m.epoch, filled: (m.fills ?? []).map((f) => ({ handle: f.handle, committed: null })), failed: [] } } }], failures: [] }
+          // The page takes every value it is sent, and reports it filled,
+          // except a Field `refuse` names.
+          const fills = m.fills ?? []
+          for (const f of fills) {
+            host.sent.push({ fid: f.handle.fid, value: f.value, ...(f.candidates === undefined ? {} : { candidates: f.candidates }) })
+          }
+          const taken = fills.filter((f) => !(f.handle.fid in host.refuse))
+          for (const f of taken) host.page[f.handle.fid] = f.value
+          host.fills.push({ epoch: m.epoch ?? -1, fids: fills.map((f) => f.handle.fid) })
+          const filled = taken.map((f) => ({ handle: f.handle, committed: null }))
+          const failed = fills.filter((f) => f.handle.fid in host.refuse).map((f) => ({ handle: f.handle, reason: host.refuse[f.handle.fid]! }))
+          return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: m.epoch, filled, failed } } }], failures: [] }
         }
         if (msg?.kind === 'toContent') {
           return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }

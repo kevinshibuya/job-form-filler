@@ -3,6 +3,7 @@ import { groupBoxesOf } from './checkboxGroup'
 import { optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
 import { attributableListbox, mountedListboxes } from './harvest'
+import { matchOption } from './optionMatch'
 import { waitForSettle } from './settle'
 
 type FillOutcome = { ok: true; committed?: string | null } | { ok: false; reason: string }
@@ -44,29 +45,49 @@ function fillTextual(el: HTMLInputElement | HTMLTextAreaElement, value: string):
   return { ok: true, committed: el.value }
 }
 
-function fillSelect(el: HTMLSelectElement, value: string): FillOutcome {
-  const target = norm(value)
-  const byLabel = Array.from(el.options).find((o) => norm(o.textContent ?? '') === target)
-  const byValue = Array.from(el.options).find((o) => norm(o.value) === target)
-  const opt = byLabel ?? byValue
-  if (opt === undefined) return { ok: false, reason: 'no-matching-option' }
-  setNativeValue(el, opt.value)
-  return { ok: true }
+/** An Option's wording as the page shows it, spacing collapsed. */
+const wording = (s: string): string => s.replace(/\s+/g, ' ').trim()
+
+/** What a filled choice reports: the page's wording of the chosen Option when it
+ *  differs from the Value sent ('Germany' fills 'Alemanha'), else nothing. */
+const committedAs = (shown: string, value: string): FillOutcome =>
+  shown === value ? { ok: true } : { ok: true, committed: shown }
+
+/**
+ * The one member whose Option label equals the Value or a candidate word, else
+ * the one whose `value` attribute does. Two equal labels, or none and two
+ * equal attributes, pick nothing: Fill never guesses between Options.
+ */
+function pickMember<T>(
+  members: readonly T[], labelOf: (m: T) => string, attrOf: (m: T) => string,
+  value: string, candidates: readonly string[],
+): T | null {
+  const byLabel = matchOption(members.map(labelOf), value, candidates)
+  if (byLabel.found === 'one') return members[byLabel.index]!
+  if (byLabel.found === 'many') return null
+  const byAttr = matchOption(members.map(attrOf), value, candidates)
+  return byAttr.found === 'one' ? members[byAttr.index]! : null
 }
 
-function fillRadioGroup(el: HTMLInputElement, value: string): FillOutcome {
+function fillSelect(el: HTMLSelectElement, value: string, candidates: readonly string[]): FillOutcome {
+  const opt = pickMember(Array.from(el.options), (o) => o.textContent ?? '', (o) => o.value, value, candidates)
+  if (opt === null) return { ok: false, reason: 'no-matching-option' }
+  setNativeValue(el, opt.value)
+  return committedAs(wording(opt.textContent ?? ''), value)
+}
+
+function fillRadioGroup(el: HTMLInputElement, value: string, candidates: readonly string[]): FillOutcome {
   const scope = scopeOf(el)
   const name = el.getAttribute('name')
   const members = name === null || name === ''
     ? [el]
     : Array.from(scope.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`))
-  const target = norm(value)
-  const hit = members.find((m) => norm(optionLabelOf(m)) === target) ?? members.find((m) => norm(m.value) === target)
-  if (hit === undefined) return { ok: false, reason: 'no-matching-option' }
+  const hit = pickMember(members, optionLabelOf, (m) => m.value, value, candidates)
+  if (hit === null) return { ok: false, reason: 'no-matching-option' }
   // A React-controlled radio needs a REAL click; assigning .checked does nothing.
   hit.click()
   if (!hit.checked) return { ok: false, reason: 'click-rejected' }
-  return { ok: true }
+  return committedAs(wording(optionLabelOf(hit)), value)
 }
 
 /**
@@ -186,7 +207,17 @@ export async function fillChoice(
   el: HTMLInputElement,
   detection: ChoiceDetection,
   value: string,
+  candidates: readonly string[] = [],
 ): Promise<FillOutcome> {
+  // With candidate words the Value is first turned into the page's wording of
+  // the one Option it names; the steps below then fill that Option.
+  if (candidates.length > 0) {
+    const m = matchOption(detection.options, value, candidates)
+    if (m.found !== 'one') return { ok: false, reason: 'no-matching-option' }
+    const shown = detection.options[m.index]!
+    const out = await fillChoice(el, detection, shown)
+    return out.ok ? committedAs(wording(shown), value) : out
+  }
   const { wrapper, buttons, options } = detection
   const members = choiceMembers(el, wrapper)
   const target = norm(value)
@@ -445,7 +476,7 @@ const expandedOwner = (el: Element): Element =>
  * page may still refetch options on that restore event; the residual is
  * page-side and is eyeballed at the manual gate (review fix, majors item 5).
  */
-async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
+async function fillCombobox(el: Element, value: string, candidates: readonly string[]): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
   const snapshot = input === null ? null : input.value
   // D2: never open a second menu while another Control's is still up.
@@ -473,13 +504,20 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   const MIN_SUBSTRING_LEN = 3
 
   let sawListbox = false
+  // Two Options equal to the Value or its candidate words: no pick, and no
+  // typeahead either, since the page offers both.
+  let ambiguous = false
   const waitForHit = async (waitMs: number, breakOnOptions: boolean): Promise<HTMLElement | null> => {
     const deadline = Date.now() + waitMs
     for (;;) {
       const m = lookup()
       sawListbox = sawListbox || m.mounted
-      const exact = m.options.find((o) => norm(o.textContent ?? '') === target)
-      if (exact !== undefined) return exact
+      // Exact tier: the one Option equal to the Value or a candidate word
+      // (#26). Candidate words match by equality only, never by the
+      // substring tier below.
+      const exact = matchOption(m.options.map((o) => o.textContent ?? ''), value, candidates)
+      if (exact.found === 'one') return m.options[exact.index]!
+      if (exact.found === 'many') { ambiguous = true; return null }
 
       // B1b ladder. Ambiguity (or a too-short target) fails closed: clicking
       // one of several substring candidates would be a guess, and a wrong
@@ -522,12 +560,13 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
 
   let hit = await waitForHit(COMBOBOX_WAIT_MS, true)
   if (hit === null) {
+    if (ambiguous) return failClosed('no-matching-option')
     if (input === null) return failClosed(noHitReason())
     // B1a: ALWAYS drive the typeahead when typing is possible.
     input.focus()
     setNativeValue(input, value)
     hit = await waitForHit(COMBOBOX_TYPE_WAIT_MS, false)
-    if (hit === null) return failClosed(noHitReason())
+    if (hit === null) return failClosed(ambiguous ? 'no-matching-option' : noHitReason())
   }
 
   const optionText = norm(hit.textContent ?? '')
@@ -599,12 +638,17 @@ export function fillFile(el: Element, file: File): FillOutcome {
   return { ok: true }
 }
 
-export async function fillOne(el: Element, value: string): Promise<FillOutcome> {
+/**
+ * `candidates` are the candidate words of the Value (Resolution.candidates):
+ * on a choice Control the Fill picks the one Option equal to the Value or to
+ * one of them. A text Control, a lone checkbox and a checkbox group ignore them.
+ */
+export async function fillOne(el: Element, value: string, candidates: readonly string[] = []): Promise<FillOutcome> {
   // Hard rail: this extension NEVER activates a submit control.
   if (el.tagName === 'BUTTON' || (el instanceof HTMLInputElement && ['submit', 'button', 'reset', 'image'].includes(el.type))) {
     return { ok: false, reason: 'unsupported-widget' }
   }
-  if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') return fillCombobox(el, value)
+  if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') return fillCombobox(el, value, candidates)
   // A checkbox group, stamped by the enumerator on every one of its boxes.
   const group = groupBoxesOf(el)
   if (group !== null) return fillCheckboxGroup(group, value)
@@ -615,10 +659,10 @@ export async function fillOne(el: Element, value: string): Promise<FillOutcome> 
   // choices into fillRadioGroup.
   if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox') && selfHidden(defaultMeasure(el))) {
     const choice = detectChoice(el)
-    if (choice !== null) return fillChoice(el, choice, value)
+    if (choice !== null) return fillChoice(el, choice, value, candidates)
   }
-  if (el instanceof HTMLSelectElement) return fillSelect(el, value)
-  if (el instanceof HTMLInputElement && el.type === 'radio') return fillRadioGroup(el, value)
+  if (el instanceof HTMLSelectElement) return fillSelect(el, value, candidates)
+  if (el instanceof HTMLInputElement && el.type === 'radio') return fillRadioGroup(el, value, candidates)
   if (el instanceof HTMLInputElement && el.type === 'checkbox') return fillCheckbox(el, value)
   if (el instanceof HTMLInputElement && el.type === 'file') return { ok: false, reason: 'file-needs-blob' }
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return fillTextual(el, value)
@@ -641,7 +685,7 @@ function isChoiceControl(el: Element): boolean {
  */
 export async function fillFields(
   root: Document,
-  fills: { handle: FieldHandle; value: string }[],
+  fills: { handle: FieldHandle; value: string; candidates?: readonly string[] }[],
 ): Promise<Omit<FillReport, 'epoch'>> {
   const filled: { handle: FieldHandle; committed: string | null }[] = []
   const failed: { handle: FieldHandle; reason: string }[] = []
@@ -656,7 +700,7 @@ export async function fillFields(
     const choice = isChoiceControl(el)
     if (choice && previousWasChoice) await waitForSettle(root, { quietMs: 100, maxMs: CHOICE_GAP_SETTLE_MS })
     previousWasChoice = choice
-    const out = await fillOne(el, f.value)
+    const out = await fillOne(el, f.value, f.candidates ?? [])
     if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null })
     else failed.push({ handle: f.handle, reason: out.reason })
   }

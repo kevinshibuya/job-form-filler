@@ -972,3 +972,158 @@ describe('combobox verdict', () => {
     expect(document.getElementById('iti-0__country-listbox')).not.toBeNull()
   }, 10_000)
 })
+
+describe('Fill picks the Option the rule table names (#26)', () => {
+  // The words the rule table gives a stored "Germany", a stored "United States"
+  // and a yes, as the Side panel sends them with the Fill.
+  const GERMANY = ['Germany', 'Alemanha']
+  const UNITED_STATES = ['United States', 'United States of America', 'US', 'USA', 'U.S.', 'U.S.A.', 'Estados Unidos', 'EUA']
+  const YES = ['Yes', 'Sim']
+  const h = (fid: number) => ({ frameId: 0, fid, epoch: 9 })
+  const scanPage = (): void => { enumerateFields({ root: document, epoch: 9, measure: allVisible }) }
+
+  it('a stored "Germany" fills a native Country select that offers "Alemanha", and the Fill reports the page wording', async () => {
+    document.body.innerHTML = `
+      <label for="c">País</label>
+      <select id="c"><option value="">Selecione</option><option value="BR">Brasil</option><option value="DE">Alemanha</option></select>`
+    scanPage()
+    const report = await fillFields(document, [{ handle: h(0), value: 'Germany', candidates: GERMANY }])
+    expect(report).toEqual({ filled: [{ handle: h(0), committed: 'Alemanha' }], failed: [] })
+    expect((document.getElementById('c') as HTMLSelectElement).value).toBe('DE')
+  })
+
+  it('the same Value fills a dropdown whose Options load when it opens', async () => {
+    document.body.innerHTML = `
+      <label for="c">País</label>
+      <input id="c" role="combobox" aria-haspopup="listbox" aria-expanded="false">
+      <div id="shown"></div>`
+    const combo = document.getElementById('c') as HTMLInputElement
+    const picked: string[] = []
+    combo.addEventListener('click', () => {
+      if (document.getElementById('lb') !== null) return
+      combo.setAttribute('aria-expanded', 'true')
+      combo.setAttribute('aria-controls', 'lb')
+      const lb = document.createElement('div')
+      lb.id = 'lb'
+      lb.setAttribute('role', 'listbox')
+      for (const name of ['Brasil', 'Alemanha', 'Estados Unidos']) {
+        const o = document.createElement('div')
+        o.setAttribute('role', 'option')
+        o.textContent = name
+        o.addEventListener('click', () => {
+          picked.push(name)
+          combo.value = name
+          combo.setAttribute('aria-expanded', 'false')
+          lb.remove()
+        })
+        lb.appendChild(o)
+      }
+      document.body.appendChild(lb)
+    })
+    scanPage()
+    const report = await fillFields(document, [{ handle: h(0), value: 'Germany', candidates: GERMANY }])
+    expect(picked).toEqual(['Alemanha'])
+    expect(report).toEqual({ filled: [{ handle: h(0), committed: 'Alemanha' }], failed: [] })
+  })
+
+  it('a radio group offering "Sim" and "Não" is filled with "Sim" for a yes sent with its candidates', async () => {
+    document.body.innerHTML = `
+      <fieldset><legend>Você tem disponibilidade imediata?</legend>
+        <label><input type="radio" name="d" value="1"> Sim</label>
+        <label><input type="radio" name="d" value="0"> Não</label>
+      </fieldset>`
+    scanPage()
+    const report = await fillFields(document, [{ handle: h(0), value: 'yes', candidates: YES }])
+    expect(report).toEqual({ filled: [{ handle: h(0), committed: 'Sim' }], failed: [] })
+    expect((document.querySelector('input[value="1"]') as HTMLInputElement).checked).toBe(true)
+    expect((document.querySelector('input[value="0"]') as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('a button choice offering "Sim" and "Não" is pressed on "Sim" for a yes', async () => {
+    document.body.innerHTML = ASHBY_YESNO_PT
+    for (const b of Array.from(document.querySelectorAll('button'))) {
+      b.addEventListener('click', () => b.setAttribute('aria-pressed', 'true'))
+    }
+    const cb = document.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    cb.addEventListener('click', (e) => e.preventDefault())
+    const pressed = (): string[] => Array.from(document.querySelectorAll('button[aria-pressed="true"]')).map((b) => b.textContent ?? '')
+    await expect(fillOne(cb, 'yes', YES)).resolves.toEqual({ ok: true, committed: 'Sim' })
+    expect(pressed()).toEqual(['Sim'])
+  })
+
+  it('a select offering two Options equal to candidates of the same Value fails as no-matching-option, unchanged', async () => {
+    document.body.innerHTML = `
+      <label for="c">Country</label>
+      <select id="c"><option value="">Select…</option><option value="us">US</option><option value="usa">United States</option></select>`
+    scanPage()
+    const changes = vi.fn()
+    document.getElementById('c')!.addEventListener('change', changes)
+    const report = await fillFields(document, [{ handle: h(0), value: 'United States', candidates: UNITED_STATES }])
+    expect(report).toEqual({ filled: [], failed: [{ handle: h(0), reason: 'no-matching-option' }] })
+    expect((document.getElementById('c') as HTMLSelectElement).value).toBe('')
+    expect(changes).not.toHaveBeenCalled()
+  })
+
+  it('a radio group offering two such Options fails the same way, nothing checked', async () => {
+    document.body.innerHTML = `
+      <fieldset><legend>Country</legend>
+        <label><input type="radio" name="c" value="a"> USA</label>
+        <label><input type="radio" name="c" value="b"> Estados Unidos</label>
+      </fieldset>`
+    scanPage()
+    const report = await fillFields(document, [{ handle: h(0), value: 'United States', candidates: UNITED_STATES }])
+    expect(report.failed).toEqual([{ handle: h(0), reason: 'no-matching-option' }])
+    expect(Array.from(document.querySelectorAll('input')).some((r) => r.checked)).toBe(false)
+  })
+
+  it('a dropdown offering two such Options fails as no-matching-option, clicks none and restores the box', async () => {
+    document.body.innerHTML = `
+      <input id="c" role="combobox" aria-controls="lb" value="">
+      <div id="lb" role="listbox"><div role="option">US</div><div role="option">United States</div><div role="option">Canada</div></div>`
+    const picked: string[] = []
+    for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
+      o.addEventListener('click', () => picked.push(o.textContent ?? ''))
+    }
+    const combo = document.getElementById('c') as HTMLInputElement
+    await expect(fillOne(combo, 'United States', UNITED_STATES)).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    expect(picked).toEqual([])
+    expect(combo.value).toBe('')
+  })
+
+  it('a Control offering no Option equal to the Value or a candidate fails as no-matching-option', async () => {
+    document.body.innerHTML = `
+      <label for="s">País</label>
+      <select id="s"><option value="">Selecione</option><option>Brasil</option><option>Portugal</option></select>
+      <fieldset><legend>Disponível?</legend>
+        <label><input type="radio" name="d" value="1"> Talvez</label>
+      </fieldset>`
+    scanPage()
+    const report = await fillFields(document, [
+      { handle: h(0), value: 'Germany', candidates: GERMANY },
+      { handle: h(1), value: 'yes', candidates: YES },
+    ])
+    expect(report.failed).toEqual([
+      { handle: h(0), reason: 'no-matching-option' },
+      { handle: h(1), reason: 'no-matching-option' },
+    ])
+    expect((document.getElementById('s') as HTMLSelectElement).value).toBe('')
+  })
+
+  it('a Value sent with no candidates is matched by its own text only: an edited "Germany" never picks "Alemanha"', async () => {
+    document.body.innerHTML = `
+      <label for="c">País</label>
+      <select id="c"><option value="">Selecione</option><option value="DE">Alemanha</option></select>`
+    scanPage()
+    const report = await fillFields(document, [{ handle: h(0), value: 'Germany' }])
+    expect(report.failed).toEqual([{ handle: h(0), reason: 'no-matching-option' }])
+    expect((document.getElementById('c') as HTMLSelectElement).value).toBe('')
+  })
+
+  it('a candidate word never matches a dropdown Option by substring', async () => {
+    document.body.innerHTML = `
+      <input id="c" role="combobox" aria-controls="lb">
+      <div id="lb" role="listbox"><div role="option">United States Minor Outlying Islands</div></div>`
+    await expect(fillOne(document.getElementById('c')!, 'Estados Unidos', UNITED_STATES))
+      .resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
+  })
+})

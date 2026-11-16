@@ -343,6 +343,18 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 }
 
 /**
+ * One entry of a JFF_FILL message: the handle, the value, and the candidate
+ * words of the Resolution's Value, which go only with that Value itself. A
+ * value the user edited is matched by its own text, so it travels without them.
+ */
+export function fillEntry(
+  resolution: Pick<Resolution, 'handle' | 'value' | 'candidates'>, value: string,
+): { handle: Resolution['handle']; value: string; candidates?: string[] } {
+  const candidates = value === resolution.value ? resolution.candidates ?? [] : []
+  return { handle: resolution.handle, value, ...(candidates.length === 0 ? {} : { candidates }) }
+}
+
+/**
  * B3: the batched scan-time Fill. Only tier `auto` Resolutions with a value
  * are sent; `page` sourced values are already there. Each frame's own JFF_FILL
  * report decides what counts as filled.
@@ -350,11 +362,11 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 async function fillAuto(
   sendToTab: ScanDeps['sendToTab'], epoch: number, resolutions: Resolution[],
 ): Promise<{ fill: CollectedFill; reports: FrameReport[] }> {
-  const byFrame = new Map<number, { handle: Resolution['handle']; value: string }[]>()
+  const byFrame = new Map<number, ReturnType<typeof fillEntry>[]>()
   for (const r of resolutions) {
     if (r.tier !== 'auto' || r.source === 'page' || r.value === null || r.value === '') continue
     const list = byFrame.get(r.handle.frameId) ?? []
-    list.push({ handle: r.handle, value: r.value })
+    list.push(fillEntry(r, r.value))
     byFrame.set(r.handle.frameId, list)
   }
   const fill = emptyFill()

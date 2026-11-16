@@ -13,7 +13,7 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { pickResumeTarget } from './resumeTarget'
-import { MAPPING_LOST, runMapping, runScan, ScanError, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
@@ -1272,7 +1272,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const fillOne = async (target: number, row: Row, value: string): Promise<string | null> => {
     if (value === '') return null
     const { replies } = await sendToTab(target, row.field.frameId, {
-      type: 'JFF_FILL', epoch: row.field.epoch, fills: [{ handle: row.resolution.handle, value }],
+      // The row's candidate words go with its own Value only; an edited Value
+      // is matched by its text (fillEntry).
+      type: 'JFF_FILL', epoch: row.field.epoch, fills: [fillEntry(row.resolution, value)],
     })
     const p = replies[0]?.payload as { ok?: boolean; error?: string; fill?: FillReport } | undefined
     if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the fill')
