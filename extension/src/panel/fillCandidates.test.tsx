@@ -103,3 +103,16 @@ describe('phone parts travel with a Fill of the phone Value (#30)', () => {
     expect(fillEntry({ handle, value: '+15550100', phone }, '+15550199')).toEqual({ handle, value: '+15550199' })
   })
 })
+
+describe('the country names travel with a Fill of the city Value (#32)', () => {
+  const handle = { frameId: 0, fid: 4, epoch: 1 }
+  const city = { countryNames: ['United Kingdom', 'UK', 'Reino Unido'] }
+
+  it('a Fill of the Resolution\'s own city carries the names of the stored country', () => {
+    expect(fillEntry({ handle, value: 'Cambridge', city }, 'Cambridge')).toEqual({ handle, value: 'Cambridge', city })
+  })
+
+  it('an edited Value travels without them', () => {
+    expect(fillEntry({ handle, value: 'Cambridge', city }, 'Cambridge, United Kingdom')).toEqual({ handle, value: 'Cambridge, United Kingdom' })
+  })
+})

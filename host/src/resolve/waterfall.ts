@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  candidatesForKey, displayValue, isCheckboxGroup, phoneParts, isConsentCheckbox, isOldText, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
+  candidatesForKey, cityParts, displayValue, isCheckboxGroup, phoneParts, isConsentCheckbox, isOldText, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
   type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -69,6 +69,21 @@ function withPhoneParts(db: Database.Database, r: Resolution): Resolution {
   const parts = phoneParts(r.value, getStoredValue(db, 'country'))
   return parts === null ? r : { ...r, phone: parts }
 }
+
+/**
+ * A Resolution of the `city` key whose Value is the stored city and whose
+ * Control is a type-to-search dropdown carries the names of the stored
+ * country, so the Fill types the city alone and picks the result that names
+ * both. A text box takes the city as it is and carries none.
+ */
+function withCityParts(db: Database.Database, f: EnumField, r: Resolution): Resolution {
+  if (r.key !== 'city' || r.value === null || !KEY_VALUE_SOURCES.has(r.source) || f.kind !== 'combobox') return r
+  return { ...r, city: cityParts(getStoredValue(db, 'country')) }
+}
+
+/** The parts a Fill needs beside the Value, added once the Resolution is decided. */
+const withFillParts = (db: Database.Database, f: EnumField, r: Resolution): Resolution =>
+  withCityParts(db, f, withPhoneParts(db, r))
 
 /**
  * A Field Mapping left unmatched, or never got to answer for: Needs input,
@@ -358,7 +373,7 @@ export function resolveFirst(db: Database.Database, input: WaterfallInput): Reso
   const { byRef } = firstStep(db, input.fields)
   return {
     epoch: input.epoch,
-    resolutions: input.fields.flatMap((f) => byRef.get(refOf(f)) ?? []).map((r) => withPhoneParts(db, r)),
+    resolutions: input.fields.flatMap((f) => { const r = byRef.get(refOf(f)); return r === undefined ? [] : [withFillParts(db, f, r)] }),
     pending: input.fields.filter((f) => !byRef.has(refOf(f)))
       .map((f) => ({ frameId: f.frameId, fid: f.fid, epoch: f.epoch })),
   }
@@ -377,7 +392,7 @@ export async function resolveMapping(deps: WaterfallDeps, input: WaterfallInput)
   const mapped = await mappingStep(deps, input, first.pending)
   return {
     epoch: input.epoch,
-    resolutions: input.fields.map((f) => withPhoneParts(deps.db, first.byRef.get(refOf(f)) ?? mapped.byRef.get(refOf(f))!)),
+    resolutions: input.fields.map((f) => withFillParts(deps.db, f, first.byRef.get(refOf(f)) ?? mapped.byRef.get(refOf(f))!)),
     llmError: mapped.llmError,
   }
 }

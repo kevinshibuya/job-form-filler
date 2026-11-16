@@ -1,5 +1,5 @@
 import { normalizeFactValue, type FieldKey } from './keys.js'
-import type { PhoneParts } from './field.js'
+import type { CityParts, PhoneParts } from './field.js'
 import { CALLING_CODES, RULE_TABLE, countryCode, countryNames, yesNoOf, type RuleLanguage } from './ruleTable.js'
 
 /**
@@ -145,4 +145,16 @@ export function phoneParts(phone: string, country: string | null | undefined): P
   const own = stored !== null && CALLING_CODES[stored] === callingCode ? stored
     : sharing.length === 1 ? sharing[0]! : null
   return { callingCode, nationalNumber: digits.slice(callingCode.length), countryNames: own === null ? [] : countryNames(own) }
+}
+
+/**
+ * The parts a city typeahead's Fill needs: every name of the stored country in
+ * both languages, by the closed list. A country outside the list is named by
+ * its own text alone, and no country stored gives no names.
+ */
+export function cityParts(country: string | null | undefined): CityParts {
+  const stored = country?.trim() ?? ''
+  if (stored === '') return { countryNames: [] }
+  const code = countryCode(stored)
+  return { countryNames: code === null ? [stored] : countryNames(code) }
 }

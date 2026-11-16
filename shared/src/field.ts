@@ -108,6 +108,17 @@ export const PhonePartsSchema = z.object({
 })
 export type PhoneParts = z.infer<typeof PhonePartsSchema>
 
+/**
+ * What a Fill of a city typeahead needs beside the city it types: every name of
+ * the stored `country` in both languages, so the Fill can pick the result that
+ * names both the city and the country. Empty when no country is stored: then
+ * only a result equal to the city alone is picked.
+ */
+export const CityPartsSchema = z.object({
+  countryNames: z.array(z.string()),
+})
+export type CityParts = z.infer<typeof CityPartsSchema>
+
 export const ResolutionSchema = z.object({
   handle: FieldHandleSchema,
   tier: ResolutionTierSchema,
@@ -136,5 +147,11 @@ export const ResolutionSchema = z.object({
    * closed list knows. Absent everywhere else.
    */
   phone: PhonePartsSchema.optional(),
+  /**
+   * The names of the stored country (CityPartsSchema), on a Resolution of the
+   * `city` key whose Value is the stored city and whose Control is a
+   * type-to-search dropdown. Absent on a text box and everywhere else.
+   */
+  city: CityPartsSchema.optional(),
 })
 export type Resolution = z.infer<typeof ResolutionSchema>

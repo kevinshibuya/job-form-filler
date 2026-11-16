@@ -1,4 +1,4 @@
-import type { ContentMessage, EnumField, FieldHandle, FillReport, HostErrorKind, PhoneParts, Resolution, ResolveFirstResult, ResolveMappingResult } from '@jff/shared'
+import type { CityParts, ContentMessage, EnumField, FieldHandle, FillReport, HostErrorKind, PhoneParts, Resolution, ResolveFirstResult, ResolveMappingResult } from '@jff/shared'
 import { electFrame } from './election'
 import { refOf } from './group'
 import { dropJunk } from './junk'
@@ -340,19 +340,20 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
 
 /**
  * One entry of a JFF_FILL message: the handle, the value, and the candidate
- * words and phone parts of the Resolution's Value, which go only with that
- * Value itself. A value the user edited is matched by its own text, so it
- * travels without them.
+ * words, phone parts and city parts of the Resolution's Value, which go only
+ * with that Value itself. A value the user edited is matched by its own text,
+ * so it travels without them.
  */
 export function fillEntry(
-  resolution: Pick<Resolution, 'handle' | 'value' | 'candidates' | 'phone'>, value: string,
-): { handle: Resolution['handle']; value: string; candidates?: string[]; phone?: PhoneParts } {
+  resolution: Pick<Resolution, 'handle' | 'value' | 'candidates' | 'phone' | 'city'>, value: string,
+): { handle: Resolution['handle']; value: string; candidates?: string[]; phone?: PhoneParts; city?: CityParts } {
   const own = value === resolution.value
   const candidates = own ? resolution.candidates ?? [] : []
   return {
     handle: resolution.handle, value,
     ...(candidates.length === 0 ? {} : { candidates }),
     ...(own && resolution.phone !== undefined ? { phone: resolution.phone } : {}),
+    ...(own && resolution.city !== undefined ? { city: resolution.city } : {}),
   }
 }
 
