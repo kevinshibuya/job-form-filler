@@ -5,6 +5,7 @@
 
 import { existsSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { findAts } from '@jff/shared'
 
 export class ProbeRefusal extends Error {}
 
@@ -150,28 +151,16 @@ export function parsePageList(text) {
   return urls
 }
 
-/** Hosted boards by domain, matched on a domain boundary so a lookalike such as
- *  notgreenhouse.io is not taken for the ATS. */
-const ATS_DOMAINS = [
-  ['greenhouse.io', 'greenhouse'],
-  ['lever.co', 'lever'],
-  ['ashbyhq.com', 'ashby'],
-  ['myworkdayjobs.com', 'workday'],
-  ['smartrecruiters.com', 'smartrecruiters'],
-  ['workable.com', 'workable'],
-  ['gupy.io', 'gupy'],
-]
-
-/** Embed ids a company's own careers page carries for the board it embeds. */
+/** Embed ids a company's own careers page carries for the board it embeds.
+ *  This rule is the probe's own; the hosted boards come from the shared list of
+ *  ATSes, matched on a domain boundary so notgreenhouse.io is not Greenhouse. */
 const ATS_PARAMS = [['gh_jid', 'greenhouse'], ['ashby_jid', 'ashby']]
 
 export function atsOf(raw) {
   let url
   try { url = new URL(raw) } catch { return 'other' }
-  const host = url.hostname.toLowerCase()
-  for (const [domain, ats] of ATS_DOMAINS) {
-    if (host === domain || host.endsWith(`.${domain}`)) return ats
-  }
+  const hosted = findAts(url.hostname)
+  if (hosted !== null) return hosted.id
   for (const [param, ats] of ATS_PARAMS) {
     if (url.searchParams.has(param)) return ats
   }

@@ -58,3 +58,21 @@ describe('canonicalUrl (A1)', () => {
     expect(canonicalUrl('https://greenhouse.io/j/1?ref=a')).toBe('greenhouse.io/j/1')
   })
 })
+
+describe('canonicalUrl from the shared list of ATSes (#42)', () => {
+  it('a Lever address keeps ref/source: Lever is on the list with its switch off', () => {
+    expect(canonicalUrl('https://jobs.lever.co/acme/0c1d2e3f/apply?ref=li&source=tw&lever-origin=applied'))
+      .toBe('jobs.lever.co/acme/0c1d2e3f/apply?lever-origin=applied&ref=li&source=tw')
+  })
+
+  it('every other ATS on the list but Greenhouse and Ashby keeps them too', () => {
+    expect(canonicalUrl('https://apply.workable.com/acme/j/6?ref=a')).toBe('apply.workable.com/acme/j/6?ref=a')
+    expect(canonicalUrl('https://acme.wd5.myworkdayjobs.com/en-US/careers/job/4?source=b'))
+      .toBe('acme.wd5.myworkdayjobs.com/en-US/careers/job/4?source=b')
+  })
+
+  it('Greenhouse and Ashby hosts in any case and with www. still strip them', () => {
+    expect(canonicalUrl('https://WWW.Boards.Greenhouse.IO/acme/jobs/1?ref=a')).toBe('boards.greenhouse.io/acme/jobs/1')
+    expect(canonicalUrl('https://jobs.ashbyhq.com/acme/1?source=a')).toBe('jobs.ashbyhq.com/acme/1')
+  })
+})

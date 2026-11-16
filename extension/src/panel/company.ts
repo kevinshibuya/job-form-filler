@@ -1,22 +1,27 @@
-/** Hosts whose second-level domain names the ATS platform, never the employer. */
-const PLATFORM_SLDS = new Set([
-  'greenhouse', 'lever', 'myworkdayjobs', 'workday', 'ashbyhq', 'bamboohr',
-  'smartrecruiters', 'icims', 'workable', 'recruitee', 'gupy',
-])
+import { ATS_LIST, findAts } from '@jff/shared'
+
+/** An ATS's own name, never the employer behind a Job posting. */
+const isAtsName = (name: string): boolean =>
+  ATS_LIST.some((ats) => ats.name.toLowerCase() === name.toLowerCase())
 
 /**
  * Best-effort ONE-SHOT guess shown in an editable field; the user's edit always
  * wins downstream. Title "… at Company" first, then a company-owned host's
- * second-level domain. ATS platform hosts, IPs and localhost yield null.
+ * second-level domain. A host on the shared list of ATSes, an ATS's own name,
+ * IPs and localhost yield null.
  */
 export function guessCompany(title: string, hostname: string): string | null {
-  const at = /\bat ([A-Z][\w&.-]*(?:\s+[A-Z][\w&.-]*)*)\s*$/.exec(title)
-  if (at?.[1] !== undefined) return at[1].trim()
+  const host = hostname.toLowerCase()
+  const onAts = findAts(host) !== null
 
-  if (/^[\d.]+$/.test(hostname) || hostname === 'localhost') return null
-  const parts = hostname.replace(/^www\./, '').split('.')
+  const at = /\bat ([A-Z][\w&.-]*(?:\s+[A-Z][\w&.-]*)*)\s*$/.exec(title)
+  const fromTitle = at?.[1]?.trim()
+  if (fromTitle !== undefined && !isAtsName(fromTitle)) return fromTitle
+
+  if (onAts || /^[\d.]+$/.test(host) || host === 'localhost') return null
+  const parts = host.replace(/^www\./, '').split('.')
   if (parts.length < 2) return null
   const sld = parts[parts.length - 2]!
-  if (sld === '' || PLATFORM_SLDS.has(sld)) return null
+  if (sld === '') return null
   return sld.charAt(0).toUpperCase() + sld.slice(1)
 }

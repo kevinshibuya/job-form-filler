@@ -194,6 +194,28 @@ describe('the ATS of a page', () => {
   })
 })
 
+describe('the table grouped by the shared list of ATSes (#42)', () => {
+  it('groups a Lever, a Greenhouse, an Ashby, a Workable and a SmartRecruiters address under the same names as before', () => {
+    const urls = [
+      `${web}jobs.lever.co/acme/2/apply`,
+      `${web}job-boards.greenhouse.io/acme/jobs/1`,
+      `${web}jobs.ashbyhq.com/acme/3/application`,
+      `${web}apply.workable.com/acme/j/6/apply`,
+      `${web}jobs.smartrecruiters.com/Acme/5`,
+      `${web}www.jobs.lever.co/acme/8/apply`,
+      `${web}acme.example.com/jobs/9`,
+    ]
+    const rows = summarize(urls.map((url) => ({ ats: atsOf(url), fields: 1, filled: 1, firstFillMs: 1, settledMs: 1 })))
+    expect(rows.map((r) => [r.ats, r.pages])).toEqual([
+      ['ashby', 1], ['greenhouse', 1], ['lever', 2], ['other', 1], ['smartrecruiters', 1], ['workable', 1], ['all', 7],
+    ])
+  })
+
+  it('names an ATS on the list that the probe never named before by its id', () => {
+    expect(atsOf(`${web}acme.recruitee.com/o/engineer`)).toBe('recruitee')
+  })
+})
+
 describe('the filled count on the status line', () => {
   it('is the number before "filled"', () => {
     expect(filledFromStatus('✓ 7 filled, 1 already on page, 0 proposed, 3 need input')).toBe(7)
