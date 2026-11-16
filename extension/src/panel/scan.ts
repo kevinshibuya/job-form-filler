@@ -3,6 +3,7 @@ import {
   type AtsModule, type AtsOrGeneric, type CityParts, type ContentMessage, type EnumField, type FieldHandle, type FillReport,
   type HostErrorKind, type PhoneParts, type Resolution, type ResolveFirstResult, type ResolveMappingResult,
 } from '@jff/shared'
+import { guessScanCompany } from './company'
 import { electFrame } from './election'
 import { refOf } from './group'
 import { dropJunk } from './junk'
@@ -65,6 +66,11 @@ export interface ScanDeps {
   pastedJobText: string
   hostname?: string
   url?: string
+  /** The tab's title, which the Company guess reads. */
+  title?: string
+  /** The Company the Session already holds, typed or guessed by an earlier
+   *  Scan. It is sent as it is and never replaced; only when it is empty does
+   *  the Scan guess one. */
   company?: string | null
   /** The ATS module of a Scan's ATS. Defaults to the shared registry; a test
    *  hands the Scan a module with a rule no real module has yet. */
@@ -152,6 +158,11 @@ export interface ScanOutcome {
   epoch: number
   /** The Scan's ATS: what both Resolution requests carry and the Session keeps. */
   ats: AtsOrGeneric
+  /** The Company both Resolution requests carry: the one the Session held, or
+   *  else the Scan's guess. */
+  company: string | null
+  /** Whether `company` is the Scan's guess, which the Session marks as one. */
+  companyGuessed: boolean
   fields: EnumField[]
   /** The first step's Resolutions: everything that needed no model. */
   resolutions: Resolution[]
@@ -220,7 +231,33 @@ async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; fram
   return { epoch, frameCount: frames.length, enumd: await enumerateAllFrames(deps, epoch) }
 }
 
+/** The Session's Company, or null when it holds none. */
+const knownCompany = (deps: ScanDeps): string | null => {
+  const known = deps.company?.trim() ?? ''
+  return known === '' ? null : known
+}
+
+/** The Company of a Scan whose ATS and elected frame are known: the
+ *  Session's, or else the guess (spec #41). */
+function scanCompany(deps: ScanDeps, ats: AtsOrGeneric, frameUrl: string | null): string | null {
+  return knownCompany(deps) ?? guessScanCompany({
+    ats, title: deps.title ?? '', hostname: deps.hostname ?? '', url: deps.url ?? '', frameUrl,
+  })
+}
+
+/**
+ * Inject, enumerate, elect, upload the Resume, and send the first Resolution
+ * request. The Company is guessed once the elected frame is known, before that
+ * request, so the request carries it; the outcome carries the same Company,
+ * worked out from the same ATS and elected frame.
+ */
 export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
+  const out = await scanPage(deps)
+  const company = scanCompany(deps, out.ats, out.election?.url ?? null)
+  return { ...out, company, companyGuessed: company !== null && knownCompany(deps) === null }
+}
+
+async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | 'companyGuessed'>> {
   const tabHostname = deps.hostname ?? ''
   const moduleFor = deps.moduleFor ?? atsModule
   const noElectionAts = (reports: FrameReport[]): AtsOrGeneric =>
@@ -390,7 +427,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
       epoch,
       url: deps.url ?? '',
       hostname: deps.hostname ?? '',
-      company: deps.company ?? null,
+      company: scanCompany(deps, ats, electionOut()?.url ?? null),
       jobText,
       fields: resolveFields,
       ats,

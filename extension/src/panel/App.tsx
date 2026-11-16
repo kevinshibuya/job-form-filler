@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
 import { CapturedPageSchema, isProfileKey, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
-import { guessCompany } from './company'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
 import { buildRows, refOf, type Row } from './group'
@@ -1096,17 +1095,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const pendingNav = rt.navRescan
       rt.navRescan = null
       const sameSiteNav = pendingNav !== null
-      // Company: the user's edit always wins; guess only while the field is empty.
+      // Company: the user's edit always wins. The Scan guesses one only while
+      // the field is empty, once it knows the elected frame (spec #41).
       // Read from the session this scan OWNS, never from whatever is on screen.
       const ownedSession = (): Session | null =>
         sessionRef.current !== null && sessionRef.current.tabId === target ? sessionRef.current : existing
       const known = ownedSession()?.company.trim() ?? ''
-      const co = known === '' ? guessCompany(tab.title ?? '', hostname) : known
-      // Post-await writes, and the mid-scan window they sit in is hundreds of ms
-      // wide: tab 7's guess belongs in tab 7's storage, never on tab 8's screen.
-      if (co !== null && known === '' && alive(sc)) {
-        await applyToSession(target, sc.gen, (s) => ({ ...s, company: co, companyGuessed: true }))
-      }
       if (alive(sc)) await applyToSession(target, sc.gen, (s) => ({ ...s, frameReports: [] }))
       const out = await runScan({
         nextEpoch: () => {
@@ -1145,7 +1139,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         pastedJobText: ownedSession()?.jobText ?? '',
         hostname,
         url,
-        company: co,
+        title: tab.title ?? '',
+        company: known === '' ? null : known,
       })
       // The bound tab navigated or closed while this scan ran: these fields,
       // resolutions and counts describe a page that is gone, and every JFF_FILL
@@ -1193,6 +1188,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
         jobText: out.jobText !== '' ? out.jobText : s.jobText,
+        // The Scan's guess fills an empty field only: what the user typed
+        // while the Scan ran is theirs.
+        ...(out.companyGuessed && out.company !== null && s.company.trim() === ''
+          ? { company: out.company, companyGuessed: true }
+          : {}),
         lastOutcome: onScreen,
       }))
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
@@ -1206,7 +1206,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           mountedRef.current && alive(sc) && rt.scanSeq === seq && rt.epoch === out.epoch
         void (async () => {
           const mapped = await runMapping({
-            port, sendToTab: (frameId, message) => sendToTab(target, frameId, message), hostname, url, company: co,
+            port, sendToTab: (frameId, message) => sendToTab(target, frameId, message), hostname, url, company: out.company,
           }, out, isCurrent)
           // Dropped by the epoch the Scan carries: a newer Scan owns the rows.
           if (mapped === null || !isCurrent()) return
