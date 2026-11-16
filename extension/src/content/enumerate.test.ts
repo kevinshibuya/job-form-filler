@@ -422,6 +422,11 @@ describe('enumerateFields — attached uploads (#37)', () => {
     expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual(['Resume/CV'])
   })
 
+  it('reports an upload group whose upload is still running: a progress bar and no file input', () => {
+    loadRealFixture('greenhouse-hosted-resume-uploading')
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual(['Resume/CV'])
+  })
+
   it('reports none on a page whose upload groups still hold their file inputs', () => {
     loadRealFixture('greenhouse-hosted-b')
     expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual([])

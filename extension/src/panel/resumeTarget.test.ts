@@ -91,6 +91,13 @@ describe('resume target on real-page fixtures', () => {
     return { fields: dropJunk(fields), attachedUploads }
   }
 
+  it('greenhouse-hosted-resume-uploading: a resume still uploading counts as attached, and no file field is the target', () => {
+    const { fields, attachedUploads } = scanFixture('greenhouse-hosted-resume-uploading')
+    expect(attachedUploads).toEqual(['Resume/CV'])
+    expect(resumeAttached(attachedUploads)).toBe(true)
+    expect(pickResumeTarget(fields, attachedUploads)).toBeNull()
+  })
+
   it('greenhouse-hosted-resume-attached: the resume is attached, and no file field is the target', () => {
     const { fields, attachedUploads } = scanFixture('greenhouse-hosted-resume-attached')
     expect(attachedUploads).toEqual(['Resume/CV'])

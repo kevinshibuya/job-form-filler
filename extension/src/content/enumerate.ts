@@ -156,16 +156,19 @@ function requiredOf(el: Element, binding: LabelBinding): boolean {
 
 /**
  * #37: the labels of upload groups that show an attached file. Greenhouse
- * removes a group's file input once a file is attached and shows the file name
- * in its place, so no Field is left to say the resume is already there. Read
- * by structure (a labelled [role="group"] holding a `.file-upload__filename`
- * and no file input), never by the remove button's wording, which is localized.
+ * removes a group's file input once a file is chosen: it shows a progress bar
+ * while the upload runs, then the file name. In neither state is a Field left
+ * to say the resume is already there, and a Scan re-reads the page right after
+ * its own upload, while the bar is still up. Read by structure (a labelled
+ * [role="group"] holding a `.file-upload__filename` or a
+ * `.file-upload__progressbar`, and no file input), never by the remove
+ * button's wording, which is localized.
  */
 export function attachedUploads(root: Document | ShadowRoot): string[] {
   const out: string[] = []
   for (const el of walkElements(root)) {
     if (el.getAttribute('role') !== 'group') continue
-    if (el.querySelector('.file-upload__filename') === null) continue
+    if (el.querySelector('.file-upload__filename, .file-upload__progressbar') === null) continue
     if (el.querySelector('input[type="file"]') !== null) continue
     const label = ariaGroupLabel(el)?.text ?? null
     if (label !== null) out.push(label)

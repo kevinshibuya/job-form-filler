@@ -247,9 +247,10 @@ export const ScanResultSchema = z.object({
   fields: z.array(EnumFieldSchema),
   unreachableWidgets: z.number().int().nonnegative(),
   activeCaptcha: z.boolean(),
-  /** #37: the labels of upload groups that show an attached file in place of
-   *  their file input, so the panel sends no second resume. Optional so a stale
-   *  content script simply omits it, and an absent list reads as none. */
+  /** #37: the labels of upload groups that show an attached file, or one still
+   *  uploading, in place of their file input, so the panel sends no second
+   *  resume. Optional so a stale content script simply omits it, and an absent
+   *  list reads as none. */
   attachedUploads: z.array(z.string()).optional(),
 })
 export type ScanResult = z.infer<typeof ScanResultSchema>
