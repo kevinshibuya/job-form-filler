@@ -24,7 +24,9 @@ export function keepField(f: EnumField): boolean {
   // required). Still no blanket keep — an unlabelled, signal-less hidden file
   // input (the autofill pane) is junk. The raw signals, not the resume score:
   // a cover-letter input the scorer vetoes (#37) is still a row to show.
-  if (f.kind === 'file' && (f.label !== null || fileSignalScore(f) > 0)) return true
+  // #46: a picker whose only label was its upload button's words ("Attach")
+  // now has no label, and is still the row it was while it had one.
+  if (f.kind === 'file' && (f.label !== null || f.uploadWordingOnly === true || fileSignalScore(f) > 0)) return true
   return false
 }
 

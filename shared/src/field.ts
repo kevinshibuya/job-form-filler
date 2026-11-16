@@ -49,6 +49,12 @@ export const EnumFieldSchema = FieldHandleSchema.extend({
    *  to it as the amount alone. Optional so a stale content script simply
    *  omits it, and an absent mark reads as false. */
   numeric: z.boolean().optional(),
+  /** File pickers only: true when the picker has no label because its only
+   *  label source offered its upload button's words ("Attach"), which are
+   *  never a label (#46). The junk filter keeps such a hidden picker as it
+   *  kept it while the wording was its label. Optional so a stale content
+   *  script simply omits it, and an absent mark reads as false. */
+  uploadWordingOnly: z.boolean().optional(),
 })
 export type EnumField = z.infer<typeof EnumFieldSchema>
 

@@ -1,4 +1,5 @@
 import type { AtsModule, WidgetKind } from '@jff/shared'
+import { isUploadWording, labelText } from './labelText'
 
 type Scope = Document | ShadowRoot
 
@@ -96,6 +97,10 @@ export interface LabelBinding {
   text: string | null
   source: LabelSource
   element: Element | null
+  /** A file picker with no label, whose only label source offered its upload
+   *  button's words ("Attach"). The junk filter keeps such a hidden picker as
+   *  it kept it while the wording was its label (#46). */
+  uploadWordingOnly?: true
 }
 
 const NO_BINDING: LabelBinding = { text: null, source: 'none', element: null }
@@ -161,7 +166,7 @@ function danglingLabelFor(el: Element): LabelBinding | null {
     if (best === null || depth < best.depth) best = { label, depth }
   }
   if (best === null) return null
-  const t = clean(best.label.textContent)
+  const t = clean(labelText(best.label))
   return t === '' ? null : { text: t, source: 'dangling', element: best.label }
 }
 
@@ -179,7 +184,7 @@ function nameForLabelFor(el: Element): LabelBinding | null {
   // bind a newsletter label at the top of the page to an ATS control far below.
   const wrapper = label.parentElement
   if (wrapper === null || !wrapper.contains(el)) return null
-  const t = clean(label.textContent)
+  const t = clean(labelText(label))
   return t === '' ? null : { text: t, source: 'name-for', element: label }
 }
 
@@ -211,7 +216,7 @@ function climbLabelFor(el: Element): LabelBinding | null {
         const target = scope.querySelector(`[id="${escapeId(forId)}"]`)
         if (target !== null && kindOf(target) !== null) continue // that label belongs to a control
       }
-      const t = clean(child.textContent)
+      const t = clean(labelText(child))
       if (t !== '') return { text: t, source: 'climb', element: child }
     }
     node = node.parentElement
@@ -231,59 +236,99 @@ function moduleLabelFor(el: Element, mod: AtsModule | undefined): LabelBinding |
   return found === null ? null : { text: found.text, source: 'module', element: found.element }
 }
 
-/** A Control's label. `mod` is the frame's ATS module: its label rule answers
- *  first for a Control that is a question by itself. A checkbox keeps its own
- *  text, so the rule is never asked for one. */
-export function labelFor(el: Element, mod?: AtsModule): LabelBinding {
-  const scope = scopeOf(el)
-
-  const kind = kindOf(el)
-  if (kind !== 'checkbox' && kind !== 'radiogroup') {
-    const fromModule = moduleLabelFor(el, mod)
-    if (fromModule !== null) return fromModule
+/**
+ * The label of the nearest labelled group around a file picker, when the
+ * picker is the only Control in it (#46). Greenhouse labels its upload with
+ * the button's words and puts the question on the group around it, so the
+ * group's label comes before the picker's own. A group that holds two file
+ * pickers, or a picker and any other Control, gives its label to neither.
+ */
+function fileGroupLabelFor(el: Element): LabelBinding | null {
+  for (let group = el.parentElement?.closest('fieldset, [role="group"]') ?? null;
+    group !== null;
+    group = group.parentElement?.closest('fieldset, [role="group"]') ?? null) {
+    const label = group.tagName === 'FIELDSET' ? legendLabelOf(group) : ariaGroupLabel(group)
+    if (label === null) continue
+    return isSoleControl(group, el) ? label : null
   }
+  return null
+}
 
-  if (el.id !== '') {
-    const l = scope.querySelector(`label[for="${escapeId(el.id)}"]`)
-    const t = clean(l?.textContent)
-    if (l !== null && t !== '') return { text: t, source: 'explicit', element: l }
-  }
+function legendLabelOf(fieldset: Element): LabelBinding | null {
+  const legend = fieldset.querySelector('legend')
+  const t = clean(legend === null ? '' : labelText(legend))
+  return legend === null || t === '' ? null : { text: t, source: 'group-legend', element: legend }
+}
 
+function explicitLabelFor(el: Element): LabelBinding | null {
+  if (el.id === '') return null
+  const l = scopeOf(el).querySelector(`label[for="${escapeId(el.id)}"]`)
+  const t = clean(l === null ? '' : labelText(l))
+  return l === null || t === '' ? null : { text: t, source: 'explicit', element: l }
+}
+
+function ariaLabelFor(el: Element): LabelBinding | null {
   const aria = clean(el.getAttribute('aria-label'))
-  if (aria !== '') return { text: aria, source: 'aria-label', element: null }
+  return aria === '' ? null : { text: aria, source: 'aria-label', element: null }
+}
 
+function ariaLabelledByFor(el: Element): LabelBinding | null {
   const labelledBy = el.getAttribute('aria-labelledby')
-  if (labelledBy !== null) {
-    const refs = labelledBy.split(/\s+/)
-      .map((id) => scope.querySelector(`[id="${escapeId(id)}"]`))
-      .filter((n): n is Element => n !== null)
-    const t = clean(refs.map((n) => n.textContent ?? '').join(' '))
-    if (t !== '') return { text: t, source: 'aria-labelledby', element: refs[0] ?? null }
-  }
+  if (labelledBy === null) return null
+  const scope = scopeOf(el)
+  const refs = labelledBy.split(/\s+/)
+    .map((id) => scope.querySelector(`[id="${escapeId(id)}"]`))
+    .filter((n): n is Element => n !== null)
+  const t = clean(refs.map(labelText).join(' '))
+  return t === '' ? null : { text: t, source: 'aria-labelledby', element: refs[0] ?? null }
+}
 
+function wrappingLabelFor(el: Element): LabelBinding | null {
   const wrapping = el.closest('label')
-  if (wrapping !== null) {
-    const t = clean(wrapping.textContent)
-    if (t !== '') return { text: t, source: 'wrapping', element: wrapping }
-  }
+  const t = clean(wrapping === null ? '' : labelText(wrapping))
+  return wrapping === null || t === '' ? null : { text: t, source: 'wrapping', element: wrapping }
+}
 
-  const legend = el.closest('fieldset')?.querySelector('legend') ?? null
-  const legendText = clean(legend?.textContent)
-  if (legend !== null && legendText !== '') return { text: legendText, source: 'legend', element: legend }
+function legendFor(el: Element): LabelBinding | null {
+  const fieldset = el.closest('fieldset')
+  const found = fieldset === null ? null : legendLabelOf(fieldset)
+  return found === null ? null : { ...found, source: 'legend' }
+}
 
-  const dangling = danglingLabelFor(el)
-  if (dangling !== null) return dangling
-
-  const nameFor = nameForLabelFor(el)
-  if (nameFor !== null) return nameFor
-
-  const climbed = climbLabelFor(el)
-  if (climbed !== null) return climbed
-
+function placeholderFor(el: Element): LabelBinding | null {
   const placeholder = clean(el.getAttribute('placeholder'))
-  if (placeholder !== '') return { text: placeholder, source: 'placeholder', element: null }
+  return placeholder === '' ? null : { text: placeholder, source: 'placeholder', element: null }
+}
 
-  return NO_BINDING
+/** A Control's label: the first source, in order, that offers one. `mod` is
+ *  the frame's ATS module: its label rule answers first for a Control that is
+ *  a question by itself. A checkbox keeps its own text, so the rule is never
+ *  asked for one. A file picker asks its group first, and passes over a
+ *  source that offers only its upload button's words; with none left it has
+ *  no label (#46). A placeholder is the last source for every Control. */
+export function labelFor(el: Element, mod?: AtsModule): LabelBinding {
+  const kind = kindOf(el)
+  const sources: ReadonlyArray<() => LabelBinding | null> = [
+    () => (kind === 'checkbox' || kind === 'radiogroup' ? null : moduleLabelFor(el, mod)),
+    () => (kind === 'file' ? fileGroupLabelFor(el) : null),
+    () => explicitLabelFor(el),
+    () => ariaLabelFor(el),
+    () => ariaLabelledByFor(el),
+    () => wrappingLabelFor(el),
+    () => legendFor(el),
+    () => danglingLabelFor(el),
+    () => nameForLabelFor(el),
+    () => climbLabelFor(el),
+    () => placeholderFor(el),
+  ]
+  let passedOver = false
+  for (const source of sources) {
+    const found = source()
+    if (found === null) continue
+    if (kind === 'file' && isUploadWording(found.text)) { passedOver = true; continue }
+    return found
+  }
+  return passedOver ? { ...NO_BINDING, uploadWordingOnly: true } : NO_BINDING
 }
 
 /** A [role="group"] container's own label: its aria-label, then the text of
@@ -297,7 +342,7 @@ export function ariaGroupLabel(group: Element): LabelBinding | null {
   const refs = labelledBy.split(/\s+/)
     .map((id) => scope.querySelector(`[id="${escapeId(id)}"]`))
     .filter((n): n is Element => n !== null)
-  const t = clean(refs.map((n) => n.textContent ?? '').join(' '))
+  const t = clean(refs.map(labelText).join(' '))
   return t === '' ? null : { text: t, source: 'group-aria', element: refs[0] ?? null }
 }
 
@@ -313,7 +358,7 @@ export function groupLabelFor(el: Element, mod?: AtsModule): LabelBinding {
   if (fromModule !== null) return fromModule
 
   const legend = el.closest('fieldset')?.querySelector('legend') ?? null
-  const legendText = clean(legend?.textContent)
+  const legendText = clean(legend === null ? '' : labelText(legend))
   if (legend !== null && legendText !== '') return { text: legendText, source: 'group-legend', element: legend }
 
   const group = el.closest('[role="group"]')
@@ -332,11 +377,11 @@ export function groupLabelFor(el: Element, mod?: AtsModule): LabelBinding {
 /** The visible label of one radio/option element. */
 export function optionLabelOf(el: Element): string {
   const wrapping = el.closest('label')
-  const t = clean(wrapping?.textContent)
+  const t = clean(wrapping === null ? '' : labelText(wrapping))
   if (t !== '') return t
   if (el.id !== '') {
     const l = scopeOf(el).querySelector(`label[for="${escapeId(el.id)}"]`)
-    const lt = clean(l?.textContent)
+    const lt = clean(l === null ? '' : labelText(l))
     if (lt !== '') return lt
   }
   const aria = clean(el.getAttribute('aria-label'))
