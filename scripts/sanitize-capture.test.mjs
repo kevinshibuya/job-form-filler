@@ -180,6 +180,14 @@ describe('sanitizeCapture on a page with no form element', () => {
   })
 })
 
+describe('sanitizeCapture without --posting', () => {
+  it('still refuses a page that holds a Job posting and no form', () => {
+    const posting = '<html><head><title>Initech - Engineer</title></head><body><main><h1>Engineer</h1><p>' +
+      'Initech builds TPS reports for the whole world. '.repeat(12) + '</p></main></body></html>'
+    expect(() => sanitizeCapture(posting)).toThrow(/no form and no Control/)
+  })
+})
+
 describe('sanitizeCapture finds the Company', () => {
   const pageTitled = (title, extra = '') => `<!doctype html><html><head><title>${title}</title>${extra}</head><body>
     <form><label for="q">Why Initech, and why Hooli?</label><input id="q" name="q"></form></body></html>`
