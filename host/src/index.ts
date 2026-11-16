@@ -1,11 +1,11 @@
 /* eslint-disable no-restricted-properties -- this is the ONE file allowed to write stdout */
-import { HostRequestSchema, type HostResponse } from '@jff/shared'
+import type { HostResponse } from '@jff/shared'
 import { loadConfig } from './config.js'
 import { openDb } from './db/repos.js'
 import { encodeMessage, FrameReader, MessageTooLarge } from './framing.js'
 import { createClaudeRunner } from './llm/claudeCli.js'
 import { createCodexRunner } from './llm/codexCli.js'
-import { handleRequest, type HandlerDeps } from './handlers.js'
+import { handleRaw, type HandlerDeps } from './handlers.js'
 import { log } from './log.js'
 import { realAuthCache, realFileExists, realProbeAuth, realProbeCodexAuth, selfCheck } from './selfcheck.js'
 import { resolveModels } from './llm/models.js'
@@ -53,16 +53,7 @@ let queue: Promise<void> = Promise.resolve()
 
 process.stdin.on('data', (chunk: Buffer) => {
   for (const raw of reader.push(chunk)) {
-    queue = queue.then(async () => {
-      const parsed = HostRequestSchema.safeParse(raw)
-      if (!parsed.success) {
-        const requestId = typeof (raw as { requestId?: unknown })?.requestId === 'string'
-          ? (raw as { requestId: string }).requestId : 'unknown'
-        write({ requestId, ok: false, error: { kind: 'bad_request', message: parsed.error.message } })
-        return
-      }
-      write(await handleRequest(deps, parsed.data))
-    })
+    queue = queue.then(async () => { write(await handleRaw(deps, raw)) })
   }
 })
 

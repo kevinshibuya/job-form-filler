@@ -182,6 +182,8 @@ export function createFakeHostPort(): HostPort {
         generate: { draft: '' },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },
+        // A Capture: the canned host writes nothing and says so.
+        'capture.save': { path: '(fake host: nothing saved)' },
       }
       return { ok: true, result: (canned[method] ?? {}) as T }
     },

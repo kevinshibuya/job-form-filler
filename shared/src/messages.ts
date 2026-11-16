@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { CityPartsSchema, EnumFieldSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
 import { FIELD_KEYS } from './keys.js'
+import { CaptureSaveParamsSchema } from './capture.js'
 
 // Re-exported so `./messages.js` alone carries the field-identity types it
 // builds its request/response schemas from (see shared/src/messages.test.ts).
@@ -141,6 +142,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.check'), params: z.object({ url: z.string().min(1) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.list'), params: z.object({}).passthrough() }),
+  // A Capture (spec #41): the cleaned page and what the Scan decided, written
+  // to the user's machine and nowhere else.
+  z.object({ requestId: z.string().min(1), method: z.literal('capture.save'), params: CaptureSaveParamsSchema }),
 ])
 export type HostRequest = z.infer<typeof HostRequestSchema>
 export type HostMethod = HostRequest['method']
@@ -228,6 +232,14 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   // A3: the panel's submission-detection needs the page's VISIBLE text after a
   // wizard-step re-scan; jobText heuristics answer a different question.
   z.object({ type: z.literal('JFF_PAGETEXT'), epoch: z.number().int().nonnegative() }),
+  // A Capture (spec #41): the frame cleans a copy of its page and hands back
+  // only that. `held`: the Values the Side panel knows for this frame's Fields,
+  // by fid, beside what each Control shows itself, so a committed dropdown
+  // choice shown as ordinary text is blanked inside its own widget.
+  z.object({
+    type: z.literal('JFF_CAPTURE'), epoch: z.number().int().nonnegative(),
+    held: z.array(z.object({ fid: z.number().int().nonnegative(), value: z.string() })),
+  }),
   z.object({
     type: z.literal('JFF_FILL_RESUME'),
     epoch: z.number().int().nonnegative(),

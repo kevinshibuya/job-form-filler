@@ -1,8 +1,9 @@
 import type Database from 'better-sqlite3'
 import {
-  FACT_MAX_CHARS, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
+  FACT_MAX_CHARS, HostRequestSchema, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
   type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type ResolveParams, type SelfCheck,
 } from '@jff/shared'
+import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
@@ -76,6 +77,16 @@ export async function handleRequest(deps: HandlerDeps, req: HostRequest): Promis
     if (!stored.ok) log('warn', 'could not cache response', { requestId: req.requestId })
   }
   return response
+}
+
+/** A request as it arrives on stdin: parsed against the schema, refused as a
+ *  bad_request when it does not fit, handled when it does. */
+export async function handleRaw(deps: HandlerDeps, raw: unknown): Promise<HostResponse> {
+  const parsed = HostRequestSchema.safeParse(raw)
+  if (parsed.success) return handleRequest(deps, parsed.data)
+  const requestId = typeof (raw as { requestId?: unknown })?.requestId === 'string'
+    ? (raw as { requestId: string }).requestId : 'unknown'
+  return fail(requestId, 'bad_request', parsed.error.message)
 }
 
 /** One log line per Resolution request, naming the Scan's ATS (spec #41) so a
@@ -230,6 +241,15 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
 
       case 'applied.list':
         return ok(req.requestId, { jobs: listApplied(db) })
+
+      // A Capture is written here and goes nowhere else. The log names its ATS
+      // and size, never its content.
+      case 'capture.save': {
+        const { capturesDir, privateStringsPath } = deps.config
+        const out = saveCapture(req.params, { capturesDir, privateStringsPath })
+        log('info', 'capture.save', { ats: req.params.ats, chars: req.params.page.html.length, saved: out.ok })
+        return out.ok ? ok(req.requestId, { path: out.path }) : fail(req.requestId, 'bad_request', out.reason)
+      }
 
       case 'facts.extract':
         return ok(req.requestId, await runFactsExtract(deps.codex, req.params.cvText, { model: deps.models.factsExtract, timeoutMs: 240_000 }))

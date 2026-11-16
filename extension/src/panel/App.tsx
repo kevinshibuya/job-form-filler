@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { isProfileKey, toStoredText } from '@jff/shared'
+import { CapturedPageSchema, isProfileKey, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { guessCompany } from './company'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
 import { buildRows, refOf, type Row } from './group'
+import { captureFrame, captureRequest, heldValues } from './capture'
 import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
@@ -330,6 +331,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
   const [generatePaused, setGeneratePaused] = useState<{ done: number; total: number } | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  /** Where the last Capture was saved, or why it was not. */
+  const [captureMsg, setCaptureMsg] = useState<string | null>(null)
+  const [capturing, setCapturing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
   const [marking, setMarking] = useState(false)
@@ -521,6 +525,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setScanStatus(s?.lastOutcome ?? null)
     setSubmitPrompt(false)
     setSaveMsg(null)
+    setCaptureMsg(null)
+    setCapturing(false)
     setActing(null)
     setPicking(false)
     setMarking(false)
@@ -1882,6 +1888,43 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     await endSession(s.tabId)
   }
 
+  /**
+   * A Capture (spec #41): the elected frame, or the top frame when none was
+   * elected, cleans a copy of its page; the Native host saves it beside what
+   * the Scan decided, on this machine only, and says where.
+   */
+  const onSaveCapture = async (): Promise<void> => {
+    const port = portRef.current
+    const owner = sessionRef.current
+    if (port === null || owner === null || capturing) return
+    const target = owner.tabId
+    // The reply belongs to the Session it was asked for, never to one swapped in meanwhile.
+    const stillShown = (): boolean => sessionRef.current?.tabId === target
+    const frameId = captureFrame(owner)
+    setCapturing(true)
+    setCaptureMsg(null)
+    try {
+      const epoch = owner.epoch
+      const { replies } = await sendToTab(target, frameId, { type: 'JFF_CAPTURE', epoch, held: heldValues(owner, frameId) })
+      const payload = replies[0]?.payload as { ok?: boolean; error?: string; capture?: unknown } | undefined
+      const page = CapturedPageSchema.safeParse(payload?.capture)
+      if (payload?.ok !== true || !page.success) {
+        const why = payload?.error === STALE_EPOCH ? 'the page changed since the Scan. Scan again, then save a capture.' : `the page did not hand it over (${payload?.error ?? 'no reply'}).`
+        if (stillShown()) setCaptureMsg(`Capture not saved: ${why}`)
+        return
+      }
+      const tab = await getTab(target)
+      const r = await port.request<{ path: string }>('capture.save', captureRequest(page.data, owner, tab?.url ?? owner.startUrl))
+      if (!stillShown()) return
+      // A refusal is the host's own sentence: it says what was found and that nothing was saved.
+      setCaptureMsg(r.ok ? `Capture saved to ${r.result.path}` : r.error.kind === 'bad_request' ? r.error.message : `Capture not saved: ${hostErrorText(r.error)}`)
+    } catch (e) {
+      if (stillShown()) setCaptureMsg(`Capture not saved: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      if (stillShown()) setCapturing(false)
+    }
+  }
+
   const onSaveAnswers = async (): Promise<void> => {
     const port = portRef.current
     // S7 constraint 5: the SESSION's tabId, not a panel-global. With no session
@@ -2231,8 +2274,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           {busyLabel(saving, 'Save answers', 'Saving…')}
         </button>
         {session !== null && !parked && discardButton}
+        {/* After any Scan, a zero-Field one included: lastOutcome is what a settled Scan leaves. */}
+        {session !== null && !parked && session.lastOutcome !== null && (
+          <button type="button" className={BTN} data-jff-capture="1" disabled={capturing || scanning} onClick={() => { void onSaveCapture() }}>
+            {busyLabel(capturing, 'Save a capture', 'Saving capture…')}
+          </button>
+        )}
         {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
       </div>
+      {captureMsg !== null && <p className={`my-1 break-all ${MUTED}`} data-jff-capture-msg="1">{captureMsg}</p>}
             </>
           )}
             </>

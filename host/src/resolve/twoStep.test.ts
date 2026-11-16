@@ -59,7 +59,7 @@ beforeEach(() => {
     runner: { complete: claudeComplete } as unknown as HandlerDeps['runner'],
     codex: { complete: codexComplete } as unknown as HandlerDeps['codex'],
     models: resolveModels({}),
-    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', models: {} },
+    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', capturesDir: '/nonexistent/jff-captures', privateStringsPath: '/nonexistent/jff-private-strings.txt', models: {} },
     selfCheckFn: async () => { throw new Error('not used') },
   }
 })

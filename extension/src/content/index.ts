@@ -1,4 +1,5 @@
-import { atsModule, ContentMessageSchema, FillReportSchema, findAts, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
+import { atsModule, CapturedPageSchema, ContentMessageSchema, FillReportSchema, findAts, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
+import { capturePage } from './capture'
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
 import { fillFields, fillResume } from './fill'
@@ -68,6 +69,12 @@ async function handle(raw: unknown): Promise<unknown> {
 
   if (msg.type === 'JFF_JOBTEXT') {
     return { ok: true, jobText: captureJobText(document, msg.selector) }
+  }
+
+  if (msg.type === 'JFF_CAPTURE') {
+    // Only the cleaned copy leaves the tab, and the live page is not touched.
+    const capture = CapturedPageSchema.safeParse(capturePage(document, msg.held))
+    return capture.success ? { ok: true, capture: capture.data } : { ok: false, error: 'bad_capture' }
   }
 
   if (msg.type === 'JFF_PAGETEXT') {

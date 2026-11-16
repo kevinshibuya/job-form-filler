@@ -39,7 +39,7 @@ beforeEach(() => {
     runner,
     codex,
     models: resolveModels({}),
-    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', models: {} },
+    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', capturesDir: '/nonexistent/jff-captures', privateStringsPath: '/nonexistent/jff-private-strings.txt', models: {} },
     selfCheckFn: async () => ({
       node: { ok: true, version: 'v20.0.0' },
       claude: { ok: true, path: '/bin/true', detail: 'found' },
