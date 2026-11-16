@@ -14,7 +14,7 @@ import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
-import { pickResumeTarget } from './resumeTarget'
+import { pickResumeTarget, resumeAttached } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
@@ -227,7 +227,7 @@ const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ k
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], waiting: [], election: null, edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
+  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -543,6 +543,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const draftWarnings = session?.draftWarnings ?? {}
   const filledRefs = session?.filledRefs ?? []
   const election = session?.election ?? null
+  const attachedUploads = session?.attachedUploads ?? []
   const company = session?.company ?? ''
   const jobText = session?.jobText ?? ''
   const snapshot = session?.snapshot ?? {}
@@ -552,8 +553,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const { main, listed, foreign } = buildRows(fields, resolutions, election?.frameId ?? null, session?.waiting ?? [])
   // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
   // the stored resume — recomputed over the CURRENT fields so a post-resume
-  // re-enumeration can never leave the button on a stale fid.
-  const resumeTargetField = pickResumeTarget(main.map((r) => r.field))
+  // re-enumeration can never leave the button on a stale fid. A resume the
+  // page already shows attached leaves no row wired to it (#37).
+  const resumeTargetField = pickResumeTarget(main.map((r) => r.field), attachedUploads)
   const resumeTargetRef = resumeTargetField === null ? null : refOf(resumeTargetField)
   const companyOrNull = company.trim() === '' ? null : company.trim()
 
@@ -1178,6 +1180,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         ...projectAnswers(s, withReadOptions(out.fields, out.fill), first.settled, first.committedEdits),
         waiting: owesMapping ? out.pending.map(refOf) : [],
         election: out.election,
+        attachedUploads: out.attachedUploads,
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
@@ -2057,7 +2060,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
       <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
         Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}
-        {resumeName !== null && main.some((r) => r.field.kind === 'file') && resumeTargetRef === null && (
+        {/* #37: a resume the page already shows is no missing target. */}
+        {resumeName !== null && resumeAttached(attachedUploads) && (
+          <span data-jff-resume-attached-note="1"> — resume already on the page</span>
+        )}
+        {resumeName !== null && !resumeAttached(attachedUploads) && main.some((r) => r.field.kind === 'file') && resumeTargetRef === null && (
           <span className="text-amber-600 dark:text-amber-400" data-jff-resume-note="1"> — resume field not identified; nothing was uploaded</span>
         )}
         <input

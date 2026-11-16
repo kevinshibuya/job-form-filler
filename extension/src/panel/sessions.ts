@@ -44,6 +44,9 @@ export interface Session {
   unreachable: number
   activeCaptcha: boolean
   election: ElectionOutcome | null
+  /** #37: the elected frame's attached uploads, by label, so the resume row
+   *  is recomputed from the same evidence the scan acted on. */
+  attachedUploads: string[]
   frameReports: FrameReport[]
   lastOutcome: ScanUiState | null
   appliedHit: { markedAt: string } | null
@@ -99,6 +102,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     unreachable: 0,
     activeCaptcha: false,
     election: null,
+    attachedUploads: [],
     frameReports: [],
     lastOutcome: null,
     appliedHit: null,
@@ -162,7 +166,7 @@ export function rememberAnswer(
  *
  * Refs are meaningless across a re-enumeration (`fid` restarts at 0), so every
  * ref-keyed assertion dies with the page: `filledRefs`, `generatedRefs`,
- * `draftWarnings`, `snapshot`, `reuseOverrides`, `election` and the old `edits`. What comes back
+ * `draftWarnings`, `snapshot`, `reuseOverrides`, `election`, `attachedUploads` and the old `edits`. What comes back
  * is derived from the label-keyed carry:
  *  - primary hit: `answers[answerKey(label)]`;
  *  - secondary hit (primary missed and the new resolution has a key): the SINGLE
@@ -227,6 +231,7 @@ export function projectAnswers(
     snapshot: {},
     reuseOverrides: {},
     election: null,
+    attachedUploads: [],
   }
 }
 
@@ -349,7 +354,12 @@ export function parseStoredSession(raw: unknown): Session | null {
     // A row stored before waiting rows, or Draft warnings, existed has none.
     if (raw.waiting !== undefined && (!Array.isArray(raw.waiting) || !allStrings(raw.waiting))) return null
     if (raw.draftWarnings !== undefined && !isDraftWarnings(raw.draftWarnings)) return null
-    return { ...(raw as unknown as Session), waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {} }
+    // A row stored before attached uploads were read has none (#37).
+    if (raw.attachedUploads !== undefined && (!Array.isArray(raw.attachedUploads) || !allStrings(raw.attachedUploads))) return null
+    return {
+      ...(raw as unknown as Session),
+      waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
+    }
   } catch {
     return null
   }

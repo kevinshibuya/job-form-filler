@@ -410,6 +410,48 @@ describe('enumerateFields — file accept capture (A8)', () => {
   })
 })
 
+describe('enumerateFields — attached uploads (#37)', () => {
+  const attachedGroup = (id: string, label: string): string => `
+    <div role="group" aria-labelledby="upload-label-${id}">
+      <div id="upload-label-${id}">${label}<span class="required">*</span></div>
+      <div class="file-upload__filename"><p>ada-lovelace-resume.pdf</p><button type="button" aria-label="Remove file"></button></div>
+    </div>`
+
+  it('reports the label of an upload group that shows a file name and holds no file input', () => {
+    loadRealFixture('greenhouse-hosted-resume-attached')
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual(['Resume/CV'])
+  })
+
+  it('reports an upload group whose upload is still running: a progress bar and no file input', () => {
+    loadRealFixture('greenhouse-hosted-resume-uploading')
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual(['Resume/CV'])
+  })
+
+  it('reports none on a page whose upload groups still hold their file inputs', () => {
+    loadRealFixture('greenhouse-hosted-b')
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual([])
+  })
+
+  it('reads the structure, not the button text, and skips a group with a file input or no label', () => {
+    document.body.innerHTML = `
+      ${attachedGroup('resume', 'Resume/CV').replace('aria-label="Remove file"', 'aria-label="Remover arquivo"')}
+      <div role="group" aria-labelledby="upload-label-cover">
+        <div id="upload-label-cover">Cover Letter</div>
+        <div class="file-upload__filename"><p>letter.pdf</p></div>
+        <input type="file" id="cover">
+      </div>
+      <div role="group"><div class="file-upload__filename"><p>unlabelled.pdf</p></div></div>`
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual(['Resume/CV'])
+  })
+
+  it('finds an attached upload inside an OPEN shadow root', () => {
+    const hostEl = document.createElement('upload-widget')
+    document.body.appendChild(hostEl)
+    hostEl.attachShadow({ mode: 'open' }).innerHTML = attachedGroup('resume', 'Resume')
+    expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual(['Resume'])
+  })
+})
+
 describe('checkbox groups across a re-scan', () => {
   it('a box left alone after its group lost a member is a lone checkbox again, and Fill treats it as one', async () => {
     document.body.innerHTML = `

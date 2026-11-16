@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { EnumField } from '@jff/shared'
 import { dropJunk, keepField } from './junk'
+import { scoreResumeField } from './resumeTarget'
 
 const field = (patch: Partial<EnumField>): EnumField => ({
   frameId: 0, fid: 0, epoch: 1, label: 'L', name: null, idAttr: null, kind: 'text',
@@ -47,6 +48,12 @@ describe('keepField', () => {
     expect(keepField(field({ kind: 'file', visible: false, label: null, required: true }))).toBe(true)
     // no label AND no scoring signal: still junk (the autofill-pane trap)
     expect(keepField(field({ kind: 'file', visible: false, label: null }))).toBe(false)
+  })
+
+  it('keeps a hidden unlabelled cover-letter input on its file signals, though it is no resume target (#37)', () => {
+    const cover = field({ kind: 'file', visible: false, label: null, idAttr: 'cover_letter', accept: '.pdf,.doc,.docx,.txt,.rtf' })
+    expect(scoreResumeField(cover)).toBe(0)
+    expect(keepField(cover)).toBe(true)
   })
 })
 
