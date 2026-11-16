@@ -1,12 +1,12 @@
 import {
-  atsIdOf, atsModule,
-  type AtsModule, type AtsOrGeneric, type CityParts, type ContentMessage, type EnumField, type FieldHandle, type FillReport,
+  atsIdOf, atsModule, JOB_TEXT_MAX, JOB_TEXT_MIN, JobTextReplySchema,
+  type AtsModule, type JobTextReply, type JobTextSource, type AtsOrGeneric, type CityParts, type ContentMessage, type EnumField, type FieldHandle, type FillReport,
   type HostErrorKind, type PhoneParts, type Resolution, type ResolveFirstResult, type ResolveMappingResult,
 } from '@jff/shared'
 import { guessScanCompany } from './company'
 import { electFrame } from './election'
 import { refOf } from './group'
-import { dropJunk } from './junk'
+import { dropJunk, isNotAForm } from './junk'
 import type { HostPort } from './port'
 import { pickResumeTarget } from './resumeTarget'
 import type { StoredResume } from './resume'
@@ -63,7 +63,12 @@ export interface ScanDeps {
   sleep: (ms: number) => Promise<void>
   port: HostPort
   getResume: () => Promise<StoredResume | null>
-  pastedJobText: string
+  /** The Job posting text the Session holds: the user's paste, or what an
+   *  earlier Scan of the Session found. */
+  heldJobText: string
+  /** Where `heldJobText` came from. Absent or null for a Session kept
+   *  before the source was. */
+  heldJobTextSource?: JobTextSource | null
   hostname?: string
   url?: string
   /** The tab's title, which the Company guess reads. */
@@ -175,17 +180,59 @@ export interface ScanOutcome {
   /** #37: the elected frame's upload groups that show an attached file, by
    *  label. Empty when nothing was elected or the frame reported none. */
   attachedUploads: string[]
+  /** #49: the elected frame's document already kept a Resume this extension
+   *  uploaded. False when nothing was elected or the frame did not say so. */
+  resumeUploaded: boolean
   unreachableWidgets: number
   activeCaptcha: boolean
   jobText: string
+  /** Where `jobText` came from. Null when the Session's text was kept before
+   *  the source was, or when the Scan never looked. */
+  jobTextSource: JobTextSource | null
   llmError: { kind: HostErrorKind; message: string } | null
   frameReports: FrameReport[]
+}
+
+/** The page's job text source as the Session records it. */
+const SOURCE_OF_REPLY: Record<JobTextReply['source'], JobTextSource> = {
+  ats: 'ats', learned: 'pick', heuristic: 'heuristic', none: 'none',
+}
+
+interface JobTextOutcome { jobText: string; jobTextSource: JobTextSource | null }
+
+/** The Session's text, cut to the cap, with the source it was recorded with.
+ *  A text with no source is one kept before the source was. */
+function heldJobText(deps: ScanDeps): JobTextOutcome {
+  return { jobText: deps.heldJobText.trim().slice(0, JOB_TEXT_MAX), jobTextSource: deps.heldJobTextSource ?? null }
+}
+
+/**
+ * The Job posting text of a Scan (spec #41), in the order: the user's paste,
+ * the ATS module, a spot the user picked, a heuristic. The Session keeps the
+ * text and its source, so a text it already holds is used as it is and the
+ * page is asked nothing. A heuristic's spot is used for this Scan and never
+ * saved. Every source but the paste must reach the minimum.
+ */
+async function scanJobText(deps: ScanDeps, epoch: number): Promise<JobTextOutcome> {
+  const held = heldJobText(deps)
+  if (held.jobText !== '') return held
+  const hostname = deps.hostname ?? ''
+  const learned = await deps.port.request<{ selector: string | null }>('selector.get', { hostname, purpose: 'job_description' })
+  const selector = learned.ok ? learned.result.selector : null
+  const { replies } = await deps.sendToTab(0, { type: 'JFF_JOBTEXT', epoch, selector })
+  const payload = replies[0]?.payload as { ok?: boolean; jobText?: unknown } | undefined
+  const reply = payload?.ok === true ? JobTextReplySchema.safeParse(payload.jobText) : null
+  if (reply?.success === true && reply.data.source !== 'none') {
+    const text = reply.data.text.trim()
+    if (text.length >= JOB_TEXT_MIN) return { jobText: text.slice(0, JOB_TEXT_MAX), jobTextSource: SOURCE_OF_REPLY[reply.data.source] }
+  }
+  return { jobText: '', jobTextSource: 'none' }
 }
 
 interface ScanPayload {
   ok: boolean
   error?: string
-  scan?: { epoch: number; fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean; attachedUploads?: string[] }
+  scan?: { epoch: number; fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean; attachedUploads?: string[]; resumeUploaded?: boolean }
 }
 
 interface Enumeration {
@@ -194,6 +241,8 @@ interface Enumeration {
   activeCaptcha: boolean
   /** frameId -> the labels of that frame's attached uploads (#37). */
   attachedUploads: Map<number, string[]>
+  /** The frames whose document already kept the Resume (#49). */
+  resumeUploaded: Set<number>
   reports: FrameReport[]
 }
 
@@ -205,6 +254,7 @@ async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumer
   let unreachableWidgets = 0
   let activeCaptcha = false
   const attachedUploads = new Map<number, string[]>()
+  const resumeUploaded = new Set<number>()
   for (const r of replies) {
     const p = r.payload as ScanPayload
     if (p?.ok !== true || p.scan === undefined) {
@@ -216,11 +266,13 @@ async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumer
     activeCaptcha = activeCaptcha || p.scan.activeCaptcha
     // A stale content script omits the list: it reads as none.
     attachedUploads.set(r.frameId, p.scan.attachedUploads ?? [])
+    // A stale content script omits the flag too: it reads as not uploaded.
+    if (p.scan.resumeUploaded === true) resumeUploaded.add(r.frameId)
     // The content script cannot know its own frame id, so the panel stamps it here.
     for (const f of p.scan.fields) fields.push({ ...f, frameId: r.frameId, epoch })
     reports.push({ frameId: r.frameId, url: r.url ?? null, fields: p.scan.fields.length, error: null })
   }
-  return { fields, unreachableWidgets, activeCaptcha, attachedUploads, reports }
+  return { fields, unreachableWidgets, activeCaptcha, attachedUploads, resumeUploaded, reports }
 }
 
 async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; frameCount: number; enumd: Enumeration }> {
@@ -270,9 +322,9 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
       // the delay, so a second pass can find fields with the flag back to false —
       // and the scan would then fill past a challenge we already saw.
       return {
-        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
+        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: true,
-        jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
+        ...heldJobText(deps), llmError: null, frameReports: enumd.reports,
       }
     }
     // First-attempt ERRORS are evidence (they may be WHY the page looked empty);
@@ -292,9 +344,9 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     if (enumd.fields.length === 0) {
       // An empty page must cost zero host round-trips: no selector.get, no resolve.
       return {
-        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [],
+        epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: enumd.activeCaptcha,
-        jobText: deps.pastedJobText.trim(), llmError: null, frameReports: enumd.reports,
+        ...heldJobText(deps), llmError: null, frameReports: enumd.reports,
       }
     }
   }
@@ -302,6 +354,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
   const urlOfFrame = (frameId: number): string | null =>
     reports.find((r) => r.frameId === frameId && r.url !== null)?.url ?? null
   let attachedByFrame = enumd.attachedUploads
+  let uploadedFrames = enumd.resumeUploaded
   // A5: the content script enumerated and stamped EVERYTHING (snapshot + fid
   // numbering unchanged); the panel drops junk before anything costs money or
   // touches the page. Raw counts above (retry/empty checks) stay raw on purpose.
@@ -319,6 +372,14 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     : scanAts(tabHostname, { url: urlOfFrame(election.frameId) }, [])
   let ats = atsOf()
   kept = dropModuleJunk(kept, election?.frameId ?? null, moduleFor(ats))
+  if (isNotAForm(kept)) {
+    // #53: a lone dropdown outside any form (a listing page's language picker)
+    // is no form. Like an empty page, it costs zero host round-trips.
+    return {
+      epoch, ats: noElectionAts(reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
+      unreachableWidgets, activeCaptcha, ...heldJobText(deps), llmError: null, frameReports: reports,
+    }
+  }
   const electedOf = (fs: EnumField[]): EnumField[] =>
     election === null ? fs : fs.filter((f) => f.frameId === election!.frameId)
   const electionOut = (): ElectionOutcome | null =>
@@ -326,38 +387,28 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
   // #37: only the elected frame's attach counts, like its file fields.
   const electedAttached = (): string[] =>
     election === null ? [] : attachedByFrame.get(election.frameId) ?? []
+  // #49: only the elected frame's memory of a Resume upload counts.
+  const electedUploaded = (): boolean =>
+    election !== null && uploadedFrames.has(election.frameId)
 
   // Everything past the enumeration runs under ScanError: a jobtext/resolve/fill
   // relay death must reach the panel WITH the per-frame evidence already collected,
   // not as a bare message that erases it.
   try {
-    // Job text: the user's paste always wins; otherwise learned selector, then heuristics.
-    let jobText = deps.pastedJobText.trim()
-    if (jobText === '') {
-      const hostname = deps.hostname ?? ''
-      const learned = await deps.port.request<{ selector: string | null }>('selector.get', { hostname, purpose: 'job_description' })
-      const selector = learned.ok ? learned.result.selector : null
-      const { replies } = await deps.sendToTab(0, { type: 'JFF_JOBTEXT', epoch, selector })
-      const payload = replies[0]?.payload as { ok: boolean; jobText?: { text: string; selector: string | null; source: string } } | undefined
-      if (payload?.ok === true && payload.jobText !== undefined && payload.jobText.source !== 'none') {
-        jobText = payload.jobText.text
-        if (payload.jobText.source === 'heuristic' && payload.jobText.selector !== null) {
-          await deps.port.request('selector.save', { hostname, purpose: 'job_description', selector: payload.jobText.selector })
-        }
-      }
-    }
+    const { jobText, jobTextSource } = await scanJobText(deps, epoch)
 
     if (activeCaptcha) {
       // An active challenge means the extension does nothing at all on this page.
-      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
     }
 
     // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
     const resume = await deps.getResume()
     // A8: never `find(kind === 'file')` — score the ELECTED frame's candidates;
     // zero positive scorers means NO upload (the autofill-pane trap). A resume
-    // the page already shows attached means NO upload either (#37).
-    const fileField = pickResumeTarget(electedOf(kept), electedAttached())
+    // the page already shows attached means NO upload either (#37), and so
+    // does one this document already kept from an earlier Scan (#49).
+    const fileField = electedUploaded() ? null : pickResumeTarget(electedOf(kept), electedAttached())
     if (resume !== null && fileField !== null) {
       let resumeError: FrameReport | null = null
       try {
@@ -384,6 +435,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
       unreachableWidgets = again.unreachableWidgets
       activeCaptcha = again.activeCaptcha
       attachedByFrame = again.attachedUploads
+      uploadedFrames = again.resumeUploaded
       reports = resumeError === null ? again.reports : [...again.reports, resumeError]
       // Fids were re-stamped under a new epoch; re-elect deterministically over
       // the fresh kept set. The application frame only gains signal from its
@@ -397,18 +449,18 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
         // Uploading a resume is a common trigger for an ATS challenge. Re-reading
         // activeCaptcha and then filling anyway would be worse than never re-reading
         // it: same blast radius, plus a paid resolve call.
-        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
       }
       if (fields.length === 0) {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
-        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
       }
     }
 
     if (kept.length === 0) {
       // Only junk on the page: resolve is NEVER called with zero real fields.
-      return { epoch, ats, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false, unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
     }
 
     // PHASE 2 — the host is asked about the ELECTED frame only. Foreign fields
@@ -420,7 +472,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     if (resolveFields.length === 0) {
       // A module's junk rule took every elected Field: resolve is NEVER called
       // with zero real fields.
-      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
     }
     deps.onProgress({ phase: 'resolving', fields: resolveFields.length })
     const resolved = await deps.port.request<ResolveFirstResult>('resolve.first', {
@@ -434,7 +486,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     })
     if (!resolved.ok) {
       return {
-        epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), unreachableWidgets, activeCaptcha, jobText,
+        epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource,
         llmError: resolved.error, frameReports: reports,
       }
     }
@@ -449,8 +501,8 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
       pending: resolveFields.filter((f) => pendingRefs.has(refOf(f))),
       fill: batch.fill,
       election: electionOut(),
-      attachedUploads: electedAttached(),
-      unreachableWidgets, activeCaptcha, jobText,
+      attachedUploads: electedAttached(), resumeUploaded: electedUploaded(),
+      unreachableWidgets, activeCaptcha, jobText, jobTextSource,
       llmError: null,
       frameReports: reports,
     }

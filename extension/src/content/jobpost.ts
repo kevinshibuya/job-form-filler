@@ -1,5 +1,9 @@
-export const MIN_JOB_TEXT = 400
-const MAX_JOB_TEXT = 50_000
+import { atsModule, findAts, JOB_TEXT_MAX, JOB_TEXT_MIN, type AtsModule, type JobTextReply } from '@jff/shared'
+import { fetchPostingText, type FetchLike } from './postingFetch'
+import { textOf } from './textOf'
+
+export const MIN_JOB_TEXT = JOB_TEXT_MIN
+const MAX_JOB_TEXT = JOB_TEXT_MAX
 
 /** Hard ceiling on a pending element pick. A JFF_PICK promise that never settles
  *  would pin the runtime message channel open for the life of the frame. */
@@ -12,17 +16,42 @@ const HEURISTIC_TIERS = [
   'article, main, [role="main"]',
 ]
 
-/** What a reader sees of an element: never the source of a style, script, noscript or template. */
-function textOf(el: Element): string {
-  const copy = el.cloneNode(true) as Element
-  for (const n of Array.from(copy.querySelectorAll('script, style, noscript, template'))) n.remove()
-  return (copy.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+/** What the page script needs to read the Job posting text from the
+ *  posting's own page: this frame's ATS module, its address, and a fetch. */
+export interface PostingReader {
+  readonly module: AtsModule
+  readonly formPageUrl: string
+  readonly fetch: FetchLike
 }
 
-export function captureJobText(
-  root: Document,
-  learnedSelector: string | null,
-): { text: string; selector: string | null; source: 'learned' | 'heuristic' | 'none' } {
+/** The reader for the frame at `href`: the module of its own ATS, found from
+ *  its own hostname as Enumeration finds it, so an embedded form's frame and
+ *  the page around it never borrow each other's rule. */
+export function postingReaderFor(href: string, fetch: FetchLike): PostingReader {
+  let hostname = ''
+  try { hostname = new URL(href).hostname } catch { /* no address, no ATS */ }
+  return { module: atsModule(findAts(hostname)?.id), formPageUrl: href, fetch }
+}
+
+/**
+ * The Job posting text of this frame (spec #41), in the page's part of the
+ * order: the ATS module's posting page, then the spot the user picked, then a
+ * heuristic. A posting page that gives nothing, or cannot be read in time,
+ * hands over to the next source and never fails the Scan.
+ */
+export async function readJobText(root: Document, learnedSelector: string | null, posting: PostingReader): Promise<JobTextReply> {
+  const fromAts = await fetchPostingText(posting.module, posting.formPageUrl, posting.fetch)
+  if (fromAts !== null) return { text: fromAts, selector: null, source: 'ats' }
+  return captureJobText(root, learnedSelector)
+}
+
+/**
+ * The Job posting text on this page itself: the spot the user picked, then a
+ * heuristic. Every source here must reach the minimum, and the text is cut to
+ * the cap.
+ */
+export function captureJobText(root: Document, learnedSelector: string | null): JobTextReply {
   if (learnedSelector !== null && learnedSelector !== '') {
     try {
       const el = root.querySelector(learnedSelector)

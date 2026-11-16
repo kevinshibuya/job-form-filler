@@ -1,4 +1,4 @@
-import type { AtsModule, ModuleLabel } from '../atsModule.js'
+import type { AtsModule, ModuleLabel, PostingPage } from '../atsModule.js'
 
 /** Every Control a question block can hold. Hidden inputs carry no question. */
 const CONTROLS = [
@@ -43,10 +43,31 @@ function leverLabel(control: Element): ModuleLabel | null {
   return text === '' ? null : { text, element: block }
 }
 
+/** Where the Job posting text sits on a Lever posting page: the posting's
+ *  wrapper, which holds its headline and categories, its description and its
+ *  lists, and none of the page's footer. Written from the Lever posting fixture
+ *  in e2e/fixtures/postings (ADR 0007). */
+const POSTING_SPOT = '.posting-page'
+
+/**
+ * A Lever apply page holds no Job posting text: the text is one page back. The
+ * posting's address is the apply address without its last segment,
+ * `/<company>/<posting>/apply` to `/<company>/<posting>`, with no query. Any
+ * other Lever address gives nothing.
+ */
+function leverPostingPage(formPageUrl: string): PostingPage | null {
+  let url: URL
+  try { url = new URL(formPageUrl) } catch { return null }
+  const segments = url.pathname.split('/').filter((s) => s !== '')
+  if (segments.length < 3 || segments[segments.length - 1] !== 'apply') return null
+  return { url: `${url.origin}/${segments.slice(0, -1).join('/')}`, spot: POSTING_SPOT }
+}
+
 /** Lever. Its climb to a checkbox group's question is already on the generic
  *  path and stays there (ADR 0007, amended). */
 export const lever: AtsModule = Object.freeze({
   id: 'lever',
   labelRule: leverLabel,
+  jobText: { postingPage: leverPostingPage },
   emptyStateHint: 'On Lever the form opens from "Apply for this job". Open it, then Scan again.',
 })

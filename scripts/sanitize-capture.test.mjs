@@ -158,6 +158,34 @@ describe('sanitizeCapture on a page with no form element', () => {
     expect(doc.title).toContain('Acme')
     expect(doc.documentElement.outerHTML).not.toMatch(/initech/i)
   })
+
+  // #53: a listing page's locale switcher is a button drawn as a combobox, with
+  // no Option in the page until it opens. Enumeration counts it as a Field, so
+  // the fixture command counts it as a Control.
+  const listing = `<!doctype html><html><head><title>Initech Careers | Product Engineer</title></head><body>
+    <main><h1>Product Engineer</h1><p>At Initech we build calm software.</p><a class="apply">Apply</a></main>
+    <footer><div class="links"><a>Support</a></div>
+      <div class="bottom"><div class="locale"><button type="button" class="locale-switcher" aria-label="English. Choose your language" aria-haspopup="listbox" aria-expanded="false" role="combobox"><span>English</span></button></div></div>
+      <button type="button" class="cookie">Accept all</button>
+    </footer>
+  </body></html>`
+
+  it('keeps a lone button drawn as a combobox, and only it, when the page holds no other Control', () => {
+    const doc = parse(sanitizeCapture(listing, [], { companies: ['Initech'] }))
+    const combo = doc.querySelector('[role="combobox"]')
+    expect(combo).not.toBeNull()
+    expect(combo.textContent).toBe('English')
+    expect(doc.querySelector('main, .links, .cookie')).toBeNull()
+    expect(doc.documentElement.outerHTML).not.toMatch(/initech/i)
+  })
+})
+
+describe('sanitizeCapture without --posting', () => {
+  it('still refuses a page that holds a Job posting and no form', () => {
+    const posting = '<html><head><title>Initech - Engineer</title></head><body><main><h1>Engineer</h1><p>' +
+      'Initech builds TPS reports for the whole world. '.repeat(12) + '</p></main></body></html>'
+    expect(() => sanitizeCapture(posting)).toThrow(/no form and no Control/)
+  })
 })
 
 describe('sanitizeCapture finds the Company', () => {

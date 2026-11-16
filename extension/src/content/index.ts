@@ -3,7 +3,7 @@ import { capturePage } from './capture'
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
 import { fillFields, fillResume } from './fill'
-import { captureJobText, PICK_TIMEOUT_MS, startPicker } from './jobpost'
+import { PICK_TIMEOUT_MS, postingReaderFor, readJobText, startPicker } from './jobpost'
 import { installSnapshotListeners, snapshotValues } from './snapshot'
 
 declare global {
@@ -21,6 +21,14 @@ export function probeFrame(): { controlCount: number; url: string } {
     url: location.href,
   }
 }
+
+/**
+ * #49: whether this document kept a Resume this page script uploaded. It lives
+ * as long as the document: a re-injection runs this file again, but only the
+ * first run's listener answers, so its copy is the one read. A reload makes a
+ * new document and a new first run.
+ */
+let resumeUploaded = false
 
 async function handle(raw: unknown): Promise<unknown> {
   const parsed = ContentMessageSchema.safeParse(raw)
@@ -45,6 +53,7 @@ async function handle(raw: unknown): Promise<unknown> {
     // to tell which frame produced it.
     const scan = ScanResultSchema.safeParse({
       epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document), attachedUploads,
+      resumeUploaded,
     })
     if (!scan.success) return { ok: false, error: 'bad_scan' }
     installSnapshotListeners(document, (snap) => {
@@ -64,11 +73,17 @@ async function handle(raw: unknown): Promise<unknown> {
     const file = new File([bytes], msg.fileName, { type: msg.mimeType })
     // Waits for a young page, attaches, settles, and checks the page kept it.
     const out = await fillResume(document, msg.handle.fid, file)
+    // A file the page refused is not remembered: the next Scan tries again.
+    if (out.ok) resumeUploaded = true
     return out.ok ? { ok: true } : { ok: false, error: out.reason }
   }
 
   if (msg.type === 'JFF_JOBTEXT') {
-    return { ok: true, jobText: captureJobText(document, msg.selector) }
+    // The Side panel asks the top frame. On a form page whose module names a
+    // Job posting page, the text comes from there (spec #41): fetched on this
+    // frame's origin only, without cookies, given up after 5 seconds.
+    const jobText = await readJobText(document, msg.selector, postingReaderFor(location.href, (url, init) => fetch(url, init)))
+    return { ok: true, jobText }
   }
 
   if (msg.type === 'JFF_CAPTURE') {
