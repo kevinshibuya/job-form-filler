@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { CALLING_CODES, RULE_TABLE, countryCode } from './ruleTable.js'
 import {
-  displayValue, isOldText, phoneProposal, storedValue, toStoredText, workAuthCountries, workAuthValue,
+  displayValue, isOldText, languageValues, phoneProposal, salaryOf, storedValue, toStoredText, workAuthCountries, workAuthValue,
 } from './typedValues.js'
 
 // Ticket #27: each typed Value has one canonical text form, with its parse and
@@ -32,7 +32,7 @@ describe('the canonical text of a typed Value', () => {
   })
 
   it('a key without a typed form stores any text as its Value', () => {
-    for (const key of ['salary', 'notice', 'earliestStart', 'remotePreference', 'email'] as const) {
+    for (const key of ['pronouns', 'location', 'email'] as const) {
       expect(storedValue(key, 'anything at all'), key).toBe('anything at all')
       expect(isOldText(key, 'anything at all'), key).toBe(false)
     }
@@ -78,7 +78,7 @@ describe('a write', () => {
   })
 
   it('a key without a typed form writes its text unchanged', () => {
-    expect(toStoredText('salary', '100k')).toEqual({ ok: true, text: '100k' })
+    expect(toStoredText('pronouns', 'she/her')).toEqual({ ok: true, text: 'she/her' })
   })
 })
 
@@ -163,5 +163,52 @@ describe('sponsorshipNeeded stores nothing', () => {
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toMatch(/workAuth/)
     expect(toStoredText('sponsorshipNeeded', '')).toEqual({ ok: true, text: '' })
+  })
+})
+
+// Ticket #33: a salary is an amount with its currency and period, and the
+// notice period, start date and remote preference hold one text per language.
+describe('the salary and per-language forms', () => {
+  const SALARY = '{"amount":90000,"currency":"EUR","period":"year"}'
+
+  it('salary: only the canonical JSON is a Value; a figure typed as text is old text', () => {
+    expect(salaryOf(SALARY)).toEqual({ amount: 90000, currency: 'EUR', period: 'year' })
+    for (const old of ['100k', 'R$ 18.000/mo', '90000', '{"currency":"EUR","amount":90000,"period":"year"}', '{"amount":"90000","currency":"EUR","period":"year"}']) {
+      expect(storedValue('salary', old), old).toBeNull()
+      expect(isOldText('salary', old), old).toBe(true)
+    }
+  })
+
+  it('salary: shown in words in each language', () => {
+    expect(displayValue('salary', SALARY)).toBe('90000 EUR per year')
+    expect(displayValue('salary', SALARY, 'pt')).toBe('90000 EUR por ano')
+    expect(displayValue('salary', '{"amount":45.5,"currency":"GBP","period":"hour"}')).toBe('45.5 GBP per hour')
+  })
+
+  it('salary: a write needs all three parts, and is refused without any one of them', () => {
+    expect(toStoredText('salary', '{"amount":"90000","currency":"eur","period":"year"}')).toEqual({ ok: true, text: SALARY })
+    for (const bad of ['{"amount":"90000","currency":"EUR"}', '{"amount":"","currency":"EUR","period":"year"}', '{"amount":"9,000","currency":"EUR","period":"year"}', '{"amount":"0","currency":"EUR","period":"year"}']) {
+      expect(toStoredText('salary', bad), bad).toMatchObject({ ok: false })
+    }
+  })
+
+  it('per-language: the canonical JSON is a Value; plain text is old text in both languages', () => {
+    expect(languageValues('{"en":"30 days","pt":"30 dias"}')).toEqual({ en: '30 days', pt: '30 dias' })
+    expect(languageValues('{"pt":"Imediato"}')).toEqual({ pt: 'Imediato' })
+    for (const old of ['30 dias', '{"pt":"30 dias","en":"30 days"}', '{"en":""}', '{}']) {
+      expect(storedValue('notice', old), old).toBeNull()
+    }
+    expect(isOldText('notice', '30 dias')).toBe(true)
+  })
+
+  it('per-language: shown with each language named, never as JSON', () => {
+    expect(displayValue('earliestStart', '{"en":"Immediately","pt":"Imediato"}')).toBe('Immediately (English); Imediato (Portuguese)')
+    expect(displayValue('remotePreference', '{"en":"Remote"}')).toBe('Remote (English)')
+  })
+
+  it('per-language: a write keeps the languages given, one line each, and refuses any other language', () => {
+    expect(toStoredText('notice', '{"pt":"30 dias","en":""}')).toEqual({ ok: true, text: '{"pt":"30 dias"}' })
+    expect(toStoredText('notice', '{"fr":"30 jours"}')).toMatchObject({ ok: false })
+    expect(toStoredText('notice', '30 days')).toMatchObject({ ok: false })
   })
 })

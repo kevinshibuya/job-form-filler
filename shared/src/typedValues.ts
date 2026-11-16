@@ -14,8 +14,10 @@ import { CALLING_CODES, COUNTRY_CODES, RULE_TABLE, countryCode, countryName, cou
  * - A Value shown to a person or handed to a model is formatted from its typed
  *   form.
  *
- * `relocate` (a yes or a no), `phone` (international form) and `workAuth` (a
- * list of countries) have a typed form. `sponsorshipNeeded` has one that no
+ * `relocate` (a yes or a no), `phone` (international form), `workAuth` (a
+ * list of countries), `salary` (an amount with its currency and period) and
+ * `notice`, `earliestStart` and `remotePreference` (one text per language)
+ * have a typed form. `sponsorshipNeeded` has one that no
  * text fits: its answer is derived from `workAuth` and nothing is stored for
  * it. Every other key stores and answers its text as is.
  */
@@ -104,8 +106,142 @@ const DERIVED: TypedForm = {
   refusal: 'is not stored: its answer comes from workAuth, the countries where you may work',
 }
 
+/** The periods a salary is paid by, with their words in each language. */
+export const SALARY_PERIODS = ['year', 'month', 'week', 'day', 'hour'] as const
+export type SalaryPeriod = (typeof SALARY_PERIODS)[number]
+
+const PERIOD_WORDS: Readonly<Record<RuleLanguage, Readonly<Record<SalaryPeriod, string>>>> = {
+  en: { year: 'per year', month: 'per month', week: 'per week', day: 'per day', hour: 'per hour' },
+  pt: { year: 'por ano', month: 'por mês', week: 'por semana', day: 'por dia', hour: 'por hora' },
+}
+
+/** A period's words, as in "per year" or "por ano". */
+export function salaryPeriodWords(period: SalaryPeriod, lang: RuleLanguage = 'en'): string {
+  return PERIOD_WORDS[lang][period]
+}
+
+export interface Salary {
+  readonly amount: number
+  readonly currency: string
+  readonly period: SalaryPeriod
+}
+
+const PERIOD_SET: ReadonlySet<string> = new Set(SALARY_PERIODS)
+const CURRENCY_FORM = /^[A-Z]{3}$/
+const AMOUNT_FORM = /^\d+(\.\d+)?$/
+
+/** The canonical text of a salary: its amount, currency and period, in that order, as JSON. */
+export function salaryValue(s: Salary): string {
+  return JSON.stringify({ amount: s.amount, currency: s.currency, period: s.period })
+}
+
+/** The JSON object a text holds, or null. */
+function jsonObject(text: string): Record<string, unknown> | null {
+  if (!text.startsWith('{')) return null
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A salary as a write gives it: an amount above zero, as a number or as
+ * digits with an optional decimal point; a currency of three letters (ISO
+ * 4217), any case; and one of the periods. Null when any part is missing.
+ */
+function salaryOfInput(text: string): Salary | null {
+  const o = jsonObject(text)
+  if (o === null) return null
+  const { amount: a, currency: c, period: p } = o
+  const amount = typeof a === 'number' ? a : typeof a === 'string' && AMOUNT_FORM.test(a.trim()) ? Number(a.trim()) : NaN
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  const currency = typeof c === 'string' ? c.trim().toUpperCase() : ''
+  const period = typeof p === 'string' ? p.trim().toLowerCase() : ''
+  if (!CURRENCY_FORM.test(currency) || !PERIOD_SET.has(period)) return null
+  return { amount, currency, period: period as SalaryPeriod }
+}
+
+/** The parts of a stored salary Value; null for old text. */
+export function salaryOf(text: string | null | undefined): Salary | null {
+  if (text == null) return null
+  const s = salaryOfInput(text)
+  return s !== null && salaryValue(s) === text ? s : null
+}
+
+/** A salary in words: "90000 EUR per year", "90000 EUR por ano". */
+export function salaryWords(s: Salary, lang: RuleLanguage = 'en'): string {
+  return `${s.amount} ${s.currency} ${salaryPeriodWords(s.period, lang)}`
+}
+
+const SALARY: TypedForm = {
+  isValue: (text) => salaryOf(text) !== null,
+  display: (text, lang) => salaryWords(salaryOf(text)!, lang),
+  fromInput: (text) => { const s = salaryOfInput(text); return s === null ? null : salaryValue(s) },
+  refusal: 'is stored as an amount, a currency and a period, as in 90000 EUR per year',
+}
+
+/** One text per language; a language with no Value is left out. */
+export type LanguageValues = Partial<Record<RuleLanguage, string>>
+
+const LANGUAGE_NAME: Readonly<Record<RuleLanguage, string>> = { en: 'English', pt: 'Portuguese' }
+const LANGUAGE_ORDER: readonly RuleLanguage[] = ['en', 'pt']
+
+/** The canonical text of per-language Values: English then Portuguese, empty ones left out, as JSON. */
+export function languageValue(values: LanguageValues): string {
+  const out: LanguageValues = {}
+  for (const lang of LANGUAGE_ORDER) {
+    const v = values[lang]
+    if (v !== undefined && v !== '') out[lang] = v
+  }
+  return JSON.stringify(out)
+}
+
+/**
+ * Per-language Values as a write gives them: a JSON object of English and
+ * Portuguese texts, each made one line. An empty text is no Value. Null when
+ * the object names any other language, holds a text that is not a string, or
+ * leaves both languages empty.
+ */
+function languagesOfInput(text: string): LanguageValues | null {
+  const o = jsonObject(text)
+  if (o === null) return null
+  const out: LanguageValues = {}
+  for (const [k, v] of Object.entries(o)) {
+    if ((k !== 'en' && k !== 'pt') || typeof v !== 'string') return null
+    const n = normalizeFactValue(v)
+    if (n !== '') out[k] = n
+  }
+  return Object.keys(out).length === 0 ? null : out
+}
+
+/** The Values of a stored per-language key; null for old text. */
+export function languageValues(text: string | null | undefined): LanguageValues | null {
+  if (text == null) return null
+  const v = languagesOfInput(text)
+  return v !== null && languageValue(v) === text ? v : null
+}
+
+/** The name of a language, in English: "English", "Portuguese". */
+export function languageName(lang: RuleLanguage): string {
+  return LANGUAGE_NAME[lang]
+}
+
+const PER_LANGUAGE: TypedForm = {
+  isValue: (text) => languageValues(text) !== null,
+  // Both languages, each named: the form has no single text to show.
+  display: (text) => {
+    const v = languageValues(text) ?? {}
+    return LANGUAGE_ORDER.flatMap((l) => (v[l] === undefined ? [] : [`${v[l]} (${LANGUAGE_NAME[l]})`])).join('; ')
+  },
+  fromInput: (text) => { const v = languagesOfInput(text); return v === null ? null : languageValue(v) },
+  refusal: 'is stored as one text in English and one in Portuguese',
+}
+
 const TYPED: Partial<Record<FieldKey, TypedForm>> = {
   relocate: YES_NO, phone: PHONE, workAuth: PLACE_LIST, sponsorshipNeeded: DERIVED,
+  salary: SALARY, notice: PER_LANGUAGE, earliestStart: PER_LANGUAGE, remotePreference: PER_LANGUAGE,
 }
 
 /** Why a write of `key` would be refused, for a key with a typed form; null otherwise. */
@@ -135,8 +271,9 @@ export function isOldText(key: FieldKey, text: string | null | undefined): boole
 
 /**
  * A stored Value formatted for a person or a model: a yes or a no in the
- * language asked for, a phone in international form, any other key's text as
- * is. Old text and an empty text format to null.
+ * language asked for, a phone in international form, a salary in words, both
+ * languages of a per-language key each named, any other key's text as is.
+ * Old text and an empty text format to null.
  */
 export function displayValue(key: FieldKey, text: string | null | undefined, lang: RuleLanguage = 'en'): string | null {
   const value = storedValue(key, text)

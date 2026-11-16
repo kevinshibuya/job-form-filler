@@ -20,6 +20,12 @@ const ANSWERS: Readonly<Record<ValueType, ReadonlySet<string>>> = {
   // A list of countries answers yes/no questions about the countries a label
   // names, so it takes the Controls a yes or a no does.
   place_list: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
+  // A salary is typed into a box; no Option list says an amount with its
+  // currency and period.
+  amount: new Set(TEXT_CONTROLS),
+  // A notice period, a start date or a remote preference may be an Option too,
+  // matched at Fill like any other Value.
+  per_language: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
 }
 
 const CHOICE_SET: ReadonlySet<string> = new Set(CHOICE_CONTROLS)

@@ -53,7 +53,7 @@ beforeEach(() => {
     firstName: 'Ada', lastName: 'Lovelace', email: 'ada@example.com', phone: '+15550100',
     linkedin: 'https://linkedin.com/in/ada', github: 'https://github.com/ada',
   })
-  setAnswerBank(db, { salary: 'USD 100k' })
+  setAnswerBank(db, { salary: '{"amount":100000,"currency":"USD","period":"year"}' })
   deps = {
     db,
     runner: { complete: claudeComplete } as unknown as HandlerDeps['runner'],
@@ -147,7 +147,7 @@ describe('resolve.mapping', () => {
 
     const mapped = await send<MappingResult>('resolve.mapping', pending)
     expect(mapped.resolutions).toHaveLength(3)
-    expect(mapped.resolutions[0]).toMatchObject({ handle: handleOf(pending[0]!), tier: 'proposed', source: 'llm_key', key: 'salary', value: 'USD 100k' })
+    expect(mapped.resolutions[0]).toMatchObject({ handle: handleOf(pending[0]!), tier: 'proposed', source: 'llm_key', key: 'salary', value: '100000 USD per year' })
     expect(mapped.resolutions[1]).toMatchObject({ handle: handleOf(pending[1]!), tier: 'proposed', source: 'llm_reuse', value: '6 years', answerId: reuseId })
     expect(mapped.resolutions[2]).toMatchObject({ handle: handleOf(pending[2]!), tier: 'needs_input', value: null, reason: 'custom' })
     expect(mapped.llmError).toBeNull()
@@ -159,7 +159,7 @@ describe('resolve.mapping', () => {
     // remembered from any earlier step.
     mappingReplies([{ ref: '0:1', decision: 'known_key', knownKey: 'salary', answerId: null }])
     const r = await send<MappingResult>('resolve.mapping', [field(1, 'What are your comp expectations for this role?')])
-    expect(r.resolutions).toEqual([expect.objectContaining({ tier: 'proposed', key: 'salary', value: 'USD 100k' })])
+    expect(r.resolutions).toEqual([expect.objectContaining({ tier: 'proposed', key: 'salary', value: '100000 USD per year' })])
     expect(codexComplete).toHaveBeenCalledTimes(1)
   })
 
@@ -235,7 +235,7 @@ describe('the two requests of one Scan resolve every Field', () => {
     expect(mapped.resolutions.map((x) => x.handle)).toEqual(first.pending)
     const byFid = new Map(all.map((x) => [x.handle.fid, x]))
     expect(byFid.get(7)).toMatchObject({ tier: 'auto', source: 'saved_answer', value: '6 years' })
-    expect(byFid.get(12)).toMatchObject({ tier: 'proposed', source: 'llm_key', key: 'salary', value: 'USD 100k' })
+    expect(byFid.get(12)).toMatchObject({ tier: 'proposed', source: 'llm_key', key: 'salary', value: '100000 USD per year' })
     expect(byFid.get(13)).toMatchObject({ tier: 'needs_input', reason: 'custom' })
     expect(mapped.llmError).toBeNull()
     expect([first.epoch, mapped.epoch]).toEqual([5, 5])

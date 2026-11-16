@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import {
-  ANSWER_BANK_KEYS, PROFILE_KEYS, displayValue, isFieldKey, isOldText, phoneProposal, refusalOf, toStoredText,
+  ANSWER_BANK_KEYS, PROFILE_KEYS, VALUE_TYPE_OF, displayValue, isFieldKey, isOldText, phoneProposal, refusalOf, toStoredText,
 } from '@jff/shared'
 import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
+import { LanguageValuesEditor } from './LanguageValuesEditor'
+import { SalaryEditor } from './SalaryEditor'
 import { WorkAuthEditor } from './WorkAuthEditor'
 
 const FACT_LABELS: Record<string, string> = {
@@ -102,6 +104,17 @@ function YesNoSelect({ id, value, onChange }: { id: string; value: string; onCha
   )
 }
 
+/** The control for one key, by the shape of its Value. */
+function FactInput({ id, k, value, onChange }: { id: string; k: string; value: string; onChange: (v: string) => void }) {
+  if (k === 'relocate') return <YesNoSelect id={id} value={value} onChange={onChange} />
+  if (k === 'workAuth') return <WorkAuthEditor id={id} value={value} onChange={onChange} />
+  if (k === 'salary') return <SalaryEditor id={id} value={value} onChange={onChange} />
+  if (isFieldKey(k) && VALUE_TYPE_OF[k] === 'per_language') {
+    return <LanguageValuesEditor id={id} label={FACT_LABELS[k] ?? k} value={value} onChange={onChange} />
+  }
+  return <input id={id} className={INPUT} value={value} onChange={(e) => onChange(e.target.value)} />
+}
+
 /** O2: the one fact-grid renderer OnboardingView and ProfileEditor share.
  *  `required` renders the * marker; `idPrefix` keeps ids unique across views. */
 export function FactFields({ facts, required = null, idPrefix = 'p' }: {
@@ -127,11 +140,7 @@ export function FactFields({ facts, required = null, idPrefix = 'p' }: {
               {FACT_LABELS[k] ?? k}
               {required?.has(k) === true && <span aria-hidden="true"> *</span>}
             </label>
-            {k === 'relocate'
-              ? <YesNoSelect id={id} value={draft[k] ?? ''} onChange={(v) => set(k, v)} />
-              : k === 'workAuth'
-                ? <WorkAuthEditor id={id} value={draft[k] ?? ''} onChange={(v) => set(k, v)} />
-                : <input id={id} className={INPUT} value={draft[k] ?? ''} onChange={(e) => set(k, e.target.value)} />}
+            <FactInput id={id} k={k} value={draft[k] ?? ''} onChange={(v) => set(k, v)} />
             {hints[k] !== undefined && (
               <p className={`text-[12px] ${MUTED}`} data-jff-fact-hint={k}>Old entry, not used until you enter a new one: {hints[k]}</p>
             )}
