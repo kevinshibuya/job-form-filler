@@ -3,6 +3,7 @@ import { groupBoxesOf } from './checkboxGroup'
 import { optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
 import { attributableListbox, mountedListboxes } from './harvest'
+import { waitForSettle } from './settle'
 
 type FillOutcome = { ok: true; committed?: string | null } | { ok: false; reason: string }
 
@@ -269,6 +270,14 @@ const COMBOBOX_WAIT_MS = 500
  *  debounced network fetch; 500ms was never enough (spec D1). */
 const COMBOBOX_TYPE_WAIT_MS = 2000
 const COMBOBOX_POLL_MS = 50
+/** How long a committed Option's menu may take to close before the commit is
+ *  called failed (spec D1). */
+export const COMMIT_SETTLE_MS = 500
+/** How long a menu another Control left open may take to close after Escape
+ *  and blur, before this Fill refuses to open its own (spec D2). */
+export const CLOSE_WAIT_MS = 500
+/** The ceiling on the settle wait between two consecutive choice Fills (D3). */
+export const CHOICE_GAP_SETTLE_MS = 300
 
 /**
  * C2: react-select (Greenhouse) opens its menu ONLY on a real pointer gesture —
@@ -349,6 +358,56 @@ function visibleCommittedText(
   return null
 }
 
+/** A menu is visible while it is mounted and not hidden by attribute or
+ *  computed style. A hidden but mounted menu (a closed intl-tel-input flag
+ *  list) is never a menu left open. */
+const menuVisible = (lb: Element | null): boolean =>
+  lb !== null && lb.isConnected && !(lb instanceof HTMLElement && isDisplayHidden(lb))
+
+/** The id tokens a control points at through aria-controls and aria-owns. */
+const ownedIds = (el: Element): string[] =>
+  [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')]
+    .flatMap((v) => (v ?? '').split(/\s+/))
+    .filter((t) => t !== '')
+
+/** The element that owns a listbox by aria-controls or aria-owns, if any. */
+function ownerOf(lb: Element): Element | null {
+  if (lb.id === '') return null
+  const id = lb.id.replace(/"/g, '\\"')
+  const scope = lb.getRootNode() as Document | ShadowRoot
+  return scope.querySelector(`[aria-controls~="${id}"], [aria-owns~="${id}"]`)
+}
+
+/**
+ * D2: before a Fill opens its control, a menu another Control left visible is
+ * closed — Escape to the element that owns it (else the active element), then
+ * a blur — and the Fill waits up to CLOSE_WAIT_MS for it to go. The control's
+ * OWN menu is not a foreign one: a widget whose list stays mounted is opened
+ * as before. Returns false when a foreign menu is still visible.
+ */
+async function closeForeignMenus(el: Element): Promise<boolean> {
+  const own = new Set(ownedIds(el))
+  const foreign = [...mountedListboxes(document, el)].filter((lb) => menuVisible(lb) && !own.has(lb.id))
+  if (foreign.length === 0) return true
+  for (const lb of foreign) {
+    const owner = ownerOf(lb) ?? document.activeElement
+    if (owner === null) continue
+    owner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    if (owner instanceof HTMLElement) owner.blur()
+  }
+  const deadline = Date.now() + CLOSE_WAIT_MS
+  for (;;) {
+    if (!foreign.some(menuVisible)) return true
+    if (Date.now() >= deadline) return false
+    await wait(COMBOBOX_POLL_MS)
+  }
+}
+
+/** The control that reports the menu's state: the element itself, or the
+ *  closest `[role=combobox]` around it. */
+const expandedOwner = (el: Element): Element =>
+  el.getAttribute('role') === 'combobox' ? el : (el.closest('[role="combobox"]') ?? el)
+
 /**
  * B1: interact ONLY with a listbox attributable to this control — aria-owns/
  * aria-controls, or one that appeared in response to OUR interaction (the same
@@ -371,9 +430,15 @@ function visibleCommittedText(
  * (more options still mounting) must never be mistaken for a settled,
  * unambiguous one. Exact matches stay eager: first poll wins, no settling
  * wait.
- * Success iff the page committed the CLICKED OPTION's text; the requested
- * value no longer has to equal it ('bra' legitimately commits 'Brazil'), and
- * `committed` reports the canonical text when it differs. Every failure path
+ * D1: the Option is committed with the same pointer sequence that opens the
+ * menu, and the commit is verified in two steps: the menu CLOSED within
+ * COMMIT_SETTLE_MS, then EVIDENCE that the page kept the Option. A typed text
+ * that merely equals the Option is never evidence by itself: it has to survive
+ * a blur, because a discarded typeahead is cleared on blur and a commit is
+ * not. Either step failing is `no-commit`. Success means the page committed
+ * the CLICKED OPTION's text; the requested value no longer has to equal it
+ * ('bra' legitimately commits 'Brazil'), and `committed` reports the
+ * canonical text when it differs. Every failure path
  * restores the pre-fill snapshot (never a clear to ''), waits a frame, THEN
  * closes via Escape+blur — the restore write is itself an input event, and
  * fired after Escape it would re-open the dropdown just closed. A type-to-load
@@ -383,6 +448,8 @@ function visibleCommittedText(
 async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
   const snapshot = input === null ? null : input.value
+  // D2: never open a second menu while another Control's is still up.
+  if (!await closeForeignMenus(el)) return { ok: false, reason: 'listbox-left-open' }
   const before = mountedListboxes(document, el)
   // C2: the full pointer+mouse open gesture, dispatched on the control itself
   // (bubbling from the input reaches the react-select control wrapper).
@@ -464,29 +531,61 @@ async function fillCombobox(el: Element, value: string): Promise<FillOutcome> {
   }
 
   const optionText = norm(hit.textContent ?? '')
+  const hitListbox = hit.closest('[role="listbox"]')
   // C2 hardening: snapshot the candidate leaves' texts BEFORE the commit
   // click, so the fallback can demand a CHANGE into the option text.
   const preTexts = new WeakMap<HTMLElement, string>()
   if (input !== null) {
     for (const node of commitScopeLeaves(input)) preTexts.set(node, node.textContent ?? '')
   }
-  hit.click()
+  // What the input held right before the commit: the typed text on the
+  // typeahead path, the pre-fill value when the open gesture found the Option.
+  const preCommit = input === null ? null : input.value
+  // D1: the commit gesture is the open gesture (a strict superset of a click),
+  // for the reason C2 widened the open: react-select ignores a bare click.
+  dispatchOpenGesture(hit)
   await nextFrame()
-  // B1c: EXACT normalized equality against the CLICKED OPTION's text, never
-  // `includes`: a widget that committed 'United States Minor Outlying Islands'
-  // after a 'United States' click would still false-pass an includes check —
-  // the misfill-reported-as-success class stays dead.
-  // Non-input widgets report their textContent TRIMMED (review fix, minors 17)
-  // — the normalized-equality verdict is unaffected either way.
-  let committed = input !== null ? input.value : (el.textContent ?? '').trim()
-  // C2 (Greenhouse): a successful react-select commit leaves input.value EMPTY
-  // — the committed text lives in the widget's visible value container. Only
-  // an EMPTY input consults the structural fallback; a non-empty input.value
-  // stays authoritative, so the Ashby arm's verification is untouched (B1c).
-  if (input !== null && committed === '') {
-    committed = visibleCommittedText(input, optionText, preTexts) ?? ''
+
+  // Step 1, CLOSED: the listbox the Option came from and any listbox now
+  // attributable to the control are gone or hidden, or the control reports
+  // aria-expanded="false". Re-querying attribution catches a widget that
+  // re-rendered a fresh, still-open menu in place of the old one.
+  const closed = (): boolean =>
+    expandedOwner(el).getAttribute('aria-expanded') === 'false'
+    || (!menuVisible(hitListbox) && !menuVisible(attributableListbox(document, el, before)))
+  const closeBy = Date.now() + COMMIT_SETTLE_MS
+  while (!closed()) {
+    if (Date.now() >= closeBy) return failClosed('no-commit')
+    await wait(COMBOBOX_POLL_MS)
   }
-  if (norm(committed) !== optionText) return failClosed('no-matching-option')
+
+  // Step 2, EVIDENCE. B1c: EXACT normalized equality against the CLICKED
+  // OPTION's text, never `includes`: a widget that committed 'United States
+  // Minor Outlying Islands' after a 'United States' click would still
+  // false-pass an includes check.
+  if (input === null) {
+    // Non-input widgets report their textContent TRIMMED (review fix, minors 17).
+    const shown = (el.textContent ?? '').trim()
+    if (norm(shown) !== optionText) return failClosed('no-commit')
+    return { ok: true, committed: shown === value ? null : shown }
+  }
+  let committed: string | null = null
+  if (input.value === '') {
+    // (a) C2 (Greenhouse): react-select CLEARS its input and renders the
+    // Option in a visible value container.
+    committed = visibleCommittedText(input, optionText, preTexts)
+  } else if (norm(input.value) === optionText && input.value !== preCommit) {
+    // (b) The widget rewrote the input into the Option's text.
+    committed = input.value
+  } else if (norm(input.value) === optionText) {
+    // (c) The input already held the Option's text. Only a blur tells a commit
+    // (kept) from a discarded typeahead (cleared).
+    if (document.activeElement !== input) input.focus()
+    input.blur()
+    await nextFrame()
+    if (norm(input.value) === optionText) committed = input.value
+  }
+  if (committed === null) return failClosed('no-commit')
   return { ok: true, committed: committed === value ? null : committed }
 }
 
@@ -526,15 +625,37 @@ export async function fillOne(el: Element, value: string): Promise<FillOutcome> 
   return { ok: false, reason: 'unsupported-widget' }
 }
 
+/** A Control a choice Fill drives: a dropdown, a native select, a radio or a
+ *  checkbox (choice widgets and checkbox groups ride on the latter two). */
+function isChoiceControl(el: Element): boolean {
+  return el.getAttribute('role') === 'combobox'
+    || el.getAttribute('aria-haspopup') === 'listbox'
+    || el instanceof HTMLSelectElement
+    || (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))
+}
+
+/**
+ * Fills run strictly one after another (D3). Between two consecutive choice
+ * Fills the page gets a settle wait — quiet for 100 ms, at most
+ * CHOICE_GAP_SETTLE_MS — so a menu still animating shut is not overlapped.
+ */
 export async function fillFields(
   root: Document,
   fills: { handle: FieldHandle; value: string }[],
 ): Promise<Omit<FillReport, 'epoch'>> {
   const filled: { handle: FieldHandle; committed: string | null }[] = []
   const failed: { handle: FieldHandle; reason: string }[] = []
+  let previousWasChoice = false
   for (const f of fills) {
     const el = elementByFid(root, f.handle.fid)
-    if (el === null) { failed.push({ handle: f.handle, reason: 'element-not-found' }); continue }
+    if (el === null) {
+      failed.push({ handle: f.handle, reason: 'element-not-found' })
+      previousWasChoice = false
+      continue
+    }
+    const choice = isChoiceControl(el)
+    if (choice && previousWasChoice) await waitForSettle(root, { quietMs: 100, maxMs: CHOICE_GAP_SETTLE_MS })
+    previousWasChoice = choice
     const out = await fillOne(el, f.value)
     if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null })
     else failed.push({ handle: f.handle, reason: out.reason })
