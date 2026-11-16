@@ -16,23 +16,64 @@ const DERIVED_YES_NO: ReadonlySet<FieldKey> = new Set(['workAuth', 'sponsorshipN
 
 /**
  * The form a Value is learned and looked up under, so the same Value in either
- * language meets the same wordings: a yes or a no as `yes` or `no`, a country
- * by its ISO 3166 code, anything else through `norm`. A derived answer is
- * learned only for its yes or no; any other Value of such a key gives null.
+ * language meets the same wordings: a yes or a no as `yn:yes` or `yn:no`, a
+ * country by its ISO 3166 code as `cc:<code>`, anything else through `norm`.
+ * The prefixes keep Norway (`cc:no`) apart from a residence answer of no
+ * (`yn:no`) under the same `country` key. A derived answer is learned only for
+ * its yes or no; any other Value of such a key gives null.
  */
 export function learnedValueOf(key: FieldKey, value: string): string | null {
   const yesNo = yesNoOf(value)
-  if (yesNo !== null) return yesNo
+  if (yesNo !== null) return `yn:${yesNo}`
   if (DERIVED_YES_NO.has(key)) return null
-  if (VALUE_TYPE_OF[key] === 'place') return countryCode(value) ?? norm(value)
+  if (VALUE_TYPE_OF[key] === 'place') {
+    const code = countryCode(value)
+    if (code !== null) return `cc:${code}`
+  }
   const n = norm(value)
   return n === '' ? null : n
 }
 
-/** Stores the wording the user accepted. False when the Value is not one a wording can be learned for. */
+/**
+ * The yes or the no a wording reads as: the whole of it ("No"), or its first
+ * word ("No, I am not authorized", "Sim, posso"); null for any other text.
+ */
+export function yesNoReading(wording: string): 'yes' | 'no' | null {
+  const whole = yesNoOf(wording)
+  if (whole !== null) return whole
+  const first = wording.trim().split(/[\s,.;:!?()/\-–—]+/)[0] ?? ''
+  return first === '' ? null : yesNoOf(first)
+}
+
+/**
+ * Whether a wording plainly gives a different answer from the Value it would
+ * be learned for. A user who picks the opposite Option for one role has
+ * answered that role, not taught a new way to say the stored Value; learning
+ * it would make the next Fill commit the opposite answer with no review.
+ */
+function contradicts(db: Database.Database, key: FieldKey, value: string, wording: string): boolean {
+  const reads = yesNoReading(wording)
+  const valueYesNo = yesNoOf(value)
+  if (reads !== null && reads !== valueYesNo) return true
+  if (valueYesNo !== null) {
+    const other = valueYesNo === 'yes' ? 'yn:no' : 'yn:yes'
+    if (getLearnedWordings(db, key, other).some((w) => norm(w) === norm(wording))) return true
+  }
+  if (VALUE_TYPE_OF[key] === 'place') {
+    const named = countryCode(wording)
+    if (named !== null && named !== countryCode(value)) return true
+  }
+  return false
+}
+
+/**
+ * Stores the wording the user accepted. False when the Value is not one a
+ * wording can be learned for, or when the wording gives a different answer.
+ */
 export function learnWording(db: Database.Database, p: LearnWordingParams): boolean {
   const value = learnedValueOf(p.key, p.value)
   if (value === null || p.wording.trim() === '') return false
+  if (contradicts(db, p.key, p.value, p.wording)) return false
   saveLearnedWording(db, p.key, value, p.wording)
   return true
 }

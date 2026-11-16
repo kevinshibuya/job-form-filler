@@ -27,6 +27,10 @@ export function wordingToLearn(
   const { key } = resolution
   if (key === null || resolution.answerId !== null || NOT_A_KEY_VALUE.has(resolution.source)) return null
   if (how === 'accept' && resolution.standsFor === undefined) return null
+  // An Accept teaches only the model's own pick. A user who changed it before
+  // accepting answered this role differently; that is not a wording of the
+  // stored Value, and learning it would auto-fill the change everywhere.
+  if (how === 'accept' && norm(committed) !== norm(resolution.value ?? '')) return null
   const value = resolution.standsFor ?? resolution.value ?? resolution.identifiedValue
   if (value === undefined || value === null || value.trim() === '') return null
   if (committed.includes('\n')) return null

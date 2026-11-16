@@ -5,6 +5,7 @@ import { openDb, setAnswerBank, setProfile, upsertAnswer } from '../db/repos.js'
 import { handleRequest, type HandlerDeps } from '../handlers.js'
 import { resolveModels } from '../llm/models.js'
 import { normalizeQuestion } from './normalize.js'
+import { learnedValueOf, learnedWordingsFor } from './learnedWordings.js'
 
 // Ticket #35 at the Native host seam (spec #6, testing decision 2): an Option
 // the user accepted for a Field answered from a Known key is stored as a
@@ -205,6 +206,55 @@ describe('a Saved answer that equals none of the Options', () => {
     })
     const r = await resolved(field(RELOCATE, 'select', RELOCATE_OPTIONS))
     expect(r).toMatchObject({ tier: 'needs_input', value: null, answerId: id, identifiedValue: 'Happy to move for the right role.' })
+  })
+})
+
+describe('a wording that gives a different answer from the Value is never learned', () => {
+  const STAY = 'No, I prefer to stay where I am'
+
+  it('an Option that opens with the opposite yes or no is refused, and the next Resolution does not carry it', async () => {
+    expect(await learn('relocate', 'Yes', STAY)).toEqual({ learned: false })
+    const r = await resolved(field(RELOCATE, 'select', RELOCATE_OPTIONS))
+    expect(r.candidates).not.toContain(STAY)
+  })
+
+  it('a bare opposite word is refused, so a plain Yes/No dropdown never turns ambiguous', async () => {
+    expect(await learn('relocate', 'Yes', 'No')).toEqual({ learned: false })
+    expect(learnedWordingsFor(db, 'relocate', 'Yes')).toEqual([])
+  })
+
+  it('the same in Portuguese', async () => {
+    expect(await learn('relocate', 'Sim', 'Não, prefiro ficar onde estou')).toEqual({ learned: false })
+  })
+
+  it('a work-authorization no picked for a derived yes is refused, so the next Fill never claims it alone', async () => {
+    expect(await learn('workAuth', 'Yes', 'No, I am not authorized')).toEqual({ learned: false })
+    const r = await resolved(field('Are you legally authorized to work in Germany?', 'select', ['Select...', 'Yes, I am authorized', 'No, I am not authorized']))
+    expect(r).toMatchObject({ key: 'workAuth', value: 'Yes' })
+    expect(r.candidates).not.toContain('No, I am not authorized')
+  })
+
+  it('a wording already learned for the other answer is refused', async () => {
+    expect(await learn('relocate', 'No', 'I would rather not')).toEqual({ learned: true })
+    expect(await learn('relocate', 'Yes', 'I would rather not')).toEqual({ learned: false })
+  })
+
+  it('a yes or a no is never learned for a place', async () => {
+    expect(await learn('country', 'France', 'Yes')).toEqual({ learned: false })
+  })
+
+  it('another country is never learned for a country', async () => {
+    expect(await learn('country', 'France', 'Germany')).toEqual({ learned: false })
+    expect(await learn('country', 'France', 'République française')).toEqual({ learned: true })
+  })
+})
+
+describe('a country code and a yes or no under the same key', () => {
+  it('are learned under different forms, so Norway never meets a residence no', async () => {
+    expect(learnedValueOf('country', 'Norway')).not.toBe(learnedValueOf('country', 'No'))
+    await learn('country', 'Norway', 'Kingdom of Norway')
+    expect(learnedWordingsFor(db, 'country', 'No')).toEqual([])
+    expect(learnedWordingsFor(db, 'country', 'Norway')).toEqual(['Kingdom of Norway'])
   })
 })
 

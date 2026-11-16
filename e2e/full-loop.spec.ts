@@ -349,7 +349,7 @@ test('an accepted Option is remembered as a Learned wording, and the next Scan f
     await row.getByRole('button', { name: 'Accept' }).click()
     await expect(target.locator('#relocate')).toHaveValue('open')
     await expect(row).toHaveAttribute('data-jff-tier', 'auto')
-    await expect.poll(learned, { timeout: 30_000 }).toEqual([{ field_key: 'relocate', value: 'yes', wording: OPEN }])
+    await expect.poll(learned, { timeout: 30_000 }).toEqual([{ field_key: 'relocate', value: 'yn:yes', wording: OPEN }])
     await panel.close()
 
     // LOAD THE FORM AGAIN: nothing is on the page, and no answer was saved.

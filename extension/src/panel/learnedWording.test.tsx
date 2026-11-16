@@ -75,10 +75,21 @@ describe('a relocation Value whose Fill missed on a dropdown that says yes in it
     await mountScanned()
     await waitFor(() => { expect(host.picks).toHaveLength(1) })
     expect(tierOf(RELOCATE)).toBe('needs_input')
-    fireEvent.change(screen.getByLabelText(RELOCATE), { target: { value: STAY } })
+    fireEvent.change(screen.getByLabelText(RELOCATE), { target: { value: OPEN } })
     fireEvent.click(within(row(RELOCATE)).getByRole('button', { name: 'Fill' }))
+    await waitFor(() => { expect(host.page[0]).toBe(OPEN) })
+    await waitFor(() => { expect(host.learned).toEqual([{ key: 'relocate', value: 'Yes', wording: OPEN }]) })
+  })
+
+  it('an Accept the user changed to another Option first stores nothing: that answers this role, it is no wording of the stored Value', async () => {
+    host.pick = () => ({ position: 1 })
+    await mountScanned()
+    await waitFor(() => { expect(tierOf(RELOCATE)).toBe('proposed') })
+    fireEvent.change(screen.getByLabelText(RELOCATE), { target: { value: STAY } })
+    fireEvent.click(within(row(RELOCATE)).getByRole('button', { name: 'Accept' }))
     await waitFor(() => { expect(host.page[0]).toBe(STAY) })
-    await waitFor(() => { expect(host.learned).toEqual([{ key: 'relocate', value: 'Yes', wording: STAY }]) })
+    await settle()
+    expect(host.learned).toEqual([])
   })
 
   it('text typed into the picker that is none of the Options is never learned', async () => {
