@@ -1639,6 +1639,9 @@ describe('App — onboarding gate (O1/O3)', () => {
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)
+    await waitFor(() => expect(document.querySelector('[data-jff-onboarding]')).toBeNull())
+    expect(scanCount()).toBe(0)
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan' }))
     await waitFor(() => expect(scanCount()).toBe(1))
     const set = calls.find((c) => c.method === 'profile.set')
     expect((set?.params as { values: Record<string, string> }).values).toMatchObject({ country: 'United Kingdom' })
@@ -1752,7 +1755,8 @@ describe('App — onboarding gate (O1/O3)', () => {
     expect(document.querySelector('[data-jff-onboarding]')).toBeNull()
   })
 
-  it('Finish persists the facts and unlocks exactly one scan', async () => {
+  // PR #36 manual pass: Finish scanned whatever tab was displayed (a search page).
+  it('Finish persists the facts and unlocks Scan, but scans nothing until it is clicked', async () => {
     await clearResume()
     const calls: string[] = []
     window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
@@ -1774,6 +1778,12 @@ describe('App — onboarding gate (O1/O3)', () => {
     fireEvent.click(finish)
     await waitFor(() => expect(calls).toContain('profile.set'))
     await waitFor(() => expect(document.querySelector('[data-jff-onboarding]')).toBeNull())
+    await new Promise((r) => setTimeout(r, 100))
+    expect(scanCount()).toBe(0)
+    expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).not.toBe('connecting')
+    const scan = await screen.findByRole('button', { name: 'Scan' })
+    await waitFor(() => expect((scan as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(scan)
     await waitFor(() => expect(scanCount()).toBe(1))
   })
 
@@ -2266,6 +2276,42 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await waitFor(() => { expect(sessionAttr()).toBe('none') })
     expect(screen.getByText(EMPTY_COPY)).toBeTruthy()
     expect(state.marks).toHaveLength(0)
+  })
+
+  // PR #36 manual pass: a new tab scanned its own blank page, minted a session
+  // for it, and the posting it then loaded parked that session.
+  it('a new tab off the web starts no session; the posting it loads waits for a Scan click', async () => {
+    let tab = { id: 7, url: 'chrome://newtab/', title: 'New Tab' }
+    tabsGet().mockImplementation(async () => tab)
+    installScan(() => tab.url)
+    render(<App />)
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(scanCount()).toBe(0)
+    expect(row(7)).toBeUndefined()
+
+    tab = { id: 7, url: APPLY_A, title: 'Engineer at Acme' }
+    await commit(7, APPLY_A)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(scanCount()).toBe(0)
+    expect(row(7)).toBeUndefined()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(APPLY_A) })
+    expect(row(7)?.parked).toBe(false)
+  })
+
+  it('after Discard, a navigation on the tab starts no scan', async () => {
+    installScan()
+    await mountScanned()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard session' }))
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    const scansBefore = scanCount()
+    await commit(7, JOB_B)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(scanCount()).toBe(scansBefore)
+    expect(row(7)).toBeUndefined()
   })
 
   it('never marks job A once the same tab moved on to job B (Task 5 boundary defect)', async () => {

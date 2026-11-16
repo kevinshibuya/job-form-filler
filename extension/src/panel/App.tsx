@@ -268,6 +268,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // The GLOBAL single-flight latch: tab switching must never multiply the paid
   // `claude -p` resolves.
   const scanningRef = useRef(false)
+  /** The tab the running scan is for; null while none runs. */
+  const scanTargetRef = useRef<number | null>(null)
   // S7: re-scans the latch could not run yet, oldest first. Membership is the
   // ORDER; `pendingRescan` on the runtime is the validity bit.
   const rescanQueueRef = useRef<number[]>([])
@@ -295,6 +297,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [hostError, setHostError] = useState<string | null>(null)
   const [booted, setBooted] = useState(false)
   const [scanNonce, setScanNonce] = useState(0)
+  /** The onboarding wall was shown: the first scan effect after Finish scans nothing. */
+  const wallShownRef = useRef(false)
   const [scanning, setScanning] = useState(false)
   const [view, setView] = useState<'session' | 'editor' | 'applications'>('session')
   const [facts, setFacts] = useState<Record<string, string>>({})
@@ -691,11 +695,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
     const record = (): void => { lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() }) }
 
-    // Lifecycle table: a session is created lazily on a Scan click OR a
-    // navigation. A brand-new one has `site === ''`, so the empty-start exception
-    // below classifies this nav as same-site and the re-scan captures the start
-    // url — exactly the path a never-scanned tab needs.
-    const s = sessionRef.current ?? newSession(ev.tabId)
+    // Lifecycle table: a session starts only on the user's act (a Scan click)
+    // and then follows its tab. A tab with no session ignores its navigations,
+    // as a background tab does: a new tab's first commit, or the next posting
+    // after Discard, waits for Scan instead of scanning a page not yet there.
+    // The one exception is a scan already running for this tab that has not
+    // yet made its session: the navigation belongs to that Scan, and the new
+    // page is re-scanned as it would be on a session's own tab.
+    const s = sessionRef.current
+      ?? (scanningRef.current && scanTargetRef.current === ev.tabId ? newSession(ev.tabId) : null)
+    if (s === null) return
     // S5 classification: a wizard step is the TOP frame or the ELECTED frame.
     // Any other subframe is page furniture (ads, chat widgets, payment iframes)
     // and must not touch the session.
@@ -969,6 +978,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // Busy state and re-entry guard flip TOGETHER, before any await: between them
     // the scan is already committed while the button would still read 'Scan'.
     scanningRef.current = true
+    scanTargetRef.current = target
     setScanning(true)
     // B8: at most ONE [data-jff-applied] node ever renders. Clearing the
     // transient post-mark confirmation HERE closes the post-mark → Scan →
@@ -1004,6 +1014,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // The session exists BEFORE the applied.check (ordering rule 2b): a badge
       // hit needs a row to land in, or A4's primary fresh-tab scenario writes the
       // badge into a session that does not exist yet and never renders it.
+      // A page off the web (a new tab, chrome://, a file) is never a posting,
+      // and a session minted for it would park on the real posting's load.
+      if (existing === null && !/^https?:/i.test(url)) {
+        if (inScope(sc)) setScanStatus(null)
+        return
+      }
       if (existing === null) {
         // A2: the FIRST scanned page of this application is the posting URL
         // applied.mark records — wizard step 2's URL is not the posting.
@@ -1241,6 +1257,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       await applyToSession(target, sc.gen, (s) => ({ ...settleWaiting(s, MAPPING_LOST), lastOutcome: outcome, frameReports: reports }))
     } finally {
       scanningRef.current = false
+      scanTargetRef.current = null
       if (mountedRef.current) {
         setScanning(false)
         // The latch is free: hand it to the oldest queued re-scan, in ANY
@@ -1312,7 +1329,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // O3: a profile PROVEN incomplete renders OnboardingView instead of scan UI
     // — no scan may fire. 'unknown' scans anyway: a dead host must never brick
     // an existing user (they see the normal panel plus the host banner).
-    if (completeness === 'incomplete') return
+    if (completeness === 'incomplete') { wallShownRef.current = true; return }
+    // Finish leaves the wall for whatever tab is displayed, which may be any
+    // page: the first scan after it waits for the Scan click.
+    if (wallShownRef.current) { wallShownRef.current = false; setScanStatus(null); return }
     void onScan()
   }, [booted, scanNonce, gateOpen, completeness])
 
@@ -1752,10 +1772,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const b = await port.request('answerBank.set', { values: bank })
     if (!b.ok) { setHostError(hostErrorText(b.error)); return }
     setFacts((f) => ({ ...f, ...profile, ...bank }))
-    // The gate's one sanctioned exit; the nonce re-fires the (blocked) auto-scan
-    // effect exactly once.
+    // The gate's one sanctioned exit. It scans nothing: the displayed tab may
+    // be any page, so the first scan waits for the Scan click.
     setCompleteness('complete')
-    setScanNonce((n) => n + 1)
   }
 
   /** S5: end the session and delete its row. Un-debounced by construction —
