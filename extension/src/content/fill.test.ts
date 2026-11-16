@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setNativeValue, fillOne, fillFields, fillFile } from './fill'
 import { enumerateFields, type MeasureFn } from './enumerate'
+import { loadRealFixture } from './fixtures/real'
 import {
   ASHBY_CHOICE_RADIO, ASHBY_YESNO_EN, ASHBY_YESNO_PT, CHOICE_FORM_WRAPPED,
   CHOICE_RADIO_OPAQUE_VALUES, CHOICE_SUBMIT_WORDED, STYLED_HIDDEN_CHECKBOX, TWO_OPEN_COMBOBOX,
@@ -172,6 +173,8 @@ describe('fillOne', () => {
     for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
       o.addEventListener('click', () => picked.push(o.textContent ?? ''))
       o.addEventListener('click', () => { combo.textContent = o.textContent })
+      // The commit closes the menu, as the widget this models does.
+      o.addEventListener('click', () => document.getElementById('lb')?.remove())
     }
     await expect(fillOne(combo, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
     expect(picked).toEqual(['Portugal'])
@@ -350,6 +353,11 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
     for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
       o.addEventListener('click', () => otherOptions.push(o.textContent ?? ''))
     }
+    // cb-b closes its menu on Escape, as real widgets do, so the close before
+    // cb-a's open leaves it mounted but hidden: still never attributable to cb-a.
+    document.getElementById('cb-b')!.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') document.getElementById('lb-b')!.hidden = true
+    })
     const a = document.getElementById('cb-a') as HTMLInputElement
     // cb-a owns no listbox and none appears for it: attribution fails, the fill
     // fails — and cb-b's mounted listbox is NEVER consulted (the old
@@ -369,7 +377,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
         const o = document.createElement('li')
         o.setAttribute('role', 'option')
         o.textContent = t
-        o.addEventListener('click', () => setNativeValue(el, t))
+        o.addEventListener('click', () => { setNativeValue(el, t); lb.remove() })
         lb.appendChild(o)
       }
       el.parentElement!.appendChild(lb)
@@ -392,7 +400,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       const o = document.createElement('li')
       o.setAttribute('role', 'option')
       o.textContent = 'Portugal'
-      o.addEventListener('click', () => setNativeValue(el, 'Portugal'))
+      o.addEventListener('click', () => { setNativeValue(el, 'Portugal'); lb.remove() })
       lb.appendChild(o)
     })
     await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
@@ -407,7 +415,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       </div>`
     const el = document.getElementById('c') as HTMLInputElement
     for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
-      o.addEventListener('click', () => setNativeValue(el, o.textContent ?? ''))
+      o.addEventListener('click', () => { setNativeValue(el, o.textContent ?? ''); document.getElementById('lb')?.remove() })
     }
     await expect(fillOne(el, 'bra')).resolves.toEqual({ ok: true, committed: 'Brazil' })
     expect(el.value).toBe('Brazil')
@@ -442,7 +450,9 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
           const o = document.createElement('li')
           o.setAttribute('role', 'option')
           o.textContent = t
-          o.addEventListener('click', () => setNativeValue(el, t))
+          // The commit writes the input and closes the menu; it fires no input
+          // event, so the typeahead does not re-mount a list behind it.
+          o.addEventListener('click', () => { el.value = t; lb.remove() })
           lb.appendChild(o)
         }
         el.parentElement!.appendChild(lb)
@@ -460,7 +470,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       </div>`
     const el = document.getElementById('c') as HTMLInputElement
     // The option click commits NOTHING (a controlled widget that ignored us).
-    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: false, reason: 'no-commit' })
     expect(el.value).toBe('Kept')
   })
 
@@ -670,7 +680,10 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
       control.appendChild(lb)
     }
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-      control.addEventListener(type, () => {
+      control.addEventListener(type, (e) => {
+        // The commit gesture on an Option bubbles up here; react-select never
+        // re-opens the menu that Option just closed.
+        if (e.target instanceof Element && e.target.closest('[role="listbox"]') !== null) return
         seen.add(type)
         // Opens ONLY once the full gesture arrived (C1: el.click() alone and a
         // lone mousedown are both no-ops on the real widget).
@@ -725,7 +738,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     // the only 'Other' text left on the page lives inside listboxes. The fill
     // must fail closed, not false-verify off the decoy.
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false })
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
     expect(input.value).toBe('')
   }, 10_000)
 
@@ -734,14 +747,14 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     // clears the input but updates nothing. Text that did not CHANGE INTO the
     // option is not evidence the widget committed anything.
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false, staleText: 'Other' })
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
   }, 10_000)
 
   it('a HIDDEN value container never verifies a commit', async () => {
     // The holder receives the committed text but is display:none — invisible
     // text is not the page-visible commit the verification promises.
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { hiddenHolder: true })
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
   }, 10_000)
 
   it("a failed commit restores a PREFILLED answer — the user's text, not '' — before Escape", async () => {
@@ -757,11 +770,205 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     input.addEventListener('input', () => seq.push('input'))
     input.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Escape') seq.push('escape') })
 
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
 
     expect(input.value).toBe(PREFILL)
     // …and the restore write landed BEFORE the close, or the input event it
     // fires would re-open the dropdown Escape just closed.
     expect(seq.slice(-2)).toEqual(['input', 'escape'])
+  }, 10_000)
+})
+
+describe('combobox verdict', () => {
+  const OPTION = "Bachelor's Degree"
+  type Commit = 'stubborn' | 'close-without-commit' | 'react-select' | 'rewrite' | 'exact' | 'hide-and-rewrite'
+
+  /** Type-to-load: the menu mounts only after an input event with a non-empty
+   *  value, never on the open gesture, so the Fill always types. Escape
+   *  unmounts the menu, as real widgets do. `commit` is what the Option does
+   *  when the Fill commits it. */
+  function mountTypeToLoad(commit: Commit): HTMLInputElement {
+    document.body.innerHTML = '<div id="wrap"><input id="c" role="combobox" aria-controls="lb"></div>'
+    const wrap = document.getElementById('wrap')!
+    const input = document.getElementById('c') as HTMLInputElement
+    const removeMenu = (): void => { document.getElementById('lb')?.remove() }
+    input.addEventListener('input', () => {
+      removeMenu()
+      if (input.value === '') return
+      const lb = document.createElement('ul')
+      lb.id = 'lb'
+      lb.setAttribute('role', 'listbox')
+      const li = document.createElement('li')
+      li.setAttribute('role', 'option')
+      li.textContent = OPTION
+      li.addEventListener('click', () => {
+        if (commit === 'stubborn') return
+        if (commit === 'react-select') {
+          input.value = ''
+          const shown = document.createElement('div')
+          shown.className = 'single-value'
+          shown.textContent = OPTION
+          wrap.insertBefore(shown, input)
+        }
+        if (commit === 'rewrite' || commit === 'hide-and-rewrite') input.value = OPTION
+        if (commit === 'hide-and-rewrite') lb.hidden = true
+        else removeMenu()
+      })
+      lb.appendChild(li)
+      wrap.appendChild(lb)
+    })
+    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') removeMenu() })
+    // A discarded typeahead is cleared on blur.
+    if (commit === 'close-without-commit') input.addEventListener('blur', () => { input.value = '' })
+    return input
+  }
+
+  it('stubborn: the Option ignores the commit and the menu stays, so the Fill fails as no-commit and restores', async () => {
+    const input = mountTypeToLoad('stubborn')
+    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    expect(document.querySelector('[role="listbox"]')).toBeNull()
+    expect(input.value).toBe('')
+  }, 10_000)
+
+  it('close-without-commit: the menu closes, a blur clears the typed text, so the Fill fails as no-commit', async () => {
+    const input = mountTypeToLoad('close-without-commit')
+    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    expect(document.querySelector('[role="listbox"]')).toBeNull()
+    expect(input.value).toBe('')
+  }, 10_000)
+
+  it('honest react-select: the input is emptied and the Option shows in a value container', async () => {
+    const input = mountTypeToLoad('react-select')
+    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: true, committed: null })
+    expect(document.querySelector('.single-value')!.textContent).toBe(OPTION)
+  }, 10_000)
+
+  it('honest rewrite: a typed prefix is rewritten into the Option, and the Fill reports the page text', async () => {
+    const input = mountTypeToLoad('rewrite')
+    await expect(fillOne(input, 'bachelor')).resolves.toEqual({ ok: true, committed: OPTION })
+    expect(input.value).toBe(OPTION)
+  }, 10_000)
+
+  it('honest exact: a typed text equal to the Option survives the blur', async () => {
+    const input = mountTypeToLoad('exact')
+    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: true, committed: null })
+    expect(input.value).toBe(OPTION)
+  }, 10_000)
+
+  it('a menu hidden but still mounted after the commit counts as closed', async () => {
+    const input = mountTypeToLoad('hide-and-rewrite')
+    await expect(fillOne(input, 'bachelor')).resolves.toEqual({ ok: true, committed: OPTION })
+    expect(document.getElementById('lb')).not.toBeNull()
+  }, 10_000)
+
+  /** A combobox that opens on a click: its menu mounts `openMs` after the open
+   *  gesture, and an Option click writes the input and unmounts the menu
+   *  `closeMs` later. Escape unmounts it at once. */
+  function clickCombo(
+    id: string,
+    options: string[],
+    { openMs = 0, closeMs = 0, onClosed = (): void => {} } = {},
+  ): HTMLInputElement {
+    const input = document.getElementById(id) as HTMLInputElement
+    const lbId = `${id}-lb`
+    input.setAttribute('aria-controls', lbId)
+    const later = (ms: number, fn: () => void): void => { if (ms === 0) fn(); else setTimeout(fn, ms) }
+    const close = (): void => {
+      const lb = document.getElementById(lbId)
+      if (lb === null) return
+      lb.remove()
+      onClosed()
+    }
+    input.addEventListener('click', () => later(openMs, () => {
+      if (document.getElementById(lbId) !== null) return
+      const lb = document.createElement('ul')
+      lb.id = lbId
+      lb.setAttribute('role', 'listbox')
+      for (const t of options) {
+        const li = document.createElement('li')
+        li.setAttribute('role', 'option')
+        li.textContent = t
+        li.addEventListener('click', () => { input.value = t; later(closeMs, close) })
+        lb.appendChild(li)
+      }
+      input.parentElement!.appendChild(lb)
+    }))
+    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
+    return input
+  }
+
+  const FOREIGN = `
+    <div><input id="other" role="combobox" aria-controls="foreign">
+      <ul id="foreign" role="listbox"><li role="option">English</li></ul></div>
+    <div><input id="c" role="combobox"></div>`
+
+  it('a menu another Control left open, whose owner ignores Escape: listbox-left-open, and this Control is never opened', async () => {
+    document.body.innerHTML = FOREIGN
+    const input = clickCombo('c', ['Brazil', 'Portugal'])
+    const opened = vi.fn()
+    input.addEventListener('mousedown', opened)
+    await expect(fillOne(input, 'Portugal')).resolves.toEqual({ ok: false, reason: 'listbox-left-open' })
+    expect(opened).not.toHaveBeenCalled()
+    expect(input.value).toBe('')
+  }, 10_000)
+
+  it('a menu another Control left open, whose owner honours Escape, is gone before the open gesture and the Fill succeeds', async () => {
+    document.body.innerHTML = FOREIGN
+    const other = document.getElementById('other')!
+    other.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.getElementById('foreign')?.remove() })
+    const input = clickCombo('c', ['Brazil', 'Portugal'])
+    const foreignAtOpen: boolean[] = []
+    input.addEventListener('mousedown', () => foreignAtOpen.push(document.getElementById('foreign') !== null))
+    await expect(fillOne(input, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
+    expect(foreignAtOpen).toEqual([false])
+    expect(input.value).toBe('Portugal')
+  }, 10_000)
+
+  it('two dropdowns filled in one call, menus opening in 20 ms and closing in 200 ms: both filled, never two menus visible', async () => {
+    document.body.innerHTML = `
+      <label for="a">Country</label><div><input id="a" role="combobox"></div>
+      <label for="b">Language</label><div><input id="b" role="combobox"></div>`
+    const log: string[] = []
+    const a = clickCombo('a', ['Brazil', 'Portugal'], { openMs: 20, closeMs: 200, onClosed: () => log.push('a-closed') })
+    const b = clickCombo('b', ['English', 'Portuguese'], { openMs: 20, closeMs: 200, onClosed: () => log.push('b-closed') })
+    b.addEventListener('pointerdown', () => log.push('b-open'))
+    const { fields } = enumerateFields({ root: document, epoch: 2, measure: allVisible })
+    const fidOf = (label: string): number => fields.find((f) => f.label === label)!.fid
+    let most = 0
+    const observer = new MutationObserver(() => {
+      most = Math.max(most, document.querySelectorAll('[role="listbox"]').length)
+    })
+    observer.observe(document.body, { subtree: true, childList: true })
+    try {
+      const report = await fillFields(document, [
+        { handle: { frameId: 0, fid: fidOf('Country'), epoch: 2 }, value: 'Portugal' },
+        { handle: { frameId: 0, fid: fidOf('Language'), epoch: 2 }, value: 'English' },
+      ])
+      expect(report.failed).toEqual([])
+      expect(report.filled).toHaveLength(2)
+      expect(a.value).toBe('Portugal')
+      expect(b.value).toBe('English')
+      expect(log.indexOf('a-closed')).toBeGreaterThanOrEqual(0)
+      expect(log.indexOf('a-closed')).toBeLessThan(log.indexOf('b-open'))
+      expect(most).toBe(1)
+    } finally {
+      observer.disconnect()
+    }
+  }, 10_000)
+
+  it("a page that keeps a hidden menu mounted, as a phone box's closed flag list, never fails a Fill as listbox-left-open", async () => {
+    loadRealFixture('greenhouse-self-id')
+    // The capture drops the stylesheet intl-tel-input ships; on the live page
+    // this rule is what hides the closed flag list.
+    const style = document.createElement('style')
+    style.textContent = '.iti__hide { display: none; }'
+    document.head.appendChild(style)
+    expect(document.getElementById('iti-0__country-listbox')).not.toBeNull()
+    const host = document.createElement('div')
+    host.innerHTML = '<input id="c" role="combobox">'
+    document.body.appendChild(host)
+    const input = clickCombo('c', ['Brazil', 'Portugal'])
+    await expect(fillOne(input, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
+    expect(document.getElementById('iti-0__country-listbox')).not.toBeNull()
   }, 10_000)
 })
