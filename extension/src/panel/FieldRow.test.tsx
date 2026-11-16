@@ -226,6 +226,20 @@ describe('FieldRow — kind-aware editors (A9)', () => {
     expect(document.querySelector('[data-jff-editor="picker"]')).not.toBeNull()
   })
 
+  // PR #36 manual pass 3: after a manual Fill put an Option on the page, the
+  // row still said no Option matched.
+  it('a Needs input row whose Fill put its value on the page drops the miss hint and reads filled', () => {
+    const opts = ['No – not required', 'Yes – now']
+    const r = row(field({ kind: 'combobox', options: opts }), resolution({ tier: 'needs_input', value: 'Yes – now', reason: 'no-matching-option' }))
+    const { unmount } = render(<ul><FieldRow row={r} {...props} filled={false} /></ul>)
+    expect(document.querySelector('[data-jff-hint]')?.textContent).toBe(NO_MATCH_PICK_HINT)
+    unmount()
+    render(<ul><FieldRow row={r} {...props} filled /></ul>)
+    expect(document.querySelector('[data-jff-hint]')).toBeNull()
+    expect(document.querySelector('[data-jff-tier-badge]')?.textContent).toBe('filled')
+    expect(document.querySelector('[data-jff-editor="options"]')).toBeNull()
+  })
+
   it('a dropdown with more than 12 Options, or a filled row, lists no buttons', () => {
     const many = Array.from({ length: 13 }, (_, i) => `Option ${i}`)
     const r = row(field({ kind: 'combobox', options: many }), resolution({ tier: 'needs_input', value: null, source: null }))

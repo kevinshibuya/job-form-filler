@@ -254,3 +254,24 @@ describe('a manual Fill that misses on the row\'s own stored Value', () => {
     expect(host.picks).toHaveLength(1)
   })
 })
+
+// PR #36 manual pass 3: right after an Accept the status line still counted
+// the row as Proposed and nothing as filled, until a reload.
+describe('the status line after an Accept', () => {
+  it('counts the accepted row as filled and no longer as Proposed', async () => {
+    host.nothingPending = false
+    host.fields = [field(0, RELOCATE, { kind: 'combobox' })]
+    host.mappingFor = (fields: EnumField[]) => fields.map((f) => resolution(f, {
+      tier: 'proposed', value: 'Yes', source: 'llm_key', key: 'relocate', reason: 'llm-key:relocate',
+    }))
+    host.offers = { 0: ['Yes', 'No'] }
+    render(<App />)
+    await waitFor(() => { expect(host.held).toHaveLength(1) })
+    await release(host, (h) => mapped(host, h))
+    await waitFor(() => { expect(statusText()).toMatch(/1 proposed/) })
+    fireEvent.click(within(row(RELOCATE)).getByRole('button', { name: 'Accept' }))
+    await waitFor(() => { expect(host.page[0]).toBe('Yes') })
+    await waitFor(() => { expect(statusText()).toMatch(/0 proposed/) })
+    expect(statusText()).toMatch(/1 filled/)
+  })
+})

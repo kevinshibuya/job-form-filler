@@ -209,11 +209,13 @@ function countsOf(filled: number, settled: Resolution[]): ScanCounts {
  * they stand now: a model pick turns a Needs input row Proposed after the
  * Scan's step has settled (ADR 0008). `filled` stays the Fill reports' count.
  */
-function withRowCounts(o: ScanUiState, rows: Resolution[]): ScanUiState {
+function withRowCounts(o: ScanUiState, rows: Resolution[], moreFilled = 0): ScanUiState {
   const proposed = rows.filter((r) => r.tier === 'proposed').length
   const needsInput = rows.filter((r) => r.tier === 'needs_input').length
-  if (o.kind === 'done' || o.kind === 'matching') return { ...o, proposed, needsInput }
-  if (o.kind === 'failed' && o.counts !== undefined) return { ...o, counts: { ...o.counts, proposed, needsInput } }
+  if (o.kind === 'done' || o.kind === 'matching') return { ...o, filled: o.filled + moreFilled, proposed, needsInput }
+  if (o.kind === 'failed' && o.counts !== undefined) {
+    return { ...o, counts: { ...o.counts, filled: o.counts.filled + moreFilled, proposed, needsInput } }
+  }
   return o
 }
 
@@ -1463,12 +1465,24 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // engine === final in buildSaveItems and silently drop every user correction
       // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
       // S4: what the PAGE took is the answer worth carrying — committed text wins.
-      await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
-        ...s,
-        fields: readOn(s, row, out),
-        edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
-        resolutions: s.resolutions.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)),
-      }, ref, committed ?? value, 'user'))
+      // The status line counts the accepted row as filled and no longer Proposed.
+      const recounted: { outcome: ScanUiState | null } = { outcome: null }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        const resolutions = s.resolutions.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r))
+        recounted.outcome = s.lastOutcome === null ? null : withRowCounts(s.lastOutcome, resolutions, 1)
+        return rememberAnswer({
+          ...s,
+          fields: readOn(s, row, out),
+          edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
+          resolutions,
+          lastOutcome: recounted.outcome ?? s.lastOutcome,
+        }, ref, committed ?? value, 'user')
+      })
+      const shown = recounted.outcome
+      if (shown !== null && inScope(sc)) {
+        lastOutcomeRef.current = shown
+        setScanStatus((st) => (st !== null && st.kind === 'action_failed' ? st : shown))
+      }
       // Accepting an AI key match IS the user confirmation the spec's
       // learned_mappings flow needs: promote it to a deterministic mapping.
       if (row.resolution.source === 'llm_key' && row.resolution.key !== null && row.field.label !== null) {

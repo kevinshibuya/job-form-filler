@@ -206,7 +206,9 @@ export function FieldRow(p: FieldRowProps) {
   // A Needs input row that is not a Prose Field asks about the user, unless it
   // already says why it is theirs (a failed Mapping, a failed Fill).
   const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
-  const hint = resolution.reason === 'no-matching-option' && field.options.length > 0
+  // A value this row's Fill put on the page supersedes the miss it reported.
+  const hint = filled ? undefined
+    : resolution.reason === 'no-matching-option' && field.options.length > 0
     ? NO_MATCH_PICK_HINT
     : REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
 
@@ -233,7 +235,7 @@ export function FieldRow(p: FieldRowProps) {
           data-jff-tier-badge="1"
           className={`rounded-full border border-neutral-200 px-1.5 text-[11px] dark:border-neutral-700 ${MUTED}`}
         >
-          {TIER_BADGE[resolution.tier]}
+          {filled && resolution.tier === 'needs_input' ? TIER_BADGE.auto : TIER_BADGE[resolution.tier]}
         </span>
         {p.foreign === true && (
           <span data-jff-frame-badge="1" className={`rounded-full border border-amber-300 px-1.5 text-[11px] dark:border-amber-600 ${MUTED}`}>
@@ -299,7 +301,7 @@ export function FieldRow(p: FieldRowProps) {
           </datalist>
           {/* A datalist looks like a text box until hovered: a row still to be
               decided lists a few Options as the segmented editor's buttons. */}
-          {resolution.tier !== 'auto' && field.options.length <= OPTION_LIST_MAX && (
+          {resolution.tier !== 'auto' && !filled && field.options.length <= OPTION_LIST_MAX && (
             <div className="mt-1 flex flex-col gap-1" role="group" aria-label="Options" data-jff-editor="options">
               {field.options.map((opt) => {
                 const selected = norm(value) === norm(opt)
