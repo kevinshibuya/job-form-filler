@@ -1,4 +1,4 @@
-import { OptionPickResultSchema, isCheckboxGroup, type EnumField, type FieldHandle, type Resolution } from '@jff/shared'
+import { OPTIONS_READ, OptionPickResultSchema, isCheckboxGroup, type EnumField, type FieldHandle, type Resolution } from '@jff/shared'
 import { refOf } from './group'
 import type { HostPort } from './port'
 
@@ -39,13 +39,31 @@ export function pickOwed(
   miss: { reason: string; options?: string[] },
   sent: string | null = resolution.value,
 ): PickRequest | null {
-  if (miss.reason !== NO_MATCH) return null
   if (resolution.standsFor !== undefined) return null
+  if (resolution.value === null) return readPickOwed(resolution, field, miss)
+  if (miss.reason !== NO_MATCH) return null
   const value = resolution.value
   if (value === null || value.trim() === '' || sent !== value) return null
   if (resolution.source === 'page' || (resolution.key === null && resolution.answerId === null)) return null
   if (field !== undefined && isCheckboxGroup(field)) return null
   const options = miss.options !== undefined && miss.options.length > 0 ? miss.options : field?.options ?? []
+  if (options.length === 0) return null
+  return { handle: resolution.handle, label: field?.label ?? '', value, options }
+}
+
+/**
+ * The pick a read owes (ticket #34): a row with no Value whose stored Value is
+ * identified (Resolution.identifiedValue) was sent to the Fill with no Value,
+ * and the page reported the Control's Options. The pick is asked with the
+ * identified Value over exactly the Options read; with none read, none is
+ * owed. A checkbox group owes one too: the pick is one of its Options.
+ */
+function readPickOwed(
+  resolution: Resolution, field: Pick<EnumField, 'label'> | undefined, read: { reason: string; options?: string[] },
+): PickRequest | null {
+  const value = resolution.identifiedValue
+  if (value === undefined || read.reason !== OPTIONS_READ) return null
+  const options = read.options ?? []
   if (options.length === 0) return null
   return { handle: resolution.handle, label: field?.label ?? '', value, options }
 }
@@ -75,7 +93,8 @@ export async function requestPick(port: HostPort | null | undefined, req: PickRe
  *
  * The outcome lands only on the row the miss left: same Scan, still Needs
  * input with the miss's reason and Value, and nothing the user typed or put on
- * the page since.
+ * the page since. After a read (ticket #34) that row is still Needs input with
+ * no Value and the identified Value the pick was asked with.
  */
 export function landPick<S extends { epoch: number; resolutions: Resolution[]; edits: Record<string, string>; filledRefs: string[] }>(
   s: S, req: PickRequest, outcome: PickOutcome,
@@ -85,12 +104,16 @@ export function landPick<S extends { epoch: number; resolutions: Resolution[]; e
   if (s.edits[ref] !== undefined || s.filledRefs.includes(ref)) return s
   const at = s.resolutions.findIndex((r) => refOf(r.handle) === ref)
   const current = s.resolutions[at]
-  if (current === undefined || current.tier !== 'needs_input' || current.reason !== NO_MATCH || current.value !== req.value) return s
+  if (current === undefined || current.tier !== 'needs_input') return s
+  const asLeft = current.value === null
+    ? current.identifiedValue === req.value
+    : current.reason === NO_MATCH && current.value === req.value
+  if (!asLeft) return s
   const resolutions = [...s.resolutions]
   if (outcome.kind === 'failed') {
     resolutions[at] = { ...current, reason: OPTION_PICK_FAILED }
   } else {
-    const { candidates: _candidates, phone: _phone, city: _city, ...rest } = current
+    const { candidates: _candidates, phone: _phone, city: _city, identifiedValue: _identified, ...rest } = current
     resolutions[at] = { ...rest, tier: 'proposed', value: outcome.option, reason: OPTION_PICK, standsFor: req.value }
   }
   return { ...s, resolutions }

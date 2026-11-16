@@ -11,7 +11,7 @@ import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
 import { matchOptionSet, optionEqualTo } from './choiceSets.js'
 import { canHold, fieldCanHold, keyForField } from './controlKinds.js'
-import { KEY_OF, countryAnswer, countryQuestionOf, type CountryQuestion } from './countryAnswers.js'
+import { KEY_OF, NAMES_REGION, countryAnswer, countryQuestionOf, type CountryQuestion } from './countryAnswers.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
 import { recognize } from './recognizers.js'
 
@@ -56,6 +56,8 @@ function res(f: EnumField, patch: Partial<Resolution> & { tier: Resolution['tier
     ...(patch.fieldClass === undefined ? {} : { fieldClass: patch.fieldClass }),
     // Likewise only a Value with candidate words carries them.
     ...(candidates.length === 0 ? {} : { candidates }),
+    // And only a row with no Value but an identified stored one carries that.
+    ...(patch.identifiedValue === undefined ? {} : { identifiedValue: patch.identifiedValue }),
   }
 }
 
@@ -118,18 +120,19 @@ const SINGLE_CHOICE_KINDS: ReadonlySet<EnumField['kind']> = new Set(['select', '
  */
 function fromAnswer(
   f: EnumField, answer: string, best: 'auto' | 'proposed',
-): { tier: Resolution['tier']; value: string | null; partial: '' | ':partial' | ':no-offered-option' } {
+): { tier: Resolution['tier']; value: string | null; partial: '' | ':partial' | ':no-offered-option'; identifiedValue?: string } {
+  // Equal to no Option, the answer is not the Value; it is what the model pick
+  // is asked with once a Fill has read the Options (ticket #34).
+  const noOffered = { tier: 'needs_input', value: null, partial: ':no-offered-option', identifiedValue: answer } as const
   if (SINGLE_CHOICE_KINDS.has(f.kind) && f.options.length > 0) {
     const option = optionEqualTo(answer, f.options)
-    return option === null
-      ? { tier: 'needs_input', value: null, partial: ':no-offered-option' }
-      : { tier: best, value: option, partial: '' }
+    return option === null ? noOffered : { tier: best, value: option, partial: '' }
   }
   if (!isCheckboxGroup(f)) return { tier: best, value: answer, partial: '' }
   const m = matchOptionSet(answer, f.options)
   if (m.match === 'all') return { tier: best, value: m.value, partial: '' }
   if (m.match === 'some') return { tier: 'proposed', value: m.value, partial: ':partial' }
-  return { tier: 'needs_input', value: null, partial: ':no-offered-option' }
+  return noOffered
 }
 
 /**
@@ -170,7 +173,14 @@ function countryResolution(
 ): Resolution {
   const key = KEY_OF[question]
   const out = countryAnswer(db, question, f.label ?? '', by === 'recognizer' ? 'recognizer' : 'llm-key')
-  if (out.tier === 'needs_input') return res(f, { tier: 'needs_input', key, reason: out.reason })
+  if (out.tier === 'needs_input') {
+    // A region is not read by rule, but the stored Value the question asks
+    // about is known: the model pick is asked with it once a Fill has read the
+    // Options (ticket #34). Authorization and sponsorship ask about the list,
+    // residence about the user's own country.
+    const kv = out.reason === NAMES_REGION ? keyValueOf(db, f, question === 'residence' ? 'country' : 'workAuth') : null
+    return res(f, { tier: 'needs_input', key, reason: out.reason, ...(kv?.kind === 'value' ? { identifiedValue: kv.value } : {}) })
+  }
   const source = by === 'mapping' ? 'llm_key' : isProfileKey(key) ? 'profile' : 'answer_bank'
   return res(f, {
     tier: by === 'mapping' ? 'proposed' : out.tier, source, key,
@@ -183,13 +193,20 @@ interface StepResult {
   byRef: Map<string, Resolution>
 }
 
+/** The identified stored Value of a Resolution patch, when it has one. */
+const identified = (v: string | undefined): Partial<Resolution> => (v === undefined ? {} : { identifiedValue: v })
+
 /**
  * Tiers 0 to 3: everything that needs no model. It is handed no runner, so it
  * cannot call one. A Field it cannot decide comes back in `pending`.
  */
-function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { pending: EnumField[] } {
+function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { pending: EnumField[]; identifiedOf: Map<string, string> } {
   const byRef = new Map<string, Resolution>()
   const unresolved: EnumField[] = []
+  // Pending checkbox groups whose recognized key has a stored Value no Option
+  // equals (ticket #34): Mapping decides them, and whatever it leaves Needs
+  // input still carries that Value for the model pick.
+  const identifiedOf = new Map<string, string>()
 
   for (const f of fields) {
     const ref = refOf(f)
@@ -233,6 +250,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     if (key !== null && isCheckboxGroup(f)) {
       const kv = keyValueOf(db, f, key)
       const option = kv.kind === 'value' ? keyValueFor(f, kv.value) : null
+      if (kv.kind === 'value' && option === null) identifiedOf.set(ref, kv.value)
       if (option !== null) {
         byRef.set(ref, res(f, {
           tier: 'auto', source: isProfileKey(key) ? 'profile' : 'answer_bank',
@@ -261,7 +279,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
             answerId: hit.id, reason: `exact-match:key-fallback${out.partial}`,
           }))
         } else if (out !== null) {
-          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `exact-match:key-fallback${out.partial}` }))
+          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `exact-match:key-fallback${out.partial}`, ...identified(out.identifiedValue) }))
         } else {
           byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `recognizer:${key}:${noValue(kv)}` }))
         }
@@ -279,6 +297,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
         byRef.set(ref, res(f, {
           tier: out.tier, source: out.value === null ? null : 'saved_answer', value: out.value,
           answerId: out.value === null ? null : hit.id, reason: `exact-match${out.partial}`,
+          ...identified(out.identifiedValue),
         }))
         continue
       }
@@ -287,12 +306,12 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     unresolved.push(f)
   }
 
-  return { byRef, pending: unresolved }
+  return { byRef, pending: unresolved, identifiedOf: new Map([...identifiedOf].filter(([ref]) => !byRef.has(ref))) }
 }
 
 /** Tiers 4 and 5: one Mapping call over the given Fields, and none when empty. */
 async function mappingStep(
-  deps: WaterfallDeps, input: WaterfallInput, unresolved: EnumField[],
+  deps: WaterfallDeps, input: WaterfallInput, unresolved: EnumField[], identifiedOf: ReadonlyMap<string, string>,
 ): Promise<StepResult & { llmError: ResolveResult['llmError'] }> {
   const { db } = deps
   const byRef = new Map<string, Resolution>()
@@ -354,8 +373,9 @@ async function mappingStep(
           continue
         }
         if (kv.kind === 'value') {
-          // A group that offers no Option equal to the stored Value.
-          byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:no-offered-option` }))
+          // A group that offers no Option equal to the stored Value, which is
+          // what the model pick is asked with (ticket #34).
+          byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:no-offered-option`, identifiedValue: kv.value }))
           continue
         }
         // B5c, defense in depth: every LABELLED field already tried tier 3
@@ -383,7 +403,7 @@ async function mappingStep(
         if (row !== null && row.reusability === 'reusable') {
           const out = fromAnswer(f, row.answer, 'proposed')
           byRef.set(ref, out.value === null
-            ? res(f, { tier: 'needs_input', reason: `llm-reuse:${row.id}${out.partial}` })
+            ? res(f, { tier: 'needs_input', reason: `llm-reuse:${row.id}${out.partial}`, ...identified(out.identifiedValue) })
             : res(f, { tier: out.tier, source: 'llm_reuse', value: out.value, answerId: row.id, reason: `llm-reuse:${row.id}${out.partial}` }))
         } else {
           byRef.set(ref, res(f, { tier: 'needs_input', reason: 'company-specific' }))
@@ -392,6 +412,15 @@ async function mappingStep(
       }
 
       byRef.set(ref, unmatched(f, 'custom', d.fieldClass))
+    }
+
+    // A group the first step recognized, with a stored Value no Option equals,
+    // keeps that Value on whatever Needs input row Mapping left it (ticket #34).
+    for (const [ref, value] of identifiedOf) {
+      const r = byRef.get(ref)
+      if (r !== undefined && r.tier === 'needs_input' && r.value === null && r.identifiedValue === undefined) {
+        byRef.set(ref, { ...r, identifiedValue: value })
+      }
     }
   }
 
@@ -422,7 +451,7 @@ export function resolveFirst(db: Database.Database, input: WaterfallInput): Reso
  */
 export async function resolveMapping(deps: WaterfallDeps, input: WaterfallInput): Promise<ResolveResult> {
   const first = firstStep(deps.db, input.fields)
-  const mapped = await mappingStep(deps, input, first.pending)
+  const mapped = await mappingStep(deps, input, first.pending, first.identifiedOf)
   return {
     epoch: input.epoch,
     resolutions: input.fields.map((f) => withFillParts(deps.db, f, first.byRef.get(refOf(f)) ?? mapped.byRef.get(refOf(f))!)),

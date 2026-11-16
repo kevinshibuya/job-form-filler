@@ -159,5 +159,16 @@ export const ResolutionSchema = z.object({
    * `value` is the page's Option. Absent everywhere else.
    */
   standsFor: z.string().optional(),
+  /**
+   * On a Needs input row with no Value to fill but a stored Value the Field is
+   * known to ask for: what the model pick is asked with once a Fill has read
+   * the Control's Options (ticket #34). The `workAuth` list on an authorization
+   * or sponsorship Field whose label names a region, the `country` on such a
+   * residence Field, the stored pronouns on a checkbox group that offers no
+   * Option equal to them, the text of a Saved answer that equals none of the
+   * Options known at Scan. Absent everywhere else: a row without it is never
+   * read and makes no model call.
+   */
+  identifiedValue: z.string().min(1).optional(),
 })
 export type Resolution = z.infer<typeof ResolutionSchema>

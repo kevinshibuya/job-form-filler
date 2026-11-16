@@ -191,8 +191,11 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
     // Absent once the user edited the Value: an edited Value matches by its own text.
     // `phone`: the parts of a phone Value (Resolution.phone), on the same terms.
     // `city`: the stored country's names beside a city (Resolution.city), likewise.
+    // No `value`: a read (ticket #34). The Fill reads the Control's Options,
+    // changes nothing on the page, and reports them as a miss does, with the
+    // reason OPTIONS_READ.
     fills: z.array(z.object({
-      handle: FieldHandleSchema, value: z.string(), candidates: z.array(z.string()).optional(),
+      handle: FieldHandleSchema, value: z.string().optional(), candidates: z.array(z.string()).optional(),
       phone: PhonePartsSchema.optional(), city: CityPartsSchema.optional(),
     })),
   }),
@@ -247,3 +250,10 @@ export const FillReportSchema = z.object({
 export type FillReport = z.infer<typeof FillReportSchema>
 
 export const STALE_EPOCH = 'stale_epoch' as const
+
+/**
+ * The reason a Fill entry sent with no Value reports: the Control's Options
+ * were read and nothing on the page changed (ticket #34). The Options travel
+ * with it, as on a miss, and are absent when the Control showed none.
+ */
+export const OPTIONS_READ = 'options-read' as const

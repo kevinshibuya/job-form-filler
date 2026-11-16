@@ -155,8 +155,10 @@ type PageFill =
 
 function settleFill(resolutions: Resolution[], fill: CollectedFill): { settled: Resolution[]; committedEdits: Record<string, string> } {
   const failedFillReason = new Map(fill.failed.map((f) => [refOf(f.handle), f.reason]))
+  // A row read with no Value (ticket #34) put nothing on the page: it stays as
+  // Resolution left it, and its Options reach the Field through withReadOptions.
   const settled = resolutions.map((r) =>
-    failedFillReason.has(refOf(r.handle))
+    failedFillReason.has(refOf(r.handle)) && r.value !== null
       ? { ...r, tier: 'needs_input' as const, reason: failedFillReason.get(refOf(r.handle))! }
       : r)
   const sentValue = new Map(settled.map((r) => [refOf(r.handle), r.value]))

@@ -1,4 +1,4 @@
-import { norm, optionSetLabels, phoneParts, type CityParts, type FieldHandle, type FillReport, type PhoneParts } from '@jff/shared'
+import { OPTIONS_READ, norm, optionSetLabels, phoneParts, type CityParts, type FieldHandle, type FillReport, type PhoneParts } from '@jff/shared'
 import { groupBoxesOf } from './checkboxGroup'
 import { pickCityOption } from './cityTypeahead'
 import { optionLabelOf, scopeOf } from './dom'
@@ -94,12 +94,16 @@ function fillSelect(el: HTMLSelectElement, value: string, candidates: readonly s
   return withOptions(committedAs(wording(opt.textContent ?? ''), value), options)
 }
 
-function fillRadioGroup(el: HTMLInputElement, value: string, candidates: readonly string[]): FillOutcome {
-  const scope = scopeOf(el)
+/** The radios of the group a radio belongs to: same name, same scope. */
+function radioMembersOf(el: HTMLInputElement): HTMLInputElement[] {
   const name = el.getAttribute('name')
-  const members = name === null || name === ''
+  return name === null || name === ''
     ? [el]
-    : Array.from(scope.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`))
+    : Array.from(scopeOf(el).querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`))
+}
+
+function fillRadioGroup(el: HTMLInputElement, value: string, candidates: readonly string[]): FillOutcome {
+  const members = radioMembersOf(el)
   const options = wordings(members.map(optionLabelOf))
   const hit = pickMember(members, optionLabelOf, (m) => m.value, value, candidates)
   if (hit === null) return withOptions({ ok: false, reason: 'no-matching-option' }, options)
@@ -808,6 +812,35 @@ export async function fillOne(
   return { ok: false, reason: 'unsupported-widget' }
 }
 
+/**
+ * A read (ticket #34): the Control's Options, and nothing on the page changed.
+ * A dropdown is opened, read and closed through the dropdown Fill itself, with
+ * a pick that takes no Option and no Value to type: the same foreign-menu
+ * check before it opens, the same attributable listbox, the same restore and
+ * Escape on the way out. A dropdown that shows nothing until text is typed
+ * reports none. A radio group, a checkbox group, a choice widget and a native
+ * select are read where they stand, with no click and no change. Any other
+ * Control has no Options to read. The outcome is always a miss whose reason is
+ * OPTIONS_READ, unless a foreign menu would not close.
+ */
+export async function readOne(el: Element): Promise<FillOutcome> {
+  const read = (options: readonly string[]): FillOutcome => withOptions({ ok: false, reason: OPTIONS_READ }, wordings(options))
+  if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox') {
+    const out = await fillCombobox(el, '', [], { pick: () => ({ found: 'none' }) })
+    if (!out.ok && out.reason === 'listbox-left-open') return out
+    return read(out.options ?? [])
+  }
+  const group = groupBoxesOf(el)
+  if (group !== null) return read(group.map(optionLabelOf))
+  if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox') && selfHidden(defaultMeasure(el))) {
+    const choice = detectChoice(el)
+    if (choice !== null) return read(choice.options)
+  }
+  if (el instanceof HTMLSelectElement) return read(Array.from(el.options, (o) => o.textContent ?? ''))
+  if (el instanceof HTMLInputElement && el.type === 'radio') return read(radioMembersOf(el).map(optionLabelOf))
+  return read([])
+}
+
 /** A Control a choice Fill drives: a dropdown, a native select, a radio or a
  *  checkbox (choice widgets and checkbox groups ride on the latter two), or a
  *  phone box whose country selector the Fill opens. */
@@ -826,7 +859,7 @@ function isChoiceControl(el: Element): boolean {
  */
 export async function fillFields(
   root: Document,
-  fills: { handle: FieldHandle; value: string; candidates?: readonly string[]; phone?: PhoneParts; city?: CityParts }[],
+  fills: { handle: FieldHandle; value?: string; candidates?: readonly string[]; phone?: PhoneParts; city?: CityParts }[],
 ): Promise<Omit<FillReport, 'epoch'>> {
   const filled: FillReport['filled'] = []
   const failed: FillReport['failed'] = []
@@ -842,7 +875,8 @@ export async function fillFields(
     if (choice && previousWasChoice) await waitForSettle(root, { quietMs: 100, maxMs: CHOICE_GAP_SETTLE_MS })
     previousWasChoice = choice
     const parts: FillParts = { ...(f.phone === undefined ? {} : { phone: f.phone }), ...(f.city === undefined ? {} : { city: f.city }) }
-    const out = await fillOne(el, f.value, f.candidates ?? [], parts)
+    // An entry with no Value is a read: the Options, and nothing changed.
+    const out = f.value === undefined ? await readOne(el) : await fillOne(el, f.value, f.candidates ?? [], parts)
     const options = out.options === undefined ? {} : { options: out.options }
     if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null, ...options })
     else failed.push({ handle: f.handle, reason: out.reason, ...options })

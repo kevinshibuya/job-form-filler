@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
-import { norm, type EnumField, type FieldHandle, type HostErrorKind, type HostResponse, type OptionPickParams, type Resolution } from '@jff/shared'
+import { OPTIONS_READ, norm, type EnumField, type FieldHandle, type HostErrorKind, type HostResponse, type OptionPickParams, type Resolution } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
 /**
@@ -61,8 +61,9 @@ export interface HeldMappingHost {
   firstValues: Record<number, string>
   /** fid → the candidate words the first step's Resolution carries with its value. */
   firstCandidates: Record<number, string[]>
-  /** fid → what else the first step's Resolution carries with its value: the
-   *  Known key or Saved answer that identifies it as a stored Value. */
+  /** fid → what else the first step's Resolution carries: with its value, the
+   *  Known key or Saved answer that identifies it as a stored Value; on a
+   *  `firstNeedsInput` row, its reason and its identified stored Value. */
   firstPatch: Record<number, Partial<Resolution>>
   /** fids the first step decides as Needs input (a recognizer with no stored Value). */
   firstNeedsInput: number[]
@@ -80,6 +81,8 @@ export interface HeldMappingHost {
   fills: { epoch: number; fids: number[] }[]
   /** Every fill the page was sent, in order, as the JFF_FILL message carried it. */
   sent: { fid: number; value: string; candidates?: string[] }[]
+  /** Every Fill entry sent with no Value (a read), as its fid, in order. */
+  reads: number[]
   /** fid → the reason the page refuses a fill of that Field with. */
   refuse: Record<number, string>
   /** fid → the Options that Field's Control offers once a Fill opens it. A
@@ -104,7 +107,7 @@ export function installHeldMappingHost(): HeldMappingHost {
     Object.assign(host, {
       fields: [], firstValues: {}, firstCandidates: {}, firstPatch: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
-      held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], refuse: {}, offers: {}, scans: 0, storage: {},
+      held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
       picks: [], pick: () => ({ position: null }),
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
@@ -127,7 +130,7 @@ export function installHeldMappingHost(): HeldMappingHost {
               ...(host.firstCandidates[f.fid] === undefined ? {} : { candidates: host.firstCandidates[f.fid] }),
               ...host.firstPatch[f.fid],
             })
-            : resolution(f, { tier: 'needs_input', reason: 'recognizer:no-stored-value' })),
+            : resolution(f, { tier: 'needs_input', reason: 'recognizer:no-stored-value', ...host.firstPatch[f.fid] })),
           pending: p.fields.filter((f) => !decided.includes(f)).map((f) => ({ frameId: f.frameId, fid: f.fid, epoch: f.epoch })),
         } }
       }
@@ -203,7 +206,7 @@ function fakeChrome(host: HeldMappingHost): unknown {
       onRemoved: { addListener: vi.fn(), removeListener: vi.fn() },
     },
     runtime: {
-      sendMessage: vi.fn(async (msg: { kind?: string; message?: { type?: string; epoch?: number; fills?: { handle: FieldHandle; value: string; candidates?: string[] }[] } }) => {
+      sendMessage: vi.fn(async (msg: { kind?: string; message?: { type?: string; epoch?: number; fills?: { handle: FieldHandle; value?: string; candidates?: string[] }[] } }) => {
         if (msg?.kind === 'inject') return { ok: true, frames: [0] }
         const m = msg?.message
         if (msg?.kind === 'toContent' && m?.type === 'JFF_SCAN') {
@@ -215,6 +218,7 @@ function fakeChrome(host: HeldMappingHost): unknown {
           // except a Field `refuse` names.
           const fills = m.fills ?? []
           for (const f of fills) {
+            if (f.value === undefined) { host.reads.push(f.handle.fid); continue }
             host.sent.push({ fid: f.handle.fid, value: f.value, ...(f.candidates === undefined ? {} : { candidates: f.candidates }) })
           }
           host.fills.push({ epoch: m.epoch ?? -1, fids: fills.map((f) => f.handle.fid) })
@@ -223,6 +227,8 @@ function fakeChrome(host: HeldMappingHost): unknown {
           for (const f of fills) {
             const offered = host.offers[f.handle.fid]
             const options = offered === undefined ? {} : { options: offered }
+            // A read: the Options, and nothing on the page changes.
+            if (f.value === undefined) { failed.push({ handle: f.handle, reason: OPTIONS_READ, ...options }); continue }
             const words = [f.value, ...(f.candidates ?? [])].map(norm)
             const option = offered?.find((o) => words.includes(norm(o)))
             const reason = host.refuse[f.handle.fid] ?? (offered !== undefined && option === undefined ? 'no-matching-option' : null)

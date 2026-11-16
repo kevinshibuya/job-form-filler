@@ -358,18 +358,29 @@ export function fillEntry(
 }
 
 /**
- * B3: the batched scan-time Fill. Only tier `auto` Resolutions with a value
- * are sent; `page` sourced values are already there. Each frame's own JFF_FILL
- * report decides what counts as filled.
+ * A row read by the Fill that follows a Scan (ticket #34): Needs input with no
+ * Value, but with a stored Value it is known to ask for. It is sent with no
+ * Value, so the page only reports the Control's Options, and the model pick is
+ * then asked with that stored Value.
+ */
+export const isReadRow = (r: Resolution): boolean =>
+  r.tier === 'needs_input' && r.value === null && r.identifiedValue !== undefined
+
+/**
+ * B3: the batched scan-time Fill. Tier `auto` Resolutions with a value are
+ * filled; `page` sourced values are already there. Rows with no Value but an
+ * identified stored one are read (isReadRow); every other row is not sent.
+ * Each frame's own JFF_FILL report decides what counts as filled.
  */
 async function fillAuto(
   sendToTab: ScanDeps['sendToTab'], epoch: number, resolutions: Resolution[],
 ): Promise<{ fill: CollectedFill; reports: FrameReport[] }> {
-  const byFrame = new Map<number, ReturnType<typeof fillEntry>[]>()
+  const byFrame = new Map<number, (ReturnType<typeof fillEntry> | { handle: FieldHandle })[]>()
   for (const r of resolutions) {
-    if (r.tier !== 'auto' || r.source === 'page' || r.value === null || r.value === '') continue
+    const read = isReadRow(r)
+    if (!read && (r.tier !== 'auto' || r.source === 'page' || r.value === null || r.value === '')) continue
     const list = byFrame.get(r.handle.frameId) ?? []
-    list.push(fillEntry(r, r.value))
+    list.push(read ? { handle: r.handle } : fillEntry(r, r.value!))
     byFrame.set(r.handle.frameId, list)
   }
   const fill = emptyFill()
