@@ -492,7 +492,7 @@ describe('generic label rules over the real-page fixtures (#46)', () => {
     expect(counts).toEqual({
       'based-in-yes-no': 12, 'greenhouse-accommodation': 18, 'greenhouse-hosted-a': 18, 'greenhouse-hosted-b': 33,
       'greenhouse-hosted-resume-attached': 26, 'greenhouse-hosted-resume-uploading': 26, 'greenhouse-self-id': 43,
-      'lever-marketing-consent': 33, 'lever-pronoun-group': 22, 'lever-source-group': 18,
+      'lever-marketing-consent': 33, 'lever-pronoun-group': 22, 'lever-source-group': 18, 'listing-language-dropdown': 1,
     })
   })
 })
@@ -568,4 +568,48 @@ describe("a phone's country selector is part of the phone Field (#30)", () => {
     expect(report.failed).toEqual([expect.objectContaining({ reason: expect.stringMatching(/^phone-country-/) })])
     expect((document.getElementById('phone') as HTMLInputElement).value).toBe('')
   }, 10_000)
+})
+
+describe('whether a Field sits inside a form (#53)', () => {
+  const scan = () => enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields
+  const inFormOf = (fields: ReturnType<typeof scan>) => Object.fromEntries(fields.map((f) => [f.idAttr ?? f.name, f.inForm]))
+
+  it('marks each kind of Field inside a form element as in a form, and each one outside as not', () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="fn">First name</label><input id="fn">
+        <label for="cl">Cover letter</label><textarea id="cl"></textarea>
+        <label for="lang">Language</label><select id="lang"><option value="en">English</option></select>
+        <fieldset><legend>Work model</legend>
+          <label><input type="radio" name="model" value="remote">Remote</label>
+          <label><input type="radio" name="model" value="office">Office</label>
+        </fieldset>
+        <fieldset><legend>Days</legend>
+          <label><input type="checkbox" name="days" value="mon">Monday</label>
+          <label><input type="checkbox" name="days" value="tue">Tuesday</label>
+        </fieldset>
+        <label for="cv">Resume</label><input id="cv" type="file">
+      </form>
+      <label for="locale">Locale</label><select id="locale"><option value="en">English</option></select>
+      <label for="search">Search jobs</label><input id="search">`
+    expect(inFormOf(scan())).toEqual({ fn: true, cl: true, lang: true, model: true, days: true, cv: true, locale: false, search: false })
+  })
+
+  it('marks a yes/no Control drawn as buttons by where its hidden input sits', () => {
+    document.body.innerHTML = `
+      <form><div><label for="w">Willing to relocate?</label>
+        <div><input type="checkbox" id="w" name="w"><button type="button">Yes</button><button type="button">No</button></div>
+      </div></form>`
+    const fields = enumerateFields({ root: document, epoch: 1, measure: hideToggles }).fields
+    expect(fields).toEqual([expect.objectContaining({ kind: 'choice', inForm: true })])
+  })
+
+  it('finds the form through an open shadow root the Control sits in', () => {
+    document.body.innerHTML = '<form><div id="host"></div></form><div id="outside"></div>'
+    const inside = document.getElementById('host')!.attachShadow({ mode: 'open' })
+    inside.innerHTML = '<label for="a">Inside</label><input id="a">'
+    const outside = document.getElementById('outside')!.attachShadow({ mode: 'open' })
+    outside.innerHTML = '<label for="b">Outside</label><input id="b">'
+    expect(inFormOf(scan())).toEqual({ a: true, b: false })
+  })
 })

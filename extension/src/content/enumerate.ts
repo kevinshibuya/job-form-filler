@@ -178,6 +178,20 @@ export function attachedUploads(root: Document | ShadowRoot): string[] {
   return out
 }
 
+/**
+ * #53: whether a Control sits inside a `form` element. The walk climbs out of
+ * any shadow root the Control is drawn in, so a form around a web component
+ * still holds it.
+ */
+export function insideForm(el: Element): boolean {
+  let node: Node | null = el
+  while (node !== null) {
+    if (node instanceof Element && node.tagName === 'FORM') return true
+    node = node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode
+  }
+  return false
+}
+
 export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; unreachableWidgets: number; attachedUploads: string[] } {
   const measure = opts.measure ?? defaultMeasure
   const isDemographic = opts.isDemographic ?? (() => false)
@@ -253,6 +267,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             currentValue: null,
             demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
+            inForm: insideForm(el),
           }
         : {
             frameId: -1, fid, epoch: opts.epoch,
@@ -262,6 +277,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             visible, currentValue: (el as HTMLInputElement).checked ? optionLabelOf(el) : null,
             demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
+            inForm: insideForm(el),
           }
       // Only the FIRST member carries data-jff-fid; the filler re-finds the
       // other members through the shared name (fill.ts) or, for choice, the
@@ -292,6 +308,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
         currentValue: groupValue(group.boxes),
         demographic: isDemographicField(group.binding.text, isDemographic(head)),
         description: descriptionFor(head, group.binding) ?? undefined,
+        inForm: insideForm(head),
       })
       fid++
       continue
@@ -310,6 +327,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
           visible, currentValue: null,
           demographic: isDemographicField(binding.text, isDemographic(el)),
           description: descriptionFor(el, binding) ?? undefined,
+          inForm: insideForm(el),
         })
         fid++
         continue
@@ -338,6 +356,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
       ...(binding.uploadWordingOnly === true ? { uploadWordingOnly: true } : {}),
       ...(kind === 'text' ? { numeric: takesOnlyNumbers(el) } : {}),
+      inForm: insideForm(el),
     })
     fid++
   }

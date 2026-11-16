@@ -6,7 +6,7 @@ import {
 import { guessScanCompany } from './company'
 import { electFrame } from './election'
 import { refOf } from './group'
-import { dropJunk } from './junk'
+import { dropJunk, isNotAForm } from './junk'
 import type { HostPort } from './port'
 import { pickResumeTarget } from './resumeTarget'
 import type { StoredResume } from './resume'
@@ -372,6 +372,14 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     : scanAts(tabHostname, { url: urlOfFrame(election.frameId) }, [])
   let ats = atsOf()
   kept = dropModuleJunk(kept, election?.frameId ?? null, moduleFor(ats))
+  if (isNotAForm(kept)) {
+    // #53: a lone dropdown outside any form (a listing page's language picker)
+    // is no form. Like an empty page, it costs zero host round-trips.
+    return {
+      epoch, ats: noElectionAts(reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
+      unreachableWidgets, activeCaptcha, ...heldJobText(deps), llmError: null, frameReports: reports,
+    }
+  }
   const electedOf = (fs: EnumField[]): EnumField[] =>
     election === null ? fs : fs.filter((f) => f.frameId === election!.frameId)
   const electionOut = (): ElectionOutcome | null =>
