@@ -197,6 +197,32 @@ describe('a Known key answers only a Control that can hold its Value', () => {
     expect(r).toMatchObject({ tier: 'proposed', key: 'workAuth', value: 'Yes' })
   })
 
+  // PR #36 manual pass: an address box whose label mentions relocating took "Yes".
+  const ADDRESS = 'What is the address from which you plan on working? If you would need to relocate, please type "relocating".'
+
+  it('a yes or a no is typed into a text box only under a yes/no question', async () => {
+    setAnswerBank(db, { relocate: 'yes' })
+    for (const kind of TEXT_CONTROLS) {
+      expect(await first(field(ADDRESS, kind))).toEqual([PENDING])
+      expect(await first(field('Relocation plans (the city you would move to)', kind))).toEqual([PENDING])
+    }
+    const [willing] = await first(field('Are you willing to relocate?', 'text'))
+    expect(willing).toMatchObject({ tier: 'auto', key: 'relocate', value: 'Yes' })
+  })
+
+  it('a yes/no key Mapping names for a text box that asks no yes/no question is refused', async () => {
+    setAnswerBank(db, { relocate: 'yes' })
+    const address = field(ADDRESS, 'text')
+    decide = () => ({ decision: 'known_key', knownKey: 'relocate' })
+    const [r] = await mapped(address)
+    expect(r).toMatchObject({ tier: 'needs_input', reason: 'llm-key:relocate:wrong-control' })
+  })
+
+  it('a page value under a label that asks no yes/no question is harvested with no yes/no key', async () => {
+    const [r] = await first(field('Relocation plans (the city you would move to)', 'text', { currentValue: 'Paris' }))
+    expect(r).toMatchObject({ tier: 'auto', source: 'page', key: null })
+  })
+
   it('a Value already on the page carries no Known key its Control cannot hold', async () => {
     const [onSelect] = await first(field('LinkedIn', 'select', { options: ['LinkedIn', 'Other'], currentValue: 'LinkedIn' }))
     expect(onSelect).toMatchObject({ tier: 'auto', source: 'page', key: null, value: 'LinkedIn' })

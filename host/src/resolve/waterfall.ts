@@ -11,7 +11,7 @@ import type { CallOpts } from '../llm/claudeCli.js'
 import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
 import { matchOptionSet, optionEqualTo } from './choiceSets.js'
-import { canHold, fieldCanHold, keyForField } from './controlKinds.js'
+import { canHold, fieldCanHold, keyForField, takesYesNo } from './controlKinds.js'
 import { KEY_OF, NAMES_REGION, countryAnswer, countryQuestionOf, type CountryQuestion } from './countryAnswers.js'
 import { learnedOptionOf, learnedWordingsFor } from './learnedWordings.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
@@ -294,7 +294,8 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     // Authorization, sponsorship and residence are answered for the country the
     // label names, never from a stored yes or no or the location line.
     const question = countryQuestionOf(recognized, label)
-    if (question !== null && canHold(f.kind, KEY_OF[question])) {
+    // Not fieldCanHold: a residence question carries a place key on a yes/no question.
+    if (question !== null && canHold(f.kind, KEY_OF[question]) && takesYesNo(f)) {
       byRef.set(ref, countryResolution(db, f, question, 'recognizer'))
       continue
     }

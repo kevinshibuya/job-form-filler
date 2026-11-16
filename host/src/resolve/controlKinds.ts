@@ -73,12 +73,24 @@ export interface FieldShape {
 }
 
 /**
- * `canHold` for one Field: its Control must hold the key's Value, and a place
- * never answers a yes/no question, whichever way the key was found.
+ * True when the Field takes a yes or a no: a choice Control, or a text box
+ * under a yes/no question. A text box that asks for anything else (an
+ * address, "type relocating") never receives a bare yes.
+ */
+export function takesYesNo(f: FieldShape): boolean {
+  return isChoiceControl(f.kind) || isYesNoQuestion(f.label ?? '', f.options)
+}
+
+/**
+ * `canHold` for one Field: its Control must hold the key's Value, a place
+ * never answers a yes/no question, and a yes or a no answers only a Field that
+ * takes one, whichever way the key was found.
  */
 export function fieldCanHold(f: FieldShape, key: FieldKey): boolean {
   if (!canHold(f.kind, key)) return false
-  return VALUE_TYPE_OF[key] !== 'place' || !isYesNoQuestion(f.label ?? '', f.options)
+  const type = VALUE_TYPE_OF[key]
+  if (type === 'yes_no' || type === 'place_list') return takesYesNo(f)
+  return type !== 'place' || !isYesNoQuestion(f.label ?? '', f.options)
 }
 
 /** The key itself when the Field can hold it, else null: a hit on the wrong
