@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  candidatesForKey, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
+  candidatesForKey, displayValue, isCheckboxGroup, phoneParts, isConsentCheckbox, isOldText, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
   type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -56,6 +56,18 @@ function res(f: EnumField, patch: Partial<Resolution> & { tier: Resolution['tier
     // Likewise only a Value with candidate words carries them.
     ...(candidates.length === 0 ? {} : { candidates }),
   }
+}
+
+/**
+ * A Resolution of the `phone` key whose Value is the stored phone carries the
+ * phone's parts, so a Fill can set the country selector beside a phone box.
+ * The phone's country depends on the stored `country`, which `res` does not
+ * see, hence a pass over the finished Resolutions.
+ */
+function withPhoneParts(db: Database.Database, r: Resolution): Resolution {
+  if (r.key !== 'phone' || r.value === null || !KEY_VALUE_SOURCES.has(r.source)) return r
+  const parts = phoneParts(r.value, getStoredValue(db, 'country'))
+  return parts === null ? r : { ...r, phone: parts }
 }
 
 /**
@@ -346,7 +358,7 @@ export function resolveFirst(db: Database.Database, input: WaterfallInput): Reso
   const { byRef } = firstStep(db, input.fields)
   return {
     epoch: input.epoch,
-    resolutions: input.fields.flatMap((f) => byRef.get(refOf(f)) ?? []),
+    resolutions: input.fields.flatMap((f) => byRef.get(refOf(f)) ?? []).map((r) => withPhoneParts(db, r)),
     pending: input.fields.filter((f) => !byRef.has(refOf(f)))
       .map((f) => ({ frameId: f.frameId, fid: f.fid, epoch: f.epoch })),
   }
@@ -365,7 +377,7 @@ export async function resolveMapping(deps: WaterfallDeps, input: WaterfallInput)
   const mapped = await mappingStep(deps, input, first.pending)
   return {
     epoch: input.epoch,
-    resolutions: input.fields.map((f) => first.byRef.get(refOf(f)) ?? mapped.byRef.get(refOf(f))!),
+    resolutions: input.fields.map((f) => withPhoneParts(deps.db, first.byRef.get(refOf(f)) ?? mapped.byRef.get(refOf(f))!)),
     llmError: mapped.llmError,
   }
 }

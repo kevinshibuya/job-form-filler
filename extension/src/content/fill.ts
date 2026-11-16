@@ -1,9 +1,10 @@
-import { norm, optionSetLabels, type FieldHandle, type FillReport } from '@jff/shared'
+import { norm, optionSetLabels, phoneParts, type FieldHandle, type FillReport, type PhoneParts } from '@jff/shared'
 import { groupBoxesOf } from './checkboxGroup'
 import { optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
 import { attributableListbox, mountedListboxes } from './listbox'
-import { matchOption } from './optionMatch'
+import { matchOption, type OptionMatch } from './optionMatch'
+import { optionCountryName, phoneSelectorsOf, pickCountryOption } from './phoneSelector'
 import { waitForSettle } from './settle'
 
 /**
@@ -502,7 +503,16 @@ const expandedOwner = (el: Element): Element =>
  * page may still refetch options on that restore event; the residual is
  * page-side and is eyeballed at the manual gate (review fix, majors item 5).
  */
-async function fillCombobox(el: Element, value: string, candidates: readonly string[]): Promise<FillOutcome> {
+/**
+ * `pick`, given only by the phone Fill, chooses the Option itself in place of
+ * the equality and substring tiers (a phone's country selector words its
+ * Options "United States +1"), and lets a non-input control prove the commit
+ * by the Option turning aria-selected or by the control coming to name it.
+ */
+async function fillCombobox(
+  el: Element, value: string, candidates: readonly string[],
+  pick?: (options: readonly string[]) => OptionMatch,
+): Promise<FillOutcome> {
   const input = el instanceof HTMLInputElement ? el : null
   const snapshot = input === null ? null : input.value
   // D2: never open a second menu while another Control's is still up.
@@ -546,7 +556,8 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
       // Exact tier: the one Option equal to the Value or a candidate word
       // (#26). Candidate words match by equality only, never by the
       // substring tier below.
-      const exact = matchOption(m.options.map((o) => o.textContent ?? ''), value, candidates)
+      const texts = m.options.map((o) => o.textContent ?? '')
+      const exact = pick === undefined ? matchOption(texts, value, candidates) : pick(texts)
       if (exact.found === 'one') return m.options[exact.index]!
       if (exact.found === 'many') { ambiguous = true; return null }
 
@@ -555,7 +566,7 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
       // option is worse than asking. A unique candidate is only RETURNED once
       // it survives two consecutive polls unchanged — `settled` below.
       let uniquePartial: HTMLElement | null = null
-      if (target.length >= MIN_SUBSTRING_LEN) {
+      if (pick === undefined && target.length >= MIN_SUBSTRING_LEN) {
         const partial = m.options.filter((o) => norm(o.textContent ?? '').includes(target))
         uniquePartial = partial.length === 1 ? partial[0]! : null
       }
@@ -592,7 +603,7 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
   let hit = await waitForHit(COMBOBOX_WAIT_MS, true, true)
   if (hit === null) {
     if (ambiguous) return failClosed('no-matching-option')
-    if (input === null || isProse(value)) return failClosed(noHitReason())
+    if (input === null || value === '' || isProse(value)) return failClosed(noHitReason())
     // B1a: ALWAYS drive the typeahead when typing is possible.
     input.focus()
     setNativeValue(input, value)
@@ -611,6 +622,11 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
   // What the input held right before the commit: the typed text on the
   // typeahead path, the pre-fill value when the open gesture found the Option.
   const preCommit = input === null ? null : input.value
+  // What a non-input control and the Option said before the commit: the phone
+  // Fill's evidence is a change in either (`pick`).
+  const naming = (): string => norm(`${el.getAttribute('title') ?? ''} ${el.getAttribute('aria-label') ?? ''}`)
+  const preNaming = naming()
+  const preSelected = hit.getAttribute('aria-selected')
   // D1: the commit gesture is the open gesture (a strict superset of a click),
   // for the reason C2 widened the open: react-select ignores a bare click.
   dispatchOpenGesture(hit)
@@ -636,8 +652,14 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
   if (input === null) {
     // Non-input widgets report their textContent TRIMMED (review fix, minors 17).
     const shown = (el.textContent ?? '').trim()
-    if (norm(shown) !== optionText) return failClosed('no-commit')
-    return withOptions({ ok: true, committed: shown === value ? null : shown }, offered)
+    if (norm(shown) === optionText) return withOptions({ ok: true, committed: shown === value ? null : shown }, offered)
+    if (pick !== undefined) {
+      const name = norm(optionCountryName(hit.textContent ?? ''))
+      const selected = preSelected !== 'true' && hit.getAttribute('aria-selected') === 'true'
+      const named = name !== '' && naming() !== preNaming && naming().includes(name)
+      if (selected || named) return withOptions({ ok: true, committed: null }, offered)
+    }
+    return failClosed('no-commit')
   }
   let committed: string | null = null
   if (input.value === '') {
@@ -659,6 +681,52 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
   return withOptions({ ok: true, committed: committed === value ? null : committed }, offered)
 }
 
+/* ------------------------------------------------- the phone's country selector */
+
+/** Sets one country selector to the phone's country and checks the page kept it. */
+async function setCountrySelector(sel: Element, parts: PhoneParts): Promise<FillOutcome> {
+  const pick = (texts: readonly string[]): OptionMatch => pickCountryOption(texts, parts)
+  if (sel instanceof HTMLSelectElement) {
+    const options = Array.from(sel.options)
+    const m = pick(options.map((o) => o.textContent ?? ''))
+    if (m.found !== 'one') return { ok: false, reason: 'no-matching-option' }
+    const opt = options[m.index]!
+    setNativeValue(sel, opt.value)
+    return opt.selected ? { ok: true } : { ok: false, reason: 'no-commit' }
+  }
+  // The typeahead, when the open list names no Option, searches the country's first name.
+  return fillCombobox(sel, parts.countryNames[0] ?? '', [], pick)
+}
+
+/** A selector's failure as the phone Field reports it. */
+const phoneReason = (reason: string): string =>
+  reason === 'no-matching-option' ? 'phone-country-no-match'
+  : reason === 'listbox-left-open' ? reason
+  : 'phone-country-not-set'
+
+/**
+ * The phone Field with country selectors attached: each selector is set to the
+ * phone's country and checked, then the national number is typed. The parts
+ * come with the Fill (Resolution.phone); a Value the user edited travels
+ * without them and is taken apart here, with no stored country to prefer. A
+ * selector that cannot be set fails the Field and leaves the phone box as it
+ * was. The Options of a selector are never reported: they are not the phone
+ * Field's.
+ */
+async function fillPhone(el: HTMLInputElement, value: string, selectors: readonly Element[], given: PhoneParts | undefined): Promise<FillOutcome> {
+  const parts = given ?? phoneParts(value, null)
+  if (parts === null) return { ok: false, reason: 'phone-country-unknown' }
+  const snapshot = el.value
+  const restore = (): void => { if (el.value !== snapshot) setNativeValue(el, snapshot) }
+  for (const sel of selectors) {
+    const out = await setCountrySelector(sel, parts)
+    if (!out.ok) { restore(); return { ok: false, reason: phoneReason(out.reason) } }
+  }
+  const typed = fillTextual(el, parts.nationalNumber)
+  if (!typed.ok) { restore(); return typed }
+  return { ok: true }
+}
+
 /** DataTransfer is the only way to populate a file input programmatically. */
 export function fillFile(el: Element, file: File): FillOutcome {
   if (!(el instanceof HTMLInputElement) || el.type !== 'file') return { ok: false, reason: 'not-a-file-input' }
@@ -674,7 +742,9 @@ export function fillFile(el: Element, file: File): FillOutcome {
  * on a choice Control the Fill picks the one Option equal to the Value or to
  * one of them. A text Control, a lone checkbox and a checkbox group ignore them.
  */
-export async function fillOne(el: Element, value: string, candidates: readonly string[] = []): Promise<FillOutcome> {
+export async function fillOne(
+  el: Element, value: string, candidates: readonly string[] = [], phone?: PhoneParts,
+): Promise<FillOutcome> {
   // Hard rail: this extension NEVER activates a submit control.
   if (el.tagName === 'BUTTON' || (el instanceof HTMLInputElement && ['submit', 'button', 'reset', 'image'].includes(el.type))) {
     return { ok: false, reason: 'unsupported-widget' }
@@ -696,14 +766,19 @@ export async function fillOne(el: Element, value: string, candidates: readonly s
   if (el instanceof HTMLInputElement && el.type === 'radio') return fillRadioGroup(el, value, candidates)
   if (el instanceof HTMLInputElement && el.type === 'checkbox') return fillCheckbox(el, value)
   if (el instanceof HTMLInputElement && el.type === 'file') return { ok: false, reason: 'file-needs-blob' }
+  // A phone box with its country selector: the selector is set, then the national number typed.
+  const attached = phoneSelectorsOf(el)
+  if (el instanceof HTMLInputElement && attached !== null) return fillPhone(el, value, attached.selectors, phone)
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return fillTextual(el, value)
   return { ok: false, reason: 'unsupported-widget' }
 }
 
 /** A Control a choice Fill drives: a dropdown, a native select, a radio or a
- *  checkbox (choice widgets and checkbox groups ride on the latter two). */
+ *  checkbox (choice widgets and checkbox groups ride on the latter two), or a
+ *  phone box whose country selector the Fill opens. */
 function isChoiceControl(el: Element): boolean {
-  return el.getAttribute('role') === 'combobox'
+  return phoneSelectorsOf(el) !== null
+    || el.getAttribute('role') === 'combobox'
     || el.getAttribute('aria-haspopup') === 'listbox'
     || el instanceof HTMLSelectElement
     || (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))
@@ -716,7 +791,7 @@ function isChoiceControl(el: Element): boolean {
  */
 export async function fillFields(
   root: Document,
-  fills: { handle: FieldHandle; value: string; candidates?: readonly string[] }[],
+  fills: { handle: FieldHandle; value: string; candidates?: readonly string[]; phone?: PhoneParts }[],
 ): Promise<Omit<FillReport, 'epoch'>> {
   const filled: FillReport['filled'] = []
   const failed: FillReport['failed'] = []
@@ -731,7 +806,7 @@ export async function fillFields(
     const choice = isChoiceControl(el)
     if (choice && previousWasChoice) await waitForSettle(root, { quietMs: 100, maxMs: CHOICE_GAP_SETTLE_MS })
     previousWasChoice = choice
-    const out = await fillOne(el, f.value, f.candidates ?? [])
+    const out = await fillOne(el, f.value, f.candidates ?? [], f.phone)
     const options = out.options === undefined ? {} : { options: out.options }
     if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null, ...options })
     else failed.push({ handle: f.handle, reason: out.reason, ...options })

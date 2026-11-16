@@ -246,7 +246,12 @@ export function countryCode(value: string): string | null {
  */
 export function countryCandidates(value: string): string[] {
   const code = countryCode(value)
-  return code === null ? [] : unique(countryWords(code))
+  return code === null ? [] : countryNames(code)
+}
+
+/** Every name and short form the closed list has for one ISO 3166 code, in both languages. */
+export function countryNames(code: string): string[] {
+  return unique(countryWords(code))
 }
 
 /**

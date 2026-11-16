@@ -93,6 +93,21 @@ export type ResolutionSource = z.infer<typeof ResolutionSourceSchema>
 export const FieldClassSchema = z.enum(['prose', 'personal_fact'])
 export type FieldClass = z.infer<typeof FieldClassSchema>
 
+/**
+ * A phone in international form taken apart for a Fill that sets the country
+ * selector beside a phone box: the calling code and the national number,
+ * digits only, and every name of the phone's country in both languages. The
+ * phone's country is the stored `country` when its calling code is the
+ * phone's, else the one country in the closed list with that code; when
+ * several share it, `countryNames` is empty.
+ */
+export const PhonePartsSchema = z.object({
+  callingCode: z.string().regex(/^\d+$/),
+  nationalNumber: z.string().regex(/^\d+$/),
+  countryNames: z.array(z.string()),
+})
+export type PhoneParts = z.infer<typeof PhonePartsSchema>
+
 export const ResolutionSchema = z.object({
   handle: FieldHandleSchema,
   tier: ResolutionTierSchema,
@@ -115,5 +130,11 @@ export const ResolutionSchema = z.object({
    * a `country` Value carries them.
    */
   candidates: z.array(z.string()).optional(),
+  /**
+   * The parts of a phone Value (PhonePartsSchema), on a Resolution of the
+   * `phone` key whose Value is the stored phone and whose calling code the
+   * closed list knows. Absent everywhere else.
+   */
+  phone: PhonePartsSchema.optional(),
 })
 export type Resolution = z.infer<typeof ResolutionSchema>
