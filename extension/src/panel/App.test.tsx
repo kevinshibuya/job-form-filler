@@ -1242,7 +1242,12 @@ describe('App — resume row wiring (A8/A9)', () => {
     })
   })
 
-  it('offers no "Put on page" when the page already shows the resume attached, and says so in a muted note (#37)', async () => {
+  // The second case isolates the attached list: its Resume-labelled field would
+  // be the target, and offer "Put on page", if the panel ignored the list.
+  it.each([
+    ['the cover-letter input is the only file field left', { label: 'Attach', idAttr: 'cover_letter', required: false }],
+    ['a Resume-labelled file field is still on the page', { label: 'Resume', idAttr: 'resume', required: true }],
+  ])('offers no "Put on page" when the page already shows the resume attached, and says so in a muted note (#37): %s', async (_what, fileField) => {
     const { saveResume } = await import('./resume')
     await saveResume(new File([new Uint8Array([1, 2, 3])], 'cv.pdf', { type: 'application/pdf' }), async () => null)
     const sentTypes: string[] = []
@@ -1251,10 +1256,10 @@ describe('App — resume row wiring (A8/A9)', () => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
       if (msg?.kind === 'toContent' && msg.message?.type !== undefined) sentTypes.push(msg.message.type)
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
-        // The resume input is gone after the attach; the cover-letter input is left.
+        // The page reports the resume attached, whatever file field is left.
         return { ok: true, replies: [{ frameId: 0, url: 'https://ats.example/', payload: { ok: true, scan: { epoch: 1, fields: [
           { frameId: -1, fid: 0, epoch: 1, label: 'First name', name: 'first_name', idAttr: 'first_name', kind: 'text', options: [], required: true, visible: true, currentValue: null, demographic: false },
-          { frameId: -1, fid: 1, epoch: 1, label: 'Attach', name: null, idAttr: 'cover_letter', kind: 'file', options: [], required: false, visible: false, currentValue: null, demographic: false, accept: '.pdf,.doc,.docx,.txt,.rtf' },
+          { frameId: -1, fid: 1, epoch: 1, name: null, kind: 'file', options: [], visible: false, currentValue: null, demographic: false, accept: '.pdf,.doc,.docx,.txt,.rtf', ...fileField },
         ], unreachableWidgets: 0, activeCaptcha: false, attachedUploads: ['Resume/CV'] } } }], failures: [] }
       }
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }

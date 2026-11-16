@@ -1,5 +1,5 @@
 import type { EnumField } from '@jff/shared'
-import { scoreResumeField } from './resumeTarget'
+import { fileSignalScore } from './resumeTarget'
 
 /**
  * A5 panel-layer junk filter. The content script enumerates and fid-stamps
@@ -20,10 +20,11 @@ export function keepField(f: EnumField): boolean {
   if (f.kind === 'choice') return true
   if ((f.kind === 'checkbox' || f.kind === 'checkboxgroup' || f.kind === 'radiogroup') && f.label !== null) return true
   // A8 seam (this is the extension plan 1 documented): a hidden file input
-  // earns its keep by a resolvable label OR by scoring positively on the
-  // resume scorer (name/id/accept/required signals). Still no blanket keep —
-  // an unlabelled, signal-less hidden file input (the autofill pane) is junk.
-  if (f.kind === 'file' && (f.label !== null || scoreResumeField(f) > 0)) return true
+  // earns its keep by a resolvable label OR by a file signal (name/id/accept/
+  // required). Still no blanket keep — an unlabelled, signal-less hidden file
+  // input (the autofill pane) is junk. The raw signals, not the resume score:
+  // a cover-letter input the scorer vetoes (#37) is still a row to show.
+  if (f.kind === 'file' && (f.label !== null || fileSignalScore(f) > 0)) return true
   return false
 }
 

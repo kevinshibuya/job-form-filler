@@ -37,10 +37,15 @@ describe('scoreResumeField', () => {
     expect(scoreResumeField(file(0))).toBe(0)
   })
 
-  it('scores a cover-letter field 0 whatever its other signals (#37)', () => {
+  it('scores a cover-letter field that nothing calls a resume 0, whatever its other signals (#37)', () => {
     expect(scoreResumeField(file(0, { idAttr: 'cover_letter', label: 'Attach', accept: '.pdf,.doc' }))).toBe(0)
     expect(scoreResumeField(file(0, { label: 'Cover Letter', required: true, accept: '.pdf' }))).toBe(0)
-    expect(scoreResumeField(file(0, { name: 'cover-letter', label: 'Resume or CV' }))).toBe(0)
+  })
+
+  it('still scores a combined uploader that is called a resume too (#37)', () => {
+    expect(scoreResumeField(file(0, { label: 'Resume / Cover Letter', accept: '.pdf' }))).toBe(4)
+    expect(scoreResumeField(file(0, { name: 'cover-letter', label: 'Resume or CV' }))).toBe(3)
+    expect(scoreResumeField(file(0, { idAttr: 'resume_cover_letter', label: 'Attach' }))).toBe(2)
   })
 })
 
