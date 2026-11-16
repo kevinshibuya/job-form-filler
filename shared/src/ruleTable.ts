@@ -231,6 +231,14 @@ export function yesNoOf(word: string): 'yes' | 'no' | null {
 /** Every word the closed list has for one country, in both languages. */
 const countryWords = (code: string): string[] => RULE_LANGUAGES.flatMap((l) => RULE_TABLE[l].countries[code] ?? [])
 
+/** The ISO 3166 codes of the closed list of countries. */
+export const COUNTRY_CODES: readonly string[] = Object.keys(EN.countries)
+
+/** A country of the closed list by its first name in the language asked for; null for any other code. */
+export function countryName(code: string, lang: RuleLanguage = 'en'): string | null {
+  return RULE_TABLE[lang].countries[code]?.[0] ?? null
+}
+
 /**
  * The ISO 3166 code of the country the Value names, found by any of its names
  * or short forms in either language; null for a place outside the closed list.
@@ -279,10 +287,12 @@ export function candidatesFor(type: ValueType, value: string): string[] {
 
 /**
  * The Known keys whose Value carries candidate words, with the rule that
- * renders it. A key outside this map gets none, whatever its Value type: the
- * old free text of `workAuth` and `sponsorshipNeeded` is not a yes/no Value
- * yet. A `relocate` Value reaches here as the yes or no word of the Field's
- * language, and old text as nothing (typedValues.ts).
+ * renders it. A key outside this map gets none, whatever its Value type. A
+ * `relocate` Value reaches here as the yes or no word of the Field's
+ * language, and old text as nothing (typedValues.ts). `workAuth` and
+ * `sponsorshipNeeded` answer with a yes or a no worked out per country, and
+ * the Resolution gives that answer its candidates itself
+ * (host/src/resolve/countryAnswers.ts).
  */
 const CANDIDATES_BY_KEY: Partial<Record<FieldKey, (value: string) => string[]>> = {
   country: countryCandidates,

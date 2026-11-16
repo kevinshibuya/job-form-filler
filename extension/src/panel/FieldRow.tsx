@@ -1,5 +1,5 @@
-import type { EnumField, ResolutionTier } from '@jff/shared'
-import { norm, storedValue } from '@jff/shared'
+import type { EnumField, FieldKey, ResolutionTier } from '@jff/shared'
+import { VALUE_TYPE_OF, norm, storedValue, yesNoOf } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
@@ -33,6 +33,19 @@ export const REASON_HINT: Record<string, string> = {
   'phone-country-not-set': 'The page did not keep the country beside the phone box. Pick it on the page, then type the number.',
   'phone-country-unknown': 'Your number\'s country code is not one the tool knows. Pick the country on the page, then type the number.',
   [MAPPING_LOST]: 'Matching did not finish. Answer this yourself, or Scan again.',
+  // Ticket #29: questions answered for the country they name.
+  'names-region': 'The question names a region, not countries. Answer it yourself.',
+  'no-country-named': 'The question names no country. This is the answer for your own country.',
+}
+
+/**
+ * A yes or a no answered for the country a question names is not the Value of
+ * its key: `workAuth` is a list of countries, `sponsorshipNeeded` stores
+ * nothing, and a residence question's yes is not a country. Such a row never
+ * offers to store what it holds.
+ */
+function answersPerCountry(key: FieldKey, value: string): boolean {
+  return key === 'workAuth' || key === 'sponsorshipNeeded' || (VALUE_TYPE_OF[key] === 'place' && yesNoOf(value) !== null)
 }
 
 /** A Fill that found no matching Option on a row whose Options are known: the picker is right below. */
@@ -163,11 +176,12 @@ export function FieldRow(p: FieldRowProps) {
   // Old text of a typed key is no Value (shared/src/typedValues.ts), so the
   // row still offers to store one.
   const alreadyStored = resolution.key !== null && storedValue(resolution.key, (p.facts[resolution.key] ?? '').trim()) !== null
-  const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
   // The value a save would actually store: page beats panel edit beats engine,
   // the same precedence buildSaveItems and App.onSaveFact use. Reading `value`
   // here would disable the button for every row the user answered on the page.
   const factValue = (p.pageValue ?? edited ?? resolution.value ?? '').trim()
+  const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
+    && !answersPerCountry(resolution.key!, factValue)
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
   // A Needs input row that is not a Prose Field asks about the user, unless it
   // already says why it is theirs (a failed Mapping, a failed Fill).

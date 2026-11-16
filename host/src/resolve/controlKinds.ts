@@ -17,6 +17,9 @@ const ANSWERS: Readonly<Record<ValueType, ReadonlySet<string>>> = {
   phone: new Set(TEXT_CONTROLS),
   yes_no: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
   place: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
+  // A list of countries answers yes/no questions about the countries a label
+  // names, so it takes the Controls a yes or a no does.
+  place_list: new Set([...CHOICE_CONTROLS, ...TEXT_CONTROLS]),
 }
 
 const CHOICE_SET: ReadonlySet<string> = new Set(CHOICE_CONTROLS)

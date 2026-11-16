@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { CALLING_CODES, RULE_TABLE, countryCode } from './ruleTable.js'
 import {
-  displayValue, isOldText, phoneProposal, storedValue, toStoredText,
+  displayValue, isOldText, phoneProposal, storedValue, toStoredText, workAuthCountries, workAuthValue,
 } from './typedValues.js'
 
 // Ticket #27: each typed Value has one canonical text form, with its parse and
@@ -32,7 +32,7 @@ describe('the canonical text of a typed Value', () => {
   })
 
   it('a key without a typed form stores any text as its Value', () => {
-    for (const key of ['workAuth', 'salary', 'notice', 'earliestStart', 'remotePreference', 'email'] as const) {
+    for (const key of ['salary', 'notice', 'earliestStart', 'remotePreference', 'email'] as const) {
       expect(storedValue(key, 'anything at all'), key).toBe('anything at all')
       expect(isOldText(key, 'anything at all'), key).toBe(false)
     }
@@ -117,5 +117,51 @@ describe('the phone proposal', () => {
     expect(phoneProposal('+15550100', 'United States')).toBeNull()
     expect(phoneProposal('', 'United States')).toBeNull()
     expect(phoneProposal('call me', 'United States')).toBeNull()
+  })
+})
+
+// Ticket #29: work authorization is the list of countries where the user may
+// work, and sponsorship is derived from it, so nothing is stored for it.
+describe('workAuth is a list of countries', () => {
+  it('its canonical text is the sorted ISO codes of the closed list, as JSON', () => {
+    expect(workAuthValue(['pt', 'de'])).toBe('["de","pt"]')
+    expect(storedValue('workAuth', '["de","pt"]')).toBe('["de","pt"]')
+    expect(workAuthCountries('["de","pt"]')).toEqual(['de', 'pt'])
+  })
+
+  it('a bare yes, a bare no and any free text stored before this ticket are old text', () => {
+    for (const old of ['yes', 'no', 'true', 'Yes', 'Authorized to work in Germany', 'Germany', '["pt","de"]', '[]', '["xx"]']) {
+      expect(storedValue('workAuth', old), old).toBeNull()
+      expect(isOldText('workAuth', old), old).toBe(true)
+      expect(workAuthCountries(old), old).toBeNull()
+    }
+  })
+
+  it('is shown to a person or a model as the countries by name, in the language asked for', () => {
+    expect(displayValue('workAuth', '["de","pt"]')).toBe('Germany, Portugal')
+    expect(displayValue('workAuth', '["de","pt"]', 'pt')).toBe('Alemanha, Portugal')
+    expect(displayValue('workAuth', 'yes')).toBeNull()
+  })
+
+  it('a write takes a list of codes or names and stores the canonical text; anything else is refused', () => {
+    expect(toStoredText('workAuth', '["pt","Germany"]')).toEqual({ ok: true, text: '["de","pt"]' })
+    expect(toStoredText('workAuth', '["de","de"]')).toEqual({ ok: true, text: '["de"]' })
+    for (const bad of ['yes', 'Germany', '[]', '["Atlantis"]', '{"de":true}']) {
+      const r = toStoredText('workAuth', bad)
+      expect(r.ok, bad).toBe(false)
+      if (!r.ok) expect(r.reason).toMatch(/workAuth is stored as a list of countries/)
+    }
+    expect(toStoredText('workAuth', '')).toEqual({ ok: true, text: '' })
+  })
+})
+
+describe('sponsorshipNeeded stores nothing', () => {
+  it('no stored text is ever its Value, and a write of anything but a delete is refused', () => {
+    expect(storedValue('sponsorshipNeeded', 'no')).toBeNull()
+    expect(displayValue('sponsorshipNeeded', 'yes')).toBeNull()
+    const r = toStoredText('sponsorshipNeeded', 'no')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toMatch(/workAuth/)
+    expect(toStoredText('sponsorshipNeeded', '')).toEqual({ ok: true, text: '' })
   })
 })

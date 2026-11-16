@@ -165,20 +165,18 @@ describe('phone is stored in international form', () => {
 })
 
 describe('the keys this ticket leaves as they are', () => {
-  it('workAuth, salary, notice, earliestStart and remotePreference store and answer any text, as before', async () => {
+  it('salary, notice, earliestStart and remotePreference store and answer any text, as before', async () => {
     const old = {
-      workAuth: 'true', salary: '100k', notice: '30 dias', earliestStart: 'Imediato', remotePreference: 'Remote only',
+      salary: '100k', notice: '30 dias', earliestStart: 'Imediato', remotePreference: 'Remote only',
     }
     expect((await write('answerBank.set', old)).ok).toBe(true)
     expect(getAnswerBank(db)).toMatchObject(old)
     const rows = await resolve('resolve.first',
-      field('Are you legally authorized to work here?', 'text'),
       field('Salary expectation', 'text'),
       field('Notice period', 'text'),
       field('Earliest start date', 'text'),
       field('Remote preference', 'text'))
     expect(rows.map((r) => [r!.tier, r!.key, r!.value])).toEqual([
-      ['auto', 'workAuth', 'true'],
       ['auto', 'salary', '100k'],
       ['auto', 'notice', '30 dias'],
       ['auto', 'earliestStart', 'Imediato'],

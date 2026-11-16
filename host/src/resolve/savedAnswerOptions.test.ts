@@ -107,11 +107,13 @@ describe('a Saved answer on a Control whose Options are known at Scan', () => {
   })
 
   it('a Saved answer under a recognized question whose key has no Value meets the Options the same way', async () => {
-    const SPONSOR = 'Will you now or in the future require visa sponsorship?'
-    save(SPONSOR, PROSE)
-    expect(await first(control('select', SPONSOR, YES_NO))).toMatchObject({ tier: 'needs_input', value: null })
-    save(SPONSOR, 'yes')
-    expect(await first(control('select', SPONSOR, YES_NO))).toMatchObject({ tier: 'auto', source: 'saved_answer', value: 'Yes' })
+    // Sponsorship and authorization are answered per country from workAuth,
+    // never from a Saved answer (ticket #29), so the key here is relocate.
+    const RELOCATE = 'Are you willing to relocate for this role?'
+    save(RELOCATE, PROSE)
+    expect(await first(control('select', RELOCATE, YES_NO))).toMatchObject({ tier: 'needs_input', value: null })
+    save(RELOCATE, 'yes')
+    expect(await first(control('select', RELOCATE, YES_NO))).toMatchObject({ tier: 'auto', source: 'saved_answer', value: 'Yes' })
   })
 
   it('a Saved answer Mapping reuses, equal to no Option, is not proposed either', async () => {

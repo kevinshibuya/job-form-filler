@@ -21,7 +21,7 @@ describe('recognize', () => {
     ['GitHub URL', 'github'],
     ['Personal website', 'portfolio'],
     ['Will you now or in the future require sponsorship?', 'sponsorshipNeeded'],
-    ['Are you legally authorized to work in Brazil?', 'workAuth'],
+    ['Are you legally authorized to work in Germany?', 'workAuth'],
     ['Are you willing to relocate?', 'relocate'],
     ['Desired salary', 'salary'],
     ['Notice period', 'notice'],
@@ -76,6 +76,28 @@ describe('recognize', () => {
   it('returns null for a free-text question so it falls through to the LLM', () => {
     expect(recognize('Why do you want to join Acme?')).toBeNull()
     expect(recognize('Tell us about a hard technical decision you made.')).toBeNull()
+  })
+
+  // Ticket #29: a residence question that names a place is a question about
+  // the stored country, read BEFORE the location rule.
+  it.each([
+    ['Are you based in US or Canada?', 'country'],
+    ['Do you live in the United States?', 'country'],
+    ['Do you currently reside in Germany?', 'country'],
+    ['Are you based in EMEA?', 'country'],
+    ['Você mora em Portugal?', 'country'],
+    ['Are you based in London?', 'location'],
+    ['Where are you based?', 'location'],
+  ])('reads the residence question %s as %s', (label, key) => {
+    expect(recognize(label)).toBe(key)
+  })
+
+  it('an authorization question that mentions sponsorship as what it does without is still authorization', () => {
+    expect(recognize('Are you legally authorized to work in the United States without sponsorship?')).toBe('workAuth')
+    expect(recognize('Are you eligible to work in Germany without visa sponsorship?')).toBe('workAuth')
+    expect(recognize('Você tem autorização para trabalhar no Canadá sem patrocínio?')).toBe('workAuth')
+    expect(recognize('Will you now or in the future require sponsorship?')).toBe('sponsorshipNeeded')
+    expect(recognize('Will you work in the US without sponsorship being needed?')).toBe('sponsorshipNeeded')
   })
 
   it('lets a learned mapping win over the baseline', () => {

@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import {
-  candidatesForKey, cityParts, displayValue, isCheckboxGroup, phoneParts, isConsentCheckbox, isOldText, isProfileKey, type EnumField, type FieldClass, type FieldKey, type Resolution,
-  type ResolveFirstResult, type ResolveResult,
+  RULE_TABLE, candidatesForKey, cityParts, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey, phoneParts, yesNoCandidates,
+  type EnumField, type FieldClass, type FieldKey, type Resolution, type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
   findExactAnswer, getAnswerById, getStoredValue, listReusableAnswers, touchAnswer,
@@ -10,7 +10,8 @@ import type { CallOpts } from '../llm/claudeCli.js'
 import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
 import { matchOptionSet, optionEqualTo } from './choiceSets.js'
-import { fieldCanHold, keyForField } from './controlKinds.js'
+import { canHold, fieldCanHold, keyForField } from './controlKinds.js'
+import { KEY_OF, countryAnswer, countryQuestionOf, type CountryQuestion } from './countryAnswers.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
 import { recognize } from './recognizers.js'
 
@@ -45,7 +46,7 @@ function candidatesOf(patch: Partial<Resolution>): string[] {
 }
 
 function res(f: EnumField, patch: Partial<Resolution> & { tier: Resolution['tier']; reason: string }): Resolution {
-  const candidates = candidatesOf(patch)
+  const candidates = patch.candidates ?? candidatesOf(patch)
   return {
     handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
     tier: patch.tier, value: patch.value ?? null, source: patch.source ?? null,
@@ -159,6 +160,25 @@ function keyValueOf(db: Database.Database, f: EnumField, key: FieldKey): KeyValu
 /** The reason suffix of a key with no Value: none stored, or only old text. */
 const noValue = (kv: KeyValue): string => (kv.kind === 'old' ? 'no-value' : 'no-stored-value')
 
+/**
+ * A question answered for the country it names (countryAnswers.ts): a yes or
+ * a no in the language of the label, with the yes or no candidates for Fill.
+ * A Mapping pick is never more than Proposed.
+ */
+function countryResolution(
+  db: Database.Database, f: EnumField, question: CountryQuestion, by: 'recognizer' | 'mapping',
+): Resolution {
+  const key = KEY_OF[question]
+  const out = countryAnswer(db, question, f.label ?? '', by === 'recognizer' ? 'recognizer' : 'llm-key')
+  if (out.tier === 'needs_input') return res(f, { tier: 'needs_input', key, reason: out.reason })
+  const source = by === 'mapping' ? 'llm_key' : isProfileKey(key) ? 'profile' : 'answer_bank'
+  return res(f, {
+    tier: by === 'mapping' ? 'proposed' : out.tier, source, key,
+    value: RULE_TABLE[detectLanguage(f.label ?? '')][out.answer][0]!,
+    candidates: yesNoCandidates(out.answer), reason: out.reason,
+  })
+}
+
 interface StepResult {
   byRef: Map<string, Resolution>
 }
@@ -199,7 +219,15 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     // 2 — deterministic recognizers + user-confirmed learned mappings. A hit on
     //     a Control that cannot hold the key's Value is not a hit: the Field goes
     //     on to tier 3 and Mapping as if nothing had matched.
-    let key = label === '' ? null : keyForField(f, recognize(label, db, f.kind))
+    const recognized = label === '' ? null : recognize(label, db, f.kind)
+    // Authorization, sponsorship and residence are answered for the country the
+    // label names, never from a stored yes or no or the location line.
+    const question = countryQuestionOf(recognized, label)
+    if (question !== null && canHold(f.kind, KEY_OF[question])) {
+      byRef.set(ref, countryResolution(db, f, question, 'recognizer'))
+      continue
+    }
+    let key = keyForField(f, recognized)
     // On a checkbox group a key answers only with an Option equal to its stored
     // Value. With none, the group goes on as if the key had not matched.
     if (key !== null && isCheckboxGroup(f)) {
@@ -312,6 +340,11 @@ async function mappingStep(
         // question.
         if (!fieldCanHold(f, key)) {
           byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:wrong-control` }))
+          continue
+        }
+        const question = countryQuestionOf(key, f.label ?? '')
+        if (question !== null) {
+          byRef.set(ref, countryResolution(db, f, question, 'mapping'))
           continue
         }
         const kv = keyValueOf(db, f, key)

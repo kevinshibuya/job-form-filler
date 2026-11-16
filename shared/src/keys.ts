@@ -24,9 +24,11 @@ export type FieldKey = ProfileKey | AnswerBankKey
  * What kind of thing a Known key holds. The type decides which Controls the key
  * may answer (host/src/resolve/controlKinds.ts). A `place` is a city, a region
  * or a country; `location` is not one: it stays the one-line display text for a
- * free-text location box.
+ * free-text location box. A `place_list` is a list of countries: `workAuth`,
+ * which answers yes/no questions about the countries a label names.
+ * `sponsorshipNeeded` is a yes or a no derived from `workAuth`, never stored.
  */
-export const VALUE_TYPES = ['text', 'link', 'phone', 'yes_no', 'place'] as const
+export const VALUE_TYPES = ['text', 'link', 'phone', 'yes_no', 'place', 'place_list'] as const
 export type ValueType = (typeof VALUE_TYPES)[number]
 
 export const VALUE_TYPE_OF: Readonly<Record<FieldKey, ValueType>> = {
@@ -35,7 +37,7 @@ export const VALUE_TYPE_OF: Readonly<Record<FieldKey, ValueType>> = {
   city: 'place', region: 'place', country: 'place',
   linkedin: 'link', github: 'link', portfolio: 'link',
   currentCompany: 'text', currentTitle: 'text',
-  workAuth: 'yes_no', sponsorshipNeeded: 'yes_no', relocate: 'yes_no',
+  workAuth: 'place_list', sponsorshipNeeded: 'yes_no', relocate: 'yes_no',
   salary: 'text', notice: 'text', earliestStart: 'text', remotePreference: 'text', pronouns: 'text',
 }
 

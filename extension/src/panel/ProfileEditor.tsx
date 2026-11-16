@@ -3,18 +3,24 @@ import {
   ANSWER_BANK_KEYS, PROFILE_KEYS, displayValue, isFieldKey, isOldText, phoneProposal, refusalOf, toStoredText,
 } from '@jff/shared'
 import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
+import { WorkAuthEditor } from './WorkAuthEditor'
 
 const FACT_LABELS: Record<string, string> = {
   firstName: 'First name', lastName: 'Last name', fullName: 'Full name',
   preferredName: 'Preferred name', email: 'Email', phone: 'Phone',
   location: 'Current location', city: 'City', region: 'State or region', country: 'Country',
   linkedin: 'LinkedIn URL', github: 'GitHub URL', portfolio: 'Portfolio URL',
-  currentCompany: 'Current company', currentTitle: 'Current title', workAuth: 'Work authorization', sponsorshipNeeded: 'Needs sponsorship',
+  currentCompany: 'Current company', currentTitle: 'Current title', workAuth: 'Work authorization',
   relocate: 'Willing to relocate', salary: 'Salary expectation', notice: 'Notice period',
   earliestStart: 'Earliest start date', remotePreference: 'Remote preference', pronouns: 'Pronouns',
 }
 
-const ALL_KEYS = [...PROFILE_KEYS, ...ANSWER_BANK_KEYS] as const
+/**
+ * The keys the editor asks for. `sponsorshipNeeded` is not one: its answer is
+ * worked out from `workAuth` for the country a question names, and nothing is
+ * stored for it.
+ */
+const EDITED_KEYS = [...PROFILE_KEYS, ...ANSWER_BANK_KEYS].filter((k) => k !== 'sponsorshipNeeded')
 
 /** What a write would store for one draft entry: a typed key's canonical form, or null when refused. */
 function storedText(key: string, value: string): string | null {
@@ -113,7 +119,7 @@ export function FactFields({ facts, required = null, idPrefix = 'p' }: {
     : phoneProposal(phoneHint, draft['country'] ?? null)
   return (
     <>
-      {ALL_KEYS.map((k) => {
+      {EDITED_KEYS.map((k) => {
         const id = `${idPrefix}-${k}`
         return (
           <div className="mb-2 grid gap-0.5" key={k}>
@@ -123,7 +129,9 @@ export function FactFields({ facts, required = null, idPrefix = 'p' }: {
             </label>
             {k === 'relocate'
               ? <YesNoSelect id={id} value={draft[k] ?? ''} onChange={(v) => set(k, v)} />
-              : <input id={id} className={INPUT} value={draft[k] ?? ''} onChange={(e) => set(k, e.target.value)} />}
+              : k === 'workAuth'
+                ? <WorkAuthEditor id={id} value={draft[k] ?? ''} onChange={(v) => set(k, v)} />
+                : <input id={id} className={INPUT} value={draft[k] ?? ''} onChange={(e) => set(k, e.target.value)} />}
             {hints[k] !== undefined && (
               <p className={`text-[12px] ${MUTED}`} data-jff-fact-hint={k}>Old entry, not used until you enter a new one: {hints[k]}</p>
             )}
