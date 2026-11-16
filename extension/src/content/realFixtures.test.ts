@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { enumerateFields, type MeasureFn } from './enumerate'
 import { REAL_FIXTURES, loadRealFixture } from './fixtures/real'
+import { loadListingFixture } from './fixtures/listing'
 
 // These tests read the markup itself, not what Enumeration makes of it: each one
 // proves that a fixture shows what the live review found on the real page.
@@ -243,5 +244,29 @@ describe('each real-page fixture shows its review finding', () => {
     loadRealFixture('greenhouse-accommodation')
     const controls = Array.from(document.querySelectorAll(CONTROL))
     expect(controls.some((c) => /accommodat/i.test(labelOf(c)))).toBe(true)
+  })
+})
+
+describe('whether Enumeration finds a real page\'s Fields inside a form (#53)', () => {
+  const ATS_FORMS = REAL_FIXTURES.filter((name) => /^(greenhouse|lever)-/.test(name))
+
+  it('covers every Greenhouse and Lever fixture', () => {
+    expect(ATS_FORMS.length).toBeGreaterThanOrEqual(9)
+  })
+
+  it.each(ATS_FORMS)('%s: every Field is inside a form', (name) => {
+    loadRealFixture(name)
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    expect(fields.length).toBeGreaterThan(0)
+    expect(fields.filter((f) => f.inForm !== true)).toEqual([])
+  })
+
+  it('listing-language-dropdown: one Field, a dropdown that holds a Value and is not inside a form', () => {
+    loadListingFixture()
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    expect(fields).toHaveLength(1)
+    expect(['select', 'combobox']).toContain(fields[0]!.kind)
+    expect(fields[0]!.currentValue).not.toBeNull()
+    expect(fields[0]!.inForm).toBe(false)
   })
 })

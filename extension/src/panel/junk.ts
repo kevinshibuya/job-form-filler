@@ -49,3 +49,19 @@ function fileSignalKeeps(f: EnumField): boolean {
 export function dropJunk(fields: EnumField[]): EnumField[] {
   return fields.filter(keepField)
 }
+
+/** The Controls a user picks one Option from a list in. */
+const DROPDOWN_KINDS: ReadonlySet<EnumField['kind']> = new Set(['select', 'combobox'])
+
+/**
+ * #53: the Fields a Scan kept after the junk filter are no form when they are
+ * one dropdown that already holds a Value and sits outside any form element,
+ * such as a listing page's language dropdown. A Field with no `inForm` mark,
+ * from a page script loaded before #53, reads as inside a form. Nothing wider:
+ * two Fields, or a wizard step made only of choice questions, are a form.
+ */
+export function isNotAForm(kept: readonly EnumField[]): boolean {
+  if (kept.length !== 1) return false
+  const [only] = kept as [EnumField]
+  return DROPDOWN_KINDS.has(only.kind) && only.currentValue !== null && only.inForm === false
+}

@@ -55,6 +55,11 @@ export const EnumFieldSchema = FieldHandleSchema.extend({
    *  kept it while the wording was its label. Optional so a stale content
    *  script simply omits it, and an absent mark reads as false. */
   uploadWordingOnly: z.boolean().optional(),
+  /** True when the Control sits inside a `form` element, through any open
+   *  shadow root it is drawn in (#53). The Side panel reads a lone dropdown
+   *  outside any form as no form at all. Optional so a stale content script
+   *  simply omits it, and an absent mark reads as inside a form. */
+  inForm: z.boolean().optional(),
 })
 export type EnumField = z.infer<typeof EnumFieldSchema>
 
