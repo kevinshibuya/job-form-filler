@@ -113,6 +113,27 @@ describe('work authorization, for the country the label names', () => {
     expect(de).toMatchObject({ tier: 'auto', key: 'workAuth', value: 'Yes' })
   })
 
+  // PR #36 manual pass: four words between "without" and "sponsorship" once
+  // read as a sponsorship question and claimed authorization.
+  it('authorization "for any employer without requiring current or future visa sponsorship" is No for a country not in the list', async () => {
+    const [us] = await first(field('Are you currently authorized to work in the United States for any employer without requiring current or future visa sponsorship?', 'select'))
+    expect(us).toMatchObject({ tier: 'auto', key: 'workAuth', value: 'No' })
+  })
+
+  it('"require a work permit" asks for sponsorship: Yes for a country not in the list', async () => {
+    const [jp, de] = await first(
+      field('Do you require a work permit to work in Japan?', 'select'),
+      field('Do you require a work permit to work in Germany?', 'select'))
+    expect(jp).toMatchObject({ tier: 'auto', key: 'sponsorshipNeeded', value: 'Yes' })
+    expect(de).toMatchObject({ tier: 'auto', key: 'sponsorshipNeeded', value: 'No' })
+  })
+
+  it('a consent that says "authorization" is not an authorization question', async () => {
+    const f = field('Authorization is given by me to have investigated any and all statements contained in this application. Please type your legal name below to consent.', 'text')
+    const r = await send<{ resolutions: Resolution[] }>('resolve.first', [f])
+    expect(r.resolutions.find((x) => x.handle.fid === f.fid)).toBeUndefined()
+  })
+
   it('a question that names no country is Proposed with the answer for my own country, and says why', async () => {
     const label = 'Are you legally authorized to work in the country where this job is located?'
     const [own] = await first(field(label, 'radiogroup'))
