@@ -59,7 +59,7 @@ const mapped = (codex: CodexRunner, fields: EnumField[]) => resolveMapping({ db,
 beforeEach(() => {
   db = openDb(':memory:')
   setProfile(db, { firstName: 'Ada', email: 'ada@example.com' })
-  setAnswerBank(db, { salary: 'R$ 18.000/mo' })
+  setAnswerBank(db, { salary: '{"amount":18000,"currency":"BRL","period":"month"}' })
 })
 
 describe('tier 0 — EEO', () => {
@@ -95,8 +95,9 @@ describe('tier 2 — deterministic recognizers', () => {
   })
 
   it('reads an answer-bank key from the answer bank, not the profile', () => {
+    // A salary is always Proposed (ticket #33), even from a recognizer.
     const [r] = first([field(1, 'Desired salary')])
-    expect(r).toMatchObject({ tier: 'auto', source: 'answer_bank', key: 'salary', value: 'R$ 18.000/mo' })
+    expect(r).toMatchObject({ tier: 'proposed', source: 'answer_bank', key: 'salary', value: '18000 BRL per month' })
   })
 })
 
@@ -140,13 +141,13 @@ describe('tier 4 — LLM results are PROPOSED, never auto', () => {
       runnerReturning({ '0:1': { decision: 'known_key', knownKey: 'salary', answerId: null } }),
       [field(1, 'What are your comp expectations for this role?')],
     )
-    expect(r.resolutions[0]).toMatchObject({ tier: 'proposed', source: 'llm_key', key: 'salary', value: 'R$ 18.000/mo' })
+    expect(r.resolutions[0]).toMatchObject({ tier: 'proposed', source: 'llm_key', key: 'salary', value: '18000 BRL per month' })
   })
 
   it('substitutes the DB value, never anything the model said', async () => {
     const runner = { complete: vi.fn(async () => [{ ref: '0:1', decision: 'known_key', knownKey: 'salary', answerId: null, value: 'R$ 999.999' }]) } as unknown as StubRunner
     const r = await mapped(runner, [field(1, 'Comp expectations?')])
-    expect(r.resolutions[0]!.value).toBe('R$ 18.000/mo')
+    expect(r.resolutions[0]!.value).toBe('18000 BRL per month')
   })
 
   it('routes an LLM known_key with no stored value to needs-input', async () => {

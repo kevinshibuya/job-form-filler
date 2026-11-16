@@ -117,7 +117,9 @@ _Avoid_: field key, fact key, key
 
 **Value type**:
 What kind of thing a Known key holds: text, link, phone, yes/no, place, list of
-places or amount. It decides which Controls the key can answer.
+places, amount (a salary, with its currency and period) or text per language
+(one in English and one in Portuguese). It decides which Controls the key can
+answer.
 _Avoid_: data type, format
 
 ### Answers and drafting

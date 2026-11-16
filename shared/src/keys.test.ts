@@ -53,9 +53,11 @@ describe('Value types', () => {
     expect(byType('yes_no')).toEqual(['relocate', 'sponsorshipNeeded'])
     expect(byType('place_list')).toEqual(['workAuth'])
     expect(byType('text')).toEqual([
-      'currentCompany', 'currentTitle', 'earliestStart', 'email', 'firstName', 'fullName', 'lastName',
-      'location', 'notice', 'preferredName', 'pronouns', 'remotePreference', 'salary',
+      'currentCompany', 'currentTitle', 'email', 'firstName', 'fullName', 'lastName',
+      'location', 'preferredName', 'pronouns',
     ])
+    expect(byType('amount')).toEqual(['salary'])
+    expect(byType('per_language')).toEqual(['earliestStart', 'notice', 'remotePreference'])
     expect(byType('place')).toEqual(['city', 'country', 'region'])
   })
 })

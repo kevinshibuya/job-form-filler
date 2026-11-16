@@ -1,4 +1,4 @@
-import type { EnumField, FieldKey, ResolutionTier } from '@jff/shared'
+import type { EnumField, FieldKey, ResolutionTier, ValueType } from '@jff/shared'
 import { VALUE_TYPE_OF, norm, storedValue, yesNoOf } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
@@ -40,7 +40,20 @@ export const REASON_HINT: Record<string, string> = {
   // Ticket #31: the model picked one of the page's Options after a Fill missed (ADR 0008).
   [OPTION_PICK]: 'The model picked this option for your stored answer. Accept it or pick another.',
   [OPTION_PICK_FAILED]: 'None of the page\'s options matches this value, and the model pick failed. Pick one.',
+  // Ticket #33: a salary is always Proposed, and a per-language Value offered
+  // in the other language says which one is missing.
+  'salary-check': 'Check the figure against this role before it goes on the page.',
+  'missing-language:en': 'You have no English answer stored. This is your Portuguese one: translate it before you accept.',
+  'missing-language:pt': 'You have no Portuguese answer stored. This is your English one: translate it before you accept.',
 }
+
+/**
+ * Keys whose Value is entered in the Profile editor only: a salary's amount,
+ * currency and period, and a text per language. What a row holds is the
+ * Value in words for one page, not the stored form, so a row never offers to
+ * store it.
+ */
+const ENTERED_IN_EDITOR: ReadonlySet<ValueType> = new Set(['amount', 'per_language'])
 
 /**
  * A yes or a no answered for the country a question names is not the Value of
@@ -185,7 +198,7 @@ export function FieldRow(p: FieldRowProps) {
   // here would disable the button for every row the user answered on the page.
   const factValue = (p.pageValue ?? edited ?? resolution.value ?? '').trim()
   const canSaveFact = keyed && p.factsReady && !backedByStore && !alreadyStored
-    && !answersPerCountry(resolution.key!, factValue)
+    && !answersPerCountry(resolution.key!, factValue) && !ENTERED_IN_EDITOR.has(VALUE_TYPE_OF[resolution.key!])
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[resolution.tier]}`
   // A Needs input row that is not a Prose Field asks about the user, unless it
   // already says why it is theirs (a failed Mapping, a failed Fill).

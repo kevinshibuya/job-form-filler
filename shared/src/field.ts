@@ -44,6 +44,11 @@ export const EnumFieldSchema = FieldHandleSchema.extend({
    *  resume scorer can read it (+1 for pdf/doc). File kinds only; optional so
    *  a stale content script simply omits it. */
   accept: z.string().optional(),
+  /** Text boxes only: true when the Control takes only numbers (a number
+   *  input, or one that asks for a numeric keyboard), so a salary is offered
+   *  to it as the amount alone. Optional so a stale content script simply
+   *  omits it, and an absent mark reads as false. */
+  numeric: z.boolean().optional(),
 })
 export type EnumField = z.infer<typeof EnumFieldSchema>
 

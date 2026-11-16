@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import {
-  RULE_TABLE, candidatesForKey, cityParts, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey, phoneParts, yesNoCandidates,
+  RULE_TABLE, VALUE_TYPE_OF, candidatesForKey, cityParts, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey,
+  languageValues, phoneParts, salaryOf, salaryWords, yesNoCandidates,
   type EnumField, type FieldClass, type FieldKey, type Resolution, type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
 import {
@@ -144,16 +145,42 @@ function keyValueFor(f: EnumField, stored: string): string | null {
  * What a Known key holds for this Field. A stored text that is not its key's
  * canonical form is `old`: no Value, so the Field is Needs input with the
  * reason `no-value` (shared/src/typedValues.ts). A Value is formatted for the
- * Field: a yes or a no in the language of its label, as Saved answers detect
- * it.
+ * Field, in the language of its label as Saved answers detect it: a yes or a
+ * no in that language's words, a salary as the amount alone on a Control that
+ * takes only numbers and in words with its currency and period elsewhere, and
+ * a per-language key's Value in that language.
+ *
+ * `proposed` holds the reason when the Value may never fill by itself: every
+ * salary, so the figure is checked against the role, and a per-language Value
+ * offered in the other language because none is stored in the Field's own.
  */
-type KeyValue = { kind: 'value'; value: string } | { kind: 'old' } | { kind: 'none' }
+type KeyValue = { kind: 'value'; value: string; proposed?: string } | { kind: 'old' } | { kind: 'none' }
+
+/** The reason on a salary row: it is always Proposed. */
+export const SALARY_CHECK = 'salary-check'
+
+/** The reason on a row offered the other language's Value: names the Field's language, the one missing. */
+export const missingLanguage = (lang: 'en' | 'pt'): string => `missing-language:${lang}`
 
 function keyValueOf(db: Database.Database, f: EnumField, key: FieldKey): KeyValue {
   const stored = getStoredValue(db, key)
   if (stored === null) return { kind: 'none' }
   if (isOldText(key, stored)) return { kind: 'old' }
-  const value = displayValue(key, stored, detectLanguage(f.label ?? ''))
+  const lang = detectLanguage(f.label ?? '')
+  const type = VALUE_TYPE_OF[key]
+  if (type === 'amount') {
+    const salary = salaryOf(stored)
+    if (salary === null) return { kind: 'none' }
+    return { kind: 'value', value: f.numeric === true ? String(salary.amount) : salaryWords(salary, lang), proposed: SALARY_CHECK }
+  }
+  if (type === 'per_language') {
+    const values = languageValues(stored) ?? {}
+    const own = values[lang]
+    if (own !== undefined) return { kind: 'value', value: own }
+    const other = values[lang === 'en' ? 'pt' : 'en']
+    return other === undefined ? { kind: 'none' } : { kind: 'value', value: other, proposed: missingLanguage(lang) }
+  }
+  const value = displayValue(key, stored, lang)
   return value === null ? { kind: 'none' } : { kind: 'value', value }
 }
 
@@ -232,7 +259,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     // Value. With none, the group goes on as if the key had not matched.
     if (key !== null && isCheckboxGroup(f)) {
       const kv = keyValueOf(db, f, key)
-      const option = kv.kind === 'value' ? keyValueFor(f, kv.value) : null
+      const option = kv.kind === 'value' && kv.proposed === undefined ? keyValueFor(f, kv.value) : null
       if (option !== null) {
         byRef.set(ref, res(f, {
           tier: 'auto', source: isProfileKey(key) ? 'profile' : 'answer_bank',
@@ -246,8 +273,8 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
       const kv = keyValueOf(db, f, key)
       if (kv.kind === 'value') {
         byRef.set(ref, res(f, {
-          tier: 'auto', source: isProfileKey(key) ? 'profile' : 'answer_bank',
-          key, value: kv.value, reason: `recognizer:${key}`,
+          tier: kv.proposed === undefined ? 'auto' : 'proposed', source: isProfileKey(key) ? 'profile' : 'answer_bank',
+          key, value: kv.value, reason: kv.proposed ?? `recognizer:${key}`,
         }))
       } else {
         // B5c: the recognizer intercepts BEFORE tier 3, so a saved answer under
@@ -350,7 +377,8 @@ async function mappingStep(
         const kv = keyValueOf(db, f, key)
         const value = kv.kind === 'value' ? keyValueFor(f, kv.value) : null
         if (value !== null) {
-          byRef.set(ref, res(f, { tier: 'proposed', source: 'llm_key', key, value, reason: `llm-key:${key}` }))
+          const reason = kv.kind === 'value' && kv.proposed !== undefined ? kv.proposed : `llm-key:${key}`
+          byRef.set(ref, res(f, { tier: 'proposed', source: 'llm_key', key, value, reason }))
           continue
         }
         if (kv.kind === 'value') {

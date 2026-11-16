@@ -136,6 +136,18 @@ function currentValueOf(el: Element, kind: WidgetKind): string | null {
 }
 
 /** Native requiredness OR the ATS conventions carried by the bound label. */
+/** Input modes that bring up a keyboard of digits. */
+const NUMERIC_INPUT_MODES: ReadonlySet<string> = new Set(['numeric', 'decimal'])
+
+/**
+ * A text box that takes only numbers: a number input, or one that asks for a
+ * keyboard of digits. Resolution offers such a Control a salary's amount alone.
+ */
+function takesOnlyNumbers(el: Element): boolean {
+  if ((el as HTMLInputElement).type?.toLowerCase() === 'number') return true
+  return NUMERIC_INPUT_MODES.has((el.getAttribute('inputmode') ?? '').trim().toLowerCase())
+}
+
 function requiredOf(el: Element, binding: LabelBinding): boolean {
   return (el as HTMLInputElement).required === true
     || el.getAttribute('aria-required') === 'true'
@@ -300,6 +312,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       demographic: isDemographicField(binding.text, isDemographic(el)),
       description: descriptionFor(el, binding) ?? undefined,
       accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
+      ...(kind === 'text' ? { numeric: takesOnlyNumbers(el) } : {}),
     })
     fid++
   }

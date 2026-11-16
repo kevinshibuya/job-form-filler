@@ -76,12 +76,12 @@ describe('OnboardingView (O2)', () => {
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '+15550100' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
     fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
-    fireEvent.change(screen.getByLabelText(/^Salary expectation/), { target: { value: '100k' } })
+    fireEvent.change(screen.getByLabelText(/^Pronouns/), { target: { value: 'she/her' } })
     await waitFor(() => expect(finishBtn().disabled).toBe(false))
     fireEvent.click(finishBtn())
     await waitFor(() => expect(props.onFinish).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'k@x.dev', phone: '+15550100', fullName: 'Ada Lovelace', country: 'United Kingdom' }),
-      expect.objectContaining({ salary: '100k' }),
+      expect.objectContaining({ pronouns: 'she/her' }),
     ))
   })
 

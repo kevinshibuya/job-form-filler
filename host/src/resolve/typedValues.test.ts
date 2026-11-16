@@ -165,33 +165,23 @@ describe('phone is stored in international form', () => {
 })
 
 describe('the keys this ticket leaves as they are', () => {
-  it('salary, notice, earliestStart and remotePreference store and answer any text, as before', async () => {
-    const old = {
-      salary: '100k', notice: '30 dias', earliestStart: 'Imediato', remotePreference: 'Remote only',
-    }
-    expect((await write('answerBank.set', old)).ok).toBe(true)
-    expect(getAnswerBank(db)).toMatchObject(old)
-    const rows = await resolve('resolve.first',
-      field('Salary expectation', 'text'),
-      field('Notice period', 'text'),
-      field('Earliest start date', 'text'),
-      field('Remote preference', 'text'))
-    expect(rows.map((r) => [r!.tier, r!.key, r!.value])).toEqual([
-      ['auto', 'salary', '100k'],
-      ['auto', 'notice', '30 dias'],
-      ['auto', 'earliestStart', 'Imediato'],
-      ['auto', 'remotePreference', 'Remote only'],
-    ])
-    for (const r of rows) expect(r!.candidates ?? []).toEqual([])
+  // salary and the per-language keys took a typed form in ticket #33
+  // (salaryAndLanguage.test.ts); pronouns still stores any text.
+  it('pronouns stores and answers any text, as before', async () => {
+    expect((await write('answerBank.set', { pronouns: 'she/her' })).ok).toBe(true)
+    expect(getAnswerBank(db)).toMatchObject({ pronouns: 'she/her' })
+    const [r] = await resolve('resolve.first', field('Pronouns', 'text'))
+    expect([r!.tier, r!.key, r!.value]).toEqual(['auto', 'pronouns', 'she/her'])
+    expect(r!.candidates ?? []).toEqual([])
   })
 })
 
 describe('a Value handed to a model', () => {
   it('the profile summary formats typed Values and leaves old text out', () => {
-    const summary = buildProfileSummary({ phone: '+15550100', email: 'ada@example.com' }, { relocate: 'yes', salary: '100k' })
+    const summary = buildProfileSummary({ phone: '+15550100', email: 'ada@example.com' }, { relocate: 'yes', pronouns: 'she/her' })
     expect(summary).toContain('phone: +15550100')
     expect(summary).toContain('relocate: Yes')
-    expect(summary).toContain('salary: 100k')
+    expect(summary).toContain('pronouns: she/her')
     const old = buildProfileSummary({ phone: '(555) 010-0100' }, { relocate: 'Yes, anywhere in Europe' })
     expect(old).not.toContain('555')
     expect(old).not.toContain('Europe')
