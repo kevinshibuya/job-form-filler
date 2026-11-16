@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App } from './App'
 import { capForStorage, newSession, type Session } from './sessions'
 import { field, installHeldMappingHost, status } from './testing/heldMapping'
+import { postingReaderFor, readJobText } from '../content/jobpost'
+import type { FetchLike } from '../content/postingFetch'
+import { postingFixtureHtml } from '../content/fixtures/real'
 
 /**
  * Where the Job posting text came from (spec #41, ticket #50), the Side panel
@@ -24,6 +27,8 @@ type Chrome = { runtime: { sendMessage: (msg: unknown) => Promise<unknown> }; ta
 
 /** What the page's job text reply holds, per Scan. */
 let pageJobText: JobTextReply
+/** When set, the page answers the job text request with this instead. */
+let readPage: ((selector: string | null) => Promise<JobTextReply>) | null
 /** The spot `selector.get` answers with. */
 let savedSpot: string | null
 /** Every host request about the job text, in order, as method and params. */
@@ -37,6 +42,7 @@ let picked: { selector: string; text: string }
 
 beforeEach(() => {
   pageJobText = { text: '', selector: null, source: 'none' }
+  readPage = null
   savedSpot = null
   spotRequests = []
   jobTextAsks = 0
@@ -53,7 +59,8 @@ beforeEach(() => {
     const m = msg as { kind?: string; frameId?: number; message?: { type?: string } }
     if (m.kind === 'toContent' && m.message?.type === 'JFF_JOBTEXT') {
       jobTextAsks++
-      return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: pageJobText } }], failures: [] }
+      const jobText = readPage === null ? pageJobText : await readPage((m.message as { selector: string | null }).selector)
+      return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText } }], failures: [] }
     }
     if (m.kind === 'toContent' && m.message?.type === 'JFF_PICK') {
       return { ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: picked } }], failures: [] }
@@ -151,6 +158,49 @@ describe('the job text source line', () => {
     pageJobText = { text: JD, selector: null, source: 'ats' }
     await mountAndScan()
     await waitFor(() => { expect(line()).toBe(`${JD.length} characters · the Lever posting page`) })
+  })
+
+  // Spec #41, #52: the page script reads the posting's page, with a stubbed fetch.
+  describe('on a Lever apply page', () => {
+    const APPLY = 'https://jobs.lever.co/acme/0000-posting/apply'
+    let fetch: ReturnType<typeof vi.fn<FetchLike>>
+
+    beforeEach(() => {
+      const chrome = (globalThis as unknown as { chrome: Chrome }).chrome
+      const tab = { id: 7, url: APPLY, title: 'Apply' }
+      chrome.tabs.query = async () => [tab]
+      chrome.tabs.get = async () => tab
+      host.frameUrl = APPLY
+      fetch = vi.fn<FetchLike>(async () => new Response(postingFixtureHtml('lever-posting'), { status: 200 }))
+      readPage = (selector) => readJobText(document, selector, postingReaderFor(APPLY, fetch))
+    })
+
+    it('the text comes from the posting\'s page and the line reads "the Lever posting page"', async () => {
+      await mountAndScan()
+      await waitFor(() => { expect(line()).toMatch(/^\d+ characters · the Lever posting page$/) })
+      expect(box().value).toContain('Placeholder text where the Job posting described the role.')
+      expect(fetch).toHaveBeenCalledTimes(1)
+      expect(fetch.mock.calls[0]![1]).toMatchObject({ credentials: 'omit' })
+      expect(rejectButton()).toBeNull()
+    })
+
+    it('a second Scan in the Session makes no second fetch', async () => {
+      await mountAndScan()
+      await waitFor(() => { expect(line()).toContain('the Lever posting page') })
+      await scanAgain()
+      expect(line()).toContain('the Lever posting page')
+      expect(fetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('a paste still wins over it, and the next Scan makes no fetch', async () => {
+      await mountAndScan()
+      await waitFor(() => { expect(line()).toContain('the Lever posting page') })
+      fireEvent.change(box(), { target: { value: 'Pasted posting' } })
+      await waitFor(() => { expect(line()).toBe('14 characters · your paste') })
+      await scanAgain()
+      expect(line()).toBe('14 characters · your paste')
+      expect(fetch).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('a Scan that finds no text reads "nothing found" with a count of 0', async () => {

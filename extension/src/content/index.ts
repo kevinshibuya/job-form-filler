@@ -3,7 +3,7 @@ import { capturePage } from './capture'
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
 import { fillFields, fillResume } from './fill'
-import { captureJobText, PICK_TIMEOUT_MS, startPicker } from './jobpost'
+import { PICK_TIMEOUT_MS, postingReaderFor, readJobText, startPicker } from './jobpost'
 import { installSnapshotListeners, snapshotValues } from './snapshot'
 
 declare global {
@@ -79,7 +79,11 @@ async function handle(raw: unknown): Promise<unknown> {
   }
 
   if (msg.type === 'JFF_JOBTEXT') {
-    return { ok: true, jobText: captureJobText(document, msg.selector) }
+    // The Side panel asks the top frame. On a form page whose module names a
+    // Job posting page, the text comes from there (spec #41): fetched on this
+    // frame's origin only, without cookies, given up after 5 seconds.
+    const jobText = await readJobText(document, msg.selector, postingReaderFor(location.href, (url, init) => fetch(url, init)))
+    return { ok: true, jobText }
   }
 
   if (msg.type === 'JFF_CAPTURE') {

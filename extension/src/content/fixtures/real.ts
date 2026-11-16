@@ -40,9 +40,15 @@ export function loadRealFixture(name: string): void {
   load(html)
 }
 
-/** Replaces the test document with the named posting fixture; `name` may carry `.html`. */
-export function loadPostingFixture(name: string): void {
+/** The named posting fixture's file as it is on disk, as a server would send
+ *  it; `name` may carry `.html`. */
+export function postingFixtureHtml(name: string): string {
   const html = POSTINGS_BY_NAME.get(name.replace(/\.html$/, ''))
   if (html === undefined) throw new Error(`no posting fixture named ${name}; there are: ${POSTING_FIXTURES.join(', ') || 'none'}`)
-  load(html)
+  return html
+}
+
+/** Replaces the test document with the named posting fixture; `name` may carry `.html`. */
+export function loadPostingFixture(name: string): void {
+  load(postingFixtureHtml(name))
 }

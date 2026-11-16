@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import type { ContentMessage, EnumField, Resolution } from '@jff/shared'
 import type { HostPort } from './port'
 import { runMapping, runScan, ScanError, type ScanDeps } from './scan'
+import { postingReaderFor, readJobText } from '../content/jobpost'
+import type { FetchLike } from '../content/postingFetch'
+import { postingFixtureHtml } from '../content/fixtures/real'
 
 /** A posting long enough for the 400-character minimum. */
 const JD = `JOB POSTING ${'Build reliable systems with a small team. '.repeat(12)}`.trim()
@@ -1078,5 +1081,85 @@ describe('the Job posting text and its source (spec #41)', () => {
   it('a Session saved before the source was kept reuses its text with no source', async () => {
     const { deps } = makeDeps({ heldJobText: 'Older text' })
     expect(await runScan(deps)).toMatchObject({ jobText: 'Older text', jobTextSource: null })
+  })
+})
+
+// Spec #41, #52: on Lever the Job posting text comes from the posting's page.
+// The fake top frame answers the job text request with the page script's own
+// reader, under the frame's address and with a stubbed fetch.
+describe('the Job posting text from the posting\'s page (spec #41)', () => {
+  const LEVER_APPLY = 'https://jobs.lever.co/acme/0000-posting/apply'
+  const LEVER_POSTING = 'https://jobs.lever.co/acme/0000-posting'
+  const HEURISTIC = `HEURISTIC ${'Text the form page holds. '.repeat(20)}`
+
+  const fixtureFetch = () => vi.fn<FetchLike>(async () => new Response(postingFixtureHtml('lever-posting'), { status: 200 }))
+
+  /** A page at `url` whose top frame runs the page script's job text reading. */
+  function pageAt(url: string, fetch: FetchLike) {
+    document.body.innerHTML = `<main>${HEURISTIC}</main>`
+    return vi.fn(async (_frameId: number | undefined, message: ContentMessage) => {
+      if (message.type === 'JFF_SCAN') return { replies: [{ frameId: 0, url, payload: { ok: true, scan: { epoch: message.epoch, fields: [field(0, 0), field(0, 1)], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+      if (message.type === 'JFF_JOBTEXT') {
+        const jobText = await readJobText(document, message.selector, postingReaderFor(url, fetch))
+        return { replies: [{ frameId: 0, payload: { ok: true, jobText } }], failures: [] }
+      }
+      if (message.type === 'JFF_FILL') return { replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: message.epoch, filled: [], failed: [] } } }], failures: [] }
+      return { replies: [{ frameId: 0, payload: { ok: false } }], failures: [] }
+    })
+  }
+
+  const scanAt = (url: string, fetch: FetchLike, over: Partial<ScanDeps> = {}) =>
+    makeDeps({ sendToTab: pageAt(url, fetch), hostname: new URL(url).hostname, ...over })
+
+  it('a Scan on a Lever apply page holds the fixture\'s text, and the source is the ATS', async () => {
+    const fetch = fixtureFetch()
+    const out = await runScan(scanAt(LEVER_APPLY, fetch).deps)
+    expect(out.ats).toBe('lever')
+    expect(out.jobTextSource).toBe('ats')
+    expect(out.jobText).toContain('Placeholder text where the Job posting described the role.')
+    expect(out.jobText).not.toContain('HEURISTIC')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls[0]![0]).toBe(LEVER_POSTING)
+    expect(fetch.mock.calls[0]![1]).toMatchObject({ credentials: 'omit' })
+  })
+
+  it('a second Scan in the same Session makes no second fetch and keeps the source', async () => {
+    const fetch = fixtureFetch()
+    const { deps } = scanAt(LEVER_APPLY, fetch)
+    const first = await runScan(deps)
+    // The Session keeps the text and its source, as the Side panel hands them back.
+    deps.heldJobText = first.jobText
+    deps.heldJobTextSource = first.jobTextSource
+    const second = await runScan(deps)
+    expect(second).toMatchObject({ jobText: first.jobText, jobTextSource: 'ats' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a paste wins, and with a paste no fetch is made', async () => {
+    const fetch = fixtureFetch()
+    const out = await runScan(scanAt(LEVER_APPLY, fetch, { heldJobText: 'My pasted posting', heldJobTextSource: 'paste' }).deps)
+    expect(out).toMatchObject({ jobText: 'My pasted posting', jobTextSource: 'paste' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('a posting page that fails goes on to the pick, then the heuristic, and the Scan does not fail', async () => {
+    const fetch = vi.fn<FetchLike>(async () => { throw new TypeError('Failed to fetch') })
+    const out = await runScan(scanAt(LEVER_APPLY, fetch).deps)
+    expect(out).toMatchObject({ jobTextSource: 'heuristic' })
+    expect(out.jobText).toContain('HEURISTIC')
+    expect(out.fields.length).toBeGreaterThan(0)
+  })
+
+  it('a posting page that holds less than the minimum goes on to the next source', async () => {
+    const fetch = vi.fn<FetchLike>(async () => new Response('<div class="posting-page">Cookie notice</div>', { status: 200 }))
+    expect((await runScan(scanAt(LEVER_APPLY, fetch).deps)).jobTextSource).toBe('heuristic')
+  })
+
+  it('a Scan on an Ashby, a Greenhouse or an unknown page makes no fetch', async () => {
+    const fetch = fixtureFetch()
+    for (const url of ['https://jobs.ashbyhq.com/acme/0000/application', 'https://boards.greenhouse.io/acme/jobs/1', 'https://careers.example/apply']) {
+      expect((await runScan(scanAt(url, fetch).deps)).jobTextSource).toBe('heuristic')
+    }
+    expect(fetch).not.toHaveBeenCalled()
   })
 })
