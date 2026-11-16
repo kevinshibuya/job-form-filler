@@ -575,6 +575,7 @@ describe('label-keyed answer carry (S4)', () => {
       snapshot: { '0:0': 'from the page' },
       reuseOverrides: { '0:0': 'company_specific' },
       election: { frameId: 0, score: 3, url: null },
+      attachedUploads: ['Resume/CV'],
     })
     // Step 2 re-enumerates: the same question is ref 0:1 now, and 0:0 is new.
     const next = projectAnswers(s, [labelled(0, 'Anything else?'), labelled(1, WHY)], [resolutionFor(0), resolutionFor(1)], {})
@@ -584,6 +585,7 @@ describe('label-keyed answer carry (S4)', () => {
     expect(next.snapshot).toEqual({})
     expect(next.reuseOverrides).toEqual({})
     expect(next.election).toBeNull()
+    expect(next.attachedUploads).toEqual([])
     expect(next.answers).toEqual(s.answers)                    // the carry itself rides on
   })
 
@@ -776,5 +778,17 @@ describe('Draft warnings ride the Session', () => {
   it('a re-scan drops them with the refs they were keyed by', () => {
     const s = { ...newSession(7), draftWarnings: { '0:1': ['I do not need any accommodations.'] } }
     expect(projectAnswers(s, [], [], {}).draftWarnings).toEqual({})
+  })
+})
+
+describe('attached uploads ride the Session (#37)', () => {
+  it('a new Session has none', () => {
+    expect(newSession(7).attachedUploads).toEqual([])
+  })
+
+  it('a stored row from before attached uploads were read has none, and a malformed list is refused', () => {
+    const { attachedUploads: _gone, ...old } = newSession(7)
+    expect(parseStoredSession(old)?.attachedUploads).toEqual([])
+    expect(parseStoredSession({ ...newSession(7), attachedUploads: [1] })).toBeNull()
   })
 })

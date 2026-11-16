@@ -1241,6 +1241,46 @@ describe('App — resume row wiring (A8/A9)', () => {
       expect(uploads.every((u) => u.handle!.fid === 1)).toBe(true)
     })
   })
+
+  it('offers no "Put on page" when the page already shows the resume attached, and says so in a muted note (#37)', async () => {
+    const { saveResume } = await import('./resume')
+    await saveResume(new File([new Uint8Array([1, 2, 3])], 'cv.pdf', { type: 'application/pdf' }), async () => null)
+    const sentTypes: string[] = []
+    const send = (globalThis as unknown as { chrome: { runtime: { sendMessage: ReturnType<typeof vi.fn> } } }).chrome.runtime.sendMessage
+    send.mockImplementation(async (msg: { kind?: string; message?: { type?: string } }) => {
+      if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+      if (msg?.kind === 'toContent' && msg.message?.type !== undefined) sentTypes.push(msg.message.type)
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') {
+        // The resume input is gone after the attach; the cover-letter input is left.
+        return { ok: true, replies: [{ frameId: 0, url: 'https://ats.example/', payload: { ok: true, scan: { epoch: 1, fields: [
+          { frameId: -1, fid: 0, epoch: 1, label: 'First name', name: 'first_name', idAttr: 'first_name', kind: 'text', options: [], required: true, visible: true, currentValue: null, demographic: false },
+          { frameId: -1, fid: 1, epoch: 1, label: 'Attach', name: null, idAttr: 'cover_letter', kind: 'file', options: [], required: false, visible: false, currentValue: null, demographic: false, accept: '.pdf,.doc,.docx,.txt,.rtf' },
+        ], unreachableWidgets: 0, activeCaptcha: false, attachedUploads: ['Resume/CV'] } } }], failures: [] }
+      }
+      if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_JOBTEXT') return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: { text: '', selector: null, source: 'none' } } }], failures: [] }
+      if (msg?.kind === 'toContent') return { ok: true, replies: [{ frameId: 0, payload: { ok: true } }], failures: [] }
+      return { ok: true }
+    })
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'resolve.first' || method === 'resolve.mapping') {
+        const p = params as { fields: { frameId: number; fid: number }[] }
+        return { requestId, ok: true, result: answerTwoStep(method, params, p.fields.map((f) => ({
+          handle: { frameId: f.frameId, fid: f.fid, epoch: 1 }, tier: 'needs_input' as const,
+          value: null, source: null, key: null, answerId: null, reason: 'custom',
+        })))! }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('[data-jff-resume-attached-note]')).not.toBeNull())
+    expect(document.querySelector('[data-jff-resume-attached-note]')!.textContent).toBe(' — resume already on the page')
+    expect(document.querySelector('[data-jff-resume-note]')).toBeNull()
+    await waitFor(() => expect(document.querySelector('[data-jff-editor="file"]')).not.toBeNull())
+    expect(screen.queryByRole('button', { name: 'Put on page' })).toBeNull()
+    expect(sentTypes).not.toContain('JFF_FILL_RESUME')
+  })
 })
 
 describe('App — B3 page-accepted fills and failure surfacing', () => {

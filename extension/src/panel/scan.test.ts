@@ -667,6 +667,43 @@ describe('runScan — A7 frame election', () => {
     expect(sent.map((m) => m.type)).not.toContain('JFF_FILL_RESUME')
   })
 
+  it('does NOT upload, nor re-enumerate, when the elected frame shows the resume already attached (#37)', async () => {
+    // The elected frame still holds a Resume-labelled file field that would
+    // win the scorer, so only the attach report can stop the upload.
+    const made = twoFrameDeps({ resume: true })
+    const inner = made.deps.sendToTab
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      const out = await inner(frameId, message)
+      if (message.type !== 'JFF_SCAN') return out
+      return { ...out, replies: out.replies.map((r) => {
+        const p = r.payload as { scan: object }
+        return r.frameId === 1 ? { ...r, payload: { ...p, scan: { ...p.scan, attachedUploads: ['Resume/CV'] } } } : r
+      }) }
+    })
+    const out = await runScan(made.deps)
+    expect(out.election!.frameId).toBe(1)
+    expect(made.sent.map((m) => m.type)).not.toContain('JFF_FILL_RESUME')
+    expect(made.sent.filter((m) => m.type === 'JFF_SCAN')).toHaveLength(1)
+    expect(out.attachedUploads).toEqual(['Resume/CV'])
+  })
+
+  it('reads attached uploads from the ELECTED frame only', async () => {
+    const made = twoFrameDeps({ resume: true })
+    const inner = made.deps.sendToTab
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      const out = await inner(frameId, message)
+      if (message.type !== 'JFF_SCAN') return out
+      return { ...out, replies: out.replies.map((r) => {
+        const p = r.payload as { scan: object }
+        return r.frameId === 0 ? { ...r, payload: { ...p, scan: { ...p.scan, attachedUploads: ['Resume'] } } } : r
+      }) }
+    })
+    const out = await runScan(made.deps)
+    expect(out.election!.frameId).toBe(1)
+    expect(made.sent.map((m) => m.type)).toContain('JFF_FILL_RESUME')
+    expect(out.attachedUploads).toEqual([])
+  })
+
   it('does NOT upload to a resume-looking file field in a NON-elected frame', async () => {
     // The scoring file input lives in frame 0; frame 1 still wins the election.
     const topWithFile = [field(0, 0, { label: 'Resume', kind: 'file' })]

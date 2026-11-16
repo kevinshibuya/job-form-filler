@@ -266,6 +266,21 @@ export function labelFor(el: Element): LabelBinding {
   return NO_BINDING
 }
 
+/** A [role="group"] container's own label: its aria-label, then the text of
+ *  its aria-labelledby targets. Null when neither yields text. */
+export function ariaGroupLabel(group: Element): LabelBinding | null {
+  const aria = clean(group.getAttribute('aria-label'))
+  if (aria !== '') return { text: aria, source: 'group-aria', element: null }
+  const labelledBy = group.getAttribute('aria-labelledby')
+  if (labelledBy === null) return null
+  const scope = scopeOf(group)
+  const refs = labelledBy.split(/\s+/)
+    .map((id) => scope.querySelector(`[id="${escapeId(id)}"]`))
+    .filter((n): n is Element => n !== null)
+  const t = clean(refs.map((n) => n.textContent ?? '').join(' '))
+  return t === '' ? null : { text: t, source: 'group-aria', element: refs[0] ?? null }
+}
+
 /**
  * The label of a WHOLE radio group. Never consults the wrapping <label> of an
  * individual radio: that is the OPTION's text ("Remote"), not the group's
@@ -278,19 +293,8 @@ export function groupLabelFor(el: Element): LabelBinding {
   if (legend !== null && legendText !== '') return { text: legendText, source: 'group-legend', element: legend }
 
   const group = el.closest('[role="group"]')
-  if (group !== null) {
-    const aria = clean(group.getAttribute('aria-label'))
-    if (aria !== '') return { text: aria, source: 'group-aria', element: null }
-    const labelledBy = group.getAttribute('aria-labelledby')
-    if (labelledBy !== null) {
-      const scope = scopeOf(group)
-      const refs = labelledBy.split(/\s+/)
-        .map((id) => scope.querySelector(`[id="${escapeId(id)}"]`))
-        .filter((n): n is Element => n !== null)
-      const t = clean(refs.map((n) => n.textContent ?? '').join(' '))
-      if (t !== '') return { text: t, source: 'group-aria', element: refs[0] ?? null }
-    }
-  }
+  const aria = group === null ? null : ariaGroupLabel(group)
+  if (aria !== null) return aria
 
   const dangling = danglingLabelFor(el)
   if (dangling !== null) return dangling
