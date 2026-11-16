@@ -6,7 +6,7 @@ import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDete
 import { attributableListbox, mountedListboxes } from './listbox'
 import { matchOption, type OptionMatch } from './optionMatch'
 import { namesPhoneCountry, phoneSelectorsOf, pickCountryOption } from './phoneSelector'
-import { waitForSettle } from './settle'
+import { waitForPageReady, waitForSettle } from './settle'
 
 /**
  * `options`: the Options a Fill of a choice Control read on the page, on a hit
@@ -802,6 +802,54 @@ export function fillFile(el: Element, file: File): FillOutcome {
   el.files = dt.files
   el.dispatchEvent(new Event('change', { bubbles: true }))
   return { ok: true }
+}
+
+/** The error texts an uploader shows: an alert, or an element whose id or class says error or invalid. */
+const ERROR_TEXT = '[role="alert"], [id*="error" i], [class*="error" i], [class*="invalid" i]'
+
+/** The uploader around a file input: its group or fieldset, else a few levels up. */
+function uploaderOf(el: Element): Element {
+  const group = el.closest('[role="group"], fieldset')
+  if (group !== null) return group
+  let scope: Element = el
+  for (let i = 0; i < 3 && scope.parentElement !== null && scope.parentElement.tagName !== 'BODY'; i++) scope = scope.parentElement
+  return scope
+}
+
+const errorTexts = (scope: Element): Map<Element, string> =>
+  new Map(Array.from(scope.querySelectorAll(ERROR_TEXT)).map((e) => [e, (e.textContent ?? '').trim()] as const).filter(([, t]) => t !== ''))
+
+/**
+ * Puts a file on a file input and checks the page kept it: an error text the
+ * uploader shows after the attach settles, and did not show before, is a
+ * refusal (`file-not-kept`). An uploader that removes itself on success
+ * (replacing the input with the file name) shows none.
+ */
+export async function attachFile(el: Element, file: File): Promise<FillOutcome> {
+  const scope = uploaderOf(el)
+  const before = errorTexts(scope)
+  const out = fillFile(el, file)
+  if (!out.ok) return out
+  // Let the ATS's async resume auto-parse finish BEFORE anything else is filled.
+  await waitForSettle(el.ownerDocument)
+  for (const [node, text] of errorTexts(scope)) {
+    if (before.get(node) !== text) return { ok: false, reason: 'file-not-kept' }
+  }
+  return { ok: true }
+}
+
+/**
+ * The resume Fill of a Scan: waits until a young page is ready to take a
+ * write (a reload's re-scan runs at its navigation commit, before the ATS has
+ * its upload targets), then finds the file input and attaches the file.
+ */
+export async function fillResume(
+  root: Document, fid: number, file: File, ready: () => Promise<void> = () => waitForPageReady(root),
+): Promise<FillOutcome> {
+  await ready()
+  const el = elementByFid(root, fid)
+  if (el === null) return { ok: false, reason: 'element-not-found' }
+  return attachFile(el, file)
 }
 
 /** The parts a Fill is given beside the Value (Resolution.phone and Resolution.city). */

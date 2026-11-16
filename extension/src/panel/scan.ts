@@ -255,11 +255,16 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
     if (resume !== null && fileField !== null) {
       let resumeError: FrameReport | null = null
       try {
-        await deps.sendToTab(fileField.frameId, {
+        const { replies } = await deps.sendToTab(fileField.frameId, {
           type: 'JFF_FILL_RESUME', epoch,
           handle: { frameId: fileField.frameId, fid: fileField.fid, epoch },
           fileName: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64,
         })
+        // A page that refused the file (or a stale frame) is reported, never dropped.
+        const reply = replies[0]?.payload as { ok?: boolean; error?: string } | undefined
+        if (reply?.ok !== true) {
+          resumeError = { frameId: fileField.frameId, url: null, fields: null, error: `resume upload failed: ${reply?.error ?? 'no reply'}` }
+        }
       } catch (e) {
         // A dead resume-upload relay must not discard the whole scan: the field
         // list and the paid resolve are still worth having. Report and continue.

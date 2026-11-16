@@ -27,3 +27,34 @@ export function waitForSettle(root: Document, opts: { quietMs?: number; maxMs?: 
     restart()
   })
 }
+
+/**
+ * Wait until a page is ready to take a write. A document loaded long ago is
+ * ready at once. A young one (a reload a re-scan followed at its navigation
+ * commit) first waits for `load`, then for the DOM to stay quiet for `quietMs`:
+ * an ATS hydrates and fetches its upload targets after load, and a change
+ * event before that is refused. `maxMs` caps the whole wait.
+ */
+export function waitForPageReady(
+  root: Document,
+  opts: { age?: () => number; quietMs?: number; maxMs?: number; oldMs?: number } = {},
+): Promise<void> {
+  const age = opts.age ?? (() => performance.now())
+  const quietMs = opts.quietMs ?? 1_000
+  const maxMs = opts.maxMs ?? 8_000
+  const oldMs = opts.oldMs ?? 10_000
+  if (root.readyState === 'complete' && age() >= oldMs) return Promise.resolve()
+  const start = Date.now()
+  const loaded = new Promise<void>((resolve) => {
+    if (root.readyState === 'complete') { resolve(); return }
+    const view = root.defaultView
+    if (view === null) { resolve(); return }
+    view.addEventListener('load', () => resolve(), { once: true })
+  })
+  let capTimer: ReturnType<typeof setTimeout> | undefined
+  const cap = new Promise<void>((resolve) => { capTimer = setTimeout(resolve, maxMs) })
+  return Promise.race([
+    loaded.then(() => waitForSettle(root, { quietMs, maxMs: Math.max(0, maxMs - (Date.now() - start)) })),
+    cap,
+  ]).finally(() => clearTimeout(capTimer))
+}

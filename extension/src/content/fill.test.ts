@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { setNativeValue, fillOne, fillFields, fillFile } from './fill'
+import { setNativeValue, fillOne, fillFields, fillFile, fillResume } from './fill'
+import { waitForPageReady } from './settle'
 import { enumerateFields, type MeasureFn } from './enumerate'
 import { loadRealFixture } from './fixtures/real'
 import {
@@ -1278,5 +1279,64 @@ describe('backing out of a menu the way a user does', () => {
     input.addEventListener('blur', () => { input.value = '' })
     await expect(fillOne(input, "Bachelor's Degree")).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
     expect(input.value).toBe('')
+  }, 10_000)
+})
+
+// PR #36 final pass: on a reload re-scan the resume reached the page before its
+// uploader had an upload target; the page threw and showed an error.
+describe('putting the resume on the page', () => {
+  /** An ATS uploader: its change handler needs an upload target that arrives `readyAfterMs` after mount (never when null). */
+  function mountUploader(readyAfterMs: number | null, preError = false): number {
+    document.body.innerHTML = `
+      <div class="file-upload" role="group" aria-labelledby="resume-label">
+        <label id="resume-label" for="resume">Resume/CV</label>
+        <div class="buttons"><label for="resume">Attach</label><input id="resume" type="file" accept=".pdf"></div>
+        ${preError ? '<p class="helper-text--error" id="old-error">Please attach a file</p>' : ''}
+      </div>`
+    const uploaders: Record<string, { uploadFile: () => Promise<void> }> = {}
+    if (readyAfterMs !== null) setTimeout(() => { uploaders['resume'] = { uploadFile: async () => undefined } }, readyAfterMs)
+    const input = document.getElementById('resume') as HTMLInputElement
+    const group = document.querySelector('.file-upload')!
+    input.addEventListener('change', () => {
+      void (async () => {
+        try {
+          await uploaders['resume']!.uploadFile()
+          group.querySelector('.buttons')!.replaceWith(Object.assign(document.createElement('div'), { className: 'filename', textContent: input.files![0]!.name }))
+        } catch (e) {
+          const p = Object.assign(document.createElement('p'), { id: 'resume-error', className: 'helper-text--error', textContent: (e as Error).message })
+          p.setAttribute('aria-live', 'polite')
+          group.appendChild(p)
+        }
+      })()
+    })
+    return enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields.find((f) => f.idAttr === 'resume')!.fid
+  }
+  const cv = (): File => new File(['%PDF'], 'ada-cv.pdf', { type: 'application/pdf' })
+  const young = () => waitForPageReady(document, { age: () => 0, quietMs: 500 })
+  const old = () => waitForPageReady(document, { age: () => 60_000 })
+
+  it('on a young page the attach waits for the uploader, and the page keeps the file', async () => {
+    const fid = mountUploader(400)
+    await expect(fillResume(document, fid, cv(), young)).resolves.toEqual({ ok: true })
+    expect(document.querySelector('.filename')?.textContent).toBe('ada-cv.pdf')
+    expect(document.getElementById('resume-error')).toBeNull()
+  }, 10_000)
+
+  it('an uploader that never gets ready is a file the page did not keep', async () => {
+    const fid = mountUploader(null)
+    await expect(fillResume(document, fid, cv(), old)).resolves.toEqual({ ok: false, reason: 'file-not-kept' })
+  }, 10_000)
+
+  it('a plain file input on an old page takes the file at once', async () => {
+    document.body.innerHTML = '<label for="cv">Resume</label><input id="cv" type="file">'
+    const fid = enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields.find((f) => f.idAttr === 'cv')!.fid
+    await expect(fillResume(document, fid, cv(), old)).resolves.toEqual({ ok: true })
+    expect((document.getElementById('cv') as HTMLInputElement).files![0]!.name).toBe('ada-cv.pdf')
+  }, 10_000)
+
+  it('an error text already on the page before the attach does not count against it', async () => {
+    const fid = mountUploader(0, true)
+    await new Promise((r) => setTimeout(r, 10))
+    await expect(fillResume(document, fid, cv(), old)).resolves.toEqual({ ok: true })
   }, 10_000)
 })

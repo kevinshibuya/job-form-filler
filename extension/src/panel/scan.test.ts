@@ -433,6 +433,21 @@ describe('runScan', () => {
     ])
   })
 
+  // PR #36 final pass: a resume the page refused was dropped in silence.
+  it('a resume the page refused is reported in frameReports, and the scan goes on to resolve', async () => {
+    const base = makeDeps()
+    const inner = base.deps.sendToTab
+    const { deps } = makeDeps({
+      sendToTab: vi.fn(async (frameId, message) => {
+        if (message.type === 'JFF_FILL_RESUME') return { replies: [{ frameId: 0, payload: { ok: false, error: 'file-not-kept' } }], failures: [] }
+        return inner(frameId, message)
+      }),
+    })
+    const out = await runScan(deps)
+    expect(out.frameReports.some((r) => r.error === 'resume upload failed: file-not-kept')).toBe(true)
+    expect((deps.port.request as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[0] === 'resolve.first')).toBe(true)
+  })
+
   it('reports a failed auto-fill send in frameReports instead of discarding the scan', async () => {
     const { deps } = makeDeps({
       getResume: async () => null,

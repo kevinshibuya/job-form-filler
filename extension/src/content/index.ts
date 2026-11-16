@@ -1,10 +1,9 @@
 import { ContentMessageSchema, FillReportSchema, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
 import { hasActiveCaptcha, isDemographic } from './classify'
-import { elementByFid, enumerateFields, getEpoch } from './enumerate'
-import { fillFields, fillFile } from './fill'
+import { enumerateFields, getEpoch } from './enumerate'
+import { fillFields, fillResume } from './fill'
 import { captureJobText, PICK_TIMEOUT_MS, startPicker } from './jobpost'
 import { installSnapshotListeners, snapshotValues } from './snapshot'
-import { waitForSettle } from './settle'
 
 declare global {
   interface Window { __jffLoaded?: boolean }
@@ -57,15 +56,11 @@ async function handle(raw: unknown): Promise<unknown> {
   if (msg.epoch !== getEpoch()) return { ok: false, error: STALE_EPOCH }
 
   if (msg.type === 'JFF_FILL_RESUME') {
-    const el = elementByFid(document, msg.handle.fid)
-    if (el === null) return { ok: false, error: 'element-not-found' }
     const bytes = Uint8Array.from(atob(msg.dataBase64), (c) => c.charCodeAt(0))
     const file = new File([bytes], msg.fileName, { type: msg.mimeType })
-    const out = fillFile(el, file)
-    if (!out.ok) return { ok: false, error: out.reason }
-    // Let the ATS's async resume auto-parse finish BEFORE anything else is filled.
-    await waitForSettle(document)
-    return { ok: true }
+    // Waits for a young page, attaches, settles, and checks the page kept it.
+    const out = await fillResume(document, msg.handle.fid, file)
+    return out.ok ? { ok: true } : { ok: false, error: out.reason }
   }
 
   if (msg.type === 'JFF_JOBTEXT') {
