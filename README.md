@@ -182,7 +182,7 @@ flowchart LR
   Host["Native host<br/>Node"]
   DB[("SQLite<br/>profile, answers,<br/>applied jobs")]
   Claude["claude CLI<br/>drafts"]
-  Codex["codex CLI<br/>mapping, review,<br/>resume facts"]
+  Codex["codex CLI<br/>mapping, Option pick,<br/>review, resume facts"]
 
   Panel -- "scan and fill requests" --> SW
   SW -- "one message per frame" --> CS
@@ -221,7 +221,7 @@ flowchart LR
 
 **A second model reviews every Draft in the same request.** The review runs before the Draft reaches the user, not as a pass they have to ask for. When the reviewer fails, the unreviewed Draft ships with a warning, because a rate-limited reviewer should not cost the user the answer they waited for. [ADR 0004](docs/adr/0004-draft-then-review-with-fallback.md)
 
-**Each model task pins its model id.** Claude writes the Drafts and Codex runs mapping, review and resume facts. The CLI default follows whatever the user last picked, and it had quietly moved the product onto the slowest and most expensive model with nobody deciding it. Every call now names its model in `host/src/llm/models.ts`. The price is prompts tuned per vendor, two sign-ins to keep alive and a doubled fake-CLI matrix in the browser tests. [ADR 0005](docs/adr/0005-claude-for-prose-codex-for-structure.md)
+**Each model task pins its model id.** Claude writes the Drafts and Codex runs mapping, the Option pick, review and resume facts. The CLI default follows whatever the user last picked, and it had quietly moved the product onto the slowest and most expensive model with nobody deciding it. Every call now names its model in `host/src/llm/models.ts`. The price is prompts tuned per vendor, two sign-ins to keep alive and a doubled fake-CLI matrix in the browser tests. [ADR 0005](docs/adr/0005-claude-for-prose-codex-for-structure.md)
 
 **The mapping schema has no value field.** The tool promises never to invent an answer, and a model allowed to return one eventually will. So the model can only say which stored key answers a field, and every value written on Fill comes from the store. The mapping step loses the ability to offer an answer even when it would be right. [ADR 0006](docs/adr/0006-anti-fabrication-is-structural.md)
 

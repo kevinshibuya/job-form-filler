@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Canned stand-in for the `codex` CLI, beside the fake `claude`. The host runs
-// facts extraction, mapping, the draft review and the codex auth probe through
+// facts extraction, mapping, the Option pick, the draft review and the codex auth probe through
 // this binary, so the e2e suite needs no real codex (and no network).
 // Contract: `exec ... -o <outFile> <prompt>` — write ONE JSON body to outFile,
 // never to stdout (stdout carries a transcript the host must never parse).
@@ -39,6 +39,9 @@ const body = () => {
     const end = prompt.indexOf('</draft_under_review>', start)
     return { draft: start >= 0 && end > start ? prompt.slice(start + open.length, end) : '' }
   }
+
+  // The Option pick (ADR 0008): the canned model finds none.
+  if (/You match a stored answer to one of the options/.test(prompt)) return { position: null }
 
   // Facts extraction: the closed key set, empty is valid.
   if (/You extract job-application facts/.test(prompt)) return {}

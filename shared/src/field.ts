@@ -136,5 +136,11 @@ export const ResolutionSchema = z.object({
    * closed list knows. Absent everywhere else.
    */
   phone: PhonePartsSchema.optional(),
+  /**
+   * On a row whose Option the model picked after a Fill missed (ADR 0008):
+   * the stored Value the picked Option stands for. The row is Proposed and
+   * `value` is the page's Option. Absent everywhere else.
+   */
+  standsFor: z.string().optional(),
 })
 export type Resolution = z.infer<typeof ResolutionSchema>

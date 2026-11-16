@@ -175,6 +175,8 @@ export function createFakeHostPort(): HostPort {
         // so the first step leaves nothing pending and no Mapping is owed.
         'resolve.first': { epoch: 0, resolutions: [], pending: [] },
         'resolve.mapping': { epoch: 0, resolutions: [], llmError: null },
+        // The model pick: the canned model finds no Option, so a miss stays a picker.
+        'option.pick': { position: null },
         generate: { draft: '' },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
-import { norm, type EnumField, type FieldHandle, type HostResponse, type Resolution } from '@jff/shared'
+import { norm, type EnumField, type FieldHandle, type HostErrorKind, type HostResponse, type OptionPickParams, type Resolution } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
 /**
@@ -61,6 +61,9 @@ export interface HeldMappingHost {
   firstValues: Record<number, string>
   /** fid → the candidate words the first step's Resolution carries with its value. */
   firstCandidates: Record<number, string[]>
+  /** fid → what else the first step's Resolution carries with its value: the
+   *  Known key or Saved answer that identifies it as a stored Value. */
+  firstPatch: Record<number, Partial<Resolution>>
   /** fids the first step decides as Needs input (a recognizer with no stored Value). */
   firstNeedsInput: number[]
   /** When true the first step decides every Field and nothing is pending. */
@@ -87,6 +90,10 @@ export interface HeldMappingHost {
   scans: number
   /** chrome.storage.session, as the fake holds it. */
   storage: Record<string, unknown>
+  /** Every `option.pick` request, in order, as its params. */
+  picks: OptionPickParams[]
+  /** What `option.pick` answers: a position, or an error. Defaults to none. */
+  pick: (p: OptionPickParams) => { position: number | null } | { error: { kind: HostErrorKind; message: string } } | Promise<{ position: number | null }>
 }
 
 export function installHeldMappingHost(): HeldMappingHost {
@@ -95,9 +102,10 @@ export function installHeldMappingHost(): HeldMappingHost {
   beforeEach(async () => {
     window.history.replaceState(null, '', '/?jffFakeHost=1')
     Object.assign(host, {
-      fields: [], firstValues: {}, firstCandidates: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
+      fields: [], firstValues: {}, firstCandidates: {}, firstPatch: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
       held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], refuse: {}, offers: {}, scans: 0, storage: {},
+      picks: [], pick: () => ({ position: null }),
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -117,6 +125,7 @@ export function installHeldMappingHost(): HeldMappingHost {
             ? resolution(f, {
               tier: 'auto', value: host.firstValues[f.fid]!, source: 'profile', reason: 'recognizer',
               ...(host.firstCandidates[f.fid] === undefined ? {} : { candidates: host.firstCandidates[f.fid] }),
+              ...host.firstPatch[f.fid],
             })
             : resolution(f, { tier: 'needs_input', reason: 'recognizer:no-stored-value' })),
           pending: p.fields.filter((f) => !decided.includes(f)).map((f) => ({ frameId: f.frameId, fid: f.fid, epoch: f.epoch })),
@@ -125,6 +134,12 @@ export function installHeldMappingHost(): HeldMappingHost {
       if (method === 'resolve.mapping') {
         host.mappingCount++
         return await new Promise<HostResponse>((reply) => { host.held.push({ fields: p.fields, reply, requestId }) })
+      }
+      if (method === 'option.pick') {
+        const pp = params as OptionPickParams
+        host.picks.push(pp)
+        const answer = await host.pick(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
       return { requestId, ok: true, result: {} }
     }

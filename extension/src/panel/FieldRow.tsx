@@ -4,6 +4,7 @@ import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
 import { scoreResumeField } from './resumeTarget'
+import { OPTION_PICK, OPTION_PICK_FAILED } from './optionPick'
 import { MAPPING_LOST } from './scan'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from './ui'
 
@@ -36,6 +37,9 @@ export const REASON_HINT: Record<string, string> = {
   // Ticket #29: questions answered for the country they name.
   'names-region': 'The question names a region, not countries. Answer it yourself.',
   'no-country-named': 'The question names no country. This is the answer for your own country.',
+  // Ticket #31: the model picked one of the page's Options after a Fill missed (ADR 0008).
+  [OPTION_PICK]: 'The model picked this option for your stored answer. Accept it or pick another.',
+  [OPTION_PICK_FAILED]: 'None of the page\'s options matches this value, and the model pick failed. Pick one.',
 }
 
 /**
@@ -232,6 +236,12 @@ export function FieldRow(p: FieldRowProps) {
       )}
 
       {claims.length > 0 && <DraftWarning claims={claims} />}
+
+      {resolution.standsFor !== undefined && resolution.tier !== 'needs_input' && (
+        <p data-jff-stands-for="1" className={`mt-0.5 line-clamp-3 text-[12px] ${MUTED}`}>
+          Stands for your stored answer: <span className="font-medium">{resolution.standsFor}</span>
+        </p>
+      )}
 
       {editor === 'checkboxes' && (
         <CheckboxGroupEditor

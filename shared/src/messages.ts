@@ -48,6 +48,23 @@ export const ResolveParamsSchema = z.object({
 })
 export type ResolveParams = z.infer<typeof ResolveParamsSchema>
 
+export const OptionPickParamsSchema = z.object({
+  label: z.string(),
+  value: z.string().min(1),
+  options: z.array(z.string()).min(1),
+})
+export type OptionPickParams = z.infer<typeof OptionPickParamsSchema>
+
+/**
+ * The reply to `option.pick`: the position (from 0) of one of the Options the
+ * request carried, or null for none. There is no text property, and zod strips
+ * unknown keys: the model can never write a Value (ADR 0006, ADR 0008).
+ */
+export const OptionPickResultSchema = z.object({
+  position: z.number().int().nonnegative().nullable(),
+})
+export type OptionPickResult = z.infer<typeof OptionPickResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -86,6 +103,10 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
       generatedCount: z.number().int().nonnegative(),
     }),
   }),
+  // The model pick (ADR 0008), made at Fill time after a miss: the Field's
+  // label, the stored Value it was meant to fill, and the Options the Fill
+  // read. Nothing else from the Profile travels with it.
+  z.object({ requestId: z.string().min(1), method: z.literal('option.pick'), params: OptionPickParamsSchema }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('mapping.confirm'), params: z.object({ label: z.string(), fieldKey: z.enum(FIELD_KEYS) }) }),

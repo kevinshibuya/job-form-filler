@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema } from './messages.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -282,5 +282,37 @@ describe('SaveItemSchema', () => {
       },
     })
     expect(r.success).toBe(false)
+  })
+})
+
+describe('option.pick — the model picks one of the page\'s Options (#31, ADR 0008)', () => {
+  const pick = { label: 'Are you open to relocation?', value: 'Yes', options: ['Yes, I am', 'No, I am not'] }
+
+  it('accepts a request carrying the label, the stored Value and the Options', () => {
+    const r = HostRequestSchema.safeParse({ requestId: 'r1', method: 'option.pick', params: pick })
+    expect(r.success).toBe(true)
+  })
+
+  it('refuses a request with no Options to pick from', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'option.pick', params: { ...pick, options: [] } }).success).toBe(false)
+  })
+
+  it('the reply is a position or none, and carries no text', () => {
+    expect(OptionPickResultSchema.parse({ position: 1 })).toEqual({ position: 1 })
+    expect(OptionPickResultSchema.parse({ position: null })).toEqual({ position: null })
+    expect(OptionPickResultSchema.parse({ position: 0, value: 'Yes, definitely', text: 'x' })).toEqual({ position: 0 })
+    expect(OptionPickResultSchema.safeParse({ position: 'Yes' }).success).toBe(false)
+    expect(OptionPickResultSchema.safeParse({ position: -1 }).success).toBe(false)
+    expect(OptionPickResultSchema.safeParse({ position: 1.5 }).success).toBe(false)
+  })
+})
+
+describe('ResolutionSchema — the stored Value a picked Option stands for (#31)', () => {
+  it('round-trips standsFor', () => {
+    const r = ResolutionSchema.parse({
+      handle, tier: 'proposed', value: 'Yes, I am', source: 'answer_bank', key: 'relocate', answerId: null,
+      reason: 'option-pick', standsFor: 'Yes',
+    })
+    expect(r.standsFor).toBe('Yes')
   })
 })

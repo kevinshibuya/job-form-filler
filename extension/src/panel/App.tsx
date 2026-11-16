@@ -12,6 +12,7 @@ import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
+import { landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
 import { pickResumeTarget } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
@@ -173,6 +174,20 @@ function settleFill(resolutions: Resolution[], fill: CollectedFill): { settled: 
   return { settled, committedEdits }
 }
 
+/**
+ * The model picks a batched Fill owes (ADR 0008): one per miss on a Field
+ * whose stored Value is identified (optionPick.pickOwed).
+ */
+function picksOwed(resolutions: Resolution[], fields: EnumField[], fill: CollectedFill): PickRequest[] {
+  const byRef = new Map(resolutions.map((r) => [refOf(r.handle), r]))
+  const fieldOf = new Map(fields.map((f) => [refOf(f), f]))
+  return fill.failed.flatMap((miss) => {
+    const r = byRef.get(refOf(miss.handle))
+    const owed = r === undefined ? null : pickOwed(r, fieldOf.get(refOf(miss.handle)), miss)
+    return owed === null ? [] : [owed]
+  })
+}
+
 /** A9/B3 status semantics: `filled` = PAGE-ACCEPTED batched fills, straight
  *  from the frames' JFF_FILL reports — never inferred from tiers, so a failed
  *  batch can never inflate it. `already on page` = page-sourced values the
@@ -186,6 +201,19 @@ function countsOf(filled: number, settled: Resolution[]): ScanCounts {
     needsInput: settled.filter((r) => r.tier === 'needs_input').length,
   }
 }
+/**
+ * A status line whose Proposed and Needs input counts describe the rows as
+ * they stand now: a model pick turns a Needs input row Proposed after the
+ * Scan's step has settled (ADR 0008). `filled` stays the Fill reports' count.
+ */
+function withRowCounts(o: ScanUiState, rows: Resolution[]): ScanUiState {
+  const proposed = rows.filter((r) => r.tier === 'proposed').length
+  const needsInput = rows.filter((r) => r.tier === 'needs_input').length
+  if (o.kind === 'done' || o.kind === 'matching') return { ...o, proposed, needsInput }
+  if (o.kind === 'failed' && o.counts !== undefined) return { ...o, counts: { ...o.counts, proposed, needsInput } }
+  return o
+}
+
 const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ kind: 'done', ...countsOf(filled, settled) })
 
 /** Everything a scan produced. A navigation makes ALL of it describe a page that
@@ -1128,6 +1156,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         lastOutcome: onScreen,
       }))
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
+      const pickStillCurrent = (): boolean => mountedRef.current && alive(sc) && rt.epoch === out.epoch
+      runPicks(target, sc.gen, picksOwed(out.resolutions, out.fields, out.fill), pickStillCurrent)
       // The second step runs OUTSIDE the scan latch: it is not awaited here, so
       // the latch frees as soon as this scan's first step has settled, and a
       // newer Scan starts without waiting on Mapping.
@@ -1149,16 +1179,23 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           if (inScope(sc)) { lastOutcomeRef.current = settledOutcome; setScanStatus(settledOutcome) }
           // Merged onto the rows as they stand now: what the user typed into a
           // first-step row while Mapping ran is still in `edits`, untouched.
+          // Counted over the rows as they stand: a model pick that landed on a
+          // first-step row while Mapping ran made it Proposed.
+          const recounted: { outcome: ScanUiState | null } = { outcome: null }
           await applyToSession(target, sc.gen, (s) => {
             if (s.epoch !== out.epoch) return s
             const merged = mergeMapping(s, pendingRefs, second.settled, second.committedEdits)
+            recounted.outcome = withRowCounts(settledOutcome, merged.resolutions)
             return {
               ...merged,
               fields: withReadOptions(merged.fields, mapped.fill),
               frameReports: [...s.frameReports, ...mapped.frameReports],
-              lastOutcome: settledOutcome,
+              lastOutcome: recounted.outcome,
             }
           })
+          const shownAfterMapping = recounted.outcome
+          if (shownAfterMapping !== null && inScope(sc)) { lastOutcomeRef.current = shownAfterMapping; setScanStatus(shownAfterMapping) }
+          runPicks(target, sc.gen, picksOwed(mapped.resolutions, out.pending, mapped.fill), isCurrent)
           if (mapped.llmError !== null && inScope(sc)) setHostError(hostErrorText(mapped.llmError))
         })().catch(swallow).finally(() => {
           if (rt.mappingEpoch === out.epoch) rt.mappingEpoch = null
@@ -1328,6 +1365,40 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `${action} failed: ${miss.reason}` })
   }
 
+  /**
+   * The model picks a Fill's misses owe (ADR 0008), each landing on its row
+   * when it answers: Proposed with the Option, unchanged on none, or a message
+   * that the pick failed. Not awaited by a Scan: its rows already show the
+   * miss and the picker while the model runs. A pick whose Scan is no longer
+   * current lands nowhere.
+   */
+  const runPicks = (target: number, gen: number, owed: PickRequest[], stillCurrent: () => boolean): void => {
+    for (const req of owed) {
+      void (async () => {
+        const outcome = await requestPick(portRef.current, req)
+        if (!stillCurrent()) return
+        await landPickOn({ target, gen }, req, outcome)
+      })().catch(swallow)
+    }
+  }
+
+  /** One pick's outcome onto its row, and the status line's counts with it. */
+  const landPickOn = async (sc: { target: number; gen: number }, req: PickRequest, outcome: PickOutcome): Promise<void> => {
+    // A box, not a `let`: the write happens inside the mutate callback.
+    const recounted: { outcome: ScanUiState | null } = { outcome: null }
+    await applyToSession(sc.target, sc.gen, (s) => {
+      const next = landPick(s, req, outcome)
+      if (next === s || s.lastOutcome === null) return next
+      recounted.outcome = withRowCounts(s.lastOutcome, next.resolutions)
+      return { ...next, lastOutcome: recounted.outcome }
+    })
+    const shown = recounted.outcome
+    if (shown !== null && inScope(sc)) {
+      lastOutcomeRef.current = shown
+      setScanStatus((st) => (st !== null && st.kind === 'action_failed' ? st : shown))
+    }
+  }
+
   /** The Options a Fill read on a hit join the Field as well. */
   const readOn = (s: Session, row: Row, hit: Extract<PageFill, { ok: true }>): EnumField[] =>
     withReadOptions(s.fields, { filled: [{ handle: row.resolution.handle, options: hit.options }], failed: [] })
@@ -1345,8 +1416,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     try {
       const out = await fillOne(sc.target, row, value)
       if (!alive(sc)) return
-      // Accept never fails in silence: the miss lands on the row itself.
-      if (!out.ok) { await settleMiss(sc, row, 'Accept', out); return }
+      // Accept never fails in silence: the miss lands on the row itself. A
+      // miss of the row's own stored Value is then handed to the model pick.
+      if (!out.ok) {
+        await settleMiss(sc, row, 'Accept', out)
+        const owed = pickOwed(row.resolution, row.field, out, value)
+        if (owed === null) return
+        const outcome = await requestPick(portRef.current, owed)
+        if (!alive(sc)) return
+        await landPickOn(sc, owed, outcome)
+        return
+      }
       const { committed } = out
       // Promote the TIER only. Writing `value` back onto the resolution would make
       // engine === final in buildSaveItems and silently drop every user correction
