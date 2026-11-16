@@ -3,7 +3,7 @@ import type { PhoneParts } from '@jff/shared'
 import { enumerateFields, type MeasureFn } from './enumerate'
 import { fillFields } from './fill'
 import { loadRealFixture } from './fixtures/real'
-import { isPhoneControl, phoneSelectorsOf, pickCountryOption } from './phoneSelector'
+import { isPhoneControl, namesPhoneCountry, phoneSelectorsOf, pickCountryOption } from './phoneSelector'
 
 // Ticket #30: the country selector beside a phone box is part of the phone
 // Field. The content script runs over fixture pages (spec #6, testing decision
@@ -38,7 +38,10 @@ function hideLikeThePage(): void {
  * in `holder` and unmounts the menu. With `keeps: false` the page ignores the
  * click and the menu stays.
  */
-function driveDropdown(input: HTMLInputElement, holder: HTMLElement, options: string[], keeps = true): string[] {
+function driveDropdown(
+  input: HTMLInputElement, holder: HTMLElement, options: string[], keeps = true,
+  render: (text: string) => string = (text) => text, onPick: (text: string) => void = () => {},
+): string[] {
   const picked: string[] = []
   const close = (): void => { document.getElementById(`${input.id}-menu`)?.remove(); input.setAttribute('aria-expanded', 'false') }
   input.addEventListener('click', () => {
@@ -56,7 +59,8 @@ function driveDropdown(input: HTMLInputElement, holder: HTMLElement, options: st
         if (!keeps) return
         picked.push(text)
         input.value = ''
-        holder.textContent = text
+        holder.innerHTML = render(text)
+        onPick(text)
         close()
       })
       lb.appendChild(o)
@@ -92,7 +96,10 @@ function driveFlagList(): void {
 }
 
 /** A phone box paired with a Country dropdown in one fieldset, as on the hosted Greenhouse form. */
-function pairedPage(options: string[], { keeps = true, prefill = '' } = {}): string[] {
+function pairedPage(
+  options: string[],
+  { keeps = true, prefill = '', shown = '', render }: { keeps?: boolean; prefill?: string; shown?: string; render?: (text: string) => string } = {},
+): string[] {
   document.body.innerHTML = `
     <fieldset>
       <legend>Phone</legend>
@@ -102,7 +109,8 @@ function pairedPage(options: string[], { keeps = true, prefill = '' } = {}): str
       <input id="phone" type="tel">
     </fieldset>`
   byId<HTMLInputElement>('phone').value = prefill
-  return driveDropdown(byId('country'), byId('shown'), options, keeps)
+  byId('shown').innerHTML = shown
+  return driveDropdown(byId('country'), byId('shown'), options, keeps, render)
 }
 
 describe('recognising a phone box and its country selector', () => {
@@ -229,3 +237,87 @@ describe('filling the phone Field sets its country selector, then types the nati
     expect(byId<HTMLInputElement>('phone').value).toBe('5550100')
   }, 10_000)
 })
+
+// PR #36 manual pass: Greenhouse's Country dropdown shows a flag and the
+// calling code once picked, never the Option's text, and its onChange already
+// sets the hidden flag button beside the phone box.
+const FLAG_AND_CODE = (text: string): string => `<div class="flag"></div><span>+${/\+(\d+)/.exec(text)![1]!}</span>`
+
+describe('a selector already showing the phone\'s country is evidence, before and after the pick', () => {
+  it.each([
+    ['+1', true],
+    ['United States', true],
+    ['United States +1', true],
+    ['United States: +1', true],
+    ['Canada +1', false],
+    ['e.g. +1 555 0100', false],
+    ['+44', false],
+    ['', false],
+  ])('%j names the United States: %s', (text, expected) => {
+    expect(namesPhoneCountry(text, US)).toBe(expected)
+  })
+
+  it('T2a: a dropdown that shows a flag and the calling code once picked is set, and the number typed', async () => {
+    const picked = pairedPage(['Canada +1', 'United States +1'], { render: FLAG_AND_CODE })
+    const report = await fillPhone(US)
+    expect(report.failed).toEqual([])
+    expect(picked).toEqual(['United States +1'])
+    expect(byId<HTMLInputElement>('phone').value).toBe('5550100')
+  }, 10_000)
+
+  it('T2b: a dropdown already showing the calling code is left as it is, and the number typed', async () => {
+    const picked = pairedPage(['Canada +1', 'United States +1'], { shown: '<div class="flag"></div><span>+1</span>', render: FLAG_AND_CODE })
+    const report = await fillPhone(US)
+    expect(report.failed).toEqual([])
+    expect(picked).toEqual([])
+    expect(byId<HTMLInputElement>('phone').value).toBe('5550100')
+  }, 10_000)
+
+  it('T2c: greenhouse-self-id as the page runs it: the Country pick sets the hidden flag button, which is never opened', async () => {
+    loadRealFixture('greenhouse-self-id')
+    const style = document.createElement('style')
+    style.textContent = '.iti__hide { display: none; } .iti__country-container { display: none; }'
+    document.head.appendChild(style)
+    const button = document.querySelector<HTMLButtonElement>('.iti__selected-country')!
+    let flagOpened = false
+    button.addEventListener('click', () => { flagOpened = true })
+    const country = byId<HTMLInputElement>('country')
+    const picked = driveDropdown(country, document.querySelector<HTMLElement>('#react-select-country-placeholder')!,
+      ['Canada +1', 'United States +1'], true, FLAG_AND_CODE, (text) => {
+        const name = optionName(text)
+        button.setAttribute('title', name)
+        button.setAttribute('aria-label', `Change country, selected ${name} (+1)`)
+      })
+    const report = await fillPhone(US)
+    expect(report.failed).toEqual([])
+    expect(picked).toEqual(['United States +1'])
+    expect(flagOpened).toBe(false)
+    expect(byId<HTMLInputElement>('phone').value).toBe('5550100')
+  }, 10_000)
+
+  it('T2d: a flag dropdown already naming the country is left as it is, and the number typed', async () => {
+    document.body.innerHTML = `
+      <label for="phone">Phone</label>
+      <div><div class="wrap">
+        <button type="button" aria-haspopup="listbox" aria-expanded="false" title="United States" aria-label="United States: +1"></button>
+        <input id="phone" type="tel">
+      </div></div>`
+    let opened = false
+    document.querySelector('button')!.addEventListener('click', () => { opened = true })
+    const report = await fillPhone(US)
+    expect(report.failed).toEqual([])
+    expect(opened).toBe(false)
+    expect(byId<HTMLInputElement>('phone').value).toBe('5550100')
+  }, 10_000)
+
+  it('T2e: a dropdown showing another country\'s code is set to the phone\'s country', async () => {
+    const picked = pairedPage(['United Kingdom +44', 'United States +1'], { shown: '<span>+44</span>' })
+    const report = await fillPhone(US)
+    expect(report.failed).toEqual([])
+    expect(picked).toEqual(['United States +1'])
+    expect(byId<HTMLInputElement>('phone').value).toBe('5550100')
+  }, 10_000)
+})
+
+const optionName = (text: string): string => text.replace(/\s*\+\d+$/, '')
+

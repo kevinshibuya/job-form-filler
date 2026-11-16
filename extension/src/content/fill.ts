@@ -1,11 +1,11 @@
 import { OPTIONS_READ, norm, optionSetLabels, phoneParts, type CityParts, type FieldHandle, type FillReport, type PhoneParts } from '@jff/shared'
 import { groupBoxesOf } from './checkboxGroup'
 import { pickCityOption } from './cityTypeahead'
-import { optionLabelOf, scopeOf } from './dom'
+import { isSoleControl, optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
 import { attributableListbox, mountedListboxes } from './listbox'
 import { matchOption, type OptionMatch } from './optionMatch'
-import { optionCountryName, phoneSelectorsOf, pickCountryOption } from './phoneSelector'
+import { namesPhoneCountry, phoneSelectorsOf, pickCountryOption } from './phoneSelector'
 import { waitForSettle } from './settle'
 
 /**
@@ -517,11 +517,11 @@ interface ComboboxHow {
    */
   pick?: (options: readonly string[]) => OptionMatch
   /**
-   * The phone Fill's: a non-input control proves the commit by the Option
-   * turning aria-selected, or by the control coming to name what this returns
-   * for the Option's text.
+   * The phone Fill's: true when the control shows the phone's country. The
+   * Fill calls it only on a control that did not show it before the commit, so
+   * a true after the commit is a change, and evidence the page kept the pick.
    */
-  namesOption?: (optionText: string) => string
+  shows?: () => boolean
   /**
    * The city Fill's: the results of a search arrive one by one, so a pick is
    * taken only once they stay the same across two polls, and a miss reports
@@ -644,10 +644,8 @@ async function fillCombobox(
   // What the input held right before the commit: the typed text on the
   // typeahead path, the pre-fill value when the open gesture found the Option.
   const preCommit = input === null ? null : input.value
-  // What a non-input control and the Option said before the commit: the phone
-  // Fill's evidence is a change in either (`namesOption`).
-  const naming = (): string => norm(`${el.getAttribute('title') ?? ''} ${el.getAttribute('aria-label') ?? ''}`)
-  const preNaming = naming()
+  // Whether the Option was selected before the commit: the phone Fill takes a
+  // change to selected as evidence on a non-input control.
   const preSelected = hit.getAttribute('aria-selected')
   // D1: the commit gesture is the open gesture (a strict superset of a click),
   // for the reason C2 widened the open: react-select ignores a bare click.
@@ -675,11 +673,9 @@ async function fillCombobox(
     // Non-input widgets report their textContent TRIMMED (review fix, minors 17).
     const shown = (el.textContent ?? '').trim()
     if (norm(shown) === optionText) return withOptions({ ok: true, committed: shown === value ? null : shown }, offered)
-    if (how.namesOption !== undefined) {
-      const name = norm(how.namesOption(hit.textContent ?? ''))
+    if (how.shows !== undefined) {
       const selected = preSelected !== 'true' && hit.getAttribute('aria-selected') === 'true'
-      const named = name !== '' && naming() !== preNaming && naming().includes(name)
-      if (selected || named) return withOptions({ ok: true, committed: null }, offered)
+      if (selected || how.shows()) return withOptions({ ok: true, committed: null }, offered)
     }
     return failClosed('no-commit')
   }
@@ -688,6 +684,8 @@ async function fillCombobox(
     // (a) C2 (Greenhouse): react-select CLEARS its input and renders the
     // Option in a visible value container.
     committed = visibleCommittedText(input, optionText, preTexts)
+    // A phone's country dropdown may show a flag and the code, never the Option's text.
+    if (committed === null && how.shows?.() === true) committed = value
   } else if (norm(input.value) === optionText && input.value !== preCommit) {
     // (b) The widget rewrote the input into the Option's text.
     committed = input.value
@@ -705,8 +703,35 @@ async function fillCombobox(
 
 /* ------------------------------------------------- the phone's country selector */
 
+/**
+ * True when a country selector shows the phone's country: a native select by
+ * its selected Option; a button by its title, accessible name or text (an
+ * intl-tel-input button reads "Change country, selected X (+NN)"); a typeahead
+ * by the visible text around it, inside the widest wrapper that holds no other
+ * control, never by what is typed in its input.
+ */
+function showsCountry(sel: Element, parts: PhoneParts): boolean {
+  if (sel instanceof HTMLSelectElement) return namesPhoneCountry(sel.selectedOptions[0]?.textContent ?? '', parts)
+  if (!(sel instanceof HTMLInputElement)) {
+    const code = new RegExp(`\\+\\s?${parts.callingCode}(?!\\d)`)
+    const attrs = [sel.getAttribute('title') ?? '', sel.getAttribute('aria-label') ?? '']
+    return attrs.some((t) => namesPhoneCountry(t, parts) || code.test(t)) || namesPhoneCountry((sel.textContent ?? '').trim(), parts)
+  }
+  let scope: Element | null = null
+  for (let a = sel.parentElement, depth = 0; a !== null && depth < 5 && isSoleControl(a, sel); depth++, a = a.parentElement) scope = a
+  if (scope === null) return false
+  return Array.from(scope.querySelectorAll<HTMLElement>('*')).some((node) =>
+    node !== sel && node.children.length === 0
+    && node.closest('[role="listbox"], label, legend') === null
+    && !isDisplayHidden(node)
+    && namesPhoneCountry((node.textContent ?? '').trim(), parts))
+}
+
 /** Sets one country selector to the phone's country and checks the page kept it. */
 async function setCountrySelector(sel: Element, parts: PhoneParts): Promise<FillOutcome> {
+  // Already on the phone's country (a page that geolocates, or syncs one
+  // selector from the other): nothing to set.
+  if (showsCountry(sel, parts)) return { ok: true }
   const pick = (texts: readonly string[]): OptionMatch => pickCountryOption(texts, parts)
   if (sel instanceof HTMLSelectElement) {
     const options = Array.from(sel.options)
@@ -717,7 +742,7 @@ async function setCountrySelector(sel: Element, parts: PhoneParts): Promise<Fill
     return opt.selected ? { ok: true } : { ok: false, reason: 'no-commit' }
   }
   // The typeahead, when the open list names no Option, searches the country's first name.
-  return fillCombobox(sel, parts.countryNames[0] ?? '', [], { pick, namesOption: optionCountryName })
+  return fillCombobox(sel, parts.countryNames[0] ?? '', [], { pick, shows: () => showsCountry(sel, parts) })
 }
 
 /** A selector's failure as the phone Field reports it. */

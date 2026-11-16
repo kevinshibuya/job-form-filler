@@ -111,3 +111,16 @@ export function pickCountryOption(options: readonly string[], parts: PhoneParts)
   const code = new RegExp(`\\+\\s?${parts.callingCode}(?!\\d)`)
   return pickOne(options.flatMap((o, i) => (code.test(o) ? [i] : [])))
 }
+
+/**
+ * A text that names the phone's country: one of its names, with or without a
+ * calling code beside it, or the calling code alone ("+1", as a dropdown that
+ * shows a flag and the code does). Another calling code never does.
+ */
+export function namesPhoneCountry(text: string, parts: PhoneParts): boolean {
+  const code = /\+\s?(\d+)/.exec(text)?.[1]
+  if (code !== undefined && code !== parts.callingCode) return false
+  const name = norm(optionCountryName(text).replace(/[:,]/g, ' '))
+  if (name === '') return code !== undefined
+  return parts.countryNames.some((n) => norm(n) === name)
+}
