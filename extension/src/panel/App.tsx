@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { CapturedPageSchema, isProfileKey, STALE_EPOCH, toStoredText } from '@jff/shared'
+import { CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -13,6 +13,7 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
+import { jobTextLine, offersNotTheJob } from './jobTextLine'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget, resumeOnPage } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
@@ -552,6 +553,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const resumeUploaded = session?.resumeUploaded ?? false
   const company = session?.company ?? ''
   const jobText = session?.jobText ?? ''
+  const jobTextSource = session?.jobTextSource ?? null
   const snapshot = session?.snapshot ?? {}
   const reuseOverrides = session?.reuseOverrides ?? {}
   const parked = session?.parked ?? false
@@ -1139,7 +1141,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         }),
         port,
         getResume: loadResume,
-        pastedJobText: ownedSession()?.jobText ?? '',
+        // The Session keeps its text with where it came from, so a second
+        // Scan uses it as it is and records the same source (spec #41).
+        heldJobText: ownedSession()?.jobText ?? '',
+        heldJobTextSource: ownedSession()?.jobTextSource ?? null,
         hostname,
         url,
         title: tab.title ?? '',
@@ -1191,7 +1196,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
-        jobText: out.jobText !== '' ? out.jobText : s.jobText,
+        // What the user typed while the Scan ran is theirs.
+        ...(s.jobTextSource === 'paste' && s.jobText.trim() !== ''
+          ? {}
+          : { jobText: out.jobText, jobTextSource: out.jobTextSource }),
         // The Scan's guess fills an empty field only: what the user typed
         // while the Scan ran is theirs.
         ...(out.companyGuessed && out.company !== null && s.company.trim() === ''
@@ -1711,7 +1719,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
       if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
       const picked = p.pick
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text }))
+      // A pick is held to the minimum as every source but a paste is: a
+      // cookie notice is never taken for the job (spec #41).
+      if (picked.text.trim().length < JOB_TEXT_MIN) {
+        if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Pick refused: that spot holds ${picked.text.trim().length} characters, and a job description needs at least ${JOB_TEXT_MIN} characters.` })
+        return
+      }
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick' }))
       if (inScope(sc)) clearActionFailure()
       const tab = await getTab(sc.target)
       if (!inScope(sc)) return
@@ -1725,6 +1739,29 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setScanStatus({ kind: 'action_failed', reason: `Pick failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       if (tabIdRef.current === sc.target) setPicking(false)
+    }
+  }
+
+  /** "Not the job description" (spec #41): the Session's text goes, the source
+   *  becomes nothing found, and the Native host forgets the spot saved for
+   *  the site. */
+  const onNotTheJob = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    try {
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: '', jobTextSource: 'none' }))
+      const tab = await getTab(sc.target)
+      if (!alive(sc)) return
+      const hostname = hostnameOf(tab?.url)
+      if (hostname === '') return
+      const r = await portRef.current?.request('selector.clear', { hostname, purpose: 'job_description' })
+      if (r !== undefined && !r.ok && inScope(sc)) {
+        setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${hostErrorText(r.error)}` })
+      }
+    } catch (e) {
+      if (!inScope(sc)) return
+      setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${e instanceof Error ? e.message : String(e)}` })
     }
   }
 
@@ -2143,8 +2180,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         Job description (paste here if the scan could not find it)
         <textarea
           className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} disabled={session === null}
-          onChange={(e) => { const v = e.target.value; writeSession((s) => ({ ...s, jobText: v })) }}
+          // Typing or pasting makes the text the user's from then on.
+          onChange={(e) => { const v = e.target.value; writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' })) }}
         />
+        {session !== null && (
+          // Where the text came from (spec #41), right under the box.
+          <span className="mt-0.5 flex items-center gap-2 text-xs">
+            <span data-jff-jobtext-source={jobTextSource ?? ''}>{jobTextLine(jobText, jobTextSource, session.ats)}</span>
+            {offersNotTheJob(jobTextSource) && (
+              <button type="button" className={BTN} onClick={() => { void onNotTheJob() }}>Not the job description</button>
+            )}
+          </span>
+        )}
         <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0 || picking} onClick={onPickJobText}>
           {busyLabel(picking, 'Pick job description', 'Picking… (click the description on the page)')}
         </button>

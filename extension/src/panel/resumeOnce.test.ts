@@ -94,7 +94,7 @@ function deps(frames: FakeFrame[]): { deps: ScanDeps; sent: ContentMessage[] } {
       disconnect: () => undefined,
     } as unknown as HostPort,
     getResume: async () => ({ name: 'ada-cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=', text: null }),
-    pastedJobText: '',
+    heldJobText: '',
   }
   return { deps: d, sent }
 }

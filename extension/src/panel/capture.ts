@@ -1,6 +1,6 @@
 import {
   captureField, captureResolution, withoutQuery,
-  type CapturedPage, type CaptureSaveParams, type EnumField, type Resolution,
+  type CapturedPage, type CaptureSaveParams, type EnumField, type JobTextSource, type Resolution,
 } from '@jff/shared'
 import type { ElectionOutcome, FrameReport } from './scan'
 import { refOf } from './group'
@@ -21,6 +21,9 @@ export interface ScanRecord {
   frameReports: FrameReport[]
   edits: Record<string, string>
   snapshot: Record<string, string>
+  /** Where the Session's Job posting text came from; null when it was kept
+   *  before the source was. */
+  jobTextSource: JobTextSource | null
 }
 
 /** The frame a Capture asks for its page: the elected one, or the top frame. */
@@ -57,5 +60,6 @@ export function captureRequest(page: CapturedPage, scan: ScanRecord, url: string
     resolutions: scan.resolutions.map(captureResolution),
     election: scan.election === null ? null : { ...scan.election, url: withoutQuery(scan.election.url) },
     frameReports: scan.frameReports.map((r) => ({ ...r, url: withoutQuery(r.url) })),
+    ...(scan.jobTextSource === null ? {} : { jobTextSource: scan.jobTextSource }),
   }
 }

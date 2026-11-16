@@ -3,6 +3,18 @@ import type { ContentMessage, EnumField, Resolution } from '@jff/shared'
 import type { HostPort } from './port'
 import { runMapping, runScan, ScanError, type ScanDeps } from './scan'
 
+/** A posting long enough for the 400-character minimum. */
+const JD = `JOB POSTING ${'Build reliable systems with a small team. '.repeat(12)}`.trim()
+
+/** A page whose one form has two Fields and whose job text reply is `jobText`. */
+const jobTextPage = (jobText: { text: string; selector: string | null; source: string }) =>
+  vi.fn(async (_frameId: number | undefined, message: ContentMessage) => {
+    if (message.type === 'JFF_SCAN') return { replies: [{ frameId: 0, url: 'https://ats.example/apply', payload: { ok: true, scan: { epoch: message.epoch, fields: [field(0, 0), field(0, 1)], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+    if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText } }], failures: [] }
+    if (message.type === 'JFF_FILL') return { replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: message.epoch, filled: [], failed: [] } } }], failures: [] }
+    return { replies: [{ frameId: 0, payload: { ok: false } }], failures: [] }
+  })
+
 const field = (frameId: number, fid: number, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: -1, fid, epoch: 0, label: `L${fid}`, name: `n${fid}`, idAttr: null, kind: 'text',
   options: [], required: false, visible: true, currentValue: null, demographic: false, ...patch,
@@ -48,7 +60,7 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
       disconnect: () => undefined,
     } as unknown as HostPort,
     getResume: async () => ({ name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' }),
-    pastedJobText: '',
+    heldJobText: '',
     ...over,
   }
   // Record AFTER merging `over`, not inside the default stub. Several tests below
@@ -131,7 +143,8 @@ function twoFrameDeps(over: {
   const made = makeDeps()
   let epoch = 0
   made.deps.nextEpoch = () => ++epoch
-  made.deps.pastedJobText = over.pasted ?? ''
+  made.deps.heldJobText = over.pasted ?? ''
+  made.deps.heldJobTextSource = over.pasted === undefined ? null : 'paste'
   made.deps.getResume = async () =>
     over.resume === true ? { name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' } : null
   made.deps.inject = vi.fn(async () => [0, 1])
@@ -228,16 +241,20 @@ describe('runScan', () => {
   })
 
   it('prefers pasted job text over scraping and never asks the page for it', async () => {
-    const { deps, sent } = makeDeps({ pastedJobText: 'PASTED JD' })
+    const { deps, sent } = makeDeps({ heldJobText: 'PASTED JD', heldJobTextSource: 'paste' })
     const out = await runScan(deps)
     expect(out.jobText).toBe('PASTED JD')
     expect(sent.map((m) => m.type)).not.toContain('JFF_JOBTEXT')
   })
 
-  it('saves a newly discovered job_description selector for this hostname', async () => {
-    const { deps } = makeDeps()
-    await runScan(deps)
-    expect(deps.port.request).toHaveBeenCalledWith('selector.save', expect.objectContaining({ selector: '#jd', purpose: 'job_description' }))
+  // Spec #41, turned around: a heuristic's spot is used for this Scan and never saved.
+  it('never saves the spot a heuristic found', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: JD, selector: '#jd', source: 'heuristic' }) })
+    const out = await runScan(deps)
+    expect(out.jobText).toBe(JD)
+    expect(out.jobTextSource).toBe('heuristic')
+    const methods = (deps.port.request as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
+    expect(methods).not.toContain('selector.save')
   })
 
   it('auto-fills only tier=auto resolutions and never page-sourced ones', async () => {
@@ -996,5 +1013,70 @@ describe('the Company on a Scan (spec #41)', () => {
     expect(s.firstRequests()).toEqual([expect.objectContaining({ company: null })])
     expect(out.company).toBeNull()
     expect(out.companyGuessed).toBe(false)
+  })
+})
+
+describe('the Job posting text and its source (spec #41)', () => {
+  const methodsOf = (deps: ScanDeps): string[] => (deps.port.request as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+
+  it('a paste is used as it is, the page is asked nothing, and the source is the paste', async () => {
+    const { deps, sent } = makeDeps({ heldJobText: 'Short paste', heldJobTextSource: 'paste' })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: 'Short paste', jobTextSource: 'paste' })
+    expect(sent.map((m) => m.type)).not.toContain('JFF_JOBTEXT')
+    expect(methodsOf(deps)).not.toContain('selector.get')
+  })
+
+  it('a paste of 50 characters is kept', async () => {
+    const paste = 'p'.repeat(50)
+    const { deps } = makeDeps({ heldJobText: paste, heldJobTextSource: 'paste' })
+    expect((await runScan(deps)).jobText).toBe(paste)
+  })
+
+  it('a paste is cut to the 50,000-character cap', async () => {
+    const { deps } = makeDeps({ heldJobText: 'p'.repeat(60_000), heldJobTextSource: 'paste' })
+    expect((await runScan(deps)).jobText).toHaveLength(50_000)
+  })
+
+  it('a heuristic result of 50 characters is refused, and the source is nothing found', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: 'h'.repeat(50), selector: '#jd', source: 'heuristic' }) })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: '', jobTextSource: 'none' })
+  })
+
+  it('a spot the user picked is read through the saved selector, and the source is the pick', async () => {
+    const page = jobTextPage({ text: JD, selector: '#jd', source: 'learned' })
+    const { deps, sent } = makeDeps({ sendToTab: page })
+    ;(deps.port.request as ReturnType<typeof vi.fn>).mockImplementation(async (method: string) => {
+      if (method === 'selector.get') return { ok: true, result: { selector: '#jd' } }
+      if (method === 'resolve.first') return { ok: true, result: { epoch: 1, resolutions: [], pending: [] } }
+      return { ok: true, result: {} }
+    })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: JD, jobTextSource: 'pick' })
+    expect(sent.find((m) => m.type === 'JFF_JOBTEXT')).toMatchObject({ selector: '#jd' })
+    expect(methodsOf(deps)).not.toContain('selector.save')
+  })
+
+  it('the ATS module\'s text comes before a pick and a heuristic, and the source is the ATS', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: JD, selector: null, source: 'ats' }) })
+    expect(await runScan(deps)).toMatchObject({ jobText: JD, jobTextSource: 'ats' })
+  })
+
+  it('a Scan that finds no text says nothing found', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: '', selector: null, source: 'none' }) })
+    expect(await runScan(deps)).toMatchObject({ jobText: '', jobTextSource: 'none' })
+  })
+
+  it('a second Scan of the Session keeps the source the first recorded, and asks the page nothing', async () => {
+    const { deps, sent } = makeDeps({ heldJobText: JD, heldJobTextSource: 'heuristic' })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: JD, jobTextSource: 'heuristic' })
+    expect(sent.map((m) => m.type)).not.toContain('JFF_JOBTEXT')
+  })
+
+  it('a Session saved before the source was kept reuses its text with no source', async () => {
+    const { deps } = makeDeps({ heldJobText: 'Older text' })
+    expect(await runScan(deps)).toMatchObject({ jobText: 'Older text', jobTextSource: null })
   })
 })

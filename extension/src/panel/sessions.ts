@@ -1,4 +1,4 @@
-import { isAtsOrGeneric, normalizeQuestion, type AtsOrGeneric, type EnumField, type FieldKey, type Resolution } from '@jff/shared'
+import { isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
@@ -34,6 +34,9 @@ export interface Session {
   company: string
   companyGuessed: boolean
   jobText: string
+  /** Where `jobText` came from (spec #41). Null before the first Scan, and on
+   *  a row stored before the source was kept. */
+  jobTextSource: JobTextSource | null
   snapshot: Record<string, string>
   reuseOverrides: Record<string, 'reusable' | 'company_specific'>
   filledRefs: string[]
@@ -100,6 +103,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     company: '',
     companyGuessed: false,
     jobText: '',
+    jobTextSource: null,
     snapshot: {},
     reuseOverrides: {},
     filledRefs: [],
@@ -369,11 +373,14 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.resumeUploaded !== undefined && typeof raw.resumeUploaded !== 'boolean') return null
     // A row stored before the ATS was kept, or naming one a later list dropped, is generic.
     if (raw.ats !== undefined && typeof raw.ats !== 'string') return null
+    // A row stored before the job text source was kept has none (spec #41).
+    if (raw.jobTextSource != null && !JobTextSourceSchema.safeParse(raw.jobTextSource).success) return null
     return {
       ...(raw as unknown as Session),
       waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
       resumeUploaded: raw.resumeUploaded ?? false,
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
+      jobTextSource: (raw.jobTextSource as JobTextSource | null | undefined) ?? null,
     }
   } catch {
     return null

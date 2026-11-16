@@ -1,5 +1,7 @@
-export const MIN_JOB_TEXT = 400
-const MAX_JOB_TEXT = 50_000
+import { JOB_TEXT_MAX, JOB_TEXT_MIN, type JobTextReply } from '@jff/shared'
+
+export const MIN_JOB_TEXT = JOB_TEXT_MIN
+const MAX_JOB_TEXT = JOB_TEXT_MAX
 
 /** Hard ceiling on a pending element pick. A JFF_PICK promise that never settles
  *  would pin the runtime message channel open for the life of the frame. */
@@ -19,10 +21,12 @@ function textOf(el: Element): string {
   return (copy.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
 
-export function captureJobText(
-  root: Document,
-  learnedSelector: string | null,
-): { text: string; selector: string | null; source: 'learned' | 'heuristic' | 'none' } {
+/**
+ * The Job posting text of this page (spec #41): the spot the user picked, then
+ * a heuristic. No ATS module supplies text yet; when one does, it comes first.
+ * Every source here must reach the minimum, and the text is cut to the cap.
+ */
+export function captureJobText(root: Document, learnedSelector: string | null): JobTextReply {
   if (learnedSelector !== null && learnedSelector !== '') {
     try {
       const el = root.querySelector(learnedSelector)

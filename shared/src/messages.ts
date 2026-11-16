@@ -133,6 +133,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('wording.learn'), params: LearnWordingParamsSchema }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
+  // "Not the job description" (spec #41): forget the spot saved for a site.
+  // A site with none is not an error.
+  z.object({ requestId: z.string().min(1), method: z.literal('selector.clear'), params: z.object({ hostname: z.string().min(1), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('mapping.confirm'), params: z.object({ label: z.string(), fieldKey: z.enum(FIELD_KEYS) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('qa.list'), params: z.object({ page: z.number().int().nonnegative() }) }),
   z.object({

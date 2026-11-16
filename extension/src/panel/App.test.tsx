@@ -806,7 +806,7 @@ describe('App generation discipline', () => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_PICK') {
-        return await new Promise((r) => { releasePick = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Dead page job description' } } }], failures: [] }) })
+        return await new Promise((r) => { releasePick = () => r({ ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Dead page job description. '.repeat(20) } } }], failures: [] }) })
       }
       if (msg?.kind === 'toContent') return jobTextReply
       return { ok: true }
@@ -852,7 +852,7 @@ describe('App generation discipline', () => {
       if (msg?.kind === 'inject') return { ok: true, frames: [0] }
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_SCAN') return scanReplyFor(['Work model', 'Why us?'])
       if (msg?.kind === 'toContent' && msg.message?.type === 'JFF_PICK') {
-        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Old page job description' } } }], failures: [] }
+        return { ok: true, replies: [{ frameId: 0, payload: { ok: true, pick: { selector: '#jd', text: 'Old page job description. '.repeat(20) } } }], failures: [] }
       }
       if (msg?.kind === 'toContent') return jobTextReply
       return { ok: true }

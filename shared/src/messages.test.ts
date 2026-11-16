@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema } from './messages.js'
-import { captureField, captureRefusal, captureResolution, withoutQuery } from './capture.js'
+import { captureField, captureRefusal, captureResolution, CaptureSaveParamsSchema, withoutQuery } from './capture.js'
+import { JobTextReplySchema, JobTextSourceSchema } from './jobText.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -417,5 +418,34 @@ describe('ScanResultSchema — the Resume uploaded once per page load (#49)', ()
 
   it('refuses a flag that is not a boolean', () => {
     expect(ScanResultSchema.safeParse({ ...reply, resumeUploaded: 'yes' }).success).toBe(false)
+  })
+})
+
+describe('the Job posting text source (spec #41)', () => {
+  it('accepts the request that forgets a saved spot for a site', () => {
+    const req = HostRequestSchema.parse({ requestId: 'r', method: 'selector.clear', params: { hostname: 'jobs.example.com', purpose: 'job_description' } })
+    expect(req.method).toBe('selector.clear')
+  })
+
+  it('refuses a forget request with no hostname', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r', method: 'selector.clear', params: { purpose: 'job_description' } }).success).toBe(false)
+  })
+
+  it('the page\'s job text reply may name the ATS as its source', () => {
+    for (const source of ['ats', 'learned', 'heuristic', 'none']) {
+      expect(JobTextReplySchema.safeParse({ text: '', selector: null, source }).success).toBe(true)
+    }
+    expect(JobTextReplySchema.safeParse({ text: '', selector: null, source: 'guess' }).success).toBe(false)
+  })
+
+  it('the Session\'s source is one of five', () => {
+    expect(JobTextSourceSchema.options).toEqual(['paste', 'ats', 'pick', 'heuristic', 'none'])
+  })
+
+  it('a Capture carries a source and refuses one that is not on the list', () => {
+    const base = { page: { html: '<p>x</p>', cut: false }, ats: 'generic', url: 'https://x.example/apply', fields: [], resolutions: [], election: null, frameReports: [] }
+    const ok = CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'heuristic' })
+    expect(ok.success && ok.data.jobTextSource).toBe('heuristic')
+    expect(CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'guess' }).success).toBe(false)
   })
 })

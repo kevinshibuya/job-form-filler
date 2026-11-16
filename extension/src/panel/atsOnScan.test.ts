@@ -71,7 +71,7 @@ function makeScan({ frames, hostname = '', moduleFor, pending = [] }: Setup) {
     sleep: async () => undefined,
     port,
     getResume: async () => ({ name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' }),
-    pastedJobText: '',
+    heldJobText: '',
     hostname,
     url: hostname === '' ? '' : `https://${hostname}/apply`,
     company: null,

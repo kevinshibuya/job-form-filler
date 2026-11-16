@@ -189,6 +189,11 @@ export function saveSelector(db: Database.Database, hostname: string, purpose: s
   ).run(hostname, purpose, selector)
 }
 
+/** Forget the spot saved for a site. True when there was one. */
+export function clearSelector(db: Database.Database, hostname: string, purpose: string): boolean {
+  return db.prepare(`DELETE FROM learned_selectors WHERE hostname = ? AND purpose = ?`).run(hostname, purpose).changes > 0
+}
+
 /* ------------------------------------------------ applications / idempotency */
 
 export function insertApplication(
