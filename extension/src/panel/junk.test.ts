@@ -57,6 +57,17 @@ describe('keepField', () => {
     expect(keepField(field({ kind: 'text', visible: false, label: null, uploadWordingOnly: true }))).toBe(false)
   })
 
+  it('drops a hidden picker with no label, no name and no id whose only file signal is its accept (#54)', () => {
+    const autofill = field({ kind: 'file', visible: false, label: null, accept: 'application/pdf,.pdf,.doc,.docx' })
+    expect(keepField(autofill)).toBe(false)
+    expect(keepField({ ...autofill, idAttr: '_systemfield_resume' })).toBe(true)
+    expect(keepField({ ...autofill, name: 'attachment' })).toBe(true)
+    expect(keepField({ ...autofill, required: true })).toBe(true)
+    expect(keepField({ ...autofill, label: 'Resume' })).toBe(true)
+    expect(keepField({ ...autofill, uploadWordingOnly: true })).toBe(true)
+    expect(keepField({ ...autofill, visible: true })).toBe(true)
+  })
+
   it('keeps a hidden unlabelled cover-letter input on its file signals, though it is no resume target (#37)', () => {
     const cover = field({ kind: 'file', visible: false, label: null, idAttr: 'cover_letter', accept: '.pdf,.doc,.docx,.txt,.rtf' })
     expect(scoreResumeField(cover)).toBe(0)
@@ -82,9 +93,10 @@ describe('the junk filter over the real-page fixtures (#46)', () => {
     return { display: 'block', visibility: 'visible', ariaHidden: el.getAttribute('aria-hidden') === 'true', width: hidden ? 1 : 200, height: hidden ? 1 : 30, clipped: hidden }
   }
 
-  // Pinned from a run on the code before the generic label rules.
+  // Pinned from a run on the code before the generic label rules. #54 drops
+  // Ashby's autofill upload (fid 0) and nothing else on any fixture.
   it.each([
-    ['based-in-yes-no', 'ashby', [], []],
+    ['based-in-yes-no', 'ashby', [0], [0]],
     ['greenhouse-accommodation', 'greenhouse', [9, 11, 15, 17], [9, 11, 15, 17]],
     ['greenhouse-hosted-a', 'greenhouse', [3, 6, 15, 17], [3, 6, 15, 17]],
     ['greenhouse-hosted-b', 'greenhouse', [4, 7, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32], [4, 7, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]],
