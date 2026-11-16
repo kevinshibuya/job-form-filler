@@ -83,7 +83,7 @@ function withPhoneParts(db: Database.Database, r: Resolution): Resolution {
  */
 function withCityParts(db: Database.Database, f: EnumField, r: Resolution): Resolution {
   if (r.key !== 'city' || r.value === null || !KEY_VALUE_SOURCES.has(r.source) || f.kind !== 'combobox') return r
-  return { ...r, city: cityParts(getStoredValue(db, 'country')) }
+  return { ...r, city: cityParts(getStoredValue(db, 'country'), getStoredValue(db, 'region')) }
 }
 
 /**

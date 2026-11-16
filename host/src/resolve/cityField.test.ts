@@ -91,6 +91,17 @@ describe('the Resolution of a city Field on a dropdown carries the names of the 
     expect(city!.city!.countryNames).toContain('United Kingdom')
   })
 
+  // PR #36 manual pass 2: several results named the city and the country;
+  // only the stored region told them apart.
+  it('a City dropdown carries the stored region, and none when no region is stored', async () => {
+    setProfile(db, { region: 'Cambridgeshire' })
+    const [withRegion] = await resolve('resolve.first', field('City', 'combobox'))
+    expect(withRegion!.city!.region).toBe('Cambridgeshire')
+    setProfile(db, { region: '' })
+    const [without] = await resolve('resolve.first', field('City', 'combobox'))
+    expect(without!.city).not.toHaveProperty('region')
+  })
+
   it('no other Resolution carries city parts', async () => {
     const [email, country] = await resolve('resolve.first', field('Email'), field('Country', 'combobox'))
     expect(email!.city).toBeUndefined()

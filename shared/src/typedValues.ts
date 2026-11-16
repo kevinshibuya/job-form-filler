@@ -342,12 +342,15 @@ export function phoneParts(phone: string, country: string | null | undefined): P
 
 /**
  * The parts a city typeahead's Fill needs: every name of the stored country in
- * both languages, by the closed list. A country outside the list is named by
- * its own text alone, and no country stored gives no names.
+ * both languages, by the closed list, and the stored region when there is one.
+ * A country outside the list is named by its own text alone, and no country
+ * stored gives no names.
  */
-export function cityParts(country: string | null | undefined): CityParts {
+export function cityParts(country: string | null | undefined, region?: string | null): CityParts {
   const stored = country?.trim() ?? ''
-  if (stored === '') return { countryNames: [] }
+  const r = region?.trim() ?? ''
+  const withRegion = (p: CityParts): CityParts => (r === '' ? p : { ...p, region: r })
+  if (stored === '') return withRegion({ countryNames: [] })
   const code = countryCode(stored)
-  return { countryNames: code === null ? [stored] : countryNames(code) }
+  return withRegion({ countryNames: code === null ? [stored] : countryNames(code) })
 }

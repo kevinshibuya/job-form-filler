@@ -117,10 +117,13 @@ export type PhoneParts = z.infer<typeof PhonePartsSchema>
  * What a Fill of a city typeahead needs beside the city it types: every name of
  * the stored `country` in both languages, so the Fill can pick the result that
  * names both the city and the country. Empty when no country is stored: then
- * only a result equal to the city alone is picked.
+ * only a result equal to the city alone is picked. `region` is the stored
+ * region, absent when none: it decides among several results that name the
+ * city and the country.
  */
 export const CityPartsSchema = z.object({
   countryNames: z.array(z.string()),
+  region: z.string().optional(),
 })
 export type CityParts = z.infer<typeof CityPartsSchema>
 

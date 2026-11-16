@@ -170,3 +170,43 @@ describe('the choice among the results', () => {
     expect(pickCityOption(['Cambridge, United Kingdom'], '', UK)).toEqual({ found: 'none' })
   })
 })
+
+// PR #36 manual pass 2: eight results shared the stored city's name, five of
+// them in the stored country; only the stored region told them apart, and
+// "<city> do Norte" is another city.
+describe('the stored region decides among results that name the city and the country', () => {
+  const SPRINGFIELDS = ['Springfield, Illinois, United States', 'Springfield, Missouri, United States', 'Springfield, Massachusetts, United States']
+  const ILLINOIS: CityParts = { ...US, region: 'Illinois' }
+
+  it('three results with the city and the country: the one with the region is picked', () => {
+    expect(pickCityOption(SPRINGFIELDS, 'Springfield', ILLINOIS)).toEqual({ found: 'one', index: 0 })
+  })
+
+  it('with no region stored they stay a miss, and so with a region none of them names', () => {
+    expect(pickCityOption(SPRINGFIELDS, 'Springfield', US)).toEqual({ found: 'many' })
+    expect(pickCityOption(SPRINGFIELDS, 'Springfield', { ...US, region: 'Ohio' })).toEqual({ found: 'many' })
+  })
+
+  it('the city is the result\'s leading part: "Springfield Gardens" is another city', () => {
+    expect(pickCityOption(['Springfield Gardens, New York, United States'], 'Springfield', US)).toEqual({ found: 'none' })
+  })
+
+  it('a region matches by its words, whatever the case', () => {
+    expect(pickCityOption(['Newport, Isle Of Wight, United Kingdom', 'Newport, Wales, United Kingdom'], 'Newport', { ...UK, region: 'Isle of Wight' }))
+      .toEqual({ found: 'one', index: 0 })
+  })
+
+  it('accents are ignored in the city, the region and the country', () => {
+    expect(pickCityOption(['Montreal, Quebec, Canada', 'Montreal, Wisconsin, United States'], 'Montréal', { countryNames: ['Canada', 'Canadá'], region: 'Québec' }))
+      .toEqual({ found: 'one', index: 0 })
+  })
+
+  it('on the page, the Illinois result is committed and only the city is typed', async () => {
+    const { box, typed, fid } = mountCityTypeahead(SPRINGFIELDS)
+    const report = await fillCity(fid, 'Springfield', ILLINOIS)
+    expect(report.failed).toEqual([])
+    expect(box.value).toBe('Springfield, Illinois, United States')
+    expect(typed).toEqual(['Springfield'])
+  }, 10_000)
+})
+
