@@ -75,7 +75,7 @@ describe('setNativeValue', () => {
 describe('fillOne', () => {
   it('fills a text input', async () => {
     document.body.innerHTML = '<input id="x">'
-    await expect(fillOne(document.getElementById('x')!, 'Ada')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.getElementById('x')!, 'Ada')).resolves.toMatchObject({ ok: true })
     expect((document.getElementById('x') as HTMLInputElement).value).toBe('Ada')
   })
 
@@ -85,20 +85,20 @@ describe('fillOne', () => {
     // marked filled while the page held nothing.
     document.body.innerHTML = '<input id="y" type="number">'
     await expect(fillOne(document.getElementById('y')!, 'Imediato'))
-      .resolves.toEqual({ ok: false, reason: 'value-rejected' })
+      .resolves.toMatchObject({ ok: false, reason: 'value-rejected' })
     expect((document.getElementById('y') as HTMLInputElement).value).toBe('')
   })
 
   it('still fills a typed input the page ACCEPTS', async () => {
     document.body.innerHTML = '<input id="y" type="number">'
-    await expect(fillOne(document.getElementById('y')!, '2024')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.getElementById('y')!, '2024')).resolves.toMatchObject({ ok: true })
     expect((document.getElementById('y') as HTMLInputElement).value).toBe('2024')
   })
 
   it('treats a malformed date the same way — the page keeps nothing', async () => {
     document.body.innerHTML = '<input id="d" type="date">'
     await expect(fillOne(document.getElementById('d')!, '2024-1-2'))
-      .resolves.toEqual({ ok: false, reason: 'value-rejected' })
+      .resolves.toMatchObject({ ok: false, reason: 'value-rejected' })
   })
 
   it('reports a page NORMALISATION as committed rather than failing', async () => {
@@ -106,12 +106,12 @@ describe('fillOne', () => {
     // it just canonicalised it. That is a success carrying `committed`.
     document.body.innerHTML = '<input id="e" type="email">'
     await expect(fillOne(document.getElementById('e')!, ' a@b.com '))
-      .resolves.toEqual({ ok: true, committed: 'a@b.com' })
+      .resolves.toMatchObject({ ok: true, committed: 'a@b.com' })
   })
 
   it('does not call an empty fill a rejection', async () => {
     document.body.innerHTML = '<input id="x">'
-    await expect(fillOne(document.getElementById('x')!, '')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.getElementById('x')!, '')).resolves.toMatchObject({ ok: true })
   })
 
   it('fills a textarea', async () => {
@@ -176,7 +176,7 @@ describe('fillOne', () => {
       // The commit closes the menu, as the widget this models does.
       o.addEventListener('click', () => document.getElementById('lb')?.remove())
     }
-    await expect(fillOne(combo, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
+    await expect(fillOne(combo, 'Portugal')).resolves.toMatchObject({ ok: true, committed: null })
     expect(picked).toEqual(['Portugal'])
   })
 
@@ -225,7 +225,7 @@ describe('fillOne — choice widgets (B1)', () => {
     document.body.innerHTML = ASHBY_CHOICE_RADIO
     const { clicks } = spyButtons()
     const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
-    await expect(fillOne(first, 'No')).resolves.toEqual({ ok: true })
+    await expect(fillOne(first, 'No')).resolves.toMatchObject({ ok: true })
     expect(document.querySelector<HTMLInputElement>('input[value="no"]')!.checked).toBe(true)
     expect(clicks).toEqual([])
   })
@@ -235,7 +235,7 @@ describe('fillOne — choice widgets (B1)', () => {
     pressableButtons()
     const { clicks } = spyButtons()
     const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
-    await expect(fillOne(first, 'Não')).resolves.toEqual({ ok: true })
+    await expect(fillOne(first, 'Não')).resolves.toMatchObject({ ok: true })
     // Proof it routed through fillChoice BEFORE the radio branch: the radios'
     // values (opt_0/opt_1) match neither 'Não' nor any option label, so
     // fillRadioGroup would have answered no-matching-option. Nothing NAMES the
@@ -259,7 +259,7 @@ describe('fillOne — choice widgets (B1)', () => {
       </form>`
     const { clicks } = spyButtons()
     const first = document.querySelector<HTMLInputElement>('input[type="radio"]')!
-    await expect(fillOne(first, 'Não')).resolves.toEqual({ ok: true })
+    await expect(fillOne(first, 'Não')).resolves.toMatchObject({ ok: true })
     expect(document.querySelector<HTMLInputElement>('input[value="opt_1"]')!.checked).toBe(true)
     expect(clicks).toEqual([]) // the in-form button was never clicked
   })
@@ -268,7 +268,7 @@ describe('fillOne — choice widgets (B1)', () => {
     document.body.innerHTML = ASHBY_YESNO_EN
     const { clicks } = spyButtons()
     const cb = document.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: true })
+    await expect(fillOne(cb, 'Yes')).resolves.toMatchObject({ ok: true })
     expect(cb.checked).toBe(true)
     expect(clicks).toEqual([])
   })
@@ -278,7 +278,7 @@ describe('fillOne — choice widgets (B1)', () => {
     const cb = controlCheckbox()
     pressableButtons()
     const { clicks } = spyButtons()
-    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: true })
+    await expect(fillOne(cb, 'Yes')).resolves.toMatchObject({ ok: true })
     expect(cb.checked).toBe(false) // the input click was prevented; the button carried the answer
     expect(clicks).toEqual(['Yes'])
     expect(document.querySelectorAll('button')[0]!.getAttribute('aria-pressed')).toBe('true')
@@ -289,7 +289,7 @@ describe('fillOne — choice widgets (B1)', () => {
     const cb = controlCheckbox()
     pressableButtons()
     const { clicks } = spyButtons()
-    await expect(fillOne(cb, 'No')).resolves.toEqual({ ok: true })
+    await expect(fillOne(cb, 'No')).resolves.toMatchObject({ ok: true })
     expect(clicks).toEqual(['No'])
     expect(document.querySelectorAll('button')[1]!.getAttribute('aria-pressed')).toBe('true')
   })
@@ -299,7 +299,7 @@ describe('fillOne — choice widgets (B1)', () => {
     controlCheckbox()
     pressableButtons()
     const { clicks } = spyButtons()
-    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Não')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Não')).resolves.toMatchObject({ ok: true })
     expect(clicks).toEqual(['Não'])
   })
 
@@ -307,7 +307,7 @@ describe('fillOne — choice widgets (B1)', () => {
     document.body.innerHTML = CHOICE_FORM_WRAPPED
     const cb = controlCheckbox() // step 1 is prevented, so only the gate stands between us and the button
     const { clicks } = spyButtons()
-    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: false, reason: 'choice-needs-user-click' })
+    await expect(fillOne(cb, 'Yes')).resolves.toMatchObject({ ok: false, reason: 'choice-needs-user-click' })
     expect(clicks).toEqual([])
   })
 
@@ -315,7 +315,7 @@ describe('fillOne — choice widgets (B1)', () => {
     document.body.innerHTML = CHOICE_SUBMIT_WORDED
     const { clicks } = spyButtons()
     await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Enviar'))
-      .resolves.toEqual({ ok: false, reason: 'choice-needs-user-click' })
+      .resolves.toMatchObject({ ok: false, reason: 'choice-needs-user-click' })
     expect(clicks).toEqual([])
   })
 
@@ -323,7 +323,7 @@ describe('fillOne — choice widgets (B1)', () => {
     document.body.innerHTML = ASHBY_YESNO_EN
     controlCheckbox()
     await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Maybe'))
-      .resolves.toEqual({ ok: false, reason: 'choice-needs-user-click' })
+      .resolves.toMatchObject({ ok: false, reason: 'choice-needs-user-click' })
   })
 
   it('reports no-state-change when the clicked button produces no observable delta', async () => {
@@ -331,7 +331,7 @@ describe('fillOne — choice widgets (B1)', () => {
     controlCheckbox() // inert buttons: no listeners, no attribute changes
     const { clicks } = spyButtons()
     await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Yes'))
-      .resolves.toEqual({ ok: false, reason: 'no-state-change' })
+      .resolves.toMatchObject({ ok: false, reason: 'no-state-change' })
     expect(clicks).toEqual(['Yes']) // the click WAS attempted; success was not claimed without evidence
   })
 
@@ -341,7 +341,7 @@ describe('fillOne — choice widgets (B1)', () => {
     // Correct no-op: unchecking an already-unchecked box reports ok, zero clicks.
     const clicks = vi.fn()
     el.addEventListener('click', clicks)
-    await expect(fillOne(el, 'false')).resolves.toEqual({ ok: true })
+    await expect(fillOne(el, 'false')).resolves.toMatchObject({ ok: true })
     expect(clicks).not.toHaveBeenCalled()
   })
 })
@@ -362,7 +362,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
     // cb-a owns no listbox and none appears for it: attribution fails, the fill
     // fails — and cb-b's mounted listbox is NEVER consulted (the old
     // document-wide fallback would have clicked 'Portuguese').
-    await expect(fillOne(a, 'Portuguese')).resolves.toEqual({ ok: false, reason: 'combobox-no-listbox' })
+    await expect(fillOne(a, 'Portuguese')).resolves.toMatchObject({ ok: false, reason: 'combobox-no-listbox' })
     expect(otherOptions).toEqual([])
     expect((document.getElementById('cb-b') as HTMLInputElement).value).toBe('')
   }, 10_000) // runs the real 500ms + 2000ms attribution/typeahead windows
@@ -382,7 +382,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       }
       el.parentElement!.appendChild(lb)
     })
-    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
+    await expect(fillOne(el, 'Portugal')).resolves.toMatchObject({ ok: true, committed: null })
     expect(el.value).toBe('Portugal')
   })
 
@@ -403,7 +403,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       o.addEventListener('click', () => { setNativeValue(el, 'Portugal'); lb.remove() })
       lb.appendChild(o)
     })
-    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
+    await expect(fillOne(el, 'Portugal')).resolves.toMatchObject({ ok: true, committed: null })
     expect(el.value).toBe('Portugal')
   })
 
@@ -417,7 +417,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
     for (const o of Array.from(document.querySelectorAll('[role="option"]'))) {
       o.addEventListener('click', () => { setNativeValue(el, o.textContent ?? ''); document.getElementById('lb')?.remove() })
     }
-    await expect(fillOne(el, 'bra')).resolves.toEqual({ ok: true, committed: 'Brazil' })
+    await expect(fillOne(el, 'bra')).resolves.toMatchObject({ ok: true, committed: 'Brazil' })
     expect(el.value).toBe('Brazil')
   })
 
@@ -430,7 +430,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
     const el = document.getElementById('c') as HTMLInputElement
     const picked = vi.fn()
     for (const o of Array.from(document.querySelectorAll('[role="option"]'))) o.addEventListener('click', picked)
-    await expect(fillOne(el, 'port')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(el, 'port')).resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
     expect(picked).not.toHaveBeenCalled()
     expect(el.value).toBe('Lisbon')
   }, 10_000) // runs the real 500ms fast-path + 2000ms post-type windows
@@ -458,7 +458,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
         el.parentElement!.appendChild(lb)
       }, 150)
     })
-    await expect(fillOne(el, 'bra')).resolves.toEqual({ ok: true, committed: 'Brazil' })
+    await expect(fillOne(el, 'bra')).resolves.toMatchObject({ ok: true, committed: 'Brazil' })
     expect(el.value).toBe('Brazil')
   }, 10_000) // rides the real 500ms fast-path window before typing
 
@@ -470,7 +470,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
       </div>`
     const el = document.getElementById('c') as HTMLInputElement
     // The option click commits NOTHING (a controlled widget that ignored us).
-    await expect(fillOne(el, 'Portugal')).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    await expect(fillOne(el, 'Portugal')).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
     expect(el.value).toBe('Kept')
   })
 
@@ -486,7 +486,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
     // 'united kingdom' does not contain 'uk' contiguously; 'ukraine' does — the
     // old un-gated substring tier would have clicked Ukraine here, which is
     // exactly the misfill this length gate exists to prevent.
-    await expect(fillOne(el, 'UK')).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(el, 'UK')).resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
     expect(picked).not.toHaveBeenCalled()
     expect(el.value).toBe('orig')
   }, 10_000) // runs the real 500ms fast-path + 2000ms post-type windows
@@ -519,7 +519,7 @@ describe('fillCombobox — attribution, typeahead, restore (B2)', () => {
 
       const resultPromise = fillOne(el, 'bra')
       await vi.runAllTimersAsync()
-      await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+      await expect(resultPromise).resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
       expect(picked).toEqual([]) // Brazil was NEVER clicked on the transient read
     } finally {
       vi.useRealTimers()
@@ -554,7 +554,7 @@ describe('fillFile', () => {
     const changed = vi.fn()
     el.addEventListener('change', changed)
     const file = new File(['pdf bytes'], 'ada-cv.pdf', { type: 'application/pdf' })
-    expect(fillFile(el, file)).toEqual({ ok: true })
+    expect(fillFile(el, file)).toMatchObject({ ok: true })
     expect(el.files?.[0]?.name).toBe('ada-cv.pdf')
     expect(changed).toHaveBeenCalledTimes(1)
   })
@@ -572,7 +572,7 @@ describe('fillFields', () => {
       { handle: { frameId: 0, fid: 99, epoch: 4 }, value: 'gone' },
     ])
     expect((document.getElementById('a') as HTMLInputElement).value).toBe('hello')
-    expect(report.filled).toEqual([{ handle: { frameId: 0, fid: 0, epoch: 4 }, committed: null }])
+    expect(report.filled).toMatchObject([{ handle: { frameId: 0, fid: 0, epoch: 4 }, committed: null }])
     expect(report.failed.map((f) => f.reason)).toEqual(['no-matching-option', 'element-not-found'])
   })
 })
@@ -585,7 +585,7 @@ describe('fillChoice — step-0 idempotency (B5e)', () => {
     const { clicks } = spyButtons()
     const inputClicks = vi.fn()
     for (const r of Array.from(document.querySelectorAll('input'))) r.addEventListener('click', inputClicks)
-    await expect(fillOne(document.querySelector<HTMLInputElement>('input[type="radio"]')!, 'No')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.querySelector<HTMLInputElement>('input[type="radio"]')!, 'No')).resolves.toMatchObject({ ok: true })
     expect(clicks).toEqual([])
     expect(inputClicks).not.toHaveBeenCalled()
   })
@@ -595,7 +595,7 @@ describe('fillChoice — step-0 idempotency (B5e)', () => {
     controlCheckbox()
     document.querySelectorAll('button')[1]!.setAttribute('aria-pressed', 'true')
     const { clicks } = spyButtons()
-    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'No')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'No')).resolves.toMatchObject({ ok: true })
     expect(clicks).toEqual([])
   })
 
@@ -604,7 +604,7 @@ describe('fillChoice — step-0 idempotency (B5e)', () => {
     const cb = controlCheckbox()
     cb.checked = true
     const { clicks } = spyButtons()
-    await expect(fillOne(cb, 'Yes')).resolves.toEqual({ ok: true })
+    await expect(fillOne(cb, 'Yes')).resolves.toMatchObject({ ok: true })
     expect(clicks).toEqual([])
   })
 
@@ -613,7 +613,7 @@ describe('fillChoice — step-0 idempotency (B5e)', () => {
     controlCheckbox()
     document.querySelectorAll('button')[0]!.setAttribute('data-state', 'checked')
     const { clicks } = spyButtons()
-    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Yes')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'Yes')).resolves.toMatchObject({ ok: true })
     expect(clicks).toEqual([])
   })
 
@@ -624,7 +624,7 @@ describe('fillChoice — step-0 idempotency (B5e)', () => {
     controlCheckbox()
     pressableButtons()
     const { clicks } = spyButtons()
-    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'No')).resolves.toEqual({ ok: true })
+    await expect(fillOne(document.querySelector('input[type="checkbox"]')!, 'No')).resolves.toMatchObject({ ok: true })
     expect(clicks).toEqual(['No'])
   })
 })
@@ -699,7 +699,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
 
   it('opens via the pointer gesture, matches "oth" → "Other", and verifies through the value container', async () => {
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'])
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: true, committed: 'Other' })
+    await expect(fillOne(input, 'oth')).resolves.toMatchObject({ ok: true, committed: 'Other' })
     expect(document.getElementById('value-holder')!.textContent).toBe('Other')
     expect(input.value).toBe('')
   }, 10_000)
@@ -708,7 +708,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     // Neither fixture can prove this on its own. THIS one accumulates events in
     // a Set whose open predicate omits `pointerup` entirely and never checks
     // order; the C3 e2e fixture has the same Set, and there the relay panel's
-    // own harvest lands a stray `click` in it BEFORE the driven gesture — so a
+    // old Scan-time Option read landed a stray `click` in it BEFORE the driven gesture — so a
     // regression that dropped the final click would still open both widgets and
     // both suites would stay green. The C1 spike proved the live Greenhouse
     // widget needs all five, in this order, so pin the sequence directly at the
@@ -719,7 +719,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
       control.addEventListener(type, (e) => seq.push(e.type))
     }
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: true, committed: 'Other' })
+    await expect(fillOne(input, 'oth')).resolves.toMatchObject({ ok: true, committed: 'Other' })
     // Only the OPEN gesture's five; the commit click on the option bubbles here too.
     expect(seq.slice(0, 5)).toEqual(['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'])
   }, 10_000)
@@ -729,7 +729,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     // fails on ambiguity; typing lets the widget's own (prefix) filter shrink
     // the list to exactly Other — the B1a leg through the new open gesture.
     const { input } = mountReactSelect(['Another', 'Other'], { prefixFilter: true })
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: true, committed: 'Other' })
+    await expect(fillOne(input, 'oth')).resolves.toMatchObject({ ok: true, committed: 'Other' })
     expect(document.getElementById('value-holder')!.textContent).toBe('Other')
   }, 10_000)
 
@@ -738,7 +738,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     // the only 'Other' text left on the page lives inside listboxes. The fill
     // must fail closed, not false-verify off the decoy.
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false })
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    await expect(fillOne(input, 'oth')).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
     expect(input.value).toBe('')
   }, 10_000)
 
@@ -747,14 +747,14 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     // clears the input but updates nothing. Text that did not CHANGE INTO the
     // option is not evidence the widget committed anything.
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { updateHolder: false, staleText: 'Other' })
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    await expect(fillOne(input, 'oth')).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
   }, 10_000)
 
   it('a HIDDEN value container never verifies a commit', async () => {
     // The holder receives the committed text but is display:none — invisible
     // text is not the page-visible commit the verification promises.
     const { input } = mountReactSelect(['Associate', 'Bachelor', 'Master', 'Other'], { hiddenHolder: true })
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    await expect(fillOne(input, 'oth')).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
   }, 10_000)
 
   it("a failed commit restores a PREFILLED answer — the user's text, not '' — before Escape", async () => {
@@ -770,7 +770,7 @@ describe('fillCombobox — Greenhouse react-select shape (C2)', () => {
     input.addEventListener('input', () => seq.push('input'))
     input.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Escape') seq.push('escape') })
 
-    await expect(fillOne(input, 'oth')).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    await expect(fillOne(input, 'oth')).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
 
     expect(input.value).toBe(PREFILL)
     // …and the restore write landed BEFORE the close, or the input event it
@@ -825,39 +825,39 @@ describe('combobox verdict', () => {
 
   it('stubborn: the Option ignores the commit and the menu stays, so the Fill fails as no-commit and restores', async () => {
     const input = mountTypeToLoad('stubborn')
-    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    await expect(fillOne(input, OPTION)).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
     expect(document.querySelector('[role="listbox"]')).toBeNull()
     expect(input.value).toBe('')
   }, 10_000)
 
   it('close-without-commit: the menu closes, a blur clears the typed text, so the Fill fails as no-commit', async () => {
     const input = mountTypeToLoad('close-without-commit')
-    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: false, reason: 'no-commit' })
+    await expect(fillOne(input, OPTION)).resolves.toMatchObject({ ok: false, reason: 'no-commit' })
     expect(document.querySelector('[role="listbox"]')).toBeNull()
     expect(input.value).toBe('')
   }, 10_000)
 
   it('honest react-select: the input is emptied and the Option shows in a value container', async () => {
     const input = mountTypeToLoad('react-select')
-    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: true, committed: null })
+    await expect(fillOne(input, OPTION)).resolves.toMatchObject({ ok: true, committed: null })
     expect(document.querySelector('.single-value')!.textContent).toBe(OPTION)
   }, 10_000)
 
   it('honest rewrite: a typed prefix is rewritten into the Option, and the Fill reports the page text', async () => {
     const input = mountTypeToLoad('rewrite')
-    await expect(fillOne(input, 'bachelor')).resolves.toEqual({ ok: true, committed: OPTION })
+    await expect(fillOne(input, 'bachelor')).resolves.toMatchObject({ ok: true, committed: OPTION })
     expect(input.value).toBe(OPTION)
   }, 10_000)
 
   it('honest exact: a typed text equal to the Option survives the blur', async () => {
     const input = mountTypeToLoad('exact')
-    await expect(fillOne(input, OPTION)).resolves.toEqual({ ok: true, committed: null })
+    await expect(fillOne(input, OPTION)).resolves.toMatchObject({ ok: true, committed: null })
     expect(input.value).toBe(OPTION)
   }, 10_000)
 
   it('a menu hidden but still mounted after the commit counts as closed', async () => {
     const input = mountTypeToLoad('hide-and-rewrite')
-    await expect(fillOne(input, 'bachelor')).resolves.toEqual({ ok: true, committed: OPTION })
+    await expect(fillOne(input, 'bachelor')).resolves.toMatchObject({ ok: true, committed: OPTION })
     expect(document.getElementById('lb')).not.toBeNull()
   }, 10_000)
 
@@ -907,7 +907,7 @@ describe('combobox verdict', () => {
     const input = clickCombo('c', ['Brazil', 'Portugal'])
     const opened = vi.fn()
     input.addEventListener('mousedown', opened)
-    await expect(fillOne(input, 'Portugal')).resolves.toEqual({ ok: false, reason: 'listbox-left-open' })
+    await expect(fillOne(input, 'Portugal')).resolves.toMatchObject({ ok: false, reason: 'listbox-left-open' })
     expect(opened).not.toHaveBeenCalled()
     expect(input.value).toBe('')
   }, 10_000)
@@ -919,7 +919,7 @@ describe('combobox verdict', () => {
     const input = clickCombo('c', ['Brazil', 'Portugal'])
     const foreignAtOpen: boolean[] = []
     input.addEventListener('mousedown', () => foreignAtOpen.push(document.getElementById('foreign') !== null))
-    await expect(fillOne(input, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
+    await expect(fillOne(input, 'Portugal')).resolves.toMatchObject({ ok: true, committed: null })
     expect(foreignAtOpen).toEqual([false])
     expect(input.value).toBe('Portugal')
   }, 10_000)
@@ -968,7 +968,7 @@ describe('combobox verdict', () => {
     host.innerHTML = '<input id="c" role="combobox">'
     document.body.appendChild(host)
     const input = clickCombo('c', ['Brazil', 'Portugal'])
-    await expect(fillOne(input, 'Portugal')).resolves.toEqual({ ok: true, committed: null })
+    await expect(fillOne(input, 'Portugal')).resolves.toMatchObject({ ok: true, committed: null })
     expect(document.getElementById('iti-0__country-listbox')).not.toBeNull()
   }, 10_000)
 })
@@ -988,7 +988,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
       <select id="c"><option value="">Selecione</option><option value="BR">Brasil</option><option value="DE">Alemanha</option></select>`
     scanPage()
     const report = await fillFields(document, [{ handle: h(0), value: 'Germany', candidates: GERMANY }])
-    expect(report).toEqual({ filled: [{ handle: h(0), committed: 'Alemanha' }], failed: [] })
+    expect(report).toMatchObject({ filled: [{ handle: h(0), committed: 'Alemanha' }], failed: [] })
     expect((document.getElementById('c') as HTMLSelectElement).value).toBe('DE')
   })
 
@@ -1023,7 +1023,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
     scanPage()
     const report = await fillFields(document, [{ handle: h(0), value: 'Germany', candidates: GERMANY }])
     expect(picked).toEqual(['Alemanha'])
-    expect(report).toEqual({ filled: [{ handle: h(0), committed: 'Alemanha' }], failed: [] })
+    expect(report).toMatchObject({ filled: [{ handle: h(0), committed: 'Alemanha' }], failed: [] })
   })
 
   it('a radio group offering "Sim" and "Não" is filled with "Sim" for a yes sent with its candidates', async () => {
@@ -1034,7 +1034,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
       </fieldset>`
     scanPage()
     const report = await fillFields(document, [{ handle: h(0), value: 'yes', candidates: YES }])
-    expect(report).toEqual({ filled: [{ handle: h(0), committed: 'Sim' }], failed: [] })
+    expect(report).toMatchObject({ filled: [{ handle: h(0), committed: 'Sim' }], failed: [] })
     expect((document.querySelector('input[value="1"]') as HTMLInputElement).checked).toBe(true)
     expect((document.querySelector('input[value="0"]') as HTMLInputElement).checked).toBe(false)
   })
@@ -1047,7 +1047,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
     const cb = document.querySelector<HTMLInputElement>('input[type="checkbox"]')!
     cb.addEventListener('click', (e) => e.preventDefault())
     const pressed = (): string[] => Array.from(document.querySelectorAll('button[aria-pressed="true"]')).map((b) => b.textContent ?? '')
-    await expect(fillOne(cb, 'yes', YES)).resolves.toEqual({ ok: true, committed: 'Sim' })
+    await expect(fillOne(cb, 'yes', YES)).resolves.toMatchObject({ ok: true, committed: 'Sim' })
     expect(pressed()).toEqual(['Sim'])
   })
 
@@ -1059,7 +1059,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
     const changes = vi.fn()
     document.getElementById('c')!.addEventListener('change', changes)
     const report = await fillFields(document, [{ handle: h(0), value: 'United States', candidates: UNITED_STATES }])
-    expect(report).toEqual({ filled: [], failed: [{ handle: h(0), reason: 'no-matching-option' }] })
+    expect(report).toMatchObject({ filled: [], failed: [{ handle: h(0), reason: 'no-matching-option' }] })
     expect((document.getElementById('c') as HTMLSelectElement).value).toBe('')
     expect(changes).not.toHaveBeenCalled()
   })
@@ -1072,7 +1072,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
       </fieldset>`
     scanPage()
     const report = await fillFields(document, [{ handle: h(0), value: 'United States', candidates: UNITED_STATES }])
-    expect(report.failed).toEqual([{ handle: h(0), reason: 'no-matching-option' }])
+    expect(report.failed).toMatchObject([{ handle: h(0), reason: 'no-matching-option' }])
     expect(Array.from(document.querySelectorAll('input')).some((r) => r.checked)).toBe(false)
   })
 
@@ -1085,7 +1085,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
       o.addEventListener('click', () => picked.push(o.textContent ?? ''))
     }
     const combo = document.getElementById('c') as HTMLInputElement
-    await expect(fillOne(combo, 'United States', UNITED_STATES)).resolves.toEqual({ ok: false, reason: 'no-matching-option' })
+    await expect(fillOne(combo, 'United States', UNITED_STATES)).resolves.toMatchObject({ ok: false, reason: 'no-matching-option' })
     expect(picked).toEqual([])
     expect(combo.value).toBe('')
   })
@@ -1103,8 +1103,8 @@ describe('Fill picks the Option the rule table names (#26)', () => {
       { handle: h(1), value: 'yes', candidates: YES },
     ])
     expect(report.failed).toEqual([
-      { handle: h(0), reason: 'no-matching-option' },
-      { handle: h(1), reason: 'no-matching-option' },
+      { handle: h(0), reason: 'no-matching-option', options: ['Selecione', 'Brasil', 'Portugal'] },
+      { handle: h(1), reason: 'no-matching-option', options: ['Talvez'] },
     ])
     expect((document.getElementById('s') as HTMLSelectElement).value).toBe('')
   })
@@ -1115,7 +1115,7 @@ describe('Fill picks the Option the rule table names (#26)', () => {
       <select id="c"><option value="">Selecione</option><option value="DE">Alemanha</option></select>`
     scanPage()
     const report = await fillFields(document, [{ handle: h(0), value: 'Germany' }])
-    expect(report.failed).toEqual([{ handle: h(0), reason: 'no-matching-option' }])
+    expect(report.failed).toMatchObject([{ handle: h(0), reason: 'no-matching-option' }])
     expect((document.getElementById('c') as HTMLSelectElement).value).toBe('')
   })
 

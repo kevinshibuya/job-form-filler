@@ -2,11 +2,22 @@ import { norm, optionSetLabels, type FieldHandle, type FillReport } from '@jff/s
 import { groupBoxesOf } from './checkboxGroup'
 import { optionLabelOf, scopeOf } from './dom'
 import { defaultMeasure, detectChoice, elementByFid, selfHidden, type ChoiceDetection } from './enumerate'
-import { attributableListbox, mountedListboxes } from './harvest'
+import { attributableListbox, mountedListboxes } from './listbox'
 import { matchOption } from './optionMatch'
 import { waitForSettle } from './settle'
 
-type FillOutcome = { ok: true; committed?: string | null } | { ok: false; reason: string }
+/**
+ * `options`: the Options a Fill of a choice Control read on the page, on a hit
+ * and on a miss, so the Side panel can offer them as a picker (ADR 0009: a
+ * Scan opens no menu, so a dropdown's Options are first known here).
+ */
+type FillOutcome =
+  | { ok: true; committed?: string | null; options?: string[] }
+  | { ok: false; reason: string; options?: string[] }
+
+/** The outcome with the Options read on the page attached; none when the page showed none. */
+const withOptions = (out: FillOutcome, options: readonly string[]): FillOutcome =>
+  options.length === 0 ? out : { ...out, options: [...options] }
 
 /**
  * React installs its own `value` setter on the element INSTANCE, so `el.value = x`
@@ -69,11 +80,16 @@ function pickMember<T>(
   return byAttr.found === 'one' ? members[byAttr.index]! : null
 }
 
+/** The Options of a list as the page words them, blanks dropped: the same
+ *  texts Enumeration reports for a native select. */
+const wordings = (texts: readonly string[]): string[] => texts.map(wording).filter((t) => t !== '')
+
 function fillSelect(el: HTMLSelectElement, value: string, candidates: readonly string[]): FillOutcome {
+  const options = wordings(Array.from(el.options, (o) => o.textContent ?? ''))
   const opt = pickMember(Array.from(el.options), (o) => o.textContent ?? '', (o) => o.value, value, candidates)
-  if (opt === null) return { ok: false, reason: 'no-matching-option' }
+  if (opt === null) return withOptions({ ok: false, reason: 'no-matching-option' }, options)
   setNativeValue(el, opt.value)
-  return committedAs(wording(opt.textContent ?? ''), value)
+  return withOptions(committedAs(wording(opt.textContent ?? ''), value), options)
 }
 
 function fillRadioGroup(el: HTMLInputElement, value: string, candidates: readonly string[]): FillOutcome {
@@ -82,12 +98,13 @@ function fillRadioGroup(el: HTMLInputElement, value: string, candidates: readonl
   const members = name === null || name === ''
     ? [el]
     : Array.from(scope.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`))
+  const options = wordings(members.map(optionLabelOf))
   const hit = pickMember(members, optionLabelOf, (m) => m.value, value, candidates)
-  if (hit === null) return { ok: false, reason: 'no-matching-option' }
+  if (hit === null) return withOptions({ ok: false, reason: 'no-matching-option' }, options)
   // A React-controlled radio needs a REAL click; assigning .checked does nothing.
   hit.click()
-  if (!hit.checked) return { ok: false, reason: 'click-rejected' }
-  return committedAs(wording(optionLabelOf(hit)), value)
+  if (!hit.checked) return withOptions({ ok: false, reason: 'click-rejected' }, options)
+  return withOptions(committedAs(wording(optionLabelOf(hit)), value), options)
 }
 
 /**
@@ -295,7 +312,7 @@ export async function fillChoice(
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /** How long the combobox may take to mount options after our OPEN click (the
- *  fast path for widgets that mount on click, mirrors HARVEST_LISTBOX_TIMEOUT_MS). */
+ *  fast path for widgets that mount on click). */
 const COMBOBOX_WAIT_MS = 500
 /** …and after our typeahead keystrokes. Real Ashby options come from a
  *  debounced network fetch; 500ms was never enough (spec D1). */
@@ -309,6 +326,15 @@ export const COMMIT_SETTLE_MS = 500
 export const CLOSE_WAIT_MS = 500
 /** The ceiling on the settle wait between two consecutive choice Fills (D3). */
 export const CHOICE_GAP_SETTLE_MS = 300
+
+/**
+ * A Value that is a paragraph of prose (a line break, or longer than any
+ * Option's wording runs) is never typed into a dropdown: a Saved answer
+ * written for a free-text question matches no Option, and typing it would
+ * only feed the page's search a sentence.
+ */
+const PROSE_MIN_LENGTH = 100
+const isProse = (value: string): boolean => /\n/.test(value.trim()) || value.trim().length >= PROSE_MIN_LENGTH
 
 /**
  * C2: react-select (Greenhouse) opens its menu ONLY on a real pointer gesture —
@@ -442,7 +468,7 @@ const expandedOwner = (el: Element): Element =>
 /**
  * B1: interact ONLY with a listbox attributable to this control — aria-owns/
  * aria-controls, or one that appeared in response to OUR interaction (the same
- * attributableListbox rule the harvest defined; the document-wide fallback was
+ * attributableListbox rule in listbox.ts; the document-wide fallback was
  * the cross-combobox bug). The open gesture stays (C2 widened the bare click
  * into the full pointer+mouse sequence), then the typeahead is ALWAYS
  * driven when there is an input to type into: real Ashby comboboxes ("Start
@@ -507,11 +533,16 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
   // Two Options equal to the Value or its candidate words: no pick, and no
   // typeahead either, since the page offers both.
   let ambiguous = false
-  const waitForHit = async (waitMs: number, breakOnOptions: boolean): Promise<HTMLElement | null> => {
+  // The Options the menu showed on the open gesture, before anything was
+  // typed: what the page offers, reported with the outcome. A list filtered by
+  // our own typing is not that list, so the typeahead never updates it.
+  let offered: string[] = []
+  const waitForHit = async (waitMs: number, breakOnOptions: boolean, readsOffer = false): Promise<HTMLElement | null> => {
     const deadline = Date.now() + waitMs
     for (;;) {
       const m = lookup()
       sawListbox = sawListbox || m.mounted
+      if (readsOffer) offered = wordings(m.options.map((o) => o.textContent ?? ''))
       // Exact tier: the one Option equal to the Value or a candidate word
       // (#26). Candidate words match by equality only, never by the
       // substring tier below.
@@ -547,21 +578,21 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
     // Restore FIRST: B1a always types, so the restore write is itself an input
     // event — fired after Escape it would re-open the dropdown we just closed.
     // Order: restore ('' only ever written when '' WAS the snapshot) → one
-    // frame for the page to react → Escape + blur (harvest's close recipe).
+    // frame for the page to react → Escape + blur, the way a user backs out.
     if (input !== null && snapshot !== null && input.value !== snapshot) setNativeValue(input, snapshot)
     await nextFrame()
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     if (el instanceof HTMLElement) el.blur()
-    return { ok: false, reason }
+    return withOptions({ ok: false, reason }, offered)
   }
   // B1d: "never opened/attributed" is a different user problem than "your value
   // is not in the list" — the hint copy diverges (Plan-3 Decision 6 debt).
   const noHitReason = (): string => (sawListbox ? 'no-matching-option' : 'combobox-no-listbox')
 
-  let hit = await waitForHit(COMBOBOX_WAIT_MS, true)
+  let hit = await waitForHit(COMBOBOX_WAIT_MS, true, true)
   if (hit === null) {
     if (ambiguous) return failClosed('no-matching-option')
-    if (input === null) return failClosed(noHitReason())
+    if (input === null || isProse(value)) return failClosed(noHitReason())
     // B1a: ALWAYS drive the typeahead when typing is possible.
     input.focus()
     setNativeValue(input, value)
@@ -606,7 +637,7 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
     // Non-input widgets report their textContent TRIMMED (review fix, minors 17).
     const shown = (el.textContent ?? '').trim()
     if (norm(shown) !== optionText) return failClosed('no-commit')
-    return { ok: true, committed: shown === value ? null : shown }
+    return withOptions({ ok: true, committed: shown === value ? null : shown }, offered)
   }
   let committed: string | null = null
   if (input.value === '') {
@@ -625,7 +656,7 @@ async function fillCombobox(el: Element, value: string, candidates: readonly str
     if (norm(input.value) === optionText) committed = input.value
   }
   if (committed === null) return failClosed('no-commit')
-  return { ok: true, committed: committed === value ? null : committed }
+  return withOptions({ ok: true, committed: committed === value ? null : committed }, offered)
 }
 
 /** DataTransfer is the only way to populate a file input programmatically. */
@@ -659,7 +690,7 @@ export async function fillOne(el: Element, value: string, candidates: readonly s
   // choices into fillRadioGroup.
   if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox') && selfHidden(defaultMeasure(el))) {
     const choice = detectChoice(el)
-    if (choice !== null) return fillChoice(el, choice, value, candidates)
+    if (choice !== null) return withOptions(await fillChoice(el, choice, value, candidates), wordings(choice.options))
   }
   if (el instanceof HTMLSelectElement) return fillSelect(el, value, candidates)
   if (el instanceof HTMLInputElement && el.type === 'radio') return fillRadioGroup(el, value, candidates)
@@ -687,8 +718,8 @@ export async function fillFields(
   root: Document,
   fills: { handle: FieldHandle; value: string; candidates?: readonly string[] }[],
 ): Promise<Omit<FillReport, 'epoch'>> {
-  const filled: { handle: FieldHandle; committed: string | null }[] = []
-  const failed: { handle: FieldHandle; reason: string }[] = []
+  const filled: FillReport['filled'] = []
+  const failed: FillReport['failed'] = []
   let previousWasChoice = false
   for (const f of fills) {
     const el = elementByFid(root, f.handle.fid)
@@ -701,8 +732,9 @@ export async function fillFields(
     if (choice && previousWasChoice) await waitForSettle(root, { quietMs: 100, maxMs: CHOICE_GAP_SETTLE_MS })
     previousWasChoice = choice
     const out = await fillOne(el, f.value, f.candidates ?? [])
-    if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null })
-    else failed.push({ handle: f.handle, reason: out.reason })
+    const options = out.options === undefined ? {} : { options: out.options }
+    if (out.ok) filled.push({ handle: f.handle, committed: out.committed ?? null, ...options })
+    else failed.push({ handle: f.handle, reason: out.reason, ...options })
   }
   return { filled, failed }
 }

@@ -13,7 +13,7 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { pickResumeTarget } from './resumeTarget'
-import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
@@ -146,6 +146,12 @@ const swallow = (): undefined => undefined
  *
  * Both Resolution steps settle through here, each over its own Fill.
  */
+/** What putting one value on the page came to: a hit, or a miss with the
+ *  page's reason, either with the Options a choice Fill read. */
+type PageFill =
+  | { ok: true; committed: string | null; options?: string[] }
+  | { ok: false; reason: string; options?: string[] }
+
 function settleFill(resolutions: Resolution[], fill: CollectedFill): { settled: Resolution[]; committedEdits: Record<string, string> } {
   const failedFillReason = new Map(fill.failed.map((f) => [refOf(f.handle), f.reason]))
   const settled = resolutions.map((r) =>
@@ -1111,7 +1117,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // The background settle runs the SAME function inside store.mutate — a
       // second implementation would be a second copy of the never-guess rules.
       await applyToSession(target, sc.gen, (s) => ({
-        ...projectAnswers(s, out.fields, first.settled, first.committedEdits),
+        // The Options the first step's Fill read: a dropdown it opened now offers them.
+        ...projectAnswers(s, withReadOptions(out.fields, out.fill), first.settled, first.committedEdits),
         waiting: owesMapping ? out.pending.map(refOf) : [],
         election: out.election,
         unreachable: out.unreachableWidgets,
@@ -1142,11 +1149,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           if (inScope(sc)) { lastOutcomeRef.current = settledOutcome; setScanStatus(settledOutcome) }
           // Merged onto the rows as they stand now: what the user typed into a
           // first-step row while Mapping ran is still in `edits`, untouched.
-          await applyToSession(target, sc.gen, (s) => (s.epoch !== out.epoch ? s : {
-            ...mergeMapping(s, pendingRefs, second.settled, second.committedEdits),
-            frameReports: [...s.frameReports, ...mapped.frameReports],
-            lastOutcome: settledOutcome,
-          }))
+          await applyToSession(target, sc.gen, (s) => {
+            if (s.epoch !== out.epoch) return s
+            const merged = mergeMapping(s, pendingRefs, second.settled, second.committedEdits)
+            return {
+              ...merged,
+              fields: withReadOptions(merged.fields, mapped.fill),
+              frameReports: [...s.frameReports, ...mapped.frameReports],
+              lastOutcome: settledOutcome,
+            }
+          })
           if (mapped.llmError !== null && inScope(sc)) setHostError(hostErrorText(mapped.llmError))
         })().catch(swallow).finally(() => {
           if (rt.mappingEpoch === out.epoch) rt.mappingEpoch = null
@@ -1266,11 +1278,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   /** Put one value on the page. Shared by Accept and Fill; what they additionally
    *  CONFIRM is the only difference between them. THROWS if the relay or the
-   *  frame refused the fill — callers must not confirm anything on a throw.
-   *  Returns the page-accepted canonical text when it differs from what was
-   *  sent (B1c: 'bra' commits 'Brazil'), else null. */
-  const fillOne = async (target: number, row: Row, value: string): Promise<string | null> => {
-    if (value === '') return null
+   *  frame refused the message as a whole — callers must not confirm anything
+   *  on a throw. A field the page refused comes back as a miss with its reason.
+   *  Either outcome carries the Options a choice Fill read on the page. A hit's
+   *  `committed` is the page-accepted canonical text when it differs from what
+   *  was sent (B1c: 'bra' commits 'Brazil'), else null. */
+  const fillOne = async (target: number, row: Row, value: string): Promise<PageFill> => {
+    if (value === '') return { ok: true, committed: null }
     const { replies } = await sendToTab(target, row.field.frameId, {
       // The row's candidate words go with its own Value only; an edited Value
       // is matched by its text (fillEntry).
@@ -1278,20 +1292,45 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     })
     const p = replies[0]?.payload as { ok?: boolean; error?: string; fill?: FillReport } | undefined
     if (p?.ok !== true) throw new Error(p?.error ?? 'the page rejected the fill')
+    const isMine = (h: FillReport['filled'][number]['handle']): boolean =>
+      h.frameId === row.resolution.handle.frameId && h.fid === row.resolution.handle.fid
+    const optionsOf = (o: string[] | undefined): { options?: string[] } => (o === undefined ? {} : { options: o })
     // An `ok` ENVELOPE is not a filled field: the content script answers ok:true
     // with a per-field `failed` list (no-matching-option, element-not-found,
     // click-rejected, unsupported-widget). Confirming on that is how a row got
-    // marked "on the page" while the page never took the value.
+    // marked "on the page" while the page never took the value. One fill was
+    // sent, so any failure listed is this row's.
     const failed = p.fill?.failed ?? []
-    if (failed.length > 0) throw new Error(failed[0]!.reason)
+    if (failed.length > 0) {
+      const miss = failed.find((f) => isMine(f.handle)) ?? failed[0]!
+      return { ok: false, reason: miss.reason, ...optionsOf(miss.options) }
+    }
     // Codex-review hardening: an ok envelope whose report mentions this fill
     // in NEITHER list is not a success — confirming on it is the "marked on
     // the page while the page never took the value" bug in a new coat.
-    const mine = p.fill?.filled.find((f) =>
-      f.handle.frameId === row.resolution.handle.frameId && f.handle.fid === row.resolution.handle.fid) ?? null
+    const mine = p.fill?.filled.find((f) => isMine(f.handle)) ?? null
     if (mine === null) throw new Error('fill unreported')
-    return mine.committed
+    return { ok: true, committed: mine.committed, ...optionsOf(mine.options) }
   }
+
+  /**
+   * A Fill the page refused never leaves its row as it was: the row becomes
+   * Needs input with the page's reason, and the Options the Fill read join the
+   * Field, so the row offers them as a picker. The status line names the
+   * failed action too.
+   */
+  const settleMiss = async (sc: { target: number; gen: number }, row: Row, action: 'Accept' | 'Fill', miss: Extract<PageFill, { ok: false }>): Promise<void> => {
+    await applyToSession(sc.target, sc.gen, (s) => ({
+      ...s,
+      fields: withReadOptions(s.fields, { filled: [], failed: [{ handle: row.resolution.handle, options: miss.options }] }),
+      resolutions: s.resolutions.map((r) => (refOf(r.handle) === row.ref ? { ...r, tier: 'needs_input' as const, reason: miss.reason } : r)),
+    }))
+    if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `${action} failed: ${miss.reason}` })
+  }
+
+  /** The Options a Fill read on a hit join the Field as well. */
+  const readOn = (s: Session, row: Row, hit: Extract<PageFill, { ok: true }>): EnumField[] =>
+    withReadOptions(s.fields, { filled: [{ handle: row.resolution.handle, options: hit.options }], failed: [] })
 
   const onAccept = async (ref: string): Promise<void> => {
     const row = main.find((r) => r.ref === ref && r.resolution.tier === 'proposed')      // onAccept
@@ -1304,14 +1343,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // a dead page — its verdict must reach neither the status line nor the rows.
     setActing({ ref, action: 'accept' })
     try {
-      const committed = await fillOne(sc.target, row, value)
+      const out = await fillOne(sc.target, row, value)
       if (!alive(sc)) return
+      // Accept never fails in silence: the miss lands on the row itself.
+      if (!out.ok) { await settleMiss(sc, row, 'Accept', out); return }
+      const { committed } = out
       // Promote the TIER only. Writing `value` back onto the resolution would make
       // engine === final in buildSaveItems and silently drop every user correction
       // to a proposed answer. The edit lives in `edits`, where the save diff reads it.
       // S4: what the PAGE took is the answer worth carrying — committed text wins.
       await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
         ...s,
+        fields: readOn(s, row, out),
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         resolutions: s.resolutions.map((r) => (refOf(r.handle) === ref ? { ...r, tier: 'auto' as const } : r)),
       }, ref, committed ?? value, 'user'))
@@ -1342,10 +1385,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // would wear a dead page's "on the page" badge without this.
     setActing({ ref, action: 'fill' })
     try {
-      const committed = await fillOne(sc.target, row, value)
+      const out = await fillOne(sc.target, row, value)
       if (!alive(sc)) return
+      if (!out.ok) { await settleMiss(sc, row, 'Fill', out); return }
+      const { committed } = out
       await applyToSession(sc.target, sc.gen, (s) => rememberAnswer({
         ...s,
+        fields: readOn(s, row, out),
         edits: committed === null ? s.edits : { ...s.edits, [ref]: committed },
         filledRefs: s.filledRefs.includes(ref) ? s.filledRefs : [...s.filledRefs, ref],
       }, ref, committed ?? value, 'user'))

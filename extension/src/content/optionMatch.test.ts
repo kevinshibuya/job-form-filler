@@ -75,7 +75,7 @@ describe('Fill over real pages, with candidate words', () => {
     expect(f.options).toEqual(expect.arrayContaining(['Sim', 'Não']))
     const report = await fillFields(document, [{ handle: handle(f), value: 'yes', candidates: yesNoCandidates('yes') }])
     expect(report.failed).toEqual([])
-    expect(report.filled).toEqual([{ handle: handle(f), committed: 'Sim' }])
+    expect(report.filled).toMatchObject([{ handle: handle(f), committed: 'Sim' }])
     const select = document.querySelector<HTMLSelectElement>(`[data-jff-fid="${f.fid}"]`)!
     expect(select.selectedOptions[0]!.textContent).toBe('Sim')
   })
@@ -84,14 +84,14 @@ describe('Fill over real pages, with candidate words', () => {
     loadRealFixture('lever-marketing-consent')
     const f = selectUnder(/LGBTQIAP/, 2)
     const report = await fillFields(document, [{ handle: handle(f), value: 'no', candidates: yesNoCandidates('no') }])
-    expect(report.filled).toEqual([{ handle: handle(f), committed: 'Não' }])
+    expect(report.filled).toMatchObject([{ handle: handle(f), committed: 'Não' }])
   })
 
   it('a country is not filled into a yes/no select, and the select stays as it was', async () => {
     loadRealFixture('lever-marketing-consent')
     const f = selectUnder(/LGBTQIAP/, 2)
     const report = await fillFields(document, [{ handle: handle(f), value: 'Germany', candidates: countryCandidates('Germany') }])
-    expect(report.failed).toEqual([{ handle: handle(f), reason: 'no-matching-option' }])
+    expect(report.failed).toMatchObject([{ handle: handle(f), reason: 'no-matching-option' }])
     expect(document.querySelector<HTMLSelectElement>(`[data-jff-fid="${f.fid}"]`)!.value).toBe('')
   })
 
@@ -104,6 +104,6 @@ describe('Fill over real pages, with candidate words', () => {
     const f = fieldLabelled(/based in/i, 3)
     const report = await fillFields(document, [{ handle: handle(f), value: 'Não', candidates: yesNoCandidates('no') }])
     expect(report.failed).toEqual([])
-    expect(report.filled).toEqual([{ handle: handle(f), committed: 'No' }])
+    expect(report.filled).toMatchObject([{ handle: handle(f), committed: 'No' }])
   })
 })

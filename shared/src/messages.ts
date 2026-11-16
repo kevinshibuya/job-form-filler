@@ -186,14 +186,6 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
     mimeType: z.string(),
     dataBase64: z.string(),
   }),
-  z.object({
-    // A6: open the listed comboboxes, read their mounted options, close and
-    // restore. ELECTED-frame-only is the PANEL's decision (it addresses the
-    // frame directly); the content script enforces only the epoch gate.
-    type: z.literal('JFF_HARVEST'),
-    epoch: z.number().int().nonnegative(),
-    fids: z.array(z.number().int().nonnegative()),
-  }),
 ])
 export type ContentMessage = z.infer<typeof ContentMessageSchema>
 
@@ -210,13 +202,21 @@ export const ScanResultSchema = z.object({
 })
 export type ScanResult = z.infer<typeof ScanResultSchema>
 
+/**
+ * The Options a Fill of a choice Control read on the page, on a hit and on a
+ * miss (ADR 0009: a Scan opens no menu, so a dropdown's Options are first known
+ * here). Absent on a text Control, and on a dropdown that showed none before
+ * anything was typed into it.
+ */
+const FillOptionsSchema = z.array(z.string()).optional()
+
 export const FillReportSchema = z.object({
   epoch: z.number().int(),
   /** B1c: `committed` carries the page-accepted canonical text when it differs
    *  from the requested value ('bra' legitimately commits 'Brazil'), else null.
    *  The panel canonicalizes the row value from it. */
-  filled: z.array(z.object({ handle: FieldHandleSchema, committed: z.string().nullable() })),
-  failed: z.array(z.object({ handle: FieldHandleSchema, reason: z.string() })),
+  filled: z.array(z.object({ handle: FieldHandleSchema, committed: z.string().nullable(), options: FillOptionsSchema })),
+  failed: z.array(z.object({ handle: FieldHandleSchema, reason: z.string(), options: FillOptionsSchema })),
 })
 export type FillReport = z.infer<typeof FillReportSchema>
 

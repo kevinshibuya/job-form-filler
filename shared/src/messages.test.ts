@@ -172,14 +172,10 @@ describe('ResolutionSchema — candidate words (#26)', () => {
   })
 })
 
-describe('ContentMessageSchema — JFF_HARVEST (A6)', () => {
-  it('accepts a harvest request', () => {
-    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3, fids: [0, 4, 9] }).success).toBe(true)
-  })
-
-  it('rejects a harvest request without fids or with a negative epoch', () => {
-    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3 }).success).toBe(false)
-    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: -1, fids: [] }).success).toBe(false)
+describe('ContentMessageSchema — a Scan opens no menu (ADR 0009)', () => {
+  it('rejects the removed message that opened dropdowns for a Scan, as any unknown one', () => {
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_HARVEST', epoch: 3, fids: [0, 4, 9] }).success).toBe(false)
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_NOPE', epoch: 3 }).success).toBe(false)
   })
 })
 
@@ -214,6 +210,22 @@ describe('FillReportSchema — committed canonical text (B1c)', () => {
       failed: [],
     })
     expect(r.success).toBe(true)
+  })
+
+  it('carries the Options a choice Fill read, on a hit and on a miss', () => {
+    const r = FillReportSchema.parse({
+      epoch: 7,
+      filled: [{ handle, committed: null, options: ['Yes', 'No'] }],
+      failed: [{ handle, reason: 'no-matching-option', options: ['Yes', 'No'] }],
+    })
+    expect(r.filled[0]!.options).toEqual(['Yes', 'No'])
+    expect(r.failed[0]!.options).toEqual(['Yes', 'No'])
+  })
+
+  it('accepts entries with no Options, as a text Fill reports them', () => {
+    const r = FillReportSchema.parse({ epoch: 7, filled: [{ handle, committed: null }], failed: [{ handle, reason: 'value-rejected' }] })
+    expect(r.filled[0]!.options).toBeUndefined()
+    expect(r.failed[0]!.options).toBeUndefined()
   })
 
   it('rejects the old bare-handle filled shape', () => {

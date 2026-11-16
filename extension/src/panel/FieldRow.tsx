@@ -21,10 +21,18 @@ export const REASON_HINT: Record<string, string> = {
   'other-frame': 'Outside the application frame. Fill puts your value there; nothing is generated or saved for it.',
   'combobox-no-listbox': 'Open this dropdown on the page yourself and pick the value.',
   // Widget-agnostic on purpose: this reason is shared by combobox, select and
-  // radio-group no-match failures (review fix, minors item 16).
+  // radio-group no-match failures (review fix, minors item 16). A row whose
+  // Options are known says NO_MATCH_PICK_HINT instead.
   'no-matching-option': 'No option matches this value. Try different text.',
+  // The verified commit (spec #6, D1 and D2): the menu stayed open or the page
+  // dropped the Option, and a menu another Control left open would not close.
+  'no-commit': 'The page did not keep the option. Pick it on the page yourself.',
+  'listbox-left-open': 'Another dropdown on the page stayed open. Close it, then Fill again.',
   [MAPPING_LOST]: 'Matching did not finish. Answer this yourself, or Scan again.',
 }
+
+/** A Fill that found no matching Option on a row whose Options are known: the picker is right below. */
+export const NO_MATCH_PICK_HINT = 'None of the page\'s options matches this value. Pick one.'
 
 /** Under a Personal-fact row: why it offers no Generation. */
 export const PERSONAL_FACT_HINT = 'A question about you. Answer it yourself.'
@@ -127,7 +135,7 @@ function editorKindOf(row: Row): EditorKind {
   if (field.kind === 'checkbox') return 'consent'
   if ((field.kind === 'choice' || field.kind === 'radiogroup')
     && field.options.length > 0 && field.options.length <= SEGMENTED_MAX_OPTIONS) return 'segmented'
-  if (field.options.length > 0) return 'picker' // >5-option sets, selects, harvested comboboxes
+  if (field.options.length > 0) return 'picker' // >5-option sets, selects, dropdowns a Fill has read
   if (field.kind === 'combobox') return 'combobox-empty'
   return 'textarea'
 }
@@ -160,7 +168,9 @@ export function FieldRow(p: FieldRowProps) {
   // A Needs input row that is not a Prose Field asks about the user, unless it
   // already says why it is theirs (a failed Mapping, a failed Fill).
   const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
-  const hint = REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
+  const hint = resolution.reason === 'no-matching-option' && field.options.length > 0
+    ? NO_MATCH_PICK_HINT
+    : REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
 
   if (resolution.tier === 'skipped') {
     return (

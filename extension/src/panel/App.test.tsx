@@ -954,15 +954,18 @@ describe('App per-field fill failures', () => {
     })
   }
 
-  it('does not promote a proposed row whose fill the page refused', async () => {
+  it('does not promote a proposed row whose fill the page refused: it becomes Needs input with the reason', async () => {
     await renderScanned()
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     await waitFor(() => {
       expect(document.querySelector('[data-jff-status]')?.getAttribute('data-jff-status')).toBe('action_failed')
     })
-    // Still Proposed: promoting to Filled would tell the user a lie about the page.
-    expect(document.querySelector('li[data-jff-tier="proposed"]')).not.toBeNull()
+    // Never Filled: promoting it would tell the user a lie about the page. And
+    // never left Proposed in silence: the row itself says why (ticket #28).
     expect(document.querySelector('li[data-jff-tier="auto"]')).toBeNull()
+    expect(document.querySelector('li[data-jff-tier="proposed"]')).toBeNull()
+    const refused = [...document.querySelectorAll('li[data-jff-tier="needs_input"]')].find((li) => li.textContent?.includes('Work model'))!
+    expect(refused.querySelector('[data-jff-hint]')?.textContent).toBe('No option matches this value. Try different text.')
     expect(screen.getByText(/Accept failed: no-matching-option/)).toBeTruthy()
   })
 
@@ -1034,7 +1037,12 @@ describe('App per-field fill failures', () => {
     expect(fill.disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Generate with AI' }) as HTMLButtonElement).disabled).toBe(true)
     release!()
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Fill' }) as HTMLButtonElement).disabled).toBe(false))
+    // The refused Accept turned its row Needs input, so it has a Fill of its own now.
+    await waitFor(() => {
+      const fills = screen.getAllByRole('button', { name: 'Fill' }) as HTMLButtonElement[]
+      expect(fills).toHaveLength(2)
+      expect(fills.every((b) => !b.disabled)).toBe(true)
+    })
   })
 })
 

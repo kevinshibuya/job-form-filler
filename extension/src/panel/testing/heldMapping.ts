@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
-import type { EnumField, FieldHandle, HostResponse, Resolution } from '@jff/shared'
+import { norm, type EnumField, type FieldHandle, type HostResponse, type Resolution } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
 /**
@@ -79,6 +79,11 @@ export interface HeldMappingHost {
   sent: { fid: number; value: string; candidates?: string[] }[]
   /** fid → the reason the page refuses a fill of that Field with. */
   refuse: Record<number, string>
+  /** fid → the Options that Field's Control offers once a Fill opens it. A
+   *  fill of such a Field takes the one Option equal to the value or to one of
+   *  its candidate words, in the page's wording, and misses as
+   *  `no-matching-option` otherwise. Either way the report carries the Options. */
+  offers: Record<number, string[]>
   scans: number
   /** chrome.storage.session, as the fake holds it. */
   storage: Record<string, unknown>
@@ -92,7 +97,7 @@ export function installHeldMappingHost(): HeldMappingHost {
     Object.assign(host, {
       fields: [], firstValues: {}, firstCandidates: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
-      held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], refuse: {}, scans: 0, storage: {},
+      held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], refuse: {}, offers: {}, scans: 0, storage: {},
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -197,11 +202,20 @@ function fakeChrome(host: HeldMappingHost): unknown {
           for (const f of fills) {
             host.sent.push({ fid: f.handle.fid, value: f.value, ...(f.candidates === undefined ? {} : { candidates: f.candidates }) })
           }
-          const taken = fills.filter((f) => !(f.handle.fid in host.refuse))
-          for (const f of taken) host.page[f.handle.fid] = f.value
           host.fills.push({ epoch: m.epoch ?? -1, fids: fills.map((f) => f.handle.fid) })
-          const filled = taken.map((f) => ({ handle: f.handle, committed: null }))
-          const failed = fills.filter((f) => f.handle.fid in host.refuse).map((f) => ({ handle: f.handle, reason: host.refuse[f.handle.fid]! }))
+          const filled: { handle: FieldHandle; committed: string | null; options?: string[] }[] = []
+          const failed: { handle: FieldHandle; reason: string; options?: string[] }[] = []
+          for (const f of fills) {
+            const offered = host.offers[f.handle.fid]
+            const options = offered === undefined ? {} : { options: offered }
+            const words = [f.value, ...(f.candidates ?? [])].map(norm)
+            const option = offered?.find((o) => words.includes(norm(o)))
+            const reason = host.refuse[f.handle.fid] ?? (offered !== undefined && option === undefined ? 'no-matching-option' : null)
+            if (reason !== null) { failed.push({ handle: f.handle, reason, ...options }); continue }
+            const committed = option === undefined || option === f.value ? null : option
+            host.page[f.handle.fid] = option ?? f.value
+            filled.push({ handle: f.handle, committed, ...options })
+          }
           return { ok: true, replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: m.epoch, filled, failed } } }], failures: [] }
         }
         if (msg?.kind === 'toContent') {

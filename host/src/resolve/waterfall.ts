@@ -74,15 +74,29 @@ function exactAnswer(db: Database.Database, label: string) {
   return hit !== null && hit.reusability === 'reusable' ? hit : null
 }
 
+/** Controls that take exactly one of their Options. */
+const SINGLE_CHOICE_KINDS: ReadonlySet<EnumField['kind']> = new Set(['select', 'combobox', 'radiogroup', 'choice'])
+
 /**
- * A Saved answer on a checkbox group: the stored set meets the page's Options.
- * Every stored label offered gives the whole set at `best`; some give the
- * matching Options as Proposed; none leaves the group Needs input. An answer on
- * any other Control is used whole, at `best`.
+ * A Saved answer meets the page's Options wherever the Scan saw them.
+ * On a checkbox group the stored set does: every stored label offered gives
+ * the whole set at `best`; some give the matching Options as Proposed; none
+ * leaves the group Needs input. On a single-choice Control with Options, an
+ * answer equal to one Option gives that Option, in the page's wording, at
+ * `best`; equal to none, it is not offered at all and the Field is Needs
+ * input, so a paragraph of prose never reaches a Yes/No dropdown. A dropdown
+ * that showed no Options at Scan, and every other Control, takes the answer
+ * whole: a dropdown's Options are matched at Fill (ADR 0009).
  */
 function fromAnswer(
   f: EnumField, answer: string, best: 'auto' | 'proposed',
 ): { tier: Resolution['tier']; value: string | null; partial: '' | ':partial' | ':no-offered-option' } {
+  if (SINGLE_CHOICE_KINDS.has(f.kind) && f.options.length > 0) {
+    const option = optionEqualTo(answer, f.options)
+    return option === null
+      ? { tier: 'needs_input', value: null, partial: ':no-offered-option' }
+      : { tier: best, value: option, partial: '' }
+  }
   if (!isCheckboxGroup(f)) return { tier: best, value: answer, partial: '' }
   const m = matchOptionSet(answer, f.options)
   if (m.match === 'all') return { tier: best, value: m.value, partial: '' }
@@ -184,12 +198,15 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
         // B5c: the recognizer intercepts BEFORE tier 3, so a saved answer under
         // this exact question used to be invisible. Try it before needs_input.
         const hit = exactAnswer(db, label)
-        if (hit !== null) {
+        const out = hit === null ? null : fromAnswer(f, hit.answer, 'auto')
+        if (hit !== null && out !== null && out.value !== null) {
           touchAnswer(db, hit.id)
           byRef.set(ref, res(f, {
-            tier: 'auto', source: 'saved_answer', key, value: hit.answer,
-            answerId: hit.id, reason: 'exact-match:key-fallback',
+            tier: out.tier, source: 'saved_answer', key, value: out.value,
+            answerId: hit.id, reason: `exact-match:key-fallback${out.partial}`,
           }))
+        } else if (out !== null) {
+          byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `exact-match:key-fallback${out.partial}` }))
         } else {
           byRef.set(ref, res(f, { tier: 'needs_input', key, reason: `recognizer:${key}:${noValue(kv)}` }))
         }

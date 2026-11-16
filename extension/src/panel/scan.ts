@@ -68,13 +68,38 @@ export interface ScanDeps {
  *  strong the signal was, and where it lives (so a mis-election is explainable). */
 export interface ElectionOutcome { frameId: number; score: number; url: string | null }
 
-export interface FillFailure { handle: FieldHandle; reason: string }
+export interface FillFailure { handle: FieldHandle; reason: string; options?: string[] }
 
 /** B3: what the batched scan-time auto-fill ACTUALLY did, per the frames' own
  *  JFF_FILL reports. `filled` is page-accepted only — the count the status
  *  line shows. Failures carry the frame's per-field reason so the panel can
- *  demote the row and render the hint. */
-export interface CollectedFill { filled: { handle: FieldHandle; committed: string | null }[]; failed: FillFailure[] }
+ *  demote the row and render the hint. Either kind carries the Options a
+ *  choice Fill read on the page. */
+export interface CollectedFill {
+  filled: { handle: FieldHandle; committed: string | null; options?: string[] }[]
+  failed: FillFailure[]
+}
+
+/**
+ * The Fields with the Options a Fill read on the page. A Scan opens no menu
+ * (ADR 0009), so a dropdown's Options are first known once a Fill has opened
+ * it, on a hit or a miss; from then on its row offers them as a picker. A
+ * report that read no Options leaves the Field as it was.
+ */
+export function withReadOptions(
+  fields: EnumField[],
+  fill: { filled: readonly { handle: FieldHandle; options?: string[] }[]; failed: readonly { handle: FieldHandle; options?: string[] }[] },
+): EnumField[] {
+  const read = new Map<string, string[]>()
+  for (const f of [...fill.filled, ...fill.failed]) {
+    if (f.options !== undefined && f.options.length > 0) read.set(refOf(f.handle), f.options)
+  }
+  if (read.size === 0) return fields
+  return fields.map((f) => {
+    const options = read.get(refOf(f))
+    return options === undefined ? f : { ...f, options }
+  })
+}
 
 const emptyFill = (): CollectedFill => ({ filled: [], failed: [] })
 
@@ -184,7 +209,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   let kept = dropJunk(fields)
 
   // A7: election happens immediately after enumeration/junk-filtering, BEFORE
-  // jobText, resume, harvest and resolve — everything page-touching or paid is
+  // jobText, resume and resolve — everything page-touching or paid is
   // scoped to the elected frame. Scored over KEPT fields: junk (the hidden
   // reCAPTCHA textarea) must not be able to tilt the election.
   let election = electFrame(kept)
@@ -263,35 +288,6 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
         return { epoch, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), unreachableWidgets, activeCaptcha, jobText, llmError: null, frameReports: reports }
-      }
-    }
-
-    // A6: harvest mounted combobox options — ELECTED frame only, never
-    // demographic, and only where enumeration found nothing (mutation
-    // containment: open/close, no typing, snapshot-restored value).
-    if (election !== null) {
-      const harvestFids = electedOf(kept)
-        .filter((f) => f.kind === 'combobox' && !f.demographic && f.options.length === 0)
-        .map((f) => f.fid)
-      if (harvestFids.length > 0) {
-        try {
-          const { replies } = await deps.sendToTab(election.frameId, { type: 'JFF_HARVEST', epoch, fids: harvestFids })
-          const p = replies[0]?.payload as { ok?: boolean; options?: Record<string, string[]> } | undefined
-          if (p?.ok === true && p.options !== undefined) {
-            const opts = p.options
-            const merge = (f: EnumField): EnumField => {
-              const found = f.frameId === election!.frameId ? opts[String(f.fid)] : undefined
-              return found !== undefined && found.length > 0 ? { ...f, options: found } : f
-            }
-            // Merged BEFORE resolve: the mapping prompt sees the harvested lists.
-            fields = fields.map(merge)
-            kept = kept.map(merge)
-          }
-        } catch (e) {
-          // Harvest is best-effort by spec: degrade to options [], never fail
-          // the scan. The failure is still evidence.
-          reports = [...reports, { frameId: election.frameId, url: null, fields: null, error: `harvest failed: ${String(e)}` }]
-        }
       }
     }
 

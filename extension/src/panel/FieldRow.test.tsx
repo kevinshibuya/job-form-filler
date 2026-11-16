@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { EnumField, Resolution } from '@jff/shared'
-import { FieldRow, PERSONAL_FACT_HINT, WaitingRow } from './FieldRow'
+import { FieldRow, NO_MATCH_PICK_HINT, PERSONAL_FACT_HINT, WaitingRow } from './FieldRow'
 import type { Row } from './group'
 
 const field = (patch: Partial<EnumField> = {}): EnumField => ({
@@ -205,7 +205,7 @@ describe('FieldRow — kind-aware editors (A9)', () => {
     expect(document.querySelectorAll('datalist option')).toHaveLength(7)
   })
 
-  it('renders harvested combobox options as a picker too', () => {
+  it('renders the Options a Fill read on a dropdown as a picker too', () => {
     const r = row(field({ kind: 'combobox', options: ['Brazil', 'Portugal'] }), resolution({ tier: 'needs_input', value: null, source: null }))
     render(<ul><FieldRow row={r} {...props} /></ul>)
     expect(document.querySelector('[data-jff-editor="picker"]')).not.toBeNull()
@@ -282,6 +282,28 @@ describe('FieldRow — foreign rows and hints (A9/B1 seam)', () => {
     const r = row(field(), resolution({ tier: 'needs_input', value: null, source: null, reason: 'no-matching-option' }))
     render(<ul><FieldRow row={r} {...props} /></ul>)
     expect(screen.getByText('No option matches this value. Try different text.')).toBeTruthy()
+  })
+
+  it('a dropdown that missed with its Options read points at the picker below it', () => {
+    const r = row(
+      field({ kind: 'combobox', label: 'Open to relocation?', options: ['Yes', 'No'] }),
+      resolution({ tier: 'needs_input', value: 'Maybe', source: null, key: null, reason: 'no-matching-option' }),
+    )
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(document.querySelector('[data-jff-hint]')!.textContent).toBe(NO_MATCH_PICK_HINT)
+    expect([...document.querySelectorAll('datalist option')].map((o) => o.getAttribute('value'))).toEqual(['Yes', 'No'])
+  })
+
+  it('gives no-commit its own wording', () => {
+    const r = row(field({ kind: 'combobox' }), resolution({ tier: 'needs_input', value: 'Yes', source: null, reason: 'no-commit' }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText('The page did not keep the option. Pick it on the page yourself.')).toBeTruthy()
+  })
+
+  it('gives listbox-left-open its own wording', () => {
+    const r = row(field({ kind: 'combobox' }), resolution({ tier: 'needs_input', value: 'Yes', source: null, reason: 'listbox-left-open' }))
+    render(<ul><FieldRow row={r} {...props} /></ul>)
+    expect(screen.getByText('Another dropdown on the page stayed open. Close it, then Fill again.')).toBeTruthy()
   })
 })
 
