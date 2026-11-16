@@ -10,7 +10,8 @@ import { pickResumeTarget } from '../panel/resumeTarget'
 // Lever's labels (spec #41, ticket #44). The Lever module says where a
 // question's text sits: in the label block of the question that holds the
 // Control. These tests run Enumeration over the three real Lever pages with the
-// module passed in, and with the generic module, which must give today's labels.
+// module passed in, and with the generic module, which must give the generic
+// labels: today's, cleaned only by the generic label rules of #46.
 
 const allVisible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 200, height: 30, clipped: false })
 
@@ -31,7 +32,8 @@ function byName(fields: EnumField[], name: string): EnumField {
 
 const isCustom = (f: EnumField): boolean => f.name !== null && /^(cards|surveysResponses)\[/.test(f.name)
 
-/** The labels each Lever fixture gave before this ticket, Field by Field. */
+/** The labels each Lever fixture gave before this ticket, Field by Field, but for
+ *  the dropdowns, whose Options #46 leaves out of their wrapping label. */
 const GENERIC_LABELS: Record<LeverFixture, readonly (string | null)[]> = {
   'lever-pronoun-group': [
     "Resume/CV ✱ATTACH RESUME/CVCouldn't auto-read resume.Analyzing resume...Success!",
@@ -47,7 +49,7 @@ const GENERIC_LABELS: Record<LeverFixture, readonly (string | null)[]> = {
     "Portfolio URL",
     "Other website",
     "Have you ever been previously employed by Acme?",
-    "What is your location?Select...AfghanistanAlbaniaAlgeriaAmerican SamoaAndorraAngolaAnguillaAntarcticaAntigua and BarbudaArgentinaArmeniaArubaAustraliaAustriaAzerbaijanBahamasBahrainBangladeshBarbadosBelarusBelgiumBelizeBeninBermudaBhutanBoliviaBonaire, Sint Eustatius and SabaBosnia and HerzegovinaBotswanaBouvet IslandBrazilBritish Indian Ocean TerritoryBruneiBulgariaBurkina FasoBurundiCambodiaCameroonCanadaCape VerdeCayman IslandsCentral African RepublicChadChileChinaChristmas IslandCocos (Keeling) IslandsColombiaComorosCongoCongo, the Democratic Republic of theCook IslandsCosta RicaCroatiaCubaCuraçaoCyprusCzech RepublicDenmarkDjiboutiDominicaDominican RepublicEcuadorEgyptEl SalvadorEquatorial GuineaEritreaEstoniaEswatiniEthiopiaFalkland IslandsFaroe IslandsFijiFinlandFranceFrench GuianaFrench PolynesiaFrench Southern TerritoriesGabonGambiaGeorgiaGermanyGhanaGibraltarGreeceGreenlandGrenadaGuadeloupeGuamGuatemalaGuernseyGuineaGuinea-BissauGuyanaHaitiHeard Island and McDonald IslandsHoly See (Vatican City State)HondurasHong KongHungaryIcelandIndiaIndonesiaIranIraqIrelandIsle of ManIsraelItalyIvory CoastJamaicaJapanJerseyJordanKazakhstanKenyaKiribatiKosovoKuwaitKyrgyzstanLaosLatviaLebanonLesothoLiberiaLibyaLiechtensteinLithuaniaLuxembourgMacaoMacedonia, the Former Yugoslav Republic ofMadagascarMalawiMalaysiaMaldivesMaliMaltaMarshall IslandsMartiniqueMauritaniaMauritiusMayotteMexicoMicronesia, Federated States ofMoldovaMonacoMongoliaMontenegroMontserratMoroccoMozambiqueMyanmarNamibiaNauruNepalNetherlandsNew CaledoniaNew ZealandNicaraguaNigerNigeriaNiueNorfolk IslandNorth KoreaNorthern Mariana IslandsNorwayOmanPakistanPalauPalestine, State ofPanamaPapua New GuineaParaguayPeruPhilippinesPitcairnPolandPortugalPuerto RicoQatarRomaniaRussiaRwandaRéunionSaint BarthélemySaint Helena, Ascension and Tristan da CunhaSaint Kitts and NevisSaint LuciaSaint Martin (French part)Saint Pierre and MiquelonSaint Vincent and the GrenadinesSamoaSan MarinoSao Tome and PrincipeSaudi ArabiaSenegalSerbiaSeychellesSierra LeoneSingaporeSint Maarten (Dutch part)SlovakiaSloveniaSolomon IslandsSomaliaSouth AfricaSouth Georgia and the South Sandwich IslandsSouth KoreaSouth SudanSpainSri LankaSudanSurinameSvalbard and Jan MayenSwedenSwitzerlandSyriaTaiwanTajikistanTanzaniaThailandTimor-LesteTogoTokelauTongaTrinidad and TobagoTunisiaTurkeyTurkmenistanTurks and Caicos IslandsTuvaluUgandaUkraineUnited Arab EmiratesUnited KingdomUnited StatesUnited States Minor Outlying IslandsUruguayUzbekistanVanuatuVenezuelaVietnamVirgin Islands, BritishVirgin Islands, U.S.Wallis and FutunaWestern SaharaYemenZambiaZimbabweÅland Islands",
+    "What is your location?",
     null,
     null,
     null,
@@ -73,9 +75,9 @@ const GENERIC_LABELS: Record<LeverFixture, readonly (string | null)[]> = {
     null,
     "How did you hear about us?",
     "Type your response",
-    "GenderSelect ...MaleFemaleDecline to self-identify",
-    "RaceSelect ...Hispanic or LatinoWhite (Not Hispanic or Latino)Black or African American (Not Hispanic or Latino)Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)Asian (Not Hispanic or Latino)American Indian or Alaska Native (Not Hispanic or Latino)Two or More Races (Not Hispanic or Latino)Decline to self-identifyHispanic or LatinoA person of Cuban, Mexican, Puerto Rican, South or Central American, or other Spanish culture or origin regardless of race.White (Not Hispanic or Latino)A person having origins in any of the original peoples of Europe, the Middle East, or North Africa.Black or African American (Not Hispanic or Latino)A person having origins in any of the black racial groups of Africa.Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)A person having origins in any of the peoples of Hawaii, Guam, Samoa, or other Pacific Islands.Asian (Not Hispanic or Latino)A person having origins in any of the original peoples of the Far East, Southeast Asia, or the Indian Subcontinent, including, for example, Cambodia, China, India, Japan, Korea, Malaysia, Pakistan, the Philippine Islands, Thailand, and Vietnam.American Indian or Alaska Native (Not Hispanic or Latino)A person having origins in any of the original peoples of North and South America (including Central America), and who maintain tribal affiliation or community attachment.Two or More Races (Not Hispanic or Latino)All persons who identify with more than one of the above five races.",
-    "Veteran statusSelect ...I am a veteranI am not a veteranDecline to self-identify",
+    "Gender",
+    "Race",
+    "Veteran status",
   ],
   'lever-marketing-consent': [
     "Resume/CV ✱ATTACH RESUME/CVCouldn't auto-read resume.Analyzing resume...Success!",
@@ -126,7 +128,7 @@ describe('Enumeration over the Lever fixtures', () => {
     expect(scan(name, GENERIC_MODULE)).toHaveLength(count)
   })
 
-  it.each(LEVER_FIXTURES)('%s gives exactly today\'s labels with the generic module', (name) => {
+  it.each(LEVER_FIXTURES)('%s gives exactly the generic labels with the generic module', (name) => {
     expect(scan(name, GENERIC_MODULE).map((f) => f.label)).toEqual(GENERIC_LABELS[name])
   })
 })

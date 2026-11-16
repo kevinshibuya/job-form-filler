@@ -336,6 +336,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       demographic: isDemographicField(binding.text, isDemographic(el)),
       description: descriptionFor(el, binding) ?? undefined,
       accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
+      ...(binding.uploadWordingOnly === true ? { uploadWordingOnly: true } : {}),
       ...(kind === 'text' ? { numeric: takesOnlyNumbers(el) } : {}),
     })
     fid++

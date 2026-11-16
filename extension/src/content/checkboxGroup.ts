@@ -1,5 +1,6 @@
 import { optionSetValue } from '@jff/shared'
 import { kindOf, optionLabelOf, requiredFromBinding, scopeOf, type LabelBinding } from './dom'
+import { labelText } from './labelText'
 
 /**
  * Checkbox groups: checkboxes that share a name, or that sit under one group
@@ -62,8 +63,9 @@ function nameOf(el: Element): string {
 function declaredGroup(box: HTMLInputElement): { container: Element; binding: LabelBinding } | null {
   const fieldset = box.closest('fieldset')
   const legend = fieldset?.querySelector('legend') ?? null
-  if (fieldset !== null && legend !== null && clean(legend.textContent) !== '') {
-    return { container: fieldset, binding: { text: clean(legend.textContent), source: 'group-legend', element: legend } }
+  const legendText = legend === null ? '' : clean(labelText(legend))
+  if (fieldset !== null && legend !== null && legendText !== '') {
+    return { container: fieldset, binding: { text: legendText, source: 'group-legend', element: legend } }
   }
   const group = box.closest('[role="group"]')
   if (group === null) return null
@@ -72,7 +74,7 @@ function declaredGroup(box: HTMLInputElement): { container: Element; binding: La
   const refs = (group.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter((id) => id !== '')
     .map((id) => scopeOf(group).querySelector(`[id="${escapeAttr(id)}"]`))
     .filter((n): n is Element => n !== null)
-  const text = clean(refs.map((n) => n.textContent ?? '').join(' '))
+  const text = clean(refs.map(labelText).join(' '))
   return text === '' ? null : { container: group, binding: { text, source: 'group-aria', element: refs[0] ?? null } }
 }
 

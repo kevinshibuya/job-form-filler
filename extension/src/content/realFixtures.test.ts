@@ -218,6 +218,27 @@ describe('each real-page fixture shows its review finding', () => {
     expect(cover.querySelector('.file-upload__filename')).toBeNull()
   })
 
+  it('every Greenhouse fixture: each file picker\'s own label reads "Attach", and its question sits on the group around it', () => {
+    for (const name of REAL_FIXTURES.filter((n) => n.startsWith('greenhouse'))) {
+      loadRealFixture(name)
+      const pickers = Array.from(document.querySelectorAll('input[type="file"]'))
+      expect(pickers.length).toBeGreaterThan(0)
+      for (const picker of pickers) {
+        expect(labelOf(picker)).toBe('Attach')
+        const group = picker.closest('[role="group"][aria-labelledby]')!
+        expect(group.querySelectorAll('input[type="file"]')).toHaveLength(1)
+        expect(text(byId(group.getAttribute('aria-labelledby')!))).not.toBe('Attach')
+      }
+    }
+  })
+
+  it('lever-source-group: a demographic dropdown sits inside its own label, beside every one of its Options', () => {
+    loadRealFixture('lever-source-group')
+    const select = Array.from(document.querySelectorAll('select')).find((s) => /^Gender/.test(labelOf(s)))!
+    expect(select.closest('label')).not.toBeNull()
+    expect(labelOf(select)).toContain('Male')
+  })
+
   it('greenhouse-accommodation: a Control whose label asks about accommodation', () => {
     loadRealFixture('greenhouse-accommodation')
     const controls = Array.from(document.querySelectorAll(CONTROL))

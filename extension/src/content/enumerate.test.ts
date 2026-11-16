@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { enumerateFields, elementByFid, detectChoice, isClipped, CHOICE_MAX_OPTION_CHARS, type MeasureFn } from './enumerate'
 import { fillFields } from './fill'
-import { loadRealFixture } from './fixtures/real'
+import { REAL_FIXTURES, loadRealFixture } from './fixtures/real'
 import {
   ASHBY_CHOICE_RADIO, ASHBY_COMBOBOX, ASHBY_COMBOBOX_WITH_DESCRIPTION, ASHBY_CONSENT_SINGLE,
   ASHBY_EEO_YESNO, ASHBY_ESSAY_WITH_DESCRIPTION, ASHBY_OPTIONAL_FIELD, ASHBY_RADIO_FIELDSET,
@@ -449,6 +449,51 @@ describe('enumerateFields — attached uploads (#37)', () => {
     document.body.appendChild(hostEl)
     hostEl.attachShadow({ mode: 'open' }).innerHTML = attachedGroup('resume', 'Resume')
     expect(enumerateFields({ root: document, epoch: 1, measure: allVisible }).attachedUploads).toEqual(['Resume'])
+  })
+})
+
+describe('generic label rules over the real-page fixtures (#46)', () => {
+  const UPLOAD_WORDING = /^(attach|upload a file|replace file|uploading)\.*$/i
+  const scan = (name: string): ReturnType<typeof enumerateFields>['fields'] => {
+    loadRealFixture(name)
+    return enumerateFields({ root: document, epoch: 1, measure: allVisible }).fields
+  }
+
+  it('the hosted Greenhouse form with two uploads labels its file pickers "Resume/CV" and "Cover Letter"', () => {
+    for (const name of ['greenhouse-hosted-b', 'greenhouse-accommodation']) {
+      const files = scan(name).filter((f) => f.kind === 'file')
+      expect(files.map((f) => [f.idAttr, f.label])).toEqual([['resume', 'Resume/CV'], ['cover_letter', 'Cover Letter']])
+    }
+  })
+
+  it('no Field of any Greenhouse fixture is labelled with an upload wording', () => {
+    for (const name of REAL_FIXTURES.filter((n) => n.startsWith('greenhouse'))) {
+      for (const f of scan(name)) expect(f.label ?? '').not.toMatch(UPLOAD_WORDING)
+    }
+  })
+
+  it('a Greenhouse resume picker takes the required mark of its group\'s label', () => {
+    const resume = scan('greenhouse-hosted-a').find((f) => f.idAttr === 'resume')!
+    expect(resume).toMatchObject({ label: 'Resume/CV', required: true })
+  })
+
+  it('with the generic module, a Lever dropdown inside its own label carries its question and none of its Options', () => {
+    const selects = scan('lever-source-group').filter((f) => f.kind === 'select' && f.label !== null)
+    expect(selects.map((f) => f.label)).toEqual(expect.arrayContaining(['Gender', 'Race', 'Veteran status']))
+    for (const f of selects) {
+      for (const option of f.options) expect(f.label).not.toContain(option)
+    }
+    const location = scan('lever-pronoun-group').find((f) => f.kind === 'select')!
+    expect(location.label).toBe('What is your location?')
+  })
+
+  it('keeps the count of Fields of every fixture', () => {
+    const counts = Object.fromEntries(REAL_FIXTURES.map((name) => [name, scan(name).length]))
+    expect(counts).toEqual({
+      'based-in-yes-no': 12, 'greenhouse-accommodation': 18, 'greenhouse-hosted-a': 18, 'greenhouse-hosted-b': 33,
+      'greenhouse-hosted-resume-attached': 26, 'greenhouse-hosted-resume-uploading': 26, 'greenhouse-self-id': 43,
+      'lever-marketing-consent': 33, 'lever-pronoun-group': 22, 'lever-source-group': 18,
+    })
   })
 })
 

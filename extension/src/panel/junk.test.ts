@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import type { EnumField } from '@jff/shared'
+import { atsModule, type EnumField } from '@jff/shared'
+import { enumerateFields, type MeasureFn } from '../content/enumerate'
+import { loadRealFixture } from '../content/fixtures/real'
 import { dropJunk, keepField } from './junk'
 import { scoreResumeField } from './resumeTarget'
 
@@ -50,6 +52,11 @@ describe('keepField', () => {
     expect(keepField(field({ kind: 'file', visible: false, label: null }))).toBe(false)
   })
 
+  it('keeps a hidden file input whose only label was an upload wording, though it now has no label (#46)', () => {
+    expect(keepField(field({ kind: 'file', visible: false, label: null, uploadWordingOnly: true }))).toBe(true)
+    expect(keepField(field({ kind: 'text', visible: false, label: null, uploadWordingOnly: true }))).toBe(false)
+  })
+
   it('keeps a hidden unlabelled cover-letter input on its file signals, though it is no resume target (#37)', () => {
     const cover = field({ kind: 'file', visible: false, label: null, idAttr: 'cover_letter', accept: '.pdf,.doc,.docx,.txt,.rtf' })
     expect(scoreResumeField(cover)).toBe(0)
@@ -63,5 +70,35 @@ describe('dropJunk', () => {
     const b = field({ fid: 1, visible: false, label: null })
     const c = field({ fid: 2, kind: 'choice', visible: false })
     expect(dropJunk([a, b, c])).toEqual([a, c])
+  })
+})
+
+describe('the junk filter over the real-page fixtures (#46)', () => {
+  // The page hides a file picker behind its button, and a class or
+  // aria-hidden hides the rest; everything else is visible.
+  const pageHidden: MeasureFn = (el) => {
+    const hidden = el.getAttribute('type') === 'file' || el.getAttribute('aria-hidden') === 'true'
+      || /hidden/.test(el.getAttribute('class') ?? '')
+    return { display: 'block', visibility: 'visible', ariaHidden: el.getAttribute('aria-hidden') === 'true', width: hidden ? 1 : 200, height: hidden ? 1 : 30, clipped: hidden }
+  }
+
+  // Pinned from a run on the code before the generic label rules.
+  it.each([
+    ['based-in-yes-no', 'ashby', [], []],
+    ['greenhouse-accommodation', 'greenhouse', [9, 11, 15, 17], [9, 11, 15, 17]],
+    ['greenhouse-hosted-a', 'greenhouse', [3, 6, 15, 17], [3, 6, 15, 17]],
+    ['greenhouse-hosted-b', 'greenhouse', [4, 7, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32], [4, 7, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]],
+    ['greenhouse-hosted-resume-attached', 'greenhouse', [7, 9, 13, 16, 18, 20, 22], [7, 9, 13, 16, 18, 20, 22]],
+    ['greenhouse-hosted-resume-uploading', 'greenhouse', [7, 9, 13, 16, 18, 20, 22], [7, 9, 13, 16, 18, 20, 22]],
+    ['greenhouse-self-id', 'greenhouse', [3, 6, 10, 15, 17, 21, 29, 31, 33, 35, 37, 39, 41], [3, 6, 10, 15, 17, 21, 29, 31, 33, 35, 37, 39, 41]],
+    ['lever-marketing-consent', 'lever', [20], []],
+    ['lever-pronoun-group', 'lever', [], []],
+    ['lever-source-group', 'lever', [], []],
+  ] as const)('%s: drops the same Fields as before, with the generic module and with %s\'s', (name, ats, genericDrops, moduleDrops) => {
+    for (const [mod, drops] of [[undefined, genericDrops], [atsModule(ats), moduleDrops]] as const) {
+      loadRealFixture(name)
+      const { fields } = enumerateFields({ root: document, epoch: 1, measure: pageHidden, atsModule: mod })
+      expect(fields.filter((f) => !keepField(f)).map((f) => f.fid)).toEqual(drops)
+    }
   })
 })
