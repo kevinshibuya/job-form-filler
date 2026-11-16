@@ -69,8 +69,8 @@ export async function requestPick(port: HostPort | null | undefined, req: PickRe
 /**
  * A pick's outcome on the row it was asked for. A pick makes the row Proposed
  * with the Option, and the row keeps the stored Value it stands for; the
- * Value's candidate words and phone parts belong to the stored Value and do
- * not travel with the Option. None leaves the row as the miss left it. A
+ * Value's candidate words, phone parts and city parts belong to the stored
+ * Value and do not travel with the Option. None leaves the row as the miss left it. A
  * failure says so on the row.
  *
  * The outcome lands only on the row the miss left: same Scan, still Needs
@@ -90,7 +90,7 @@ export function landPick<S extends { epoch: number; resolutions: Resolution[]; e
   if (outcome.kind === 'failed') {
     resolutions[at] = { ...current, reason: OPTION_PICK_FAILED }
   } else {
-    const { candidates: _candidates, phone: _phone, ...rest } = current
+    const { candidates: _candidates, phone: _phone, city: _city, ...rest } = current
     resolutions[at] = { ...rest, tier: 'proposed', value: outcome.option, reason: OPTION_PICK, standsFor: req.value }
   }
   return { ...s, resolutions }

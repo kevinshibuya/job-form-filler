@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EnumFieldSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
+import { CityPartsSchema, EnumFieldSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
 import { FIELD_KEYS } from './keys.js'
 
 // Re-exported so `./messages.js` alone carries the field-identity types it
@@ -190,9 +190,10 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
     // `candidates`: the candidate words of the row's Value (Resolution.candidates).
     // Absent once the user edited the Value: an edited Value matches by its own text.
     // `phone`: the parts of a phone Value (Resolution.phone), on the same terms.
+    // `city`: the stored country's names beside a city (Resolution.city), likewise.
     fills: z.array(z.object({
       handle: FieldHandleSchema, value: z.string(), candidates: z.array(z.string()).optional(),
-      phone: PhonePartsSchema.optional(),
+      phone: PhonePartsSchema.optional(), city: CityPartsSchema.optional(),
     })),
   }),
   z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
