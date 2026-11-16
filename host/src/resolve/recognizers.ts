@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { FieldKey } from '@jff/shared'
+import { readPlaces, type FieldKey } from '@jff/shared'
 import { getLearnedMapping } from '../db/repos.js'
 import { isChoiceControl } from './controlKinds.js'
 import { normalizeQuestion } from './normalize.js'
@@ -12,10 +12,36 @@ import { normalizeQuestion } from './normalize.js'
  * are subjective and must fall through to the LLM and then to [Generate].
  * `onChoice` is the key the same label takes when its Control is a choice: a
  * location dropdown picks a city, never the free-text location line.
+ * `when` narrows a rule to labels it also holds for.
  */
-export const BASELINE_RECOGNIZERS: { match: RegExp; key: FieldKey; onChoice?: FieldKey }[] = [
+
+/**
+ * A question about where the user lives ("are you based in", "do you live
+ * in", in English and Portuguese). Read BEFORE the location rule: when it
+ * names a place it is a yes/no question about the user's country, never a
+ * request for the location line (host/src/resolve/countryAnswers.ts).
+ */
+export const RESIDENCE_QUESTION =
+  /\bbased in\b|\b(live|living|reside|residing|located)\s+in\b|\bresident (of|in)\b|\b(mora|moras|reside|vive|baseado|baseada|localizado|localizada)\s+(em|no|na|nos|nas)\b/i
+
+const namesPlace = (label: string): boolean => {
+  const { countries, regions } = readPlaces(label)
+  return countries.length > 0 || regions.length > 0
+}
+
+const AUTHORIZED = /authoriz|legally.*work|right to work|eligible to work|work permit|autoriza[cç][aã]o para trabalhar/i
+
+export const BASELINE_RECOGNIZERS: { match: RegExp; key: FieldKey; onChoice?: FieldKey; when?: (label: string) => boolean }[] = [
+  // "Authorized to work … without sponsorship" asks for authorization, so a yes
+  // there is a claim of it: BEFORE the sponsorship rule, or a needed
+  // sponsorship would answer it yes.
+  {
+    match: /without\s+(\w+\s+){0,2}(sponsor|visa)|sem\s+(necessidade\s+de\s+)?(patroc[ií]nio|visto)/i,
+    key: 'workAuth', when: (label) => AUTHORIZED.test(label),
+  },
   { match: /sponsor|visa|patroc[ií]nio/i, key: 'sponsorshipNeeded' },
-  { match: /authoriz|legally.*work|right to work|work permit|autoriza[cç][aã]o para trabalhar/i, key: 'workAuth' },
+  { match: AUTHORIZED, key: 'workAuth' },
+  { match: RESIDENCE_QUESTION, key: 'country', when: namesPlace },
   { match: /relocat|mudan[cç]a de cidade|disposto a mudar/i, key: 'relocate' },
   { match: /salary|compensation|desired pay|expected pay|sal[aá]rio|pretens[aã]o/i, key: 'salary' },
   { match: /notice period|aviso pr[eé]vio/i, key: 'notice' },
@@ -62,7 +88,7 @@ export function recognize(label: string, db?: Database.Database, kind?: string):
     const learned = getLearnedMapping(db, normalizeQuestion(trimmed))
     if (learned) return learned
   }
-  const hit = BASELINE_RECOGNIZERS.find((r) => r.match.test(trimmed))
+  const hit = BASELINE_RECOGNIZERS.find((r) => r.match.test(trimmed) && (r.when?.(trimmed) ?? true))
   if (hit === undefined) return null
   return hit.onChoice !== undefined && kind !== undefined && isChoiceControl(kind) ? hit.onChoice : hit.key
 }

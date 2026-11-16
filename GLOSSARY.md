@@ -133,8 +133,9 @@ context.
 _Avoid_: CV
 
 **Answer bank**:
-The store of standing factual answers: work authorization, sponsorship,
-relocation, salary, notice, start date, remote preference, pronouns.
+The store of standing factual answers: work authorization (the countries where
+the user may work), relocation, salary, notice, start date, remote preference,
+pronouns. Sponsorship is answered from work authorization and never stored.
 _Avoid_: facts, standing answers
 
 **Saved answer**:

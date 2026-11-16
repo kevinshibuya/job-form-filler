@@ -189,14 +189,16 @@ describe('current company and current title', () => {
 
 describe('a question is not a place', () => {
   it('"Do you live in the US or Canada?" as a yes/no Field gets no place Value', async () => {
+    // Ticket #29: it is a residence question, answered no from the stored
+    // country before Mapping could pick a place key for it.
     for (const kind of ['radiogroup', 'select', 'choice', 'combobox'] as WidgetKind[]) {
       const q = field('Do you live in the US or Canada?', kind, { options: YES_NO })
       const [onFirst] = await first(q)
-      if (onFirst !== PENDING) expect(onFirst.value).toBeNull()
+      expect(onFirst).toMatchObject({ tier: 'auto', key: 'country', value: 'No' })
       for (const knownKey of ['country', 'city', 'region']) {
         decide = () => ({ decision: 'known_key', knownKey })
         const [r] = await mapped(q)
-        expect(r, `${kind} mapped to ${knownKey}`).toMatchObject({ value: null })
+        expect(r, `${kind} mapped to ${knownKey}`).toMatchObject({ value: 'No' })
         expect([ADA.country, ADA.city, ADA.region, ADA.location]).not.toContain(r!.value)
       }
     }

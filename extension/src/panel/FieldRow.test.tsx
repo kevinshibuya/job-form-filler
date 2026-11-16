@@ -467,3 +467,44 @@ describe('WaitingRow: a Field Mapping has not decided yet', () => {
     }
   })
 })
+
+// Ticket #29: authorization, sponsorship and residence are answered with a yes
+// or a no for the country a question names. That answer is not the key's
+// Value, so the row never offers to store it.
+describe('FieldRow — a yes or a no answered per country', () => {
+  const ready = { ...props, factsReady: true }
+  const saveBtn = () => screen.queryByRole('button', { name: 'Save to profile' })
+  const perCountry = (key: Resolution['key'], label: string, patch: Partial<Resolution> = {}) => row(
+    field({ label, kind: 'radiogroup', options: ['Yes', 'No'] }),
+    resolution({ tier: 'needs_input', value: null, source: null, key, ...patch }),
+  )
+
+  it('offers no Save to profile on an authorization or a sponsorship row', () => {
+    for (const key of ['workAuth', 'sponsorshipNeeded'] as const) {
+      const { unmount } = render(<ul><FieldRow {...ready} row={perCountry(key, 'Are you authorized to work in Germany?')} pageValue="Yes" /></ul>)
+      expect(saveBtn(), key).toBeNull()
+      unmount()
+    }
+  })
+
+  it('offers no Save to profile when a yes or a no would be stored as a country', () => {
+    const { rerender } = render(<ul><FieldRow {...ready} row={perCountry('country', 'Are you based in EMEA?')} pageValue="No" /></ul>)
+    expect(saveBtn()).toBeNull()
+    // A country typed into a Country row is still offered.
+    rerender(<ul><FieldRow {...ready} row={perCountry('country', 'Country')} pageValue="Portugal" /></ul>)
+    expect(saveBtn()).toBeTruthy()
+  })
+
+  it('says why a row that names a region is left to the user', () => {
+    render(<ul><FieldRow {...ready} row={perCountry('workAuth', 'Are you authorized to work in the EU?', { reason: 'names-region' })} /></ul>)
+    expect(screen.getByText(/names a region/)).toBeTruthy()
+  })
+
+  it('says a proposal for a question that names no country is the answer for the user\'s own country', () => {
+    render(<ul><FieldRow
+      {...ready}
+      row={perCountry('workAuth', 'Are you authorized to work in the country of this role?', { tier: 'proposed', value: 'Yes', source: 'answer_bank', reason: 'no-country-named' })}
+    /></ul>)
+    expect(screen.getByText(/names no country/)).toBeTruthy()
+  })
+})

@@ -1,5 +1,5 @@
 import { normalizeFactValue, type FieldKey } from './keys.js'
-import { CALLING_CODES, RULE_TABLE, countryCode, yesNoOf, type RuleLanguage } from './ruleTable.js'
+import { CALLING_CODES, COUNTRY_CODES, RULE_TABLE, countryCode, countryName, yesNoOf, type RuleLanguage } from './ruleTable.js'
 
 /**
  * The rule for a Known key whose Value changed shape. Each typed Value has one
@@ -13,8 +13,10 @@ import { CALLING_CODES, RULE_TABLE, countryCode, yesNoOf, type RuleLanguage } fr
  * - A Value shown to a person or handed to a model is formatted from its typed
  *   form.
  *
- * Only `relocate` (a yes or a no) and `phone` (international form) have a
- * typed form so far; every other key stores and answers its text as is.
+ * `relocate` (a yes or a no), `phone` (international form) and `workAuth` (a
+ * list of countries) have a typed form. `sponsorshipNeeded` has one that no
+ * text fits: its answer is derived from `workAuth` and nothing is stored for
+ * it. Every other key stores and answers its text as is.
  */
 
 interface TypedForm {
@@ -49,7 +51,61 @@ const PHONE: TypedForm = {
   refusal: 'is stored in international form: a plus sign, the country calling code and the number, as in +15550100',
 }
 
-const TYPED: Partial<Record<FieldKey, TypedForm>> = { relocate: YES_NO, phone: PHONE }
+const CODE_SET: ReadonlySet<string> = new Set(COUNTRY_CODES)
+
+/** The canonical text of a list of countries: its ISO codes, each once, sorted, as JSON. */
+export function workAuthValue(codes: readonly string[]): string {
+  return JSON.stringify([...new Set(codes)].sort())
+}
+
+/** The JSON array a text holds, or null. */
+function jsonArray(text: string): unknown[] | null {
+  if (!text.startsWith('[')) return null
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The countries of a stored `workAuth` Value, as ISO codes; null for old text.
+ * Only the canonical text is a Value: a bare yes or no stored before the list
+ * existed, or any other text, is not.
+ */
+export function workAuthCountries(text: string | null | undefined): string[] | null {
+  if (text == null) return null
+  const items = jsonArray(text)
+  if (items === null || items.length === 0) return null
+  if (!items.every((c): c is string => typeof c === 'string' && CODE_SET.has(c))) return null
+  return workAuthValue(items) === text ? items : null
+}
+
+const PLACE_LIST: TypedForm = {
+  isValue: (text) => workAuthCountries(text) !== null,
+  display: (text, lang) => (workAuthCountries(text) ?? []).map((c) => countryName(c, lang) ?? c).join(', '),
+  // A JSON list whose items are codes of the closed list or any of their names.
+  fromInput: (text) => {
+    const items = jsonArray(text)
+    if (items === null || items.length === 0) return null
+    const codes = items.map((i) => (typeof i !== 'string' ? null : CODE_SET.has(i) ? i : countryCode(i.trim())))
+    return codes.every((c): c is string => c !== null) ? workAuthValue(codes) : null
+  },
+  refusal: 'is stored as a list of countries from the closed list',
+}
+
+/** No text is a Value: the answer is worked out from `workAuth` each time. */
+const DERIVED: TypedForm = {
+  isValue: () => false,
+  display: (text) => text,
+  fromInput: () => null,
+  refusal: 'is not stored: its answer comes from workAuth, the countries where you may work',
+}
+
+const TYPED: Partial<Record<FieldKey, TypedForm>> = {
+  relocate: YES_NO, phone: PHONE, workAuth: PLACE_LIST, sponsorshipNeeded: DERIVED,
+}
 
 /** Why a write of `key` would be refused, for a key with a typed form; null otherwise. */
 export function refusalOf(key: FieldKey): string | null {

@@ -50,7 +50,8 @@ describe('Value types', () => {
     const byType = (type: string) => FIELD_KEYS.filter((k) => VALUE_TYPE_OF[k] === type).sort()
     expect(byType('link')).toEqual(['github', 'linkedin', 'portfolio'])
     expect(byType('phone')).toEqual(['phone'])
-    expect(byType('yes_no')).toEqual(['relocate', 'sponsorshipNeeded', 'workAuth'])
+    expect(byType('yes_no')).toEqual(['relocate', 'sponsorshipNeeded'])
+    expect(byType('place_list')).toEqual(['workAuth'])
     expect(byType('text')).toEqual([
       'currentCompany', 'currentTitle', 'earliestStart', 'email', 'firstName', 'fullName', 'lastName',
       'location', 'notice', 'preferredName', 'pronouns', 'remotePreference', 'salary',

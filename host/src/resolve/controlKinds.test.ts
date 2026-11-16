@@ -28,7 +28,7 @@ const ADA = {
 beforeEach(() => {
   db = openDb(':memory:')
   setProfile(db, ADA)
-  setAnswerBank(db, { workAuth: 'Yes', pronouns: 'she/her' })
+  setAnswerBank(db, { workAuth: '["gb"]', pronouns: 'she/her' })
   decide = () => ({ decision: 'custom' })
   mapping = vi.fn(async (prompt: string) => {
     const refs = [...prompt.matchAll(/^- ref=(\S+)/gm)].map((m) => m[1]!)
@@ -121,7 +121,7 @@ describe('a Known key answers only a Control that can hold its Value', () => {
 
   it('a yes/no key still answers a radio group, a dropdown, a combobox, yes/no buttons and a text box', async () => {
     for (const kind of ['radiogroup', 'select', 'combobox', 'choice', 'text'] as WidgetKind[]) {
-      const [r] = await first(field('Are you legally authorized to work in Brazil?', kind, { options: kind === 'text' ? [] : YES_NO }))
+      const [r] = await first(field('Are you legally authorized to work in the United Kingdom?', kind, { options: kind === 'text' ? [] : YES_NO }))
       expect(r).toMatchObject({ tier: 'auto', key: 'workAuth', value: 'Yes' })
     }
   })
@@ -148,7 +148,9 @@ describe('a Known key answers only a Control that can hold its Value', () => {
   })
 
   it('a yes/no question that mentions where the applicant is based does not receive the location line', async () => {
-    const based = field('Are you based in US or Canada?', 'choice', { options: YES_NO, required: true })
+    // One that names a country is answered from the stored country instead
+    // (countryAnswers.test.ts); this one names a city.
+    const based = field('Are you based in London?', 'choice', { options: YES_NO, required: true })
     expect(await first(based)).toEqual([PENDING])
     const [r] = await mapped(based)
     expect(r).toMatchObject({ tier: 'needs_input', key: null, value: null })
@@ -159,10 +161,10 @@ describe('a Known key answers only a Control that can hold its Value', () => {
 
   it('a recognizer hit on the wrong Control goes on to the exact Saved answer match', async () => {
     upsertAnswer(db, {
-      questionNormalized: normalizeQuestion('Are you based in US or Canada?'), questionRaw: 'Are you based in US or Canada?',
+      questionNormalized: normalizeQuestion('Are you based in London?'), questionRaw: 'Are you based in London?',
       answer: 'No', language: 'en', reusability: 'reusable',
     })
-    const [r] = await first(field('Are you based in US or Canada?', 'choice', { options: YES_NO }))
+    const [r] = await first(field('Are you based in London?', 'choice', { options: YES_NO }))
     expect(r).toMatchObject({ tier: 'auto', source: 'saved_answer', key: null, value: 'No' })
     expect(mapping).not.toHaveBeenCalled()
   })
@@ -186,6 +188,8 @@ describe('a Known key answers only a Control that can hold its Value', () => {
   })
 
   it('a Known key Mapping names for a Control that can hold it is still proposed', async () => {
+    // It names no country, so the answer is the one for the stored country.
+    setProfile(db, { country: 'United Kingdom' })
     const auth = field('Can you work for us without restrictions?', 'radiogroup', { options: YES_NO })
     decide = () => ({ decision: 'known_key', knownKey: 'workAuth' })
     expect(await first(auth)).toEqual([PENDING])

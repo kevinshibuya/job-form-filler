@@ -122,10 +122,11 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     await expect(target.locator('#hard_bug')).toHaveValue(/production TypeScript/)
 
     // The user overrides that draft by typing on the PAGE (snapshot must beat the
-    // panel edit), corrects a factual select, types into the unlabelled mystery
-    // field (which must NOT be saved), then submits.
+    // panel edit), answers a factual select and a fact the profile lacks, types
+    // into the unlabelled mystery field (which must NOT be saved), then submits.
     await target.fill('#hard_bug', 'answered by hand on the page')
     await target.selectOption('#work_auth', { index: 1 })
+    await target.fill('#linkedin-input', 'https://www.linkedin.com/in/ada-lovelace')
     await target.fill('#mystery', 'unlabelled, must never be saved')
     await target.click('#submit_app')
     await expect(target.locator('#application-confirmation')).toBeVisible()
@@ -162,16 +163,20 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     expect(apps[0]!).toMatchObject({ company: 'Acme', generated_count: 1 })
     expect(apps[0]!.url).toContain('fixture-form.html')
 
-    // ...and "Save to profile" is what does write it. The row carries key
-    // 'workAuth' and nothing is stored under it yet, so the button is offered.
+    // ...and "Save to profile" is what does write a fact. The LinkedIn row
+    // carries key 'linkedin' and nothing is stored under it yet, so the button
+    // is offered. The work authorization row is not: its key is the list of
+    // countries, entered only in the Profile editor (ticket #29).
     const authRow = panel.locator('li', { hasText: 'Work Authorization' })
-    await authRow.locator('[data-jff-save-fact="1"]').click()
-    await expect(authRow.locator('[data-jff-save-fact="1"]')).toHaveCount(0, { timeout: 30_000 })
+    await expect(authRow.locator('[data-jff-save-fact="1"]')).toHaveCount(0)
+    const linkedinRow = panel.locator('li', { hasText: 'LinkedIn Profile' })
+    await linkedinRow.locator('[data-jff-save-fact="1"]').click()
+    await expect(linkedinRow.locator('[data-jff-save-fact="1"]')).toHaveCount(0, { timeout: 30_000 })
 
     const db2 = new DatabaseCtor(host.dbPath, { readonly: true })
-    const bank2 = db2.prepare('SELECT key, value FROM answer_bank').all() as { key: string; value: string }[]
+    const profile2 = db2.prepare('SELECT key, value FROM profile').all() as { key: string; value: string }[]
     db2.close()
-    expect(bank2).toContainEqual({ key: 'workAuth', value: 'I am authorized to work for any employer in the US.' })
+    expect(profile2).toContainEqual({ key: 'linkedin', value: 'https://www.linkedin.com/in/ada-lovelace' })
 
     // Protocol hygiene: the host never wrote anything but frames to stdout, and it
     // logged to stderr. A stray console.log would have corrupted every response.
