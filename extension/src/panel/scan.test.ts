@@ -928,3 +928,73 @@ describe('the two Resolution steps', () => {
     expect(sendToTab).not.toHaveBeenCalled()
   })
 })
+
+describe('the Company on a Scan (spec #41)', () => {
+  /** One frame holds the form, at `frameUrl`, on a tab at `url` titled `title`. */
+  function companyDeps({ url, title, frameUrl = url, company = null }: { url: string; title: string; frameUrl?: string; company?: string | null }) {
+    const made = makeDeps({ url, hostname: new URL(url).hostname, title, company })
+    const inner = made.deps.sendToTab
+    made.deps.inject = vi.fn(async () => [0, 2])
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      if (message.type !== 'JFF_SCAN') return inner(frameId, message)
+      const scan = (fields: EnumField[]) => ({ ok: true, scan: { epoch: message.epoch, fields, unreachableWidgets: 0, activeCaptcha: false } })
+      return {
+        replies: [
+          { frameId: 0, url, payload: scan([]) },
+          { frameId: 2, url: frameUrl, payload: scan([field(0, 0, { label: 'Email', required: true }), field(0, 1, { label: 'Why us?', required: true })]) },
+        ],
+        failures: [],
+      }
+    })
+    made.deps.getResume = async () => null
+    const port = made.deps.port.request as unknown as ReturnType<typeof vi.fn>
+    const firstRequests = () => port.mock.calls.filter(([m]) => m === 'resolve.first').map(([, p]) => p as { company: string | null })
+    return { ...made, firstRequests }
+  }
+
+  it('the first Resolution request carries the Company read from the elected frame\'s Lever address', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/acme-rockets/123/apply', title: 'Apply' })
+    const out = await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme Rockets' })])
+    expect(out.company).toBe('Acme Rockets')
+    expect(out.companyGuessed).toBe(true)
+  })
+
+  it('reads the elected frame\'s address, not the tab\'s, for an ATS form inside an iframe', async () => {
+    const s = companyDeps({
+      url: 'https://www.acme.com/careers/1', title: 'Careers',
+      frameUrl: 'https://boards.greenhouse.io/embed/job_app?for=acme-rockets&token=1',
+    })
+    const out = await runScan(s.deps)
+    expect(out.election?.frameId).toBe(2)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme Rockets' })])
+  })
+
+  it('the title pattern comes before the address', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/acmerockets/123/apply', title: 'Acme Rockets - Senior Engineer' })
+    await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme Rockets' })])
+  })
+
+  it('a Company the user typed is sent and never replaced', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/acme-rockets/123/apply', title: 'Acme Rockets - Senior Engineer', company: 'Initech' })
+    const out = await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Initech' })])
+    expect(out.company).toBe('Initech')
+    expect(out.companyGuessed).toBe(false)
+  })
+
+  it('a page on an unknown site sends the generic guess', async () => {
+    const s = companyDeps({ url: 'https://jobs.acme.com/apply', title: 'Careers' })
+    await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme' })])
+  })
+
+  it('a page on a known ATS hostname never sends the ATS\'s name', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/lever/123/apply', title: 'Apply' })
+    const out = await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: null })])
+    expect(out.company).toBeNull()
+    expect(out.companyGuessed).toBe(false)
+  })
+})
