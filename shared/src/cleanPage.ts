@@ -25,7 +25,9 @@ const SHOW_TEXT = 0x4
 
 const VALUELESS_INPUTS = new Set(['submit', 'button', 'reset', 'image'])
 const NOT_CONTROLS = new Set(['hidden', 'submit', 'button', 'reset', 'image'])
-const CONTROL = 'input, select, textarea'
+/** What Enumeration reads as a Control, a combobox drawn on any element
+ *  included: a listing page's locale switcher is a button with that role (#53). */
+const CONTROL = 'input, select, textarea, [role="combobox"], [aria-haspopup="listbox"]'
 
 /** Elements that carry no question: code, styling, pictures, icons, embeds. */
 const DROPPED = 'script, style, link, meta, base, noscript, template, img, svg, picture, source, iframe, object, embed, canvas, video, audio'

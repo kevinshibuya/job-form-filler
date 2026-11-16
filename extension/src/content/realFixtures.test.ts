@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { enumerateFields, type MeasureFn } from './enumerate'
 import { REAL_FIXTURES, loadRealFixture } from './fixtures/real'
-import { loadListingFixture } from './fixtures/listing'
 
 // These tests read the markup itself, not what Enumeration makes of it: each one
 // proves that a fixture shows what the live review found on the real page.
@@ -81,7 +80,8 @@ describe('loadRealFixture', () => {
 
   it.each(REAL_FIXTURES)('loads %s by name, and Enumeration finds a Field in it', (name) => {
     loadRealFixture(name)
-    expect(document.querySelector(CONTROL)).not.toBeNull()
+    // A listing page's only Control can be a button drawn as a combobox (#53).
+    expect(document.querySelector(`${CONTROL}, [role="combobox"]`)).not.toBeNull()
     const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
     expect(fields.length).toBeGreaterThan(0)
   })
@@ -262,7 +262,7 @@ describe('whether Enumeration finds a real page\'s Fields inside a form (#53)', 
   })
 
   it('listing-language-dropdown: one Field, a dropdown that holds a Value and is not inside a form', () => {
-    loadListingFixture()
+    loadRealFixture('listing-language-dropdown')
     const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
     expect(fields).toHaveLength(1)
     expect(['select', 'combobox']).toContain(fields[0]!.kind)

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ContentMessage, EnumField, FieldHandle, Resolution } from '@jff/shared'
 import { enumerateFields, type MeasureFn } from '../content/enumerate'
-import { loadListingFixture } from '../content/fixtures/listing'
+import { loadRealFixture } from '../content/fixtures/real'
 import type { HostPort } from './port'
+import { dropJunk } from './junk'
 import { runScan, type ScanDeps } from './scan'
 
 /**
@@ -72,9 +73,11 @@ function makeScan(fields: EnumField[], hostname = 'careers.acme.example') {
 
 describe('a lone dropdown outside a form is not a form', () => {
   it('a Scan of the listing fixture sends no request to the Native host and its outcome has no Fields', async () => {
-    loadListingFixture()
+    loadRealFixture('listing-language-dropdown')
     const visible: MeasureFn = () => ({ display: 'block', visibility: 'visible', ariaHidden: false, width: 200, height: 30, clipped: false })
     const { fields } = enumerateFields({ root: document, epoch: 1, measure: visible })
+    // The junk filter keeps the dropdown, so the rule, not the filter, empties the Scan.
+    expect(dropJunk(fields)).toHaveLength(1)
     const { deps, requests, resumeTo } = makeScan(fields)
     const out = await runScan(deps)
     expect(requests).toEqual([])
