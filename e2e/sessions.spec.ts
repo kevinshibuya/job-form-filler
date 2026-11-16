@@ -142,6 +142,7 @@ test('the onboarding gate blocks scanning until the real setup flow completes (O
     await panel.locator('#ob-email').fill(ONBOARDED_PROFILE.email!)
     await panel.locator('#ob-phone').fill(ONBOARDED_PROFILE.phone!)
     await panel.locator('#ob-fullName').fill(ONBOARDED_PROFILE.fullName!)
+    await panel.locator('#ob-country').fill(ONBOARDED_PROFILE.country!)
     await expect(panel.locator('[data-jff-ob-finish]')).toBeEnabled()
     await panel.locator('[data-jff-ob-finish]').click()
 
@@ -161,6 +162,7 @@ test('the onboarding gate blocks scanning until the real setup flow completes (O
       email: ONBOARDED_PROFILE.email,
       phone: ONBOARDED_PROFILE.phone,
       fullName: ONBOARDED_PROFILE.fullName,
+      country: ONBOARDED_PROFILE.country,
     })
 
     expect(ext.consoleErrors).toEqual([])

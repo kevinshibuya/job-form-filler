@@ -9,6 +9,7 @@ export const REQUIRED_FACTS: ReadonlyArray<ReadonlyArray<ReadonlyArray<FieldKey>
   [['email']],
   [['phone']],
   [['fullName'], ['firstName', 'lastName']],
+  [['country']],
 ]
 
 export type Completeness = 'complete' | 'incomplete' | 'unknown'

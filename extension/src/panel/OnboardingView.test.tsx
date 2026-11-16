@@ -28,6 +28,7 @@ describe('OnboardingView (O2)', () => {
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     await waitFor(() => expect(finishBtn().disabled).toBe(false))
   })
 
@@ -36,7 +37,17 @@ describe('OnboardingView (O2)', () => {
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     expect(finishBtn().disabled).toBe(true)
+  })
+
+  it('without a country, Finish stays disabled and the wording asks for the country', async () => {
+    mount({ resumeName: 'cv.pdf', values: { email: 'ada@example.com', phone: '+1 555 0100', fullName: 'Ada Lovelace', location: 'London, UK' } })
+    expect(finishBtn().disabled).toBe(true)
+    expect(screen.getByText(/^Add a resume/).textContent).toMatch(/country/)
+    expect(document.querySelector('[data-jff-onboarding]')!.textContent).toMatch(/name, email, phone and country/)
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
+    await waitFor(() => expect(finishBtn().disabled).toBe(false))
   })
 
   it('a PDF upload auto-extracts and pre-fills EMPTY fields only', async () => {
@@ -64,11 +75,12 @@ describe('OnboardingView (O2)', () => {
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     fireEvent.change(screen.getByLabelText(/^Salary expectation/), { target: { value: '100k' } })
     await waitFor(() => expect(finishBtn().disabled).toBe(false))
     fireEvent.click(finishBtn())
     await waitFor(() => expect(props.onFinish).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'k@x.dev', phone: '1', fullName: 'Ada Lovelace' }),
+      expect.objectContaining({ email: 'k@x.dev', phone: '1', fullName: 'Ada Lovelace', country: 'United Kingdom' }),
       expect.objectContaining({ salary: '100k' }),
     ))
   })
@@ -77,9 +89,11 @@ describe('OnboardingView (O2)', () => {
     mount({})
     const labelFor = (id: string): string =>
       document.querySelector(`label[for="ob-${id}"]`)?.textContent ?? ''
-    for (const k of ['email', 'phone', 'fullName', 'firstName', 'lastName']) {
+    for (const k of ['email', 'phone', 'fullName', 'firstName', 'lastName', 'country']) {
       expect(labelFor(k)).toContain('*')
     }
-    expect(labelFor('salary')).not.toContain('*')
+    for (const k of ['salary', 'city', 'region', 'currentCompany', 'currentTitle', 'location']) {
+      expect(labelFor(k)).not.toContain('*')
+    }
   })
 })

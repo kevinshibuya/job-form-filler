@@ -1,22 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { profileCompleteness, REQUIRED_FACTS } from './completeness'
 
-const FULL = { email: 'k@x.dev', phone: '+1 555 0100', fullName: 'Ada Lovelace' }
+const FULL = { email: 'k@x.dev', phone: '+1 555 0100', fullName: 'Ada Lovelace', country: 'United Kingdom' }
 
 describe('profileCompleteness (O1)', () => {
-  it('complete: resume + email + phone + fullName', () => {
+  it('incomplete: a resume, a name, email and phone but no country', () => {
+    const { country: _country, ...noCountry } = FULL
+    expect(profileCompleteness(noCountry, true, true)).toBe('incomplete')
+    expect(profileCompleteness({ ...noCountry, location: 'London, UK' }, true, true)).toBe('incomplete')
+    expect(profileCompleteness({ ...noCountry, country: 'United Kingdom' }, true, true)).toBe('complete')
+  })
+
+  it('complete: resume + email + phone + fullName + country', () => {
     expect(profileCompleteness(FULL, true, true)).toBe('complete')
   })
 
   it('complete: firstName+lastName satisfies the name group', () => {
     expect(profileCompleteness(
-      { email: 'k@x.dev', phone: '1', firstName: 'Ada', lastName: 'Lovelace' }, true, true,
+      { email: 'k@x.dev', phone: '1', firstName: 'Ada', lastName: 'Lovelace', country: 'United Kingdom' }, true, true,
     )).toBe('complete')
   })
 
   it('incomplete: firstName WITHOUT lastName does not satisfy the name group', () => {
     expect(profileCompleteness(
-      { email: 'k@x.dev', phone: '1', firstName: 'Ada' }, true, true,
+      { email: 'k@x.dev', phone: '1', firstName: 'Ada', country: 'United Kingdom' }, true, true,
     )).toBe('incomplete')
   })
 
@@ -24,7 +31,7 @@ describe('profileCompleteness (O1)', () => {
     expect(profileCompleteness(FULL, false, true)).toBe('incomplete')
   })
 
-  it.each(['email', 'phone'] as const)('incomplete: missing %s', (k) => {
+  it.each(['email', 'phone', 'country'] as const)('incomplete: missing %s', (k) => {
     expect(profileCompleteness({ ...FULL, [k]: '' }, true, true)).toBe('incomplete')
   })
 

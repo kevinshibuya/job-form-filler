@@ -9,7 +9,7 @@ const REQUIRED_MARKED: ReadonlySet<string> = new Set(REQUIRED_FACTS.flat(2))
 
 /**
  * O2: the hard gate's front door. Upload CV → auto-extract pre-fills EMPTY
- * fields (non-PDF stores the blob, user types) → review all 18 keys with the
+ * fields (non-PDF stores the blob, user types) → review every Known key with the
  * core ones marked → Finish persists and unlocks scanning. ProfileEditor stays
  * the post-onboarding edit path; the rendering is shared via FactFields.
  */
@@ -72,7 +72,7 @@ export function OnboardingView({ values, loaded, resumeName, onUpload, onExtract
     <section className="mt-3" data-jff-onboarding="1">
       <h2 className="mb-0.5 text-[13px] font-semibold">Welcome — set up your profile</h2>
       <p className={`mb-2.5 ${MUTED}`}>
-        Scanning stays locked until the basics every application needs are stored: your resume, name, email and phone.
+        Scanning stays locked until the basics every application needs are stored: your resume, name, email, phone and country.
       </p>
       <label className={`my-2 block ${MUTED}`} data-jff-ob-resume="1">
         Resume {resumeName === null ? '(none stored) *' : `(${resumeName})`}
@@ -93,7 +93,7 @@ export function OnboardingView({ values, loaded, resumeName, onUpload, onExtract
       >
         {busy === 'finish' ? 'Saving…' : 'Finish setup'}
       </button>
-      {!complete && <p className={`mt-1.5 text-[12px] ${MUTED}`}>Add a resume, your name, email and phone to finish.</p>}
+      {!complete && <p className={`mt-1.5 text-[12px] ${MUTED}`}>Add a resume, your name, email, phone and country to finish.</p>}
     </section>
   )
 }

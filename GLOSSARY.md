@@ -231,8 +231,8 @@ _Avoid_: applied banner, warning
 ### Setup and surfaces
 
 **Onboarding**:
-The one-time gate that blocks Scanning until a Resume, name, email and phone
-exist. Its completeness is complete, incomplete or unknown.
+The one-time gate that blocks Scanning until a Resume, name, email, phone and
+country exist. Its completeness is complete, incomplete or unknown.
 _Avoid_: setup, first run
 
 **Self-check**:

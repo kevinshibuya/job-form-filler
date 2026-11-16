@@ -60,7 +60,7 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
 
   try {
     // O3 era: this is no longer just fill fodder — the panel REFUSES to scan
-    // until the profile is complete (email, phone, a name AND a stored resume),
+    // until the profile is complete (email, phone, a name, a country AND a stored resume),
     // so an unseeded run lands on the onboarding wall and nothing below ever
     // runs. `seedOnboardedProfile` supplies the host-side half straight into
     // SQLite (the panel is what is under test; it must not be asked to store its

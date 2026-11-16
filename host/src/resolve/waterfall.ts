@@ -10,7 +10,7 @@ import type { CallOpts } from '../llm/claudeCli.js'
 import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
 import { matchOptionSet, optionEqualTo } from './choiceSets.js'
-import { canHold, keyFor } from './controlKinds.js'
+import { fieldCanHold, keyForField } from './controlKinds.js'
 import { detectLanguage, normalizeQuestion } from './normalize.js'
 import { recognize } from './recognizers.js'
 
@@ -113,7 +113,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
       // learning needs the key to route it to profile/answer_bank.
       // A key the Control cannot hold is not harvested either.
       // A group's ticked set is not a Known key Value, so none is harvested.
-      const pageKey = label === '' || isCheckboxGroup(f) ? null : keyFor(f.kind, recognize(label, db))
+      const pageKey = label === '' || isCheckboxGroup(f) ? null : keyForField(f, recognize(label, db, f.kind))
       byRef.set(ref, res(f, { tier: 'auto', source: 'page', key: pageKey, value: f.currentValue, reason: 'already-on-page' }))
       continue
     }
@@ -121,7 +121,7 @@ function firstStep(db: Database.Database, fields: EnumField[]): StepResult & { p
     // 2 — deterministic recognizers + user-confirmed learned mappings. A hit on
     //     a Control that cannot hold the key's Value is not a hit: the Field goes
     //     on to tier 3 and Mapping as if nothing had matched.
-    let key = label === '' ? null : keyFor(f.kind, recognize(label, db))
+    let key = label === '' ? null : keyForField(f, recognize(label, db, f.kind))
     // On a checkbox group a key answers only with an Option equal to its stored
     // Value. With none, the group goes on as if the key had not matched.
     if (key !== null && isCheckboxGroup(f)) {
@@ -226,8 +226,10 @@ async function mappingStep(
 
       if (d.decision === 'known_key' && d.knownKey !== null) {
         const key: FieldKey = d.knownKey
-        // Mapping is told the Control kind, but its answer is checked anyway.
-        if (!canHold(f.kind, key)) {
+        // Mapping is told the Control kind, but its answer is checked anyway:
+        // the Control must hold the key, and a place never answers a yes/no
+        // question.
+        if (!fieldCanHold(f, key)) {
           byRef.set(ref, res(f, { tier: 'needs_input', reason: `llm-key:${key}:wrong-control` }))
           continue
         }

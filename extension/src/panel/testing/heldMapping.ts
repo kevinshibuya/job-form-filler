@@ -39,7 +39,7 @@ const SELF_CHECK = {
   codexAuth: { ok: true, detail: 'logged in' },
   db: { ok: true, path: '(fake)' },
 }
-const ONBOARDED = { email: 'ada@example.com', phone: '+1 555 0100', fullName: 'Ada Lovelace' }
+const ONBOARDED = { email: 'ada@example.com', phone: '+1 555 0100', fullName: 'Ada Lovelace', country: 'United Kingdom' }
 
 export const field = (fid: number, label: string, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: -1, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',

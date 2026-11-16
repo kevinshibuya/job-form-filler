@@ -5,8 +5,9 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED } from './ui'
 const FACT_LABELS: Record<string, string> = {
   firstName: 'First name', lastName: 'Last name', fullName: 'Full name',
   preferredName: 'Preferred name', email: 'Email', phone: 'Phone',
-  location: 'Current location', linkedin: 'LinkedIn URL', github: 'GitHub URL',
-  portfolio: 'Portfolio URL', workAuth: 'Work authorization', sponsorshipNeeded: 'Needs sponsorship',
+  location: 'Current location', city: 'City', region: 'State or region', country: 'Country',
+  linkedin: 'LinkedIn URL', github: 'GitHub URL', portfolio: 'Portfolio URL',
+  currentCompany: 'Current company', currentTitle: 'Current title', workAuth: 'Work authorization', sponsorshipNeeded: 'Needs sponsorship',
   relocate: 'Willing to relocate', salary: 'Salary expectation', notice: 'Notice period',
   earliestStart: 'Earliest start date', remotePreference: 'Remote preference', pronouns: 'Pronouns',
 }

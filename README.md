@@ -16,7 +16,7 @@ For the questions nothing stored can answer, it spawns the `claude` CLI to write
 
 ## What works today
 
-- Block scanning until a resume, name, email and phone are stored. Evidence: `extension/src/panel/completeness.test.ts`, the onboarding test in `e2e/sessions.spec.ts`.
+- Block scanning until a resume, name, email, phone and country are stored. Evidence: `extension/src/panel/completeness.test.ts`, the onboarding test in `e2e/sessions.spec.ts`.
 - Scan a page, pick the frame that holds the application and send only its fields on. Evidence: `extension/src/panel/election.test.ts`, `e2e/election.spec.ts` with a cross-origin iframe.
 - Fill name, email, phone and other known facts from deterministic recognizers, with no model call. Evidence: `host/src/resolve/waterfall.test.ts`, and `e2e/full-loop.spec.ts` asserts the values on the page.
 - Skip demographic and EEO questions and stop on an active CAPTCHA. Evidence: `extension/src/content/classify.test.ts`, the EEO and CAPTCHA tests in `e2e/foundation.spec.ts`.
@@ -206,7 +206,7 @@ flowchart LR
 | `host/src/llm/` | CLI runners, mapping, Draft generation and review, the per-task model registry |
 | `host/src/db/` | SQLite schema and repositories |
 | `host/scripts/install.mjs` | Installer: wrapper script, host config, Chrome manifest |
-| `shared/src/` | Message schemas in zod, the eighteen Known keys, text normalisation |
+| `shared/src/` | Message schemas in zod, the twenty-three Known keys, text normalisation |
 | `e2e/` | Playwright specs, fake `claude` and `codex`, fixture forms |
 | `scripts/` | The private-data guard, the capture sanitiser and the live probe |
 | `docs/` | ADRs, specs, plans, and the README image script |

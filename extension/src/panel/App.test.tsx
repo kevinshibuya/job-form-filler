@@ -25,7 +25,7 @@ const SELF_CHECK = {
 }
 
 /** O3: the default test persona is ONBOARDED. Gate tests opt out explicitly. */
-const ONBOARDED = { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User' }
+const ONBOARDED = { email: 'fake@example.com', phone: '+1 555 0100', fullName: 'Fake User', country: 'Canada' }
 
 /**
  * jsdom's Blob has no `arrayBuffer()`, so `saveResume(new File(...))` throws here
@@ -1609,6 +1609,33 @@ describe('App — onboarding gate (O1/O3)', () => {
     expect(scanCount()).toBe(0)
   })
 
+  it('a Profile stored before the country key is incomplete: Onboarding asks for the country before the next Scan', async () => {
+    // A resume is stored (the suite's beforeEach), and the Profile has a name,
+    // email, phone and a location line, but no country.
+    const calls: { method: string; params: unknown }[] = []
+    window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
+      calls.push({ method, params })
+      if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
+      if (method === 'profile.get') {
+        return { requestId, ok: true, result: { email: 'ada@example.com', phone: '+1 555 0100', fullName: 'Ada Lovelace', location: 'London, UK' } }
+      }
+      return { requestId, ok: true, result: {} }
+    }
+    render(<App />)
+    await screen.findByText('Welcome — set up your profile')
+    expect(scanCount()).toBe(0)
+    const country = screen.getByLabelText(/^Country/) as HTMLInputElement
+    expect(country.value).toBe('') // never derived from the location line
+    expect(document.querySelector('[data-jff-onboarding]')!.textContent).toMatch(/country/)
+    fireEvent.change(country, { target: { value: 'United Kingdom' } })
+    const finish = screen.getByRole('button', { name: 'Finish setup' })
+    await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(finish)
+    await waitFor(() => expect(scanCount()).toBe(1))
+    const set = calls.find((c) => c.method === 'profile.set')
+    expect((set?.params as { values: Record<string, string> }).values).toMatchObject({ country: 'United Kingdom' })
+  })
+
   it('a dead host is unknown: normal panel + banner, never the onboarding wall', async () => {
     await clearResume()
     window.__jffHostBridge = async ({ requestId }): Promise<HostResponse> =>
@@ -1733,6 +1760,7 @@ describe('App — onboarding gate (O1/O3)', () => {
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)
@@ -1756,6 +1784,7 @@ describe('App — onboarding gate (O1/O3)', () => {
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'k@x.dev' } })
     fireEvent.change(screen.getByLabelText(/^Phone/), { target: { value: '1' } })
     fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: 'Ada Lovelace' } })
+    fireEvent.change(screen.getByLabelText(/^Country/), { target: { value: 'United Kingdom' } })
     const finish = screen.getByRole('button', { name: 'Finish setup' })
     await waitFor(() => expect((finish as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(finish)

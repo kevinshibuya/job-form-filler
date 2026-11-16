@@ -3,7 +3,7 @@ import type { LaunchedExtension } from './ext'
 
 /**
  * O3 era: the panel refuses to scan until a profile is COMPLETE — email, phone,
- * a name, AND a stored resume (see `extension/src/panel/completeness.ts`). Every
+ * a name, a country, AND a stored resume (see `extension/src/panel/completeness.ts`). Every
  * pre-onboarding e2e mounted the panel against an empty host home and now lands
  * on the onboarding wall instead of the scan UI. These two helpers put the suite
  * back on the far side of that gate:
@@ -25,6 +25,7 @@ export const ONBOARDED_PROFILE: Readonly<Record<string, string>> = {
   email: 'ada@example.com',
   phone: '+1 555 0100',
   fullName: 'Ada Lovelace',
+  country: 'United Kingdom',
 }
 
 /**

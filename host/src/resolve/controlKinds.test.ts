@@ -126,6 +126,16 @@ describe('a Known key answers only a Control that can hold its Value', () => {
     }
   })
 
+  it('a place key answers a text box and every choice Control, and no checkbox group', async () => {
+    setProfile(db, { country: 'United Kingdom' })
+    for (const kind of [...TEXT_CONTROLS, ...CHOICE_CONTROLS]) {
+      const [r] = await first(field('Country', kind, { options: kind === 'text' || kind === 'textarea' ? [] : ['France', 'United Kingdom'] }))
+      expect(r, kind).toMatchObject({ tier: 'auto', key: 'country', value: 'United Kingdom' })
+    }
+    const group = field('Country', 'checkboxgroup', { options: ['France', 'United Kingdom'] })
+    expect(await first(group)).toEqual([PENDING])
+  })
+
   it('a Control kind the rule does not list takes no Known key', async () => {
     const unlisted = 'signature' as WidgetKind
     const fields = [field('LinkedIn profile (PDF)', 'file'), field('Email', unlisted)]

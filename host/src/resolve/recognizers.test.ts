@@ -27,7 +27,25 @@ describe('recognize', () => {
     ['Notice period', 'notice'],
     ['When can you start?', 'earliestStart'],
     ['Pronouns', 'pronouns'],
-    ['Current location (city)', 'location'],
+    ['Current location (city)', 'city'],
+    ['City', 'city'],
+    ['Cidade', 'city'],
+    ['Location', 'location'],
+    ['Where are you based?', 'location'],
+    ['Country', 'country'],
+    ['Country of residence', 'country'],
+    ['País', 'country'],
+    ['State/Province', 'region'],
+    ['State', 'region'],
+    ['Region', 'region'],
+    ['Estado', 'region'],
+    ['Current company', 'currentCompany'],
+    ['Current employer', 'currentCompany'],
+    ['Empresa atual', 'currentCompany'],
+    ['Current title', 'currentTitle'],
+    ['Current job title', 'currentTitle'],
+    ['Cargo atual', 'currentTitle'],
+    ['Nome do cargo atual', 'currentTitle'],
     ['Remote preference', 'remotePreference'],
   ])('maps %s to %s', (label, key) => {
     expect(recognize(label)).toBe(key)
@@ -39,6 +57,16 @@ describe('recognize', () => {
 
   it('does not match a bare "name" substring like "Company name"', () => {
     expect(recognize('Company name')).toBeNull()
+  })
+
+  it('prefers the specific title over a name: "Nome do cargo atual" is a title', () => {
+    expect(recognize('Nome do cargo atual')).toBe('currentTitle')
+    expect(recognize('Nome da empresa atual')).toBe('currentCompany')
+  })
+
+  it('a phone country code and marital status are not places', () => {
+    expect(recognize('Country code')).not.toBe('country')
+    expect(recognize('Estado civil')).not.toBe('region')
   })
 
   it('prefers the specific "Preferred First Name" over "First Name"', () => {
