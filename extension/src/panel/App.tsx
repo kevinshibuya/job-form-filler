@@ -20,7 +20,7 @@ import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
 import { createSessionStore, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
-import { registrableDomain, sameSite } from './site'
+import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
@@ -670,7 +670,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (s === null) return null
       if (ev.frameId !== 0 && ev.frameId !== s.election?.frameId) return null
       lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() })
-      const same = ev.url === '' || s.site === '' || sameSite(ev.url, s.startUrl)
+      const same = ev.url === '' || s.site === '' || sameApplication(ev.url, s.startUrl)
       if (!same) {
         if (s.parked) return null
         rt.gen = nextGen()
@@ -716,7 +716,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // change — it must not park, unpark or rewrite `site`. A session that never
     // scanned (`site === ''`) has nothing to compare against, so the nav is
     // same-site and the next scan captures the start url.
-    const same = ev.url === '' || s.site === '' || sameSite(ev.url, s.startUrl)
+    const same = ev.url === '' || s.site === '' || sameApplication(ev.url, s.startUrl)
 
     if (!same) {
       // Idempotent: a second hop deeper into the same detour stays parked.
@@ -1017,6 +1017,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // A page off the web (a new tab, chrome://, a file) is never a posting,
       // and a session minted for it would park on the real posting's load.
       if (existing === null && !/^https?:/i.test(url)) {
+        if (inScope(sc)) setScanStatus(null)
+        return
+      }
+      // A tab that moved to another application while the panel was closed
+      // (navigations are heard only while it is open) parks, as a navigation
+      // there would have: its session is not this page's.
+      if (existing !== null && existing.startUrl !== '' && url !== '' && !sameApplication(url, existing.startUrl)) {
+        await applyToSession(target, sc.gen, (s) => ({ ...s, parked: true }))
         if (inScope(sc)) setScanStatus(null)
         return
       }
@@ -2089,7 +2097,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                   ? (
                       <div className="mt-4" data-jff-parked="1">
                         <p className={MUTED}>
-                          Session parked — return to {session.site} to continue. Scanning is paused on this page.
+                          Session parked — return to {placeOf(session.startUrl) || session.site} to continue. Scanning is paused on this page.
                         </p>
                         <div className="mt-2">{discardButton}</div>
                       </div>

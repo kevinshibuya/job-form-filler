@@ -2180,7 +2180,7 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await commit(7, SSO)
 
     await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
-    expect(screen.getByText('Session parked — return to acme.com to continue. Scanning is paused on this page.')).toBeTruthy()
+    expect(screen.getByText('Session parked — return to jobs.acme.com/apply to continue. Scanning is paused on this page.')).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Scan' }) as HTMLButtonElement).disabled).toBe(true)
     expect(document.querySelector('[data-jff-rows]')).toBeNull()
     await waitFor(() => { expect(row(7)?.parked).toBe(true) })
@@ -2312,6 +2312,68 @@ describe('App — per-tab sessions (S2/S5/S6)', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(scanCount()).toBe(scansBefore)
     expect(row(7)).toBeUndefined()
+  })
+
+  // PR #36 manual pass 2: a parked session crossed to another company's
+  // posting on the same ATS host and auto-filled it.
+  const GH_A = 'https://job-boards.greenhouse.io/acme/jobs/8038026003'
+  const GH_B = 'https://job-boards.greenhouse.io/globex/jobs/8209762'
+  const fillCount = (): number => relayTargets('JFF_FILL').length
+
+  it('a different posting on the same host, after a detour, stays parked and scans nothing until Discard and Scan', async () => {
+    let tab = { id: 7, url: GH_A, title: 'Engineer at Acme' }
+    tabsGet().mockImplementation(async () => tab)
+    installScan(() => tab.url)
+    await mountScanned()
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(GH_A) })
+    tab = { id: 7, url: 'https://www.google.com/search?q=jobs', title: 'Search' }
+    await commit(7, tab.url)
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    const scans = scanCount()
+    const fills = fillCount()
+
+    tab = { id: 7, url: GH_B, title: 'Designer at Globex' }
+    await commit(7, GH_B)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(document.querySelector('[data-jff-parked]')).not.toBeNull()
+    expect(scanCount()).toBe(scans)
+    expect(fillCount()).toBe(fills)
+    expect(row(7)?.startUrl).toBe(GH_A)
+    // On one ATS host the site names nothing: the message names the posting.
+    expect(screen.getByText('Session parked — return to job-boards.greenhouse.io/acme/jobs/8038026003 to continue. Scanning is paused on this page.')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard session' }))
+    await waitFor(() => { expect(sessionAttr()).toBe('none') })
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(GH_B) })
+  })
+
+  it('a different posting on the same host parks; the same posting\'s confirmation page re-scans', async () => {
+    let tab = { id: 7, url: GH_A, title: 'Engineer at Acme' }
+    tabsGet().mockImplementation(async () => tab)
+    installScan(() => tab.url)
+    await mountScanned()
+    await waitFor(() => { expect(row(7)?.startUrl).toBe(GH_A) })
+    const scans = scanCount()
+    tab = { id: 7, url: `${GH_A}/confirmation`, title: 'Thanks' }
+    await commit(7, tab.url)
+    await waitFor(() => { expect(scanCount()).toBe(scans + 1) })
+    expect(document.querySelector('[data-jff-parked]')).toBeNull()
+
+    tab = { id: 7, url: GH_B, title: 'Designer at Globex' }
+    await commit(7, GH_B)
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    expect(scanCount()).toBe(scans + 1)
+  })
+
+  it('a stored session whose tab moved to another posting while the panel was closed parks and scans nothing', async () => {
+    tabsGet().mockImplementation(async () => ({ id: 7, url: GH_B, title: 'Designer at Globex' }))
+    installScan(() => GH_B)
+    storageRows()['jff:session:7'] = capForStorage({ ...newSession(7, GH_A), fields: [field(0, 'Email')], resolutions: [resolutionFor(0)] })
+    render(<App />)
+    await waitFor(() => { expect(sessionAttr()).toBe('7') })
+    await waitFor(() => { expect(document.querySelector('[data-jff-parked]')).not.toBeNull() })
+    expect(scanCount()).toBe(0)
   })
 
   it('never marks job A once the same tab moved on to job B (Task 5 boundary defect)', async () => {
