@@ -21,9 +21,11 @@ const NO_COUNTRY: CityParts = { countryNames: [] }
  * A city typeahead: the open gesture shows nothing; every keystroke searches
  * `places` for the typed text and mounts the results a moment later. A click
  * on a result writes it into the box and unmounts the menu. `typed` records
- * every text the page was asked to search.
+ * every text the page was asked to search. With `rival`, a search that answers
+ * in pages: one more result mounts right after the Fill first reads the
+ * results, so the next poll always sees it, whatever the machine's load.
  */
-function mountCityTypeahead(places: string[]): { box: HTMLInputElement; typed: string[]; fid: number } {
+function mountCityTypeahead(places: string[], rival?: string): { box: HTMLInputElement; typed: string[]; fid: number } {
   document.body.innerHTML = `
     <label for="city">City</label>
     <div class="wrap"><input id="city" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" /></div>`
@@ -40,12 +42,24 @@ function mountCityTypeahead(places: string[]): { box: HTMLInputElement; typed: s
       const lb = document.createElement('div')
       lb.id = 'city-menu'
       lb.setAttribute('role', 'listbox')
-      for (const text of places.filter((p) => p.toLowerCase().startsWith(q))) {
+      const option = (text: string): HTMLElement => {
         const o = document.createElement('div')
         o.setAttribute('role', 'option')
         o.textContent = text
         o.addEventListener('click', () => { box.value = text; close() })
-        lb.appendChild(o)
+        return o
+      }
+      for (const text of places.filter((p) => p.toLowerCase().startsWith(q))) lb.appendChild(option(text))
+      const first = lb.firstElementChild
+      if (rival !== undefined && first !== null) {
+        let read = false
+        Object.defineProperty(first, 'textContent', {
+          configurable: true,
+          get: () => {
+            if (!read) { read = true; queueMicrotask(() => { if (lb.isConnected) lb.appendChild(option(rival)) }) }
+            return first.firstChild?.nodeValue ?? ''
+          },
+        })
       }
       box.setAttribute('aria-controls', 'city-menu')
       box.setAttribute('aria-expanded', 'true')
@@ -100,6 +114,16 @@ describe('a city typeahead is given the city alone and picks the result with the
       reason: 'no-matching-option',
       options: ['Cambridge, Cambridgeshire, United Kingdom', 'Cambridge, United Kingdom', 'Cambridge, Massachusetts, United States'],
     })])
+    expect(box.value).toBe('')
+  })
+
+  it('a lone match is not taken until a second poll finds the same results: a rival that mounts before the next poll makes it a miss', async () => {
+    // The Massachusetts result is seen alone by the first poll only; Ohio
+    // mounts before the next one.
+    const { box, fid } = mountCityTypeahead(['Cambridge, Massachusetts, United States'], 'Cambridge, Ohio, United States')
+    const report = await fillCity(fid, 'Cambridge', US)
+    expect(report.filled).toEqual([])
+    expect(report.failed).toEqual([expect.objectContaining({ reason: 'no-matching-option' })])
     expect(box.value).toBe('')
   })
 

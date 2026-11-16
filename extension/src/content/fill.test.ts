@@ -863,11 +863,13 @@ describe('combobox verdict', () => {
 
   /** A combobox that opens on a click: its menu mounts `openMs` after the open
    *  gesture, and an Option click writes the input and unmounts the menu
-   *  `closeMs` later. Escape unmounts it at once. */
+   *  `closeMs` later. Escape unmounts it at once. With `fadeMs`, an Option
+   *  click reports aria-expanded="false" at once and the menu fades out
+   *  (a style change every 30 ms) for `fadeMs` before it unmounts. */
   function clickCombo(
     id: string,
     options: string[],
-    { openMs = 0, closeMs = 0, onClosed = (): void => {} } = {},
+    { openMs = 0, closeMs = 0, fadeMs = 0, onClosed = (): void => {} } = {},
   ): HTMLInputElement {
     const input = document.getElementById(id) as HTMLInputElement
     const lbId = `${id}-lb`
@@ -888,7 +890,19 @@ describe('combobox verdict', () => {
         const li = document.createElement('li')
         li.setAttribute('role', 'option')
         li.textContent = t
-        li.addEventListener('click', () => { input.value = t; later(closeMs, close) })
+        li.addEventListener('click', () => {
+          input.value = t
+          if (fadeMs === 0) { later(closeMs, close); return }
+          input.setAttribute('aria-expanded', 'false')
+          const start = Date.now()
+          const step = (): void => {
+            const left = fadeMs - (Date.now() - start)
+            if (left <= 0) { close(); return }
+            lb.style.opacity = String(left / fadeMs)
+            setTimeout(step, 30)
+          }
+          setTimeout(step, 30)
+        })
         lb.appendChild(li)
       }
       input.parentElement!.appendChild(lb)
@@ -922,6 +936,42 @@ describe('combobox verdict', () => {
     await expect(fillOne(input, 'Portugal')).resolves.toMatchObject({ ok: true, committed: null })
     expect(foreignAtOpen).toEqual([false])
     expect(input.value).toBe('Portugal')
+  }, 10_000)
+
+  it('a menu another Control left open, whose owner closes it 200 ms after Escape, is waited for and the Fill succeeds', async () => {
+    document.body.innerHTML = FOREIGN
+    const other = document.getElementById('other')!
+    other.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') setTimeout(() => document.getElementById('foreign')?.remove(), 200)
+    })
+    const input = clickCombo('c', ['Brazil', 'Portugal'])
+    const foreignAtOpen: boolean[] = []
+    input.addEventListener('mousedown', () => foreignAtOpen.push(document.getElementById('foreign') !== null))
+    await expect(fillOne(input, 'Portugal')).resolves.toMatchObject({ ok: true, committed: null })
+    expect(foreignAtOpen).toEqual([false])
+    expect(input.value).toBe('Portugal')
+  }, 10_000)
+
+  it('a menu that reports closed at the commit but fades for 150 ms is left to finish: the next dropdown waits, and sends it no Escape', async () => {
+    document.body.innerHTML = `
+      <label for="a">Country</label><div><input id="a" role="combobox"></div>
+      <label for="b">Language</label><div><input id="b" role="combobox"></div>`
+    const log: string[] = []
+    const a = clickCombo('a', ['Brazil', 'Portugal'], { openMs: 20, fadeMs: 150, onClosed: () => log.push('a-closed') })
+    const b = clickCombo('b', ['English', 'Portuguese'], { openMs: 20 })
+    a.addEventListener('keydown', (e) => { if (e.key === 'Escape') log.push('a-escape') })
+    b.addEventListener('pointerdown', () => log.push('b-open'))
+    const { fields } = enumerateFields({ root: document, epoch: 2, measure: allVisible })
+    const fidOf = (label: string): number => fields.find((f) => f.label === label)!.fid
+    const report = await fillFields(document, [
+      { handle: { frameId: 0, fid: fidOf('Country'), epoch: 2 }, value: 'Portugal' },
+      { handle: { frameId: 0, fid: fidOf('Language'), epoch: 2 }, value: 'English' },
+    ])
+    expect(report.failed).toEqual([])
+    expect(a.value).toBe('Portugal')
+    expect(b.value).toBe('English')
+    expect(log.filter((l) => l !== 'a-escape')).toEqual(['a-closed', 'b-open'])
+    expect(log).not.toContain('a-escape')
   }, 10_000)
 
   it('two dropdowns filled in one call, menus opening in 20 ms and closing in 200 ms: both filled, never two menus visible', async () => {
