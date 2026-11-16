@@ -28,6 +28,10 @@ export const REASON_HINT: Record<string, string> = {
   // dropped the Option, and a menu another Control left open would not close.
   'no-commit': 'The page did not keep the option. Pick it on the page yourself.',
   'listbox-left-open': 'Another dropdown on the page stayed open. Close it, then Fill again.',
+  // The country selector beside a phone box (#30): the phone box is left as it was.
+  'phone-country-no-match': 'No country beside the phone box matches your number. Pick it on the page, then type the number.',
+  'phone-country-not-set': 'The page did not keep the country beside the phone box. Pick it on the page, then type the number.',
+  'phone-country-unknown': 'Your number\'s country code is not one the tool knows. Pick the country on the page, then type the number.',
   [MAPPING_LOST]: 'Matching did not finish. Answer this yourself, or Scan again.',
   // Ticket #29: questions answered for the country they name.
   'names-region': 'The question names a region, not countries. Answer it yourself.',

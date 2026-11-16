@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import type { EnumField } from '@jff/shared'
 import { App } from './App'
+import { fillEntry } from './scan'
 import { field, installHeldMappingHost, mapped, release, resolution, rowOf, status, tierOf } from './testing/heldMapping'
 
 /**
@@ -87,5 +88,18 @@ describe('candidate words travel with every Fill of a Value', () => {
     host.firstCandidates = {}
     await mountScanned()
     expect(sentFor(0)).toEqual([{ fid: 0, value: 'Germany' }])
+  })
+})
+
+describe('phone parts travel with a Fill of the phone Value (#30)', () => {
+  const handle = { frameId: 0, fid: 3, epoch: 1 }
+  const phone = { callingCode: '1', nationalNumber: '5550100', countryNames: ['Canada', 'Canadá'] }
+
+  it('a Fill of the Resolution\'s own Value carries its phone parts', () => {
+    expect(fillEntry({ handle, value: '+15550100', phone }, '+15550100')).toEqual({ handle, value: '+15550100', phone })
+  })
+
+  it('an edited Value travels without them', () => {
+    expect(fillEntry({ handle, value: '+15550100', phone }, '+15550199')).toEqual({ handle, value: '+15550199' })
   })
 })

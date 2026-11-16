@@ -5,6 +5,7 @@ import {
 } from './dom'
 import { isDemographicField } from './demographic'
 import { GROUP_ATTR, groupCheckboxes, groupOptions, groupRequired, groupValue } from './checkboxGroup'
+import { phoneSelectorsOf } from './phoneSelector'
 
 export interface Measure {
   display: string
@@ -166,11 +167,14 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
   const boxes = elements.filter((el): el is HTMLInputElement =>
     kindOf(el) === 'checkbox' && !(selfHidden(measureOnce(el)) && detectChoice(el) !== null))
   const checkboxGroups = groupCheckboxes(boxes)
+  // A country selector attached to a phone box is part of the phone Field, so
+  // neither it nor anything inside it is a Field of its own (phoneSelector.ts).
+  const attachedToPhone = new Set(elements.flatMap((el) => phoneSelectorsOf(el)?.internals ?? []))
   const isVisible = (m: Measure): boolean => !(m.ariaHidden || m.display === 'none' || m.visibility === 'hidden' || m.clipped)
 
   for (const el of elements) {
     const kind = kindOf(el)
-    if (kind === null) continue
+    if (kind === null || attachedToPhone.has(el)) continue
 
     const m = measureOnce(el)
     // HONEST visibility for every kind, file included: the blanket file

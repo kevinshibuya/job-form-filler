@@ -1,5 +1,6 @@
 import { normalizeFactValue, type FieldKey } from './keys.js'
-import { CALLING_CODES, COUNTRY_CODES, RULE_TABLE, countryCode, countryName, yesNoOf, type RuleLanguage } from './ruleTable.js'
+import type { PhoneParts } from './field.js'
+import { CALLING_CODES, COUNTRY_CODES, RULE_TABLE, countryCode, countryName, countryNames, yesNoOf, type RuleLanguage } from './ruleTable.js'
 
 /**
  * The rule for a Known key whose Value changed shape. Each typed Value has one
@@ -179,4 +180,25 @@ export function phoneProposal(old: string, country: string | null | undefined): 
     proposal = `+${calling}${digits.replace(/^0+/, '')}`
   }
   return PHONE.isValue(proposal) ? proposal : null
+}
+
+/**
+ * A phone Value taken apart: its calling code, the national number after it,
+ * and the names of the phone's country. The phone's country is `country` when
+ * its calling code is the phone's; otherwise it is the one country of the
+ * closed list with that code, and none when several share it. A text that is
+ * not a phone Value, or whose calling code the closed list does not hold, has
+ * no parts.
+ */
+export function phoneParts(phone: string, country: string | null | undefined): PhoneParts | null {
+  if (!PHONE.isValue(phone)) return null
+  const digits = phone.slice(1)
+  // Calling codes are prefix-free (ITU E.164), so at most one is a prefix.
+  const callingCode = [...new Set(Object.values(CALLING_CODES))].find((c) => digits.startsWith(c))
+  if (callingCode === undefined || digits.length === callingCode.length) return null
+  const stored = country == null ? null : countryCode(country.trim())
+  const sharing = Object.keys(CALLING_CODES).filter((code) => CALLING_CODES[code] === callingCode)
+  const own = stored !== null && CALLING_CODES[stored] === callingCode ? stored
+    : sharing.length === 1 ? sharing[0]! : null
+  return { callingCode, nationalNumber: digits.slice(callingCode.length), countryNames: own === null ? [] : countryNames(own) }
 }

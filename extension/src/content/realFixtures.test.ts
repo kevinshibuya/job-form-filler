@@ -172,6 +172,31 @@ describe('each real-page fixture shows its review finding', () => {
     expect(outside.some((c) => /^e-?mail\b/i.test(labelOf(c)))).toBe(true)
   })
 
+  it('greenhouse-self-id and greenhouse-accommodation: a flag dropdown inside the phone box\'s wrapper, its list mounted and hidden by a class', () => {
+    for (const name of ['greenhouse-self-id', 'greenhouse-accommodation']) {
+      loadRealFixture(name)
+      const phone = document.querySelector('input[type="tel"]')!
+      const wrapper = phone.parentElement!
+      expect(wrapper.querySelector('label')).toBeNull()
+      const button = wrapper.querySelector('button[aria-haspopup]')!
+      const list = document.getElementById(button.getAttribute('aria-controls')!)!
+      expect(list.classList.contains('iti__hide')).toBe(true)
+      const options = Array.from(list.querySelectorAll('[role="option"]')).map(text)
+      expect(options).toEqual(expect.arrayContaining(['United States+1', 'Canada+1']))
+    }
+  })
+
+  it('greenhouse-hosted-a and greenhouse-hosted-b: a Country dropdown paired with the phone box in one fieldset', () => {
+    for (const name of ['greenhouse-hosted-a', 'greenhouse-hosted-b']) {
+      loadRealFixture(name)
+      const phone = document.querySelector('input[type="tel"]')!
+      const group = phone.closest('fieldset')!
+      expect(text(group.querySelector('legend'))).toBe('Phone')
+      const reachable = Array.from(group.querySelectorAll(CONTROL)).filter((c) => c !== phone && c.getAttribute('aria-hidden') !== 'true')
+      expect(reachable.map((c) => [c.getAttribute('role'), labelOf(c)])).toEqual([['combobox', 'Country*']])
+    }
+  })
+
   it('greenhouse-accommodation: a Control whose label asks about accommodation', () => {
     loadRealFixture('greenhouse-accommodation')
     const controls = Array.from(document.querySelectorAll(CONTROL))
