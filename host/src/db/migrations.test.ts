@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import { DatabaseTooNew, MIGRATIONS, type Migration } from './migrations.js'
-import { getProfile, listApplied, listKeptProseAnswers, openDb, setProfile } from './repos.js'
+import { getProfile, listApplicationEmails, listApplied, listKeptProseAnswers, markApplied, openDb, setProfile } from './repos.js'
 import { SCHEMA_SQL } from './schema.js'
 
 // The host log is a file under the real home directory: no test writes to it.
@@ -94,6 +94,45 @@ describe('openDb migrations', () => {
     expect(jobs).toHaveLength(1)
     expect(jobs[0]).toMatchObject({ canonicalUrl: 'https://jobs.example.com/1', channel: 'form' })
     expect(listKeptProseAnswers(db, jobs[0]!.id)).toEqual([])
+    db.close()
+  })
+
+  it('opens a database from before Application emails were kept with its Applied jobs and prose answers, and none of them holds an email', () => {
+    const path = tempDbPath()
+    // The shape the Native host left before ticket #75: the migrations up to
+    // channels and kept prose answers, with rows in it.
+    const before = openDb(path, MIGRATIONS.slice(0, 2))
+    const form = markApplied(before, {
+      url: 'https://jobs.example.com/1', company: 'Acme', jobTitle: 'Engineer', channel: 'form',
+      proseAnswers: [{ question: 'Why us?', text: 'Because of the engines.', aiDrafted: true, edited: false, model: 'claude-opus-5-5' }],
+    })
+    const email = markApplied(before, { url: 'https://jobs.example.com/2', company: null, jobTitle: 'Analyst', channel: 'email' })
+    const appliedRows = before.prepare('SELECT * FROM applied_jobs ORDER BY id').all()
+    const proseRows = before.prepare('SELECT * FROM applied_prose_answers ORDER BY applied_job_id, position').all()
+    before.close()
+
+    const db = openDb(path)
+    expect(version(db)).toBe(MIGRATIONS.length)
+    expect(db.prepare('SELECT * FROM applied_jobs ORDER BY id').all()).toEqual(appliedRows)
+    expect(db.prepare('SELECT * FROM applied_prose_answers ORDER BY applied_job_id, position').all()).toEqual(proseRows)
+    expect(listKeptProseAnswers(db, form.id)).toHaveLength(1)
+    expect(listApplicationEmails(db, form.id)).toEqual([])
+    expect(listApplicationEmails(db, email.id)).toEqual([])
+    db.close()
+  })
+
+  it('refuses an Application email with a route, a language or a mark it does not know', () => {
+    const db = openDb(':memory:')
+    const job = markApplied(db, { url: 'https://jobs.example.com/3', company: null, jobTitle: null, channel: 'email' })
+    const insert = (patch: Record<string, unknown>): unknown => db.prepare(
+      `INSERT INTO application_emails (applied_job_id, apply_address, subject, body, attachment_names, sent_at, language, route, ai_drafted, edited)
+       VALUES (@job, 'jobs@example.org', 's', 'b', '[]', '2026-11-18T00:00:00Z', @language, @route, @ai, 0)`,
+    ).run({ job: job.id, language: 'en', route: 'mail_app', ai: 1, ...patch })
+    expect(() => insert({})).not.toThrow()
+    expect(() => insert({ route: 'fax' })).toThrow(/CHECK/)
+    expect(() => insert({ language: 'fr' })).toThrow(/CHECK/)
+    expect(() => insert({ ai: 2 })).toThrow(/CHECK/)
+    expect(() => insert({ job: 9999 })).toThrow(/FOREIGN KEY/)
     db.close()
   })
 

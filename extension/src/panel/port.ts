@@ -169,6 +169,7 @@ export function createFakeHostPort(): HostPort {
         'applied.check': { applied: null },
         'applied.list': { jobs: [] },
         'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString(), channel: 'form' },
+        'applied.get': { id: 0, proseAnswers: [], emails: [] },
         'answerBank.get': {},
         'selector.get': { selector: null },
         'selector.clear': { cleared: false },

@@ -1,6 +1,9 @@
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
-import { isProfileKey, norm, type AppliedChannel, type FieldKey, type KeptProseAnswer } from '@jff/shared'
+import {
+  isProfileKey, norm,
+  type AppliedChannel, type AppliedTexts, type ApplicationEmail, type EmailLanguage, type EmailRoute, type FieldKey, type KeptProseAnswer,
+} from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
 import { MIGRATIONS, migrate, type Migration } from './migrations.js'
 
@@ -290,12 +293,17 @@ const toApplied = (r: RawApplied): AppliedJob => ({
  *
  *  The channel is the latest mark's, and the kept prose answers are the latest
  *  mark's too (spec #66): a later mark replaces them, in the same transaction
- *  as the upsert. A prose answer with no text is not kept. */
+ *  as the upsert. A prose answer with no text is not kept.
+ *
+ *  An `email` is the Application email the mark records, stored beside the
+ *  Applied job in the same transaction. A later mark adds one and never
+ *  deletes one. */
 export function markApplied(
   db: Database.Database,
   row: {
     url: string; company: string | null; jobTitle: string | null
     channel?: AppliedChannel; proseAnswers?: readonly KeptProseAnswer[]
+    email?: NewApplicationEmail
   },
 ): AppliedJob {
   const canonical = canonicalUrl(row.url)
@@ -318,9 +326,56 @@ export function markApplied(
     kept.forEach((a, i) => {
       insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model)
     })
+    if (row.email !== undefined) insertApplicationEmail(db, got.id, row.email)
     return got
   })
   return tx()
+}
+
+/** An Application email to keep: the stored fields less the time, which the
+ *  Native host sets when it stores it. */
+export type NewApplicationEmail = Omit<ApplicationEmail, 'sentAt'>
+
+function insertApplicationEmail(db: Database.Database, appliedJobId: number, e: NewApplicationEmail): void {
+  db.prepare(
+    `INSERT INTO application_emails (applied_job_id, apply_address, sender_address, subject, body, attachment_names,
+       sent_at, language, gmail_message_id, gmail_thread_id, route, ai_drafted, edited, model)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    appliedJobId, e.applyAddress, e.senderAddress, e.subject, e.body, JSON.stringify(e.attachmentNames),
+    new Date().toISOString(), e.language, e.gmailMessageId, e.gmailThreadId, e.route,
+    e.aiDrafted ? 1 : 0, e.edited ? 1 : 0, e.model,
+  )
+}
+
+/** The Application emails kept beside one Applied job, newest first. */
+export function listApplicationEmails(db: Database.Database, appliedJobId: number): ApplicationEmail[] {
+  const rows = db.prepare(
+    `SELECT apply_address, sender_address, subject, body, attachment_names, sent_at, language,
+            gmail_message_id, gmail_thread_id, route, ai_drafted, edited, model
+     FROM application_emails WHERE applied_job_id = ? ORDER BY sent_at DESC, id DESC`,
+  ).all(appliedJobId) as {
+    apply_address: string; sender_address: string | null; subject: string; body: string; attachment_names: string
+    sent_at: string; language: EmailLanguage; gmail_message_id: string | null; gmail_thread_id: string | null
+    route: EmailRoute; ai_drafted: number; edited: number; model: string | null
+  }[]
+  return rows.map((r) => ({
+    applyAddress: r.apply_address, senderAddress: r.sender_address, subject: r.subject, body: r.body,
+    attachmentNames: JSON.parse(r.attachment_names) as string[], sentAt: r.sent_at, language: r.language,
+    gmailMessageId: r.gmail_message_id, gmailThreadId: r.gmail_thread_id, route: r.route,
+    aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model,
+  }))
+}
+
+/** One Applied job's stored texts, or null when no Applied job has the id. */
+export function getAppliedTexts(db: Database.Database, appliedJobId: number): AppliedTexts | null {
+  const exists = db.prepare(`SELECT 1 FROM applied_jobs WHERE id = ?`).get(appliedJobId)
+  if (exists === undefined) return null
+  return {
+    id: appliedJobId,
+    proseAnswers: listKeptProseAnswers(db, appliedJobId),
+    emails: listApplicationEmails(db, appliedJobId),
+  }
 }
 
 export function checkApplied(db: Database.Database, url: string): AppliedJob | null {

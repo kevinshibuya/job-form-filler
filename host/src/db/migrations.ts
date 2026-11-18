@@ -41,6 +41,33 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `),
   },
+  {
+    version: 3,
+    name: 'an Applied job keeps its Application emails',
+    // An Applied job may hold several, and a later mark never deletes one.
+    // The mail app's email has no Sender address, no attachments and no
+    // Gmail ids; `attachment_names` is a JSON array of file names.
+    up: (db) => db.exec(`
+      CREATE TABLE application_emails (
+        id               INTEGER PRIMARY KEY,
+        applied_job_id   INTEGER NOT NULL REFERENCES applied_jobs(id) ON DELETE CASCADE,
+        apply_address    TEXT NOT NULL,
+        sender_address   TEXT,
+        subject          TEXT NOT NULL,
+        body             TEXT NOT NULL,
+        attachment_names TEXT NOT NULL DEFAULT '[]',
+        sent_at          TEXT NOT NULL,
+        language         TEXT NOT NULL CHECK (language IN ('en', 'pt')),
+        gmail_message_id TEXT,
+        gmail_thread_id  TEXT,
+        route            TEXT NOT NULL CHECK (route IN ('tool', 'mail_app')),
+        ai_drafted       INTEGER NOT NULL CHECK (ai_drafted IN (0, 1)),
+        edited           INTEGER NOT NULL CHECK (edited IN (0, 1)),
+        model            TEXT
+      );
+      CREATE INDEX application_emails_by_job ON application_emails (applied_job_id);
+    `),
+  },
 ]
 
 /** The file carries a schema version this Native host does not know: a newer

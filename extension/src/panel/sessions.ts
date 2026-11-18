@@ -1,6 +1,7 @@
 import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { SessionEmailDraftSchema, type SessionEmailDraft } from './emailDraft'
+import { SessionMailHandoverSchema, type SessionMailHandover } from './mailApp'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
 import type { ScanUiState } from './ScanStatus'
@@ -84,6 +85,10 @@ export interface Session {
    *  mark and the page's subject, once one is written. It rides with the
    *  Apply address through a re-Scan. */
   emailDraft: SessionEmailDraft | null
+  /** What "Open in my mail app" last handed over (ticket #75), as it left:
+   *  Mark applied records this and not the rows as they read by then. Null
+   *  while the mail app was never opened. */
+  mailHandover: SessionMailHandover | null
 }
 
 /** S4: answers are keyed by the NORMALIZED label, so a carry survives a field
@@ -147,6 +152,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     applyAddress: null,
     applyAddressChosenBy: null,
     emailDraft: null,
+    mailHandover: null,
   }
 }
 
@@ -447,6 +453,8 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.applyAddressChosenBy != null && !ApplyAddressChoiceSchema.safeParse(raw.applyAddressChosenBy).success) return null
     // A row stored before the Application email has no Draft.
     if (raw.emailDraft != null && !SessionEmailDraftSchema.safeParse(raw.emailDraft).success) return null
+    // A row stored before "Open in my mail app" handed nothing over.
+    if (raw.mailHandover != null && !SessionMailHandoverSchema.safeParse(raw.mailHandover).success) return null
     const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
     return {
       ...(raw as unknown as Session),
@@ -460,6 +468,7 @@ export function parseStoredSession(raw: unknown): Session | null {
       // Parsed, so a Draft stored before the language switch reads as English
       // with an unedited subject.
       emailDraft: applyAddress === null || raw.emailDraft == null ? null : SessionEmailDraftSchema.parse(raw.emailDraft),
+      mailHandover: (raw.mailHandover as SessionMailHandover | null | undefined) ?? null,
     }
   } catch {
     return null

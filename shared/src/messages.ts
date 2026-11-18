@@ -217,6 +217,66 @@ export const EmailDraftResultSchema = z.object({
 })
 export type EmailDraftResult = z.infer<typeof EmailDraftResultSchema>
 
+/** How an Application email left: sent through the tool, or handed to the
+ *  user's mail app by "Open in my mail app". */
+export const EMAIL_ROUTES = ['tool', 'mail_app'] as const
+export const EmailRouteSchema = z.enum(EMAIL_ROUTES)
+export type EmailRoute = z.infer<typeof EmailRouteSchema>
+
+/**
+ * The Application email "Open in my mail app" handed over, as `applied.mark`
+ * carries it: the Apply address, the subject and the body as they left the
+ * Side panel, the language, and for the body whether AI drafted it, whether
+ * the user edited it and which model wrote it. Strict: the mail app's email
+ * has no Sender address, no attachment names and no Gmail ids, so a mark that
+ * names one is refused.
+ */
+export const HandedOverEmailSchema = z.object({
+  applyAddress: z.string().min(1),
+  subject: z.string(),
+  body: z.string(),
+  language: EmailLanguageSchema,
+  aiDrafted: z.boolean(),
+  edited: z.boolean(),
+  model: z.string().nullable(),
+}).strict()
+export type HandedOverEmail = z.infer<typeof HandedOverEmailSchema>
+
+/**
+ * An Application email kept beside an Applied job: both addresses (no Sender
+ * address when the mail app sent it), the subject, the body, the attachment
+ * names, the time, the language, Gmail's message and thread ids (null unless
+ * the tool sent it), the route it left by, and the body's three marks.
+ */
+export const ApplicationEmailSchema = z.object({
+  applyAddress: z.string(),
+  senderAddress: z.string().nullable(),
+  subject: z.string(),
+  body: z.string(),
+  attachmentNames: z.array(z.string()),
+  sentAt: z.string(),
+  language: EmailLanguageSchema,
+  gmailMessageId: z.string().nullable(),
+  gmailThreadId: z.string().nullable(),
+  route: EmailRouteSchema,
+  aiDrafted: z.boolean(),
+  edited: z.boolean(),
+  model: z.string().nullable(),
+})
+export type ApplicationEmail = z.infer<typeof ApplicationEmailSchema>
+
+/**
+ * The reply to `applied.get`: one Applied job's stored texts, read only when
+ * the user opens it, so `applied.list` stays small. The Application emails
+ * come newest first.
+ */
+export const AppliedTextsSchema = z.object({
+  id: z.number().int(),
+  proseAnswers: z.array(KeptProseAnswerSchema),
+  emails: z.array(ApplicationEmailSchema),
+})
+export type AppliedTexts = z.infer<typeof AppliedTextsSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -279,14 +339,19 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
     requestId: z.string().min(1), method: z.literal('applied.mark'),
     // A2: url is the session's captured START url; jobTitle from tab.title, nullable.
     // A mark with no channel is a form mark, and one with no prose answers keeps none.
+    // A mark after "Open in my mail app" carries the `email` it handed over
+    // and goes by email: a form mark with one is refused.
     params: z.object({
       url: z.string().min(1), company: z.string().nullable(), jobTitle: z.string().nullable(),
       channel: AppliedChannelSchema.optional(),
       proseAnswers: z.array(KeptProseAnswerSchema).optional(),
-    }),
+      email: HandedOverEmailSchema.optional(),
+    }).refine((p) => p.email === undefined || p.channel !== 'form', 'a mark with an Application email goes by email'),
   }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.check'), params: z.object({ url: z.string().min(1) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.list'), params: z.object({}).passthrough() }),
+  // One Applied job's stored texts, read when the user opens it (spec #66).
+  z.object({ requestId: z.string().min(1), method: z.literal('applied.get'), params: z.object({ id: z.number().int().positive() }) }),
   // A Capture (spec #41): the cleaned page and what the Scan decided, written
   // to the user's machine and nowhere else.
   z.object({ requestId: z.string().min(1), method: z.literal('capture.save'), params: CaptureSaveParamsSchema }),

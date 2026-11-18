@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
+import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -13,6 +13,7 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { EmailChooser } from './EmailChooser'
 import { EmailReview } from './EmailReview'
+import type { SessionMailHandover } from './mailApp'
 import { emailDraftOwed, emailDraftParams, emailRedraftParams, replaceEmailDraft, requestEmailDraft, type EmailDraftUi, type RedraftAsk } from './emailDraft'
 import { addressPickParams, requestAddressPick, type AddressPickUi } from './applyAddressPick'
 import { loadResume, loadResumeText, saveResume } from './resume'
@@ -1904,6 +1905,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       : { ...s, emailDraft: { ...s.emailDraft, ...patch, ...('body' in patch ? { edited: true } : { subjectEdited: true }) } }))
   }
 
+  /** "Open in my mail app" (ticket #75): the link opens the address; the
+   *  Session keeps what it carried, for Mark applied. Nothing is marked. */
+  const onOpenMailApp = (email: SessionMailHandover): void => {
+    writeSession((s) => ({ ...s, mailHandover: email }))
+  }
+
   /**
    * Regenerate, or the language switch (ticket #73): a new Draft in place of
    * the one the Session holds, asked with the language and the user's
@@ -2144,13 +2151,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (genOf(target) !== gen) return
       const title = (tab?.title ?? '').trim()
       // A form mark keeps the Prose Fields' texts as the Session held them at
-      // the click (spec #66).
+      // the click (spec #66). After "Open in my mail app" the mark goes by
+      // email and keeps the Application email as it was handed over (#75).
       const r = await port.request<{ markedAt: string }>('applied.mark', {
         url: startUrl,
         company: markCompany,
         jobTitle: title === '' ? null : title,
-        channel: 'form',
-        proseAnswers: keptProseAnswers(s),
+        ...(s.mailHandover === null
+          ? { channel: 'form', proseAnswers: keptProseAnswers(s) }
+          : { channel: 'email', email: s.mailHandover }),
       })
       if (!r.ok) { setHostError(hostErrorText(r.error)); return }
       await endSession(target)
@@ -2269,6 +2278,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // `?? []`: a fake/stale host answering {} must render the empty state,
     // never crash the view on `jobs.map`.
     return r.result.jobs ?? []
+  }
+
+  /** One Applied job's stored texts (spec #66), or null on a host failure or
+   *  a malformed reply. */
+  const loadAppliedTexts = async (id: number): Promise<AppliedTexts | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request('applied.get', { id })
+    if (!r.ok) return null
+    const parsed = AppliedTextsSchema.safeParse(r.result)
+    return parsed.success ? parsed.data : null
   }
 
   /* ---------------------------------------------------------------- markup */
@@ -2455,7 +2475,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
           )
         : view === 'applications'
-          ? <ApplicationsView load={loadApplications} />
+          ? <ApplicationsView load={loadApplications} loadTexts={loadAppliedTexts} />
           : (
             <>
               {session === null
@@ -2489,6 +2509,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       draft={session.emailDraft} ui={emailDraftUi}
                       needsJobText={session.emailDraft === null && session.jobText.trim() === ''}
                       resumeName={resumeName}
+                      to={session.applyAddress}
+                      handedOver={session.mailHandover !== null}
+                      onOpenMailApp={onOpenMailApp}
                       onSubject={(subject) => onEditEmail({ subject })}
                       onBody={(body) => onEditEmail({ body })}
                       onDraft={onDraftEmail}

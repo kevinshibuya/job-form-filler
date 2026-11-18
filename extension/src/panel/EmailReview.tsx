@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { EMAIL_INSTRUCTION_MAX, EMAIL_LANGUAGES, type EmailLanguage, type EmailLinkKey } from '@jff/shared'
 import { DraftWarning } from './FieldRow'
 import { redraftNeedsConfirm, type EmailDraftUi, type RedraftAsk, type SessionEmailDraft } from './emailDraft'
+import { mailHandoverOf, mailtoAddress, type SessionMailHandover } from './mailApp'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
 
 /**
@@ -10,7 +11,8 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
  * (`ROW_BASE`, the bold label, the muted detail), and a flagged sentence
  * shows with the same warning a Prose Field's Draft carries. Under the body,
  * Regenerate and the language switch ask for a new Draft (ticket #73); with
- * hand edits in the subject or the body they ask first.
+ * hand edits in the subject or the body they ask first. Where Send will be,
+ * "Open in my mail app" hands the email to the user's mail app (ticket #75).
  */
 
 const LINK_NAME: Record<EmailLinkKey, string> = { linkedin: 'LinkedIn', github: 'GitHub', portfolio: 'portfolio' }
@@ -26,6 +28,13 @@ export interface EmailReviewProps {
   /** No Draft can start: the Session holds no Job posting text. */
   needsJobText: boolean
   resumeName: string | null
+  /** The To row's address, the Session's Apply address. */
+  to: string | null
+  /** "Open in my mail app" was clicked since the Session began. */
+  handedOver: boolean
+  /** The user opened the mail app with this email. The link opens the
+   *  address itself; this records what it carried. */
+  onOpenMailApp: (email: SessionMailHandover) => void
   onSubject: (subject: string) => void
   onBody: (body: string) => void
   /** Start the Draft by hand: after a failure, or when nothing started it. */
@@ -125,7 +134,42 @@ function Redraft({ draft, ui, onRedraft }: { draft: SessionEmailDraft; ui: Email
   )
 }
 
-export function EmailReview({ draft, ui, needsJobText, resumeName, onSubject, onBody, onDraft, onRedraft }: EmailReviewProps) {
+/**
+ * "Open in my mail app", with the note that the mail app gets no Resume. A
+ * link while the email can be handed over, so the browser opens the
+ * `mailto:` address on the click; a disabled button while the Draft is being
+ * written or checked, or the To address, the subject or the body is empty.
+ * It marks nothing: Mark applied stays the user's click.
+ */
+function MailApp({ email, resumeName, handedOver, onOpen }: {
+  email: SessionMailHandover | null; resumeName: string | null; handedOver: boolean; onOpen: (email: SessionMailHandover) => void
+}) {
+  return (
+    <div className={ROW} data-jff-email-send="1">
+      {email === null
+        ? <button type="button" className={BTN_PRIMARY} disabled data-jff-email-mailapp="1">Open in my mail app</button>
+        : (
+            <a
+              className={`${BTN_PRIMARY} inline-block no-underline`} href={mailtoAddress(email)} target="_blank" rel="noreferrer"
+              data-jff-email-mailapp="1" onClick={() => onOpen(email)}
+            >
+              Open in my mail app
+            </a>
+          )}
+      <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-email-mailapp-note="1">
+        {'Your mail app gets the address, the subject and the body, but not the Resume. '}
+        {resumeName === null ? 'Attach your Resume there before you send.' : <>Attach <span className="break-all font-semibold">{resumeName}</span> there before you send.</>}
+      </p>
+      {handedOver && (
+        <p className={`mt-1 text-[12px] ${MUTED}`} role="status" data-jff-email-handed="1">
+          Once it has left your mail app, click Mark applied to record it.
+        </p>
+      )}
+    </div>
+  )
+}
+
+export function EmailReview({ draft, ui, needsJobText, resumeName, to, handedOver, onOpenMailApp, onSubject, onBody, onDraft, onRedraft }: EmailReviewProps) {
   if (draft === null) return <NoDraft ui={ui} needsJobText={needsJobText} onDraft={onDraft} />
   // While a new Draft is written, the one shown takes no edit it would lose.
   const busy = ui?.kind === 'drafting'
@@ -176,6 +220,10 @@ export function EmailReview({ draft, ui, needsJobText, resumeName, onSubject, on
           {resumeName ?? 'No Resume stored. Add one above.'}
         </p>
       </div>
+      <MailApp
+        email={busy ? null : mailHandoverOf({ applyAddress: to, emailDraft: draft })}
+        resumeName={resumeName} handedOver={handedOver} onOpen={onOpenMailApp}
+      />
     </div>
   )
 }

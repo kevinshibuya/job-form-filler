@@ -7,7 +7,7 @@ import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  checkApplied, getAnswerBank, getCachedResponse, getProfile, getSelector, clearSelector,
+  checkApplied, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
   insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
   markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
   setProfile, upsertAnswer,
@@ -281,17 +281,37 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         // proof of the {page, done} chunking protocol. See Task 11 preamble.
         return ok(req.requestId, paginate(listAllAnswers(db), req.params.page))
 
-      case 'applied.mark':
+      case 'applied.mark': {
+        // A mark after "Open in my mail app" keeps the email as it was handed
+        // over: it left through the mail app, with no Sender address, no
+        // attachments and no Gmail ids (spec #66).
+        const handed = req.params.email
         return ok(req.requestId, markApplied(db, {
           url: req.params.url, company: req.params.company, jobTitle: req.params.jobTitle,
-          channel: req.params.channel ?? 'form', proseAnswers: req.params.proseAnswers ?? [],
+          channel: req.params.channel ?? (handed === undefined ? 'form' : 'email'),
+          proseAnswers: req.params.proseAnswers ?? [],
+          ...(handed === undefined ? {} : {
+            email: {
+              ...handed, senderAddress: null, attachmentNames: [], gmailMessageId: null, gmailThreadId: null, route: 'mail_app' as const,
+            },
+          }),
         }))
+      }
 
       case 'applied.check':
         return ok(req.requestId, { applied: checkApplied(db, req.params.url) })
 
       case 'applied.list':
         return ok(req.requestId, { jobs: listApplied(db) })
+
+      // One Applied job's stored texts, read when the user opens it, so the
+      // list stays small.
+      case 'applied.get': {
+        const texts = getAppliedTexts(db, req.params.id)
+        return texts === null
+          ? fail(req.requestId, 'bad_request', `no Applied job has the id ${req.params.id}`)
+          : ok(req.requestId, texts)
+      }
 
       // A Capture is written here and goes nowhere else. The log names its ATS
       // and size, never its content.
