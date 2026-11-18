@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
+import { MIGRATIONS } from './migrations.js'
 import {
   openDb, getProfile, setProfile, getAnswerBank, setAnswerBank, getStoredValue,
   findExactAnswer, listReusableAnswers, listReferenceAnswers, getAnswerById,
@@ -100,7 +101,8 @@ describe('learned wordings', () => {
 
   it('a database created before the store existed opens, gains it, and keeps its data', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'jff-repos-')), 'db.sqlite')
-    const old = openDb(path)
+    // The schema as it stood before versioning is migration 1 alone.
+    const old = openDb(path, MIGRATIONS.slice(0, 1))
     // The database as it was before ticket #35: no learned_wordings table.
     old.exec('DROP TABLE learned_wordings')
     // ...and no schema version: versioned migrations (ticket #68) came later.

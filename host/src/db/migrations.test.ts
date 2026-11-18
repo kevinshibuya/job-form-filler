@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import { DatabaseTooNew, MIGRATIONS, type Migration } from './migrations.js'
-import { getProfile, openDb, setProfile } from './repos.js'
+import { getProfile, listApplied, listKeptProseAnswers, openDb, setProfile } from './repos.js'
 import { SCHEMA_SQL } from './schema.js'
 
 // The host log is a file under the real home directory: no test writes to it.
@@ -77,7 +77,31 @@ describe('openDb migrations', () => {
 
     const db = openDb(path)
     expect(version(db)).toBe(MIGRATIONS.length)
-    expect(rowsOf(db)).toEqual(rows)
+    // Every row is kept as it was. An Applied job gains only its channel, and
+    // one from before channels existed went by form.
+    expect(rowsOf(db)).toEqual({
+      ...rows,
+      applied_jobs: rows.applied_jobs!.map((r) => ({ ...(r as object), channel: 'form' })),
+    })
+    db.close()
+  })
+
+  it('reads every Applied job from before channels as a form application, with no prose answers kept', () => {
+    const path = tempDbPath()
+    oldShapeDb(path)
+    const db = openDb(path)
+    const jobs = listApplied(db)
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0]).toMatchObject({ canonicalUrl: 'https://jobs.example.com/1', channel: 'form' })
+    expect(listKeptProseAnswers(db, jobs[0]!.id)).toEqual([])
+    db.close()
+  })
+
+  it('refuses a channel other than form or email', () => {
+    const db = openDb(':memory:')
+    expect(() => db.prepare(`INSERT INTO applied_jobs (url, canonical_url, marked_at, channel)
+                             VALUES ('https://x.example.com/1', 'x.example.com/1', '2026-11-18T00:00:00Z', 'fax')`).run())
+      .toThrow(/CHECK/)
     db.close()
   })
 

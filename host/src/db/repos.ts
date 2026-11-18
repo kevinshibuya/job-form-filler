@@ -1,6 +1,6 @@
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
-import { isProfileKey, norm, type FieldKey } from '@jff/shared'
+import { isProfileKey, norm, type AppliedChannel, type FieldKey, type KeptProseAnswer } from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
 import { MIGRATIONS, migrate, type Migration } from './migrations.js'
 
@@ -261,16 +261,21 @@ export interface AppliedJob {
   company: string | null
   jobTitle: string | null
   markedAt: string
+  channel: AppliedChannel
 }
 
 interface RawApplied {
   id: number; url: string; canonical_url: string
   company: string | null; job_title: string | null; marked_at: string
+  channel: AppliedChannel
 }
+
+// Named columns, never `*`: a row read for a list carries nothing heavy.
+const APPLIED_COLUMNS = 'id, url, canonical_url, company, job_title, marked_at, channel'
 
 const toApplied = (r: RawApplied): AppliedJob => ({
   id: r.id, url: r.url, canonicalUrl: r.canonical_url,
-  company: r.company, jobTitle: r.job_title, markedAt: r.marked_at,
+  company: r.company, jobTitle: r.job_title, markedAt: r.marked_at, channel: r.channel,
 })
 
 /** Upsert by canonical_url. `marked_at` is NOT in the update set: re-marking
@@ -281,29 +286,60 @@ const toApplied = (r: RawApplied): AppliedJob => ({
  *  and both are routine on a re-mark (the company guess misses on a step-2 url,
  *  the tab has not settled its title yet). A plain `excluded.company` there
  *  DELETES a company the first mark got right — a null is "I have nothing to
- *  say", never "erase what you know". */
+ *  say", never "erase what you know".
+ *
+ *  The channel is the latest mark's, and the kept prose answers are the latest
+ *  mark's too (spec #66): a later mark replaces them, in the same transaction
+ *  as the upsert. A prose answer with no text is not kept. */
 export function markApplied(
   db: Database.Database,
-  row: { url: string; company: string | null; jobTitle: string | null },
+  row: {
+    url: string; company: string | null; jobTitle: string | null
+    channel?: AppliedChannel; proseAnswers?: readonly KeptProseAnswer[]
+  },
 ): AppliedJob {
   const canonical = canonicalUrl(row.url)
-  db.prepare(
-    `INSERT INTO applied_jobs (url, canonical_url, company, job_title, marked_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(canonical_url) DO UPDATE SET
-       url = excluded.url,
-       company = COALESCE(excluded.company, company),
-       job_title = COALESCE(excluded.job_title, job_title)`,
-  ).run(row.url, canonical, row.company, row.jobTitle, new Date().toISOString())
-  const got = db.prepare(`SELECT * FROM applied_jobs WHERE canonical_url = ?`).get(canonical) as RawApplied
-  return toApplied(got)
+  const kept = (row.proseAnswers ?? []).filter((a) => a.text.trim() !== '')
+  const tx = db.transaction((): AppliedJob => {
+    db.prepare(
+      `INSERT INTO applied_jobs (url, canonical_url, company, job_title, marked_at, channel) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(canonical_url) DO UPDATE SET
+         url = excluded.url,
+         company = COALESCE(excluded.company, company),
+         job_title = COALESCE(excluded.job_title, job_title),
+         channel = excluded.channel`,
+    ).run(row.url, canonical, row.company, row.jobTitle, new Date().toISOString(), row.channel ?? 'form')
+    const got = toApplied(db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs WHERE canonical_url = ?`).get(canonical) as RawApplied)
+    db.prepare(`DELETE FROM applied_prose_answers WHERE applied_job_id = ?`).run(got.id)
+    const insert = db.prepare(
+      `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    kept.forEach((a, i) => {
+      insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model)
+    })
+    return got
+  })
+  return tx()
 }
 
 export function checkApplied(db: Database.Database, url: string): AppliedJob | null {
-  const row = db.prepare(`SELECT * FROM applied_jobs WHERE canonical_url = ?`)
+  const row = db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs WHERE canonical_url = ?`)
     .get(canonicalUrl(url)) as RawApplied | undefined
   return row === undefined ? null : toApplied(row)
 }
 
 export function listApplied(db: Database.Database): AppliedJob[] {
-  return (db.prepare(`SELECT * FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
+  return (db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
+}
+
+/** The prose answers kept beside one Applied job, in the order the mark sent them. */
+export function listKeptProseAnswers(db: Database.Database, appliedJobId: number): KeptProseAnswer[] {
+  const rows = db.prepare(
+    `SELECT question, text, ai_drafted, edited, model FROM applied_prose_answers
+     WHERE applied_job_id = ? ORDER BY position`,
+  ).all(appliedJobId) as { question: string; text: string; ai_drafted: number; edited: number; model: string | null }[]
+  return rows.map((r) => ({
+    question: r.question, text: r.text, aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model,
+  }))
 }

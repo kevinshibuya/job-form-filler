@@ -20,7 +20,7 @@ import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOption
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
-import { createSessionStore, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
+import { createSessionStore, keptProseAnswers, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
 import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
@@ -1609,7 +1609,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // never land in edits (spec D3).
     setGeneratingRefs((s) => new Set(s).add(ref))
     try {
-      const r = await port.request<{ draft: string; unsupportedClaims?: string[] }>('generate', {
+      const r = await port.request<{ draft: string; unsupportedClaims?: string[]; model?: string }>('generate', {
         handle: row.resolution.handle,
         questionRaw: row.field.label ?? '',
         description: row.field.description,
@@ -1624,6 +1624,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (r.ok) {
         const draft = r.result.draft
         const unsupported = r.result.unsupportedClaims ?? []
+        // The Session records which model wrote each Draft (spec #66).
+        const model = typeof r.result.model === 'string' ? r.result.model : null
         // S4: a settled draft is carried with provenance 'generated', which is
         // what re-enters generatedRefs on the next step. Its Draft check
         // warning replaces whatever the row's previous Draft carried.
@@ -1634,7 +1636,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             edits: { ...s.edits, [ref]: draft },
             generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
             draftWarnings: unsupported.length === 0 ? draftWarnings : { ...draftWarnings, [ref]: unsupported },
-          }, ref, draft, 'generated')
+          }, ref, draft, 'generated', model)
         })
         return 'ok'
       }
@@ -1906,10 +1908,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // silent-wrong-data write. Marking stays available for the new page.
       if (genOf(target) !== gen) return
       const title = (tab?.title ?? '').trim()
+      // A form mark keeps the Prose Fields' texts as the Session held them at
+      // the click (spec #66).
       const r = await port.request<{ markedAt: string }>('applied.mark', {
         url: startUrl,
         company: markCompany,
         jobTitle: title === '' ? null : title,
+        channel: 'form',
+        proseAnswers: keptProseAnswers(s),
       })
       if (!r.ok) { setHostError(hostErrorText(r.error)); return }
       await endSession(target)

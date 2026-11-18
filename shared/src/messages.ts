@@ -87,6 +87,26 @@ export type LearnWordingParams = z.infer<typeof LearnWordingParamsSchema>
 export const LearnWordingResultSchema = z.object({ learned: z.boolean() })
 export type LearnWordingResult = z.infer<typeof LearnWordingResultSchema>
 
+/** How an Applied job went out: through the page's form, or by email (spec #66). */
+export const APPLIED_CHANNELS = ['form', 'email'] as const
+export const AppliedChannelSchema = z.enum(APPLIED_CHANNELS)
+export type AppliedChannel = z.infer<typeof AppliedChannelSchema>
+
+/**
+ * One Prose Field's final text, kept beside a form Applied job (spec #66):
+ * the question as the page wrote it, the text the Session held at Mark
+ * applied, whether AI drafted it, whether the user changed the Draft, and the
+ * model that wrote the Draft, null when AI drafted nothing.
+ */
+export const KeptProseAnswerSchema = z.object({
+  question: z.string(),
+  text: z.string(),
+  aiDrafted: z.boolean(),
+  edited: z.boolean(),
+  model: z.string().nullable(),
+})
+export type KeptProseAnswer = z.infer<typeof KeptProseAnswerSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -141,7 +161,12 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({
     requestId: z.string().min(1), method: z.literal('applied.mark'),
     // A2: url is the session's captured START url; jobTitle from tab.title, nullable.
-    params: z.object({ url: z.string().min(1), company: z.string().nullable(), jobTitle: z.string().nullable() }),
+    // A mark with no channel is a form mark, and one with no prose answers keeps none.
+    params: z.object({
+      url: z.string().min(1), company: z.string().nullable(), jobTitle: z.string().nullable(),
+      channel: AppliedChannelSchema.optional(),
+      proseAnswers: z.array(KeptProseAnswerSchema).optional(),
+    }),
   }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.check'), params: z.object({ url: z.string().min(1) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.list'), params: z.object({}).passthrough() }),

@@ -21,6 +21,26 @@ export interface Migration {
  */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'the schema as it stood before versioning', up: (db) => db.exec(SCHEMA_SQL) },
+  {
+    version: 2,
+    name: 'an Applied job has a channel and keeps its prose answers',
+    // A row from before channels existed went by form: the default fills it.
+    // A kept prose answer belongs to one Applied job and goes with it.
+    up: (db) => db.exec(`
+      ALTER TABLE applied_jobs ADD COLUMN channel TEXT NOT NULL DEFAULT 'form' CHECK (channel IN ('form', 'email'));
+
+      CREATE TABLE applied_prose_answers (
+        applied_job_id INTEGER NOT NULL REFERENCES applied_jobs(id) ON DELETE CASCADE,
+        position       INTEGER NOT NULL,
+        question       TEXT NOT NULL,
+        text           TEXT NOT NULL,
+        ai_drafted     INTEGER NOT NULL CHECK (ai_drafted IN (0, 1)),
+        edited         INTEGER NOT NULL CHECK (edited IN (0, 1)),
+        model          TEXT,
+        PRIMARY KEY (applied_job_id, position)
+      );
+    `),
+  },
 ]
 
 /** The file carries a schema version this Native host does not know: a newer
