@@ -107,6 +107,58 @@ export const KeptProseAnswerSchema = z.object({
 })
 export type KeptProseAnswer = z.infer<typeof KeptProseAnswerSchema>
 
+/* ------------------------------------------------- the Apply address (#66) */
+
+/** Where a page shows an address: a `mailto:` link, with its link text and its
+ *  `subject` parameter (null when it has none), or the visible text, with the
+ *  sentence around the address. A link's `body`, `cc` and `bcc` never travel. */
+export const AddressContextSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('mailto'), linkText: z.string(), subject: z.string().nullable() }),
+  z.object({ kind: z.literal('text'), sentence: z.string() }),
+])
+export type AddressContext = z.infer<typeof AddressContextSchema>
+
+/** One address a frame's page script found, in the place it found it. */
+export const FoundAddressSchema = z.object({ address: z.string(), context: AddressContextSchema })
+export type FoundAddress = z.infer<typeof FoundAddressSchema>
+
+/** One address the Side panel offers as the Apply address, with each place
+ *  the page shows it, in page order. */
+export const ApplyAddressCandidateSchema = z.object({ address: z.string(), contexts: z.array(AddressContextSchema) })
+export type ApplyAddressCandidate = z.infer<typeof ApplyAddressCandidateSchema>
+
+/** How the Session's Apply address was chosen: by the model's pick among the
+ *  candidates, by the user from the candidate list, or typed by the user. */
+export const ApplyAddressChoiceSchema = z.enum(['pick', 'list', 'typed'])
+export type ApplyAddressChoice = z.infer<typeof ApplyAddressChoiceSchema>
+
+/** How much of the Job posting text, from its start, the Apply address pick reads. */
+export const APPLY_PICK_JOB_TEXT_MAX = 3_000
+
+/**
+ * `applyAddress.pick`: the page's candidates with their contexts, the Job
+ * posting's title and Company, and the start of its text. All of it is page
+ * content. Nothing from the Profile travels with it.
+ */
+export const ApplyAddressPickParamsSchema = z.object({
+  candidates: z.array(ApplyAddressCandidateSchema).min(1),
+  title: z.string().nullable(),
+  company: z.string().nullable(),
+  jobText: z.string(),
+})
+export type ApplyAddressPickParams = z.infer<typeof ApplyAddressPickParamsSchema>
+
+/**
+ * The reply to `applyAddress.pick`: the position (from 0) of one of the
+ * candidates the request carried, or null for none. There is no address
+ * property, and zod strips unknown keys: the model can never write an address
+ * (ADR 0006, ADR 0008).
+ */
+export const ApplyAddressPickResultSchema = z.object({
+  position: z.number().int().nonnegative().nullable(),
+})
+export type ApplyAddressPickResult = z.infer<typeof ApplyAddressPickResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -151,6 +203,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('option.pick'), params: OptionPickParamsSchema }),
   // A Learned wording: an Option the user accepted for a keyed Field.
   z.object({ requestId: z.string().min(1), method: z.literal('wording.learn'), params: LearnWordingParamsSchema }),
+  // The Apply address pick (spec #66, ADR 0008): the page's candidates and
+  // the Job posting they came with. It answers a position, never an address.
+  z.object({ requestId: z.string().min(1), method: z.literal('applyAddress.pick'), params: ApplyAddressPickParamsSchema }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
   // "Not the job description" (spec #41): forget the spot saved for a site.
@@ -282,31 +337,6 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   }),
 ])
 export type ContentMessage = z.infer<typeof ContentMessageSchema>
-
-/* ------------------------------------------------- the Apply address (#66) */
-
-/** Where a page shows an address: a `mailto:` link, with its link text and its
- *  `subject` parameter (null when it has none), or the visible text, with the
- *  sentence around the address. A link's `body`, `cc` and `bcc` never travel. */
-export const AddressContextSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('mailto'), linkText: z.string(), subject: z.string().nullable() }),
-  z.object({ kind: z.literal('text'), sentence: z.string() }),
-])
-export type AddressContext = z.infer<typeof AddressContextSchema>
-
-/** One address a frame's page script found, in the place it found it. */
-export const FoundAddressSchema = z.object({ address: z.string(), context: AddressContextSchema })
-export type FoundAddress = z.infer<typeof FoundAddressSchema>
-
-/** One address the Side panel offers as the Apply address, with each place
- *  the page shows it, in page order. */
-export const ApplyAddressCandidateSchema = z.object({ address: z.string(), contexts: z.array(AddressContextSchema) })
-export type ApplyAddressCandidate = z.infer<typeof ApplyAddressCandidateSchema>
-
-/** How the Session's Apply address was chosen: by the model's pick among the
- *  candidates, by the user from the candidate list, or typed by the user. */
-export const ApplyAddressChoiceSchema = z.enum(['pick', 'list', 'typed'])
-export type ApplyAddressChoice = z.infer<typeof ApplyAddressChoiceSchema>
 
 /** The longest sentence a text context keeps, and a link text too. */
 export const ADDRESS_SENTENCE_MAX = 200

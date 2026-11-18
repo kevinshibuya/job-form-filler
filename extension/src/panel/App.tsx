@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
+import type { ApplyAddressPickParams, ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
 import { CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
@@ -12,6 +12,7 @@ import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { EmailChooser } from './EmailChooser'
+import { addressPickParams, requestAddressPick, type AddressPickUi } from './applyAddressPick'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
 import { jobTextLine, offersNotTheJob } from './jobTextLine'
@@ -119,11 +120,17 @@ interface SessionRuntime {
    *  or null. A Session whose rows wait on any other epoch waits on a request
    *  that is gone: the panel that sent it closed, or a newer Scan dropped it. */
   mappingEpoch: number | null
+  /** Spec #66: the Apply address pick of this session, while it is out and
+   *  after it ended without an address. Shown by the email flow, never stored:
+   *  a reopened panel shows the candidates, which is where none ends too. */
+  addressPick: AddressPickUi | null
+  /** Bumped when a pick starts. Only the newest pick's answer lands. */
+  addressPickSeq: number
 }
 
 const newRuntime = (gen: number): SessionRuntime => ({
   gen, epoch: 0, scanSeq: 0, mappingEpoch: null, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
-  generateAll: null, generatePaused: null,
+  generateAll: null, generatePaused: null, addressPick: null, addressPickSeq: 0,
 })
 
 /**
@@ -346,6 +353,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // independent host requests, and completing one must not touch the others.
   const [generatingRefs, setGeneratingRefs] = useState<ReadonlySet<string>>(new Set())
   const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
+  const [addressPick, setAddressPick] = useState<AddressPickUi | null>(null)
   const [generatePaused, setGeneratePaused] = useState<{ done: number; total: number } | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   /** Where the last Capture was saved, or why it was not. */
@@ -554,6 +562,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // the batch was still running.
     setGenerateAll(s === null ? null : runtimeOf(s.tabId).generateAll)
     setGeneratePaused(s === null ? null : runtimeOf(s.tabId).generatePaused)
+    // Like the batch, the Apply address pick belongs to its session.
+    setAddressPick(s === null ? null : runtimeOf(s.tabId).addressPick)
     setMarkedMsg(null)
   }
 
@@ -1207,7 +1217,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // enumeration handed the same questions, and `committedEdits` outranks it.
       // The background settle runs the SAME function inside store.mutate — a
       // second implementation would be a second copy of the never-guess rules.
-      await applyToSession(target, sc.gen, (s) => ({
+      // Spec #66: a page with no Field and a candidate picks its Apply address
+      // without a click, from the Session as this Scan leaves it. A Session
+      // that holds an Apply address keeps it: that is the user's choice.
+      const autoPick: { params: ApplyAddressPickParams | null } = { params: null }
+      await applyToSession(target, sc.gen, (s) => {
+        const next: Session = {
         // The Options the first step's Fill read: a dropdown it opened now offers them.
         ...projectAnswers(s, withReadOptions(out.fields, out.fill), first.settled, first.committedEdits),
         waiting: owesMapping ? out.pending.map(refOf) : [],
@@ -1229,7 +1244,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           ? { company: out.company, companyGuessed: true }
           : {}),
         lastOutcome: onScreen,
-      }))
+        }
+        autoPick.params = outcome.kind === 'email' && next.applyAddress === null && next.applyCandidates.length > 0
+          ? addressPickParams(next, tab.title ?? '')
+          : null
+        return next
+      })
+      if (autoPick.params !== null) void pickApplyAddress(sc, autoPick.params)
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
       const pickStillCurrent = (): boolean => mountedRef.current && alive(sc) && rt.epoch === out.epoch
       runPicks(target, sc.gen, picksOwed(out.resolutions, out.fields, out.fill), pickStillCurrent)
@@ -1767,6 +1788,56 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     }
   }
 
+  /** The pick's state on its session's runtime, and on screen when that
+   *  session is shown. A runtime pruned with its tab is not rebuilt. */
+  const setAddressPickFor = (tabId: number, v: AddressPickUi | null): void => {
+    const rt = runtimesRef.current.get(tabId)
+    if (rt === undefined) return
+    rt.addressPick = v
+    if (mountedRef.current && sessionRef.current?.tabId === tabId) setAddressPick(v)
+  }
+
+  /**
+   * The Apply address pick (spec #66, ADR 0008). A pick becomes the Session's
+   * Apply address, recorded as `pick`, unless the user chose one while it was
+   * out: their choice wins. None, a position outside the list and a failure
+   * leave the candidate list and the box, with a line that says which.
+   */
+  const pickApplyAddress = async (sc: { target: number; gen: number }, params: ApplyAddressPickParams): Promise<void> => {
+    const rt = runtimeOf(sc.target)
+    if (rt.addressPick?.kind === 'picking') return
+    const seq = ++rt.addressPickSeq
+    setAddressPickFor(sc.target, { kind: 'picking' })
+    const outcome = await requestAddressPick(portRef.current, params)
+    if (rt.addressPickSeq !== seq) return
+    // The page the pick was asked for is gone: its answer describes nothing.
+    if (!alive(sc)) { setAddressPickFor(sc.target, null); return }
+    if (outcome.kind === 'failed') { setAddressPickFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
+    if (outcome.kind === 'none') { setAddressPickFor(sc.target, { kind: 'none' }); return }
+    const landed: { ended: AddressPickUi | null } = { ended: null }
+    await applyToSession(sc.target, sc.gen, (s) => {
+      if (s.applyAddress !== null) return s
+      // A newer Scan whose candidates no longer hold the address: the pick is none.
+      if (!s.applyCandidates.some((c) => c.address.toLowerCase() === outcome.address.toLowerCase())) {
+        landed.ended = { kind: 'none' }
+        return s
+      }
+      return { ...s, applyAddress: outcome.address, applyAddressChosenBy: 'pick' }
+    })
+    if (rt.addressPickSeq === seq) setAddressPickFor(sc.target, landed.ended)
+  }
+
+  /** "Apply by email instead" beside a form (spec #66): the pick runs on this click and no sooner. */
+  const onApplyByEmail = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || owner.applyAddress !== null || owner.applyCandidates.length === 0) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const tab = await getTab(sc.target)
+    const now = sessionRef.current
+    if (!alive(sc) || now === null || now.tabId !== sc.target || now.applyAddress !== null || now.applyCandidates.length === 0) return
+    await pickApplyAddress(sc, addressPickParams(now, tab?.title ?? ''))
+  }
+
   /**
    * The Apply address the user picked from the list or typed (spec #66). A
    * Session that holds no Job posting text reads the page's now: a Scan with
@@ -2283,6 +2354,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                   key={session.tabId}
                   candidates={session.applyCandidates} applyAddress={session.applyAddress} chosenBy={session.applyAddressChosenBy}
                   hasFields={session.fields.length > 0}
+                  pick={addressPick}
+                  onOffer={() => { void onApplyByEmail() }}
                   onChoose={(address, how) => { void onChooseApplyAddress(address, how) }}
                 />
               )}

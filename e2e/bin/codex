@@ -17,6 +17,9 @@
 //   JFF_FAKE_CODEX_PICK_LOG=<path>   append one line to <path> per Option pick
 //                                    prompt, so a test can count the picks the
 //                                    stand-in model received.
+//   JFF_FAKE_CODEX_ADDRESS=<text>    (ok mode) the Apply address pick answers the
+//                                    position of the first address containing
+//                                    <text>, case ignored; unset, it finds none.
 // Deliberately written to parse identically as CommonJS or ESM: the file has no
 // extension, so Node picks the goal symbol itself and this must not care. That
 // rules out `require` and a top-level `return`.
@@ -57,6 +60,17 @@ const body = () => {
     const wanted = (process.env.JFF_FAKE_CODEX_PICK ?? '').toLowerCase()
     if (wanted === '') return { position: null }
     for (const m of prompt.matchAll(/^- position=(\d+) <option>([^\n]*)<\/option>$/gm)) {
+      if (m[2].toLowerCase().includes(wanted)) return { position: Number(m[1]) }
+    }
+    return { position: null }
+  }
+
+  // The Apply address pick (spec #66): the canned model points at the first
+  // address containing JFF_FAKE_CODEX_ADDRESS, and finds none without it.
+  if (/You choose which of a job posting's email addresses takes applications/.test(prompt)) {
+    const wanted = (process.env.JFF_FAKE_CODEX_ADDRESS ?? '').toLowerCase()
+    if (wanted === '') return { position: null }
+    for (const m of prompt.matchAll(/^- position=(\d+) <address>([^\n]*)<\/address>$/gm)) {
       if (m[2].toLowerCase().includes(wanted)) return { position: Number(m[1]) }
     }
     return { position: null }

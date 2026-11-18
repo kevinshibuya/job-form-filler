@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema, ApplyAddressPickResultSchema } from './messages.js'
 import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, FoundAddressSchema, isAddressShape } from './messages.js'
 import { captureField, captureRefusal, captureResolution, CaptureSaveParamsSchema, withoutQuery } from './capture.js'
 import { JobTextReplySchema, JobTextSourceSchema } from './jobText.js'
@@ -494,5 +494,28 @@ describe('the shape check of an address (spec #66)', () => {
   it('refuses what is not shaped like one', () => {
     for (const a of ['', 'ada', 'ada@', '@example.com', 'ada@example', 'ada example.com', 'ada@exa mple.com', 'a@b@example.com', 'ada@example.', 'ada@.example.com', ' ada@example.com', 'ada at example dot com'])
       expect(isAddressShape(a), a).toBe(false)
+  })
+})
+
+describe('applyAddress.pick (#71)', () => {
+  const params = {
+    candidates: [{ address: 'jobs@example.org', contexts: [{ kind: 'text', sentence: 'Apply at jobs@example.org.' }] }],
+    title: 'Analyst at Acme', company: null, jobText: 'Acme is hiring.',
+  }
+
+  it('takes the candidates with their contexts, the title, the Company and the job text', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'applyAddress.pick', params }).success).toBe(true)
+  })
+
+  it('refuses a request with no candidate', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'applyAddress.pick', params: { ...params, candidates: [] } }).success).toBe(false)
+  })
+
+  it('the reply is a position or none, and carries no address', () => {
+    expect(ApplyAddressPickResultSchema.parse({ position: 0 })).toEqual({ position: 0 })
+    expect(ApplyAddressPickResultSchema.parse({ position: null })).toEqual({ position: null })
+    expect(ApplyAddressPickResultSchema.parse({ position: 0, address: 'careers@example.org' })).toEqual({ position: 0 })
+    expect(ApplyAddressPickResultSchema.safeParse({ position: 'jobs@example.org' }).success).toBe(false)
+    expect(ApplyAddressPickResultSchema.safeParse({ position: -1 }).success).toBe(false)
   })
 })

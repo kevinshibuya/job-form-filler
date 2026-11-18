@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type Resolution,
+  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -107,6 +107,10 @@ export interface HeldMappingHost {
   learned: LearnWordingParams[]
   /** The addresses the page's one frame reports with its Scan reply (spec #66). */
   addresses: FoundAddress[]
+  /** Every `applyAddress.pick` request, in order, as its params (spec #66). */
+  addressPicks: ApplyAddressPickParams[]
+  /** What `applyAddress.pick` answers: a position, or an error. Defaults to none. */
+  addressPick: (p: ApplyAddressPickParams) => { position: number | null } | { error: { kind: HostErrorKind; message: string } } | Promise<{ position: number | null } | { error: { kind: HostErrorKind; message: string } }>
   /** Frames beside the first that hold no Field, each with its addresses. */
   otherFrames: { frameId: number; url: string; addresses: FoundAddress[] }[]
   /** Every request the panel sent the Native host, as its method, in order. */
@@ -129,7 +133,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
       held: [], firstRequests: [], firstCompanies: [], frameUrl: 'https://jobs.example.com/apply', mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
       picks: [], pick: () => ({ position: null }), learned: [],
-      addresses: [], otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
+      addresses: [], addressPicks: [], addressPick: () => ({ position: null }), otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -165,6 +169,12 @@ export function installHeldMappingHost(): HeldMappingHost {
         const pp = params as OptionPickParams
         host.picks.push(pp)
         const answer = await host.pick(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'applyAddress.pick') {
+        const pp = params as ApplyAddressPickParams
+        host.addressPicks.push(pp)
+        const answer = await host.addressPick(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
       if (method === 'wording.learn') {

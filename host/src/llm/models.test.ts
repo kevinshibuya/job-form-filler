@@ -7,6 +7,7 @@ describe('DEFAULT_MODELS', () => {
       factsExtract: 'gpt-6.1-sol',
       mapping: 'gpt-6.1-sol',
       optionPick: 'gpt-6.1-sol',
+      applyAddressPick: 'gpt-6.1-sol',
       generate: 'claude-opus-5-5',
       reviewDraft: 'gpt-6.1-sol',
       claudeAuthProbe: 'claude-opus-5-5',

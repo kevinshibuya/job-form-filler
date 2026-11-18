@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { isAddressShape, type AddressContext, type ApplyAddressCandidate, type ApplyAddressChoice } from '@jff/shared'
+import type { AddressPickUi } from './applyAddressPick'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
 
 /**
@@ -27,6 +28,10 @@ export interface EmailChooserProps {
   chosenBy: ApplyAddressChoice | null
   /** The page has Fields: the flow waits behind "Apply by email instead". */
   hasFields: boolean
+  /** The Apply address pick: out, or ended without an address. */
+  pick: AddressPickUi | null
+  /** "Apply by email instead" was clicked: the pick may run now. */
+  onOffer: () => void
   /** A shape-checked address the user picked from the list or typed. */
   onChoose: (address: string, how: 'list' | 'typed') => void
 }
@@ -97,7 +102,27 @@ function ToRow({ address, chosenBy, onChoose }: { address: string; chosenBy: App
   )
 }
 
-export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, onChoose }: EmailChooserProps) {
+/** What the pick says while no Apply address is chosen. The candidates and
+ *  the box stay below it throughout, so the user can choose without waiting. */
+function PickLine({ pick }: { pick: AddressPickUi }) {
+  if (pick.kind === 'picking') {
+    return <p className={`mt-2 text-[12px] ${MUTED}`} role="status" data-jff-email-pick="picking">Choosing the address to apply to from the page's addresses…</p>
+  }
+  if (pick.kind === 'none') {
+    return (
+      <p className="mt-2 text-[12px] text-amber-600 dark:text-amber-400" data-jff-email-pick="none">
+        No address on this page is clearly the one for applications. Choose one below, or type it.
+      </p>
+    )
+  }
+  return (
+    <p className="mt-2 whitespace-pre-line text-[12px] text-red-600 dark:text-red-400" role="alert" data-jff-email-pick="failed">
+      {`Could not pick the address. ${pick.reason}\nChoose one below, or type it.`}
+    </p>
+  )
+}
+
+export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, pick, onOffer, onChoose }: EmailChooserProps) {
   // Beside a form the flow waits for a click, which sends nothing. A chosen
   // address opens it for good: it is stored with the Session.
   const [offerTaken, setOfferTaken] = useState(false)
@@ -108,7 +133,7 @@ export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, on
     if (candidates.length === 0) return null
     return (
       <div className="mt-3" data-jff-email="1">
-        <button type="button" className={`${BTN} ${MUTED}`} data-jff-email-offer="1" onClick={() => setOfferTaken(true)}>
+        <button type="button" className={`${BTN} ${MUTED}`} data-jff-email-offer="1" onClick={() => { setOfferTaken(true); onOffer() }}>
           Apply by email instead
         </button>
       </div>
@@ -118,6 +143,7 @@ export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, on
   const unchosen = candidates.length === 0 && applyAddress === null
   return (
     <section className="mt-4" data-jff-email="1">
+      {pick !== null && applyAddress === null && <PickLine pick={pick} />}
       {applyAddress !== null && (
         <ToRow address={applyAddress} chosenBy={chosenBy} onChoose={(a) => onChoose(a, 'typed')} />
       )}

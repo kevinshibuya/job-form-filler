@@ -70,7 +70,8 @@ describe('a page with no Fields and addresses on it', () => {
     expect(sessionRow()?.jobText).toBe(JOB_TEXT)
     expect(sessionRow()?.jobTextSource).toBe('heuristic')
     expect(sessionRow()?.company).toBe('Acme')
-    expect(hostRequests()).toEqual(['selector.get'])
+    // The Apply address pick runs without a click on a page with no Field (#71).
+    await waitFor(() => { expect(hostRequests()).toEqual(['selector.get', 'applyAddress.pick']) })
   }, 15_000)
 
   it('lists an address found in a frame other than the top one', async () => {
@@ -207,6 +208,7 @@ describe('a page with Fields and an address', () => {
     fireEvent.click(offer)
     expect(candidates()).toEqual(['address-1@example.org', 'address-2@example.org'])
     expect(typedInput()).not.toBeNull()
-    expect(host.methods.length).toBe(before)
+    // The click is what sends the Apply address pick, and nothing else (#71).
+    await waitFor(() => { expect(host.methods.slice(before)).toEqual(['applyAddress.pick']) })
   })
 })
