@@ -26,3 +26,14 @@ exactly the hidden unlabelled file input the generic scorer keeps as the
 résumé target. A module rule written before its Capture is a guess wearing the
 costume of a fix. Ship the module empty and add the rule when the DOM is on
 disk.
+
+Amended 2026-11-16. Some ATS knowledge reached the generic path before any
+module existed: Greenhouse's upload markup, Lever's six-level climb to a
+checkbox group's question, Ashby's label repair. It stays there. A new
+ATS-specific rule goes in a module, and an old one moves only when a change
+touches it anyway. Moving working code for tidiness risks a regression and
+gives the user nothing.
+
+The Ignored field named above was cut on the same date and is not planned. A
+Capture records what the Scan found and decided, and that is the evidence the
+module's fix is built on.

@@ -13,6 +13,12 @@ export interface HostConfig {
   projectsPaths: string[]
   dbPath: string
   authCachePath: string
+  /** Where accepted Captures are written (spec #41). Not overridable from
+   *  config.json: a Capture stays in the app directory. */
+  capturesDir: string
+  /** The private-strings file a Capture is cleaned against; the guard's own
+   *  file. Absent means nothing of the user's to replace. */
+  privateStringsPath: string
   /** Per-task model id overrides; unknown keys and non-string values are
    *  dropped with a warning. Empty means "use the defaults". */
   models: ModelOverrides
@@ -48,6 +54,9 @@ export function loadConfig(): HostConfig {
     projectsPaths: [],
     dbPath: join(HOME_DIR, 'db.sqlite'),
     authCachePath: join(HOME_DIR, 'authcheck.json'),
+    capturesDir: join(HOME_DIR, 'captures'),
+    // The same file, and the same override, the guard reads (scripts/check-private.mjs).
+    privateStringsPath: process.env.JFF_PRIVATE_STRINGS ?? join(HOME_DIR, 'private-strings.txt'),
     models: {},
   }
   try {
@@ -61,6 +70,8 @@ export function loadConfig(): HostConfig {
         : defaults.projectsPaths,
       dbPath: typeof cfg?.dbPath === 'string' ? cfg.dbPath : defaults.dbPath,
       authCachePath: defaults.authCachePath,
+      capturesDir: defaults.capturesDir,
+      privateStringsPath: defaults.privateStringsPath,
       models: readModels(cfg?.models),
     }
   } catch {

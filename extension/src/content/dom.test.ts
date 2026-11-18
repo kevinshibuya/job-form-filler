@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import type { AtsModule } from '@jff/shared'
 import { walkElements, countUnreachableWidgets, labelFor, groupLabelFor, optionLabelOf, requiredFromBinding, descriptionFor, DESCRIPTION_MAX_CHARS } from './dom'
 import { ASHBY_COMBOBOX, ASHBY_YESNO_EN, SHARED_WRAPPER_FIRST_LAST, ASHBY_RADIO_FIELDSET, ASHBY_CONSENT_SINGLE, ASHBY_ESSAY_WITH_DESCRIPTION, ASHBY_COMBOBOX_WITH_DESCRIPTION, ASHBY_REQUIRED_BY_CLASS, ASHBY_OPTIONAL_FIELD, STAR_REQUIRED_FIELD } from './fixtures/ashby'
 
@@ -307,5 +308,130 @@ describe('descriptionFor', () => {
     document.body.innerHTML = '<div><div class="description">Nearby text</div><input id="nb" aria-label="Q"></div>'
     const el = document.getElementById('nb')!
     expect(descriptionFor(el, labelFor(el))).toBeNull()
+  })
+})
+
+describe('an ATS module\'s label rule', () => {
+  // A rule that answers for anything inside a `.question` block, from its `.q`.
+  const mod: AtsModule = {
+    id: 'lever',
+    labelRule: (control) => {
+      const block = control.closest('.question')?.querySelector('.q') ?? null
+      return block === null ? null : { text: block.textContent ?? '', element: block }
+    },
+  }
+
+  it('is tried first, before an explicit label, and records that the label came from the module', () => {
+    document.body.innerHTML = '<div class="question"><div class="q">The question</div><label for="x">Polluted</label><input id="x"></div>'
+    const control = document.getElementById('x')!
+    expect(labelFor(control, mod)).toEqual({ text: 'The question', source: 'module', element: document.querySelector('.q') })
+    expect(labelFor(control)).toMatchObject({ text: 'Polluted', source: 'explicit' })
+  })
+
+  it('answers for a radio group\'s question, while each Option keeps its own text', () => {
+    document.body.innerHTML = `<div class="question"><div class="q">Work model</div><fieldset><legend>Polluted</legend>
+      <label><input type="radio" name="wm" id="r1"> Remote</label></fieldset></div>`
+    const radio = document.getElementById('r1')!
+    expect(groupLabelFor(radio, mod)).toMatchObject({ text: 'Work model', source: 'module' })
+    expect(optionLabelOf(radio)).toBe('Remote')
+  })
+
+  it('is never asked for a checkbox, which keeps its own text', () => {
+    document.body.innerHTML = '<div class="question"><div class="q">Consent</div><label><input type="checkbox" id="c"> Email me</label></div>'
+    expect(labelFor(document.getElementById('c')!, mod)).toMatchObject({ text: 'Email me', source: 'wrapping' })
+  })
+
+  it('lets the generic order run when it finds nothing', () => {
+    document.body.innerHTML = '<label for="x">Email</label><input id="x">'
+    expect(labelFor(document.getElementById('x')!, mod)).toMatchObject({ text: 'Email', source: 'explicit' })
+  })
+
+  it('changes nothing for a module with no rule', () => {
+    document.body.innerHTML = '<div class="question"><div class="q">The question</div><input id="x" placeholder="Type your response"></div>'
+    expect(labelFor(document.getElementById('x')!, { id: 'greenhouse' })).toMatchObject({ text: 'Type your response', source: 'placeholder' })
+  })
+})
+
+describe('a label leaves out the text of the Controls inside it (#46)', () => {
+  it('a dropdown inside its own label is labelled with its question and none of its Options', () => {
+    document.body.innerHTML = '<label>Gender<select id="g"><option>Select ...</option><option>Male</option><option>Female</option></select></label>'
+    expect(labelFor(document.getElementById('g')!)).toMatchObject({ text: 'Gender', source: 'wrapping' })
+  })
+
+  it('a label that holds a button keeps its own words and loses the button\'s', () => {
+    document.body.innerHTML = '<label for="w">Website <button type="button">Clear</button></label><input id="w">'
+    expect(labelFor(document.getElementById('w')!)).toMatchObject({ text: 'Website', source: 'explicit' })
+  })
+
+  it('a legend that holds a Control keeps only its own words', () => {
+    document.body.innerHTML = '<fieldset><legend>Work model <button type="button">?</button></legend><input type="radio" name="m" id="r1"><input type="radio" name="m" id="r2"></fieldset>'
+    expect(groupLabelFor(document.getElementById('r1')!)).toMatchObject({ text: 'Work model', source: 'group-legend' })
+  })
+
+  it('a text box with only a placeholder is still labelled with the placeholder', () => {
+    document.body.innerHTML = '<div><input id="e" placeholder="Email address"></div>'
+    expect(labelFor(document.getElementById('e')!)).toMatchObject({ text: 'Email address', source: 'placeholder' })
+  })
+})
+
+describe('a file picker takes its group\'s label, never its button\'s words (#46)', () => {
+  const upload = (key: string, title: string): string =>
+    `<div role="group" aria-labelledby="upload-label-${key}"><div id="upload-label-${key}">${title}</div>`
+    + `<button type="button">Attach</button><label for="${key}">Attach</label><input id="${key}" type="file"></div>`
+
+  it('a file picker that is the only Control in a labelled group takes the group\'s label before its own', () => {
+    document.body.innerHTML = upload('resume', 'Resume/CV<span class="required">*</span>') + upload('cover_letter', 'Cover Letter')
+    expect(labelFor(document.getElementById('resume')!)).toMatchObject({ text: 'Resume/CV', source: 'group-aria' })
+    expect(labelFor(document.getElementById('cover_letter')!)).toMatchObject({ text: 'Cover Letter', source: 'group-aria' })
+  })
+
+  it('a fieldset\'s legend counts as a group\'s label', () => {
+    document.body.innerHTML = '<fieldset><legend>Portfolio</legend><label for="p">Upload a file</label><input id="p" type="file"></fieldset>'
+    expect(labelFor(document.getElementById('p')!)).toMatchObject({ text: 'Portfolio', source: 'group-legend' })
+  })
+
+  it('a labelled group that holds two file pickers gives neither of them its label', () => {
+    document.body.innerHTML = '<div role="group" aria-label="Documents">'
+      + '<label for="a">Transcript</label><input id="a" type="file">'
+      + '<label for="b">Certificate</label><input id="b" type="file"></div>'
+    expect(labelFor(document.getElementById('a')!)).toMatchObject({ text: 'Transcript', source: 'explicit' })
+    expect(labelFor(document.getElementById('b')!)).toMatchObject({ text: 'Certificate', source: 'explicit' })
+  })
+
+  it.each(['Attach', 'ATTACH', 'Upload a file.', 'Replace file', 'Uploading', 'Uploading...'])(
+    'an upload wording ("%s") is passed over for the next source',
+    (wording) => {
+      document.body.innerHTML = `<label for="f">${wording}</label><input id="f" type="file" aria-label="Writing sample">`
+      expect(labelFor(document.getElementById('f')!)).toMatchObject({ text: 'Writing sample', source: 'aria-label' })
+    },
+  )
+
+  it('a file picker whose only label source is an upload wording has no label, and says so', () => {
+    document.body.innerHTML = '<div><label for="f">Attach</label><input id="f" type="file"></div>'
+    const binding = labelFor(document.getElementById('f')!)
+    expect(binding).toMatchObject({ text: null, source: 'none', uploadWordingOnly: true })
+  })
+
+  it('a file picker with no label source at all does not say it lost an upload wording', () => {
+    document.body.innerHTML = '<div><input id="f" type="file"></div>'
+    expect(labelFor(document.getElementById('f')!).uploadWordingOnly).toBeUndefined()
+  })
+
+  it('a fieldset that holds a file picker and other Controls gives the picker its legend by no route (#55)', () => {
+    // Recruitee draws a video recorder's pickers inside the fieldset that holds
+    // every custom question; its legend ("Questions") names none of them.
+    document.body.innerHTML = '<fieldset><legend>Questions</legend>'
+      + '<label for="q">Why Acme?</label><input id="q">'
+      + '<input id="v" type="file"><input id="w" type="file" aria-label="Upload a file"><input id="t"></fieldset>'
+    expect(labelFor(document.getElementById('v')!)).toMatchObject({ text: null, source: 'none' })
+    expect(labelFor(document.getElementById('v')!).uploadWordingOnly).toBeUndefined()
+    expect(labelFor(document.getElementById('w')!)).toMatchObject({ text: null, source: 'none', uploadWordingOnly: true })
+    // The rule is for file pickers only: a text box in the same fieldset still takes the legend.
+    expect(labelFor(document.getElementById('t')!)).toMatchObject({ text: 'Questions', source: 'legend' })
+  })
+
+  it('a text box whose label is the word "Attach" keeps it: the wording rule is for file pickers only', () => {
+    document.body.innerHTML = '<label for="t">Attach</label><input id="t">'
+    expect(labelFor(document.getElementById('t')!)).toMatchObject({ text: 'Attach', source: 'explicit' })
   })
 })

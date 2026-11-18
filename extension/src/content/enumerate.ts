@@ -1,4 +1,4 @@
-import type { EnumField, WidgetKind } from '@jff/shared'
+import type { AtsModule, EnumField, WidgetKind } from '@jff/shared'
 import {
   ariaGroupLabel, countUnreachableWidgets, descriptionFor, groupLabelFor, isSoleControl, kindOf,
   labelFor, optionLabelOf, requiredFromBinding, scopeOf, walkElements, type LabelBinding,
@@ -85,6 +85,8 @@ export interface EnumerateOptions {
   measure?: MeasureFn
   /** Injected in Task 14; defaults to "nothing is demographic" so this task stands alone. */
   isDemographic?: (el: Element) => boolean
+  /** The frame's ATS module (spec #41). Absent means the generic module. */
+  atsModule?: AtsModule
 }
 
 const FID_ATTR = 'data-jff-fid'
@@ -176,6 +178,20 @@ export function attachedUploads(root: Document | ShadowRoot): string[] {
   return out
 }
 
+/**
+ * #53: whether a Control sits inside a `form` element. The walk climbs out of
+ * any shadow root the Control is drawn in, so a form around a web component
+ * still holds it.
+ */
+export function insideForm(el: Element): boolean {
+  let node: Node | null = el
+  while (node !== null) {
+    if (node instanceof Element && node.tagName === 'FORM') return true
+    node = node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode
+  }
+  return false
+}
+
 export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; unreachableWidgets: number; attachedUploads: string[] } {
   const measure = opts.measure ?? defaultMeasure
   const isDemographic = opts.isDemographic ?? (() => false)
@@ -235,7 +251,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
 
       // groupLabelFor, NOT labelFor: the wrapping <label> of the first radio is
       // that OPTION's text ("Remote"), never the group's ("Work model").
-      const binding = groupLabelFor(el)
+      const binding = groupLabelFor(el, opts.atsModule)
       const choice = selfHidden(m) ? detectChoice(el) : null
       const group: EnumField = choice !== null
         ? {
@@ -251,6 +267,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             currentValue: null,
             demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
+            inForm: insideForm(el),
           }
         : {
             frameId: -1, fid, epoch: opts.epoch,
@@ -260,6 +277,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
             visible, currentValue: (el as HTMLInputElement).checked ? optionLabelOf(el) : null,
             demographic: isDemographicField(binding.text, isDemographic(el)),
             description: descriptionFor(el, binding) ?? undefined,
+            inForm: insideForm(el),
           }
       // Only the FIRST member carries data-jff-fid; the filler re-finds the
       // other members through the shared name (fill.ts) or, for choice, the
@@ -290,6 +308,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
         currentValue: groupValue(group.boxes),
         demographic: isDemographicField(group.binding.text, isDemographic(head)),
         description: descriptionFor(head, group.binding) ?? undefined,
+        inForm: insideForm(head),
       })
       fid++
       continue
@@ -298,7 +317,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
     if (kind === 'checkbox' && selfHidden(m)) {
       const choice = detectChoice(el)
       if (choice !== null) {
-        const binding = labelFor(el)
+        const binding = labelFor(el, opts.atsModule)
         el.setAttribute(FID_ATTR, String(fid))
         fields.push({
           frameId: -1, fid, epoch: opts.epoch,
@@ -308,6 +327,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
           visible, currentValue: null,
           demographic: isDemographicField(binding.text, isDemographic(el)),
           description: descriptionFor(el, binding) ?? undefined,
+          inForm: insideForm(el),
         })
         fid++
         continue
@@ -323,7 +343,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       options = comboboxOptions(el)
     }
 
-    const binding = labelFor(el)
+    const binding = labelFor(el, opts.atsModule)
     el.setAttribute(FID_ATTR, String(fid))
     fields.push({
       frameId: -1, fid, epoch: opts.epoch,
@@ -334,7 +354,9 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
       demographic: isDemographicField(binding.text, isDemographic(el)),
       description: descriptionFor(el, binding) ?? undefined,
       accept: kind === 'file' ? el.getAttribute('accept') ?? undefined : undefined,
+      ...(binding.uploadWordingOnly === true ? { uploadWordingOnly: true } : {}),
       ...(kind === 'text' ? { numeric: takesOnlyNumbers(el) } : {}),
+      inForm: insideForm(el),
     })
     fid++
   }

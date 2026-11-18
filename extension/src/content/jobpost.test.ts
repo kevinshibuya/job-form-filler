@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { captureJobText, cssPathOf, MIN_JOB_TEXT, startPicker } from './jobpost'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { atsModule, JOB_TEXT_MIN } from '@jff/shared'
+import { captureJobText, cssPathOf, MIN_JOB_TEXT, readJobText, startPicker, type PostingReader } from './jobpost'
+import { postingFixtureHtml } from './fixtures/real'
+import type { FetchLike } from './postingFetch'
 
 const long = (marker: string): string => `${marker} ` + 'lorem ipsum dolor sit amet '.repeat(30)
 
@@ -59,6 +62,92 @@ describe('captureJobText', () => {
   it('requires at least MIN_JOB_TEXT characters', () => {
     document.body.innerHTML = `<main>${'a'.repeat(MIN_JOB_TEXT - 1)}</main>`
     expect(captureJobText(document, null).source).toBe('none')
+  })
+
+  // Spec #41: the minimum holds for every source but the user's paste.
+  it('refuses a heuristic result of 50 characters', () => {
+    document.body.innerHTML = `<main>${'a'.repeat(50)}</main>`
+    expect(captureJobText(document, null)).toMatchObject({ source: 'none', text: '' })
+  })
+
+  it('refuses a picked spot that now holds fewer than the minimum, and falls through', () => {
+    document.body.innerHTML = `<div id="jd">${'a'.repeat(50)}</div><main>${long('HEURISTIC')}</main>`
+    const r = captureJobText(document, '#jd')
+    expect(r.source).toBe('heuristic')
+    expect(r.text).toContain('HEURISTIC')
+  })
+
+  it('the minimum is the shared one', () => {
+    expect(MIN_JOB_TEXT).toBe(JOB_TEXT_MIN)
+  })
+})
+
+// Spec #41, #52: the page's part of the order is the ATS module's posting
+// page, then the spot the user picked, then a heuristic.
+describe('readJobText', () => {
+  const APPLY = 'https://jobs.lever.co/acme/0000-posting/apply'
+  const fixtureFetch = () => vi.fn<FetchLike>(async () => new Response(postingFixtureHtml('lever-posting'), { status: 200 }))
+  const reader = (fetch: FetchLike, id = 'lever', formPageUrl = APPLY): PostingReader => ({ module: atsModule(id), formPageUrl, fetch })
+
+  it('on a Lever apply page reads the posting page first, ahead of a pick and a heuristic', async () => {
+    document.body.innerHTML = `<div id="jd">${long('LEARNED')}</div><main>${long('HEURISTIC')}</main>`
+    const fetch = fixtureFetch()
+    const r = await readJobText(document, '#jd', reader(fetch))
+    expect(r.source).toBe('ats')
+    expect(r.selector).toBeNull()
+    expect(r.text).toContain('Placeholder text where the Job posting described the role.')
+    expect(r.text).not.toContain('LEARNED')
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('goes on to the pick when the posting page cannot be read', async () => {
+    document.body.innerHTML = `<div id="jd">${long('LEARNED')}</div><main>${long('HEURISTIC')}</main>`
+    const fetch = vi.fn<FetchLike>(async () => { throw new TypeError('Failed to fetch') })
+    expect(await readJobText(document, '#jd', reader(fetch))).toMatchObject({ source: 'learned', selector: '#jd' })
+  })
+
+  it('goes on to the heuristic when the posting page answers with an error', async () => {
+    document.body.innerHTML = `<main>${long('HEURISTIC')}</main>`
+    const fetch = vi.fn<FetchLike>(async () => new Response('', { status: 500 }))
+    const r = await readJobText(document, null, reader(fetch))
+    expect(r.source).toBe('heuristic')
+    expect(r.text).toContain('HEURISTIC')
+  })
+
+  it('goes on to the next source when the posting page holds less than the minimum', async () => {
+    document.body.innerHTML = `<main>${long('HEURISTIC')}</main>`
+    const fetch = vi.fn<FetchLike>(async () => new Response(`<div class="posting-page">${'a'.repeat(MIN_JOB_TEXT - 1)}</div>`, { status: 200 }))
+    expect((await readJobText(document, null, reader(fetch))).source).toBe('heuristic')
+  })
+
+  it('goes on to the next source when the posting page has not answered after 5 seconds', async () => {
+    vi.useFakeTimers()
+    try {
+      document.body.innerHTML = `<main>${long('HEURISTIC')}</main>`
+      const fetch = vi.fn<FetchLike>(() => new Promise<Response>(() => {}))
+      let reply: Awaited<ReturnType<typeof readJobText>> | undefined
+      void readJobText(document, null, reader(fetch)).then((r) => { reply = r })
+      await vi.advanceTimersByTimeAsync(5_001)
+      expect(reply?.source).toBe('heuristic')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('makes no fetch on an Ashby, a Greenhouse or an unknown page', async () => {
+    document.body.innerHTML = `<main>${long('HEURISTIC')}</main>`
+    const fetch = fixtureFetch()
+    for (const [id, url] of [['ashby', 'https://jobs.ashbyhq.com/acme/0000/application'], ['greenhouse', 'https://boards.greenhouse.io/acme/jobs/1'], ['generic', 'https://careers.example/apply']] as const) {
+      expect((await readJobText(document, null, reader(fetch, id, url))).source).toBe('heuristic')
+    }
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('makes no fetch on a Lever page that is not an apply page', async () => {
+    document.body.innerHTML = `<main>${long('HEURISTIC')}</main>`
+    const fetch = fixtureFetch()
+    expect((await readJobText(document, null, reader(fetch, 'lever', 'https://jobs.lever.co/acme/0000-posting'))).source).toBe('heuristic')
+    expect(fetch).not.toHaveBeenCalled()
   })
 })
 

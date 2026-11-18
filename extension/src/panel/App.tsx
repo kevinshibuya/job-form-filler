@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { isProfileKey, toStoredText } from '@jff/shared'
+import { CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
-import { guessCompany } from './company'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
 import { buildRows, refOf, type Row } from './group'
+import { captureFrame, captureRequest, heldValues } from './capture'
 import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port'
 import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
@@ -13,8 +13,9 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
+import { jobTextLine, offersNotTheJob } from './jobTextLine'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
-import { pickResumeTarget, resumeAttached } from './resumeTarget'
+import { pickResumeTarget, resumeOnPage } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
@@ -227,7 +228,7 @@ const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ k
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
+  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], resumeUploaded: false, ats: 'generic', edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -330,6 +331,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
   const [generatePaused, setGeneratePaused] = useState<{ done: number; total: number } | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  /** Where the last Capture was saved, or why it was not. */
+  const [captureMsg, setCaptureMsg] = useState<string | null>(null)
+  const [capturing, setCapturing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
   const [marking, setMarking] = useState(false)
@@ -521,6 +525,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setScanStatus(s?.lastOutcome ?? null)
     setSubmitPrompt(false)
     setSaveMsg(null)
+    setCaptureMsg(null)
+    setCapturing(false)
     setActing(null)
     setPicking(false)
     setMarking(false)
@@ -544,8 +550,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const filledRefs = session?.filledRefs ?? []
   const election = session?.election ?? null
   const attachedUploads = session?.attachedUploads ?? []
+  const resumeUploaded = session?.resumeUploaded ?? false
   const company = session?.company ?? ''
   const jobText = session?.jobText ?? ''
+  const jobTextSource = session?.jobTextSource ?? null
   const snapshot = session?.snapshot ?? {}
   const reuseOverrides = session?.reuseOverrides ?? {}
   const parked = session?.parked ?? false
@@ -554,7 +562,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // A8/A9: the SAME pure scorer scan.ts used decides which file row is wired to
   // the stored resume — recomputed over the CURRENT fields so a post-resume
   // re-enumeration can never leave the button on a stale fid. A resume the
-  // page already shows attached leaves no row wired to it (#37).
+  // page already shows attached leaves no row wired to it (#37). One this
+  // document kept from an earlier Scan still leaves "Put on page" on its row:
+  // only the Scan stops uploading it again (#49).
   const resumeTargetField = pickResumeTarget(main.map((r) => r.field), attachedUploads)
   const resumeTargetRef = resumeTargetField === null ? null : refOf(resumeTargetField)
   const companyOrNull = company.trim() === '' ? null : company.trim()
@@ -1090,17 +1100,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const pendingNav = rt.navRescan
       rt.navRescan = null
       const sameSiteNav = pendingNav !== null
-      // Company: the user's edit always wins; guess only while the field is empty.
+      // Company: the user's edit always wins. The Scan guesses one only while
+      // the field is empty, once it knows the elected frame (spec #41).
       // Read from the session this scan OWNS, never from whatever is on screen.
       const ownedSession = (): Session | null =>
         sessionRef.current !== null && sessionRef.current.tabId === target ? sessionRef.current : existing
       const known = ownedSession()?.company.trim() ?? ''
-      const co = known === '' ? guessCompany(tab.title ?? '', hostname) : known
-      // Post-await writes, and the mid-scan window they sit in is hundreds of ms
-      // wide: tab 7's guess belongs in tab 7's storage, never on tab 8's screen.
-      if (co !== null && known === '' && alive(sc)) {
-        await applyToSession(target, sc.gen, (s) => ({ ...s, company: co, companyGuessed: true }))
-      }
       if (alive(sc)) await applyToSession(target, sc.gen, (s) => ({ ...s, frameReports: [] }))
       const out = await runScan({
         nextEpoch: () => {
@@ -1136,10 +1141,14 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         }),
         port,
         getResume: loadResume,
-        pastedJobText: ownedSession()?.jobText ?? '',
+        // The Session keeps its text with where it came from, so a second
+        // Scan uses it as it is and records the same source (spec #41).
+        heldJobText: ownedSession()?.jobText ?? '',
+        heldJobTextSource: ownedSession()?.jobTextSource ?? null,
         hostname,
         url,
-        company: co,
+        title: tab.title ?? '',
+        company: known === '' ? null : known,
       })
       // The bound tab navigated or closed while this scan ran: these fields,
       // resolutions and counts describe a page that is gone, and every JFF_FILL
@@ -1154,7 +1163,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         out.activeCaptcha ? { kind: 'captcha' }
         // DISTINCT frames: a frame that errored first-pass and replied on the retry
         // contributes two reports but is still one frame on the page.
-        : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size }
+        // The ATS rides along so the empty state can say where its form is.
+        : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size, ats: out.ats }
         : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
         : doneOutcome(out.fill.filled.length, first.settled)
       // The first step has filled what needed no model. While Mapping runs, the
@@ -1181,10 +1191,20 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         waiting: owesMapping ? out.pending.map(refOf) : [],
         election: out.election,
         attachedUploads: out.attachedUploads,
+        resumeUploaded: out.resumeUploaded,
+        ats: out.ats,
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
-        jobText: out.jobText !== '' ? out.jobText : s.jobText,
+        // What the user typed while the Scan ran is theirs.
+        ...(s.jobTextSource === 'paste' && s.jobText.trim() !== ''
+          ? {}
+          : { jobText: out.jobText, jobTextSource: out.jobTextSource }),
+        // The Scan's guess fills an empty field only: what the user typed
+        // while the Scan ran is theirs.
+        ...(out.companyGuessed && out.company !== null && s.company.trim() === ''
+          ? { company: out.company, companyGuessed: true }
+          : {}),
         lastOutcome: onScreen,
       }))
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
@@ -1198,7 +1218,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           mountedRef.current && alive(sc) && rt.scanSeq === seq && rt.epoch === out.epoch
         void (async () => {
           const mapped = await runMapping({
-            port, sendToTab: (frameId, message) => sendToTab(target, frameId, message), hostname, url, company: co,
+            port, sendToTab: (frameId, message) => sendToTab(target, frameId, message), hostname, url, company: out.company,
           }, out, isCurrent)
           // Dropped by the epoch the Scan carries: a newer Scan owns the rows.
           if (mapped === null || !isCurrent()) return
@@ -1699,7 +1719,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const p = replies[0]?.payload as { ok: boolean; pick?: { selector: string; text: string } } | undefined
       if (p?.ok !== true || p.pick === undefined) return // cancelled; leave the paste box alone
       const picked = p.pick
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text }))
+      // A pick is held to the minimum as every source but a paste is: a
+      // cookie notice is never taken for the job (spec #41).
+      if (picked.text.trim().length < JOB_TEXT_MIN) {
+        if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Pick refused: that spot holds ${picked.text.trim().length} characters, and a job description needs at least ${JOB_TEXT_MIN} characters.` })
+        return
+      }
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick' }))
       if (inScope(sc)) clearActionFailure()
       const tab = await getTab(sc.target)
       if (!inScope(sc)) return
@@ -1713,6 +1739,29 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setScanStatus({ kind: 'action_failed', reason: `Pick failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       if (tabIdRef.current === sc.target) setPicking(false)
+    }
+  }
+
+  /** "Not the job description" (spec #41): the Session's text goes, the source
+   *  becomes nothing found, and the Native host forgets the spot saved for
+   *  the site. */
+  const onNotTheJob = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    try {
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: '', jobTextSource: 'none' }))
+      const tab = await getTab(sc.target)
+      if (!alive(sc)) return
+      const hostname = hostnameOf(tab?.url)
+      if (hostname === '') return
+      const r = await portRef.current?.request('selector.clear', { hostname, purpose: 'job_description' })
+      if (r !== undefined && !r.ok && inScope(sc)) {
+        setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${hostErrorText(r.error)}` })
+      }
+    } catch (e) {
+      if (!inScope(sc)) return
+      setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${e instanceof Error ? e.message : String(e)}` })
     }
   }
 
@@ -1878,6 +1927,43 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const s = sessionRef.current
     if (s === null) return
     await endSession(s.tabId)
+  }
+
+  /**
+   * A Capture (spec #41): the elected frame, or the top frame when none was
+   * elected, cleans a copy of its page; the Native host saves it beside what
+   * the Scan decided, on this machine only, and says where.
+   */
+  const onSaveCapture = async (): Promise<void> => {
+    const port = portRef.current
+    const owner = sessionRef.current
+    if (port === null || owner === null || capturing) return
+    const target = owner.tabId
+    // The reply belongs to the Session it was asked for, never to one swapped in meanwhile.
+    const stillShown = (): boolean => sessionRef.current?.tabId === target
+    const frameId = captureFrame(owner)
+    setCapturing(true)
+    setCaptureMsg(null)
+    try {
+      const epoch = owner.epoch
+      const { replies } = await sendToTab(target, frameId, { type: 'JFF_CAPTURE', epoch, held: heldValues(owner, frameId) })
+      const payload = replies[0]?.payload as { ok?: boolean; error?: string; capture?: unknown } | undefined
+      const page = CapturedPageSchema.safeParse(payload?.capture)
+      if (payload?.ok !== true || !page.success) {
+        const why = payload?.error === STALE_EPOCH ? 'the page changed since the Scan. Scan again, then save a capture.' : `the page did not hand it over (${payload?.error ?? 'no reply'}).`
+        if (stillShown()) setCaptureMsg(`Capture not saved: ${why}`)
+        return
+      }
+      const tab = await getTab(target)
+      const r = await port.request<{ path: string }>('capture.save', captureRequest(page.data, owner, tab?.url ?? owner.startUrl))
+      if (!stillShown()) return
+      // A refusal is the host's own sentence: it says what was found and that nothing was saved.
+      setCaptureMsg(r.ok ? `Capture saved to ${r.result.path}` : r.error.kind === 'bad_request' ? r.error.message : `Capture not saved: ${hostErrorText(r.error)}`)
+    } catch (e) {
+      if (stillShown()) setCaptureMsg(`Capture not saved: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      if (stillShown()) setCapturing(false)
+    }
   }
 
   const onSaveAnswers = async (): Promise<void> => {
@@ -2060,11 +2146,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
       <label className={`my-2 block ${MUTED}`} data-jff-resume="1">
         Resume {resumeName === null ? '(none stored)' : `(${resumeName})`}
-        {/* #37: a resume the page already shows is no missing target. */}
-        {resumeName !== null && resumeAttached(attachedUploads) && (
+        {/* #37: a resume the page already shows is no missing target, nor
+            one this document kept from an earlier Scan (#49). */}
+        {resumeName !== null && resumeOnPage(attachedUploads, resumeUploaded) && (
           <span data-jff-resume-attached-note="1"> — resume already on the page</span>
         )}
-        {resumeName !== null && !resumeAttached(attachedUploads) && main.some((r) => r.field.kind === 'file') && resumeTargetRef === null && (
+        {resumeName !== null && !resumeOnPage(attachedUploads, resumeUploaded) && main.some((r) => r.field.kind === 'file') && resumeTargetRef === null && (
           <span className="text-amber-600 dark:text-amber-400" data-jff-resume-note="1"> — resume field not identified; nothing was uploaded</span>
         )}
         <input
@@ -2093,8 +2180,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         Job description (paste here if the scan could not find it)
         <textarea
           className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} disabled={session === null}
-          onChange={(e) => { const v = e.target.value; writeSession((s) => ({ ...s, jobText: v })) }}
+          // Typing or pasting makes the text the user's from then on.
+          onChange={(e) => { const v = e.target.value; writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' })) }}
         />
+        {session !== null && (
+          // Where the text came from (spec #41), right under the box.
+          <span className="mt-0.5 flex items-center gap-2 text-xs">
+            <span data-jff-jobtext-source={jobTextSource ?? ''}>{jobTextLine(jobText, jobTextSource, session.ats)}</span>
+            {offersNotTheJob(jobTextSource) && (
+              <button type="button" className={BTN} onClick={() => { void onNotTheJob() }}>Not the job description</button>
+            )}
+          </span>
+        )}
         <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0 || picking} onClick={onPickJobText}>
           {busyLabel(picking, 'Pick job description', 'Picking… (click the description on the page)')}
         </button>
@@ -2229,8 +2326,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           {busyLabel(saving, 'Save answers', 'Saving…')}
         </button>
         {session !== null && !parked && discardButton}
+        {/* After any Scan, a zero-Field one included: lastOutcome is what a settled Scan leaves. */}
+        {session !== null && !parked && session.lastOutcome !== null && (
+          <button type="button" className={BTN} data-jff-capture="1" disabled={capturing || scanning} onClick={() => { void onSaveCapture() }}>
+            {busyLabel(capturing, 'Save a capture', 'Saving capture…')}
+          </button>
+        )}
         {saveMsg !== null && <span className={MUTED} data-jff-savemsg="1">{saveMsg}</span>}
       </div>
+      {captureMsg !== null && <p className={`my-1 break-all ${MUTED}`} data-jff-capture-msg="1">{captureMsg}</p>}
             </>
           )}
             </>

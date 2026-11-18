@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import type { EnumField } from '@jff/shared'
+import { atsModule, type EnumField } from '@jff/shared'
 import { enumerateFields, type MeasureFn } from '../content/enumerate'
 import { loadRealFixture } from '../content/fixtures/real'
 import { dropJunk } from './junk'
-import { pickResumeTarget, resumeAttached, scoreResumeField } from './resumeTarget'
+import { pickResumeTarget, resumeAttached, resumeOnPage, scoreResumeField } from './resumeTarget'
 
 const file = (fid: number, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: 1, fid, epoch: 1, label: null, name: null, idAttr: null, kind: 'file',
@@ -55,6 +55,21 @@ describe('resumeAttached', () => {
     expect(resumeAttached(['Cover Letter', 'Currículo'])).toBe(true)
     expect(resumeAttached(['Cover Letter'])).toBe(false)
     expect(resumeAttached([])).toBe(false)
+  })
+})
+
+describe('resumeOnPage (#49)', () => {
+  it('is true for a resume the page shows attached, or one this document kept from an earlier Scan', () => {
+    expect(resumeOnPage([], true)).toBe(true)
+    expect(resumeOnPage(['Resume/CV'], false)).toBe(true)
+    expect(resumeOnPage(['Cover Letter'], false)).toBe(false)
+    expect(resumeOnPage([], false)).toBe(false)
+  })
+
+  it('leaves the Put on page target alone: the row keeps it when only the flag is set', () => {
+    const real = file(1, { label: 'Resume/CV', required: true })
+    expect(resumeOnPage([], true)).toBe(true)
+    expect(pickResumeTarget([real], [])).toBe(real)
   })
 })
 
@@ -112,6 +127,34 @@ describe('resume target on real-page fixtures', () => {
     expect(attachedUploads).toEqual([])
     expect(pickResumeTarget(fields, attachedUploads)?.idAttr).toBe('resume')
     expect(scoreResumeField(fields.find((f) => f.idAttr === 'cover_letter')!)).toBe(0)
+  })
+
+  // #46: the labels got better, the outcome did not move. Pinned from a run on
+  // the code before the generic label rules, with each fixture's own module too.
+  it.each([
+    ['based-in-yes-no', 'ashby', '_systemfield_resume'],
+    ['greenhouse-accommodation', 'greenhouse', 'resume'],
+    ['greenhouse-hosted-a', 'greenhouse', 'resume'],
+    ['greenhouse-hosted-b', 'greenhouse', 'resume'],
+    ['greenhouse-hosted-resume-attached', 'greenhouse', null],
+    ['greenhouse-hosted-resume-uploading', 'greenhouse', null],
+    ['greenhouse-self-id', 'greenhouse', 'resume'],
+    ['lever-marketing-consent', 'lever', 0],
+    ['lever-pronoun-group', 'lever', 0],
+    ['lever-source-group', 'lever', 0],
+    ['recruitee-file-inputs', 'recruitee', 3],
+  ] as const)('%s: the Resume target is the same Field as before, with the generic module and with %s\'s', (name, ats, target) => {
+    for (const mod of [undefined, atsModule(ats)]) {
+      loadRealFixture(name)
+      const { fields, attachedUploads } = enumerateFields({ root: document, epoch: 1, measure: allVisible, atsModule: mod })
+      const picked = pickResumeTarget(dropJunk(fields), attachedUploads)
+      if (target === null) expect(picked).toBeNull()
+      else if (typeof target === 'number') expect(picked?.fid).toBe(target)
+      else expect(picked?.idAttr).toBe(target)
+      for (const cover of fields.filter((f) => f.kind === 'file' && /cover/i.test(`${f.idAttr ?? ''} ${f.name ?? ''}`))) {
+        expect(scoreResumeField(cover)).toBe(0)
+      }
+    }
   })
 
   it("based-in-yes-no (Ashby): the hidden resume input scores positive and is the target", () => {

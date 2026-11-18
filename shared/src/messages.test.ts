@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema } from './messages.js'
+import { captureField, captureRefusal, captureResolution, CaptureSaveParamsSchema, withoutQuery } from './capture.js'
+import { JobTextReplySchema, JobTextSourceSchema } from './jobText.js'
 
 const handle = { frameId: 0, fid: 3, epoch: 7 }
 
@@ -86,6 +88,16 @@ describe('Resolution in two requests', () => {
       const parsed = HostRequestSchema.parse({ requestId: `r-${method}`, method, params })
       expect(parsed.method).toBe(method)
     }
+  })
+
+  it('carries the Scan\'s ATS on either request, and accepts a request with none', () => {
+    for (const method of ['resolve.first', 'resolve.mapping'] as const) {
+      const parsed = HostRequestSchema.parse({ requestId: `r-${method}`, method, params: { ...params, ats: 'greenhouse' } })
+      expect(parsed.params).toMatchObject({ ats: 'greenhouse' })
+      const without = HostRequestSchema.parse({ requestId: `r0-${method}`, method, params })
+      expect((without.params as { ats?: string }).ats).toBeUndefined()
+    }
+    expect(HostRequestSchema.safeParse({ requestId: 'r3', method: 'resolve.first', params: { ...params, ats: '' } }).success).toBe(false)
   })
 
   it('rejects either request without its fields', () => {
@@ -314,5 +326,126 @@ describe('ResolutionSchema — the stored Value a picked Option stands for (#31)
       reason: 'option-pick', standsFor: 'Yes',
     })
     expect(r.standsFor).toBe('Yes')
+  })
+})
+
+describe('a Capture (spec #41)', () => {
+  const field = {
+    ...handle, label: 'Country', name: 'country', idAttr: null, kind: 'combobox' as const,
+    options: [], required: true, visible: true, currentValue: null, demographic: false,
+  }
+  const params = {
+    page: { html: '<!DOCTYPE html><html><body><form></form></body></html>', cut: false },
+    ats: 'lever',
+    url: 'https://jobs.lever.co/acme/123/apply',
+    fields: [field],
+    resolutions: [{ handle, tier: 'auto' as const, source: 'profile' as const, key: 'country' as const, reason: 'recognizer:country' }],
+    election: { frameId: 0, score: 9, url: 'https://jobs.lever.co/acme/123/apply' },
+    frameReports: [{ frameId: 0, url: 'https://jobs.lever.co/acme/123/apply', fields: 1, error: null }],
+  }
+
+  it('is a host request that carries the page, the ATS, the Fields, the Resolutions, the election and the frame reports', () => {
+    const parsed = HostRequestSchema.safeParse({ requestId: 'c1', method: 'capture.save', params })
+    expect(parsed.success).toBe(true)
+  })
+
+  it('has an optional place for the job text\'s source', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'c2', method: 'capture.save', params: { ...params, jobTextSource: 'heuristic' } }).success).toBe(true)
+  })
+
+  it('keeps a sixth key on a Resolution, so the Native host can see it and refuse it', () => {
+    const extra = { ...params, resolutions: [{ ...params.resolutions[0], value: 'Canada' }] }
+    const parsed = HostRequestSchema.parse({ requestId: 'c3', method: 'capture.save', params: extra })
+    if (parsed.method !== 'capture.save') throw new Error('wrong branch')
+    expect(Object.keys(parsed.params.resolutions[0]!)).toContain('value')
+  })
+
+  it('refuses a cleaned page longer than 2,000,000 characters', () => {
+    const long = { ...params, page: { html: 'x'.repeat(2_000_001), cut: true } }
+    expect(HostRequestSchema.safeParse({ requestId: 'c4', method: 'capture.save', params: long }).success).toBe(false)
+  })
+
+  it('asks a frame for its page with the Values the Side panel knows for it', () => {
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_CAPTURE', epoch: 3, held: [{ fid: 2, value: 'Canada' }] }).success).toBe(true)
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_CAPTURE', epoch: 3 }).success).toBe(false)
+  })
+})
+
+describe('what a Capture keeps', () => {
+  const resolution = ResolutionSchema.parse({
+    handle, tier: 'auto', value: '+44 20 7946 0100', source: 'profile', key: 'phone', answerId: null, reason: 'recognizer:phone',
+    candidates: ['United Kingdom', 'Reino Unido'], phone: { callingCode: '44', nationalNumber: '2079460100', countryNames: ['United Kingdom'] },
+    city: { countryNames: ['United Kingdom'], region: 'London' }, standsFor: 'x', identifiedValue: 'y', fieldClass: 'personal_fact',
+  })
+
+  it('keeps a Resolution\'s five keys and nothing else', () => {
+    expect(captureResolution(resolution)).toEqual({ handle, tier: 'auto', source: 'profile', key: 'phone', reason: 'recognizer:phone' })
+  })
+
+  it('drops a Field\'s current Value', () => {
+    const f = EnumFieldSchema.parse({
+      ...handle, label: 'Name', name: 'name', idAttr: null, kind: 'text', options: [], required: true, visible: true, currentValue: 'Ada Lovelace', demographic: false,
+    })
+    expect(captureField(f)).toEqual({ ...f, currentValue: null })
+  })
+
+  it('drops an address\'s query and fragment', () => {
+    expect(withoutQuery('https://jobs.lever.co/acme/123/apply?lever-source=x&token=abc#frag')).toBe('https://jobs.lever.co/acme/123/apply')
+    expect(withoutQuery('about:srcdoc')).toBe('about:srcdoc')
+    expect(withoutQuery(null)).toBeNull()
+  })
+
+  it('refuses a Field with a current Value and a Resolution with a sixth key', () => {
+    const f = { ...handle, label: 'Name', name: null, idAttr: null, kind: 'text' as const, options: [], required: false, visible: true, currentValue: null, demographic: false }
+    const r = captureResolution(resolution)
+    expect(captureRefusal({ fields: [f], resolutions: [r] })).toBeNull()
+    expect(captureRefusal({ fields: [{ ...f, currentValue: 'Ada' }], resolutions: [r] })).toMatch(/current Value/)
+    expect(captureRefusal({ fields: [f], resolutions: [{ ...r, candidates: ['x'] } as typeof r] })).toMatch(/candidates/)
+  })
+})
+
+describe('ScanResultSchema — the Resume uploaded once per page load (#49)', () => {
+  const reply = { epoch: 1, fields: [], unreachableWidgets: 0, activeCaptcha: false, attachedUploads: [] }
+
+  it('keeps the flag a page script sends, so its own check does not strip it', () => {
+    expect(ScanResultSchema.parse({ ...reply, resumeUploaded: true }).resumeUploaded).toBe(true)
+    expect(ScanResultSchema.parse({ ...reply, resumeUploaded: false }).resumeUploaded).toBe(false)
+  })
+
+  it('accepts a reply from a stale page script that omits it', () => {
+    expect(ScanResultSchema.parse(reply).resumeUploaded).toBeUndefined()
+  })
+
+  it('refuses a flag that is not a boolean', () => {
+    expect(ScanResultSchema.safeParse({ ...reply, resumeUploaded: 'yes' }).success).toBe(false)
+  })
+})
+
+describe('the Job posting text source (spec #41)', () => {
+  it('accepts the request that forgets a saved spot for a site', () => {
+    const req = HostRequestSchema.parse({ requestId: 'r', method: 'selector.clear', params: { hostname: 'jobs.example.com', purpose: 'job_description' } })
+    expect(req.method).toBe('selector.clear')
+  })
+
+  it('refuses a forget request with no hostname', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r', method: 'selector.clear', params: { purpose: 'job_description' } }).success).toBe(false)
+  })
+
+  it('the page\'s job text reply may name the ATS as its source', () => {
+    for (const source of ['ats', 'learned', 'heuristic', 'none']) {
+      expect(JobTextReplySchema.safeParse({ text: '', selector: null, source }).success).toBe(true)
+    }
+    expect(JobTextReplySchema.safeParse({ text: '', selector: null, source: 'guess' }).success).toBe(false)
+  })
+
+  it('the Session\'s source is one of five', () => {
+    expect(JobTextSourceSchema.options).toEqual(['paste', 'ats', 'pick', 'heuristic', 'none'])
+  })
+
+  it('a Capture carries a source and refuses one that is not on the list', () => {
+    const base = { page: { html: '<p>x</p>', cut: false }, ats: 'generic', url: 'https://x.example/apply', fields: [], resolutions: [], election: null, frameReports: [] }
+    const ok = CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'heuristic' })
+    expect(ok.success && ok.data.jobTextSource).toBe('heuristic')
+    expect(CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'guess' }).success).toBe(false)
   })
 })

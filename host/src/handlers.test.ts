@@ -6,6 +6,11 @@ import { HostRequestSchema } from '@jff/shared'
 import { ClaudeError } from './llm/claudeCli.js'
 import { CodexError } from './llm/codexCli.js'
 import { resolveModels } from './llm/models.js'
+import { log } from './log.js'
+
+// The host log is a file under the real home directory: no test writes to it.
+// Mocked for the whole file, so the ATS test below can read what was logged.
+vi.mock('./log.js', () => ({ log: vi.fn() }))
 
 let db: Database.Database
 let deps: HandlerDeps
@@ -28,12 +33,13 @@ beforeEach(() => {
   db = openDb(':memory:')
   complete.mockClear()
   codexComplete.mockClear()
+  vi.mocked(log).mockClear()
   deps = {
     db,
     runner,
     codex,
     models: resolveModels({}),
-    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', models: {} },
+    config: { claudePath: '/bin/true', codexPath: '/bin/true', projectsPaths: [], dbPath: ':memory:', authCachePath: '/tmp/jff-auth.json', capturesDir: '/nonexistent/jff-captures', privateStringsPath: '/nonexistent/jff-private-strings.txt', models: {} },
     selfCheckFn: async () => ({
       node: { ok: true, version: 'v20.0.0' },
       claude: { ok: true, path: '/bin/true', detail: 'found' },
@@ -68,6 +74,26 @@ describe('handleRequest', () => {
     expect(getSelector(db, 'x.com', 'job_description')).toBe('#jd')
     const r = await handleRequest(deps, { requestId: 'f', method: 'selector.get', params: { hostname: 'x.com', purpose: 'job_description' } })
     expect(r).toMatchObject({ ok: true, result: { selector: '#jd' } })
+  })
+
+  // Spec #41: "Not the job description" makes the host forget a saved spot.
+  it('forgets the saved spot for a site, so it no longer returns one', async () => {
+    await handleRequest(deps, { requestId: 'sc1', method: 'selector.save', params: { hostname: 'x.com', purpose: 'job_description', selector: '#jd' } })
+    await handleRequest(deps, { requestId: 'sc2', method: 'selector.save', params: { hostname: 'y.com', purpose: 'job_description', selector: '#other' } })
+    const r = await handleRequest(deps, { requestId: 'sc3', method: 'selector.clear', params: { hostname: 'x.com', purpose: 'job_description' } })
+    expect(r).toMatchObject({ ok: true, result: { cleared: true } })
+    const after = await handleRequest(deps, { requestId: 'sc4', method: 'selector.get', params: { hostname: 'x.com', purpose: 'job_description' } })
+    expect(after).toMatchObject({ ok: true, result: { selector: null } })
+    // Another site's spot is not touched.
+    expect(getSelector(db, 'y.com', 'job_description')).toBe('#other')
+  })
+
+  it('forgetting a spot on a site with none succeeds and changes nothing', async () => {
+    await handleRequest(deps, { requestId: 'sc5', method: 'selector.save', params: { hostname: 'y.com', purpose: 'job_description', selector: '#other' } })
+    const r = await handleRequest(deps, { requestId: 'sc6', method: 'selector.clear', params: { hostname: 'x.com', purpose: 'job_description' } })
+    expect(r).toMatchObject({ ok: true, result: { cleared: false } })
+    expect(getSelector(db, 'x.com', 'job_description')).toBeNull()
+    expect(getSelector(db, 'y.com', 'job_description')).toBe('#other')
   })
 
   it('promotes a confirmed mapping to deterministic, normalized', async () => {
@@ -360,5 +386,47 @@ describe('facts never arrive through save, and stored facts are single-line', ()
     })
     expect(r.ok).toBe(false)
     expect(getAnswerBank(db).salary).toBeUndefined()
+  })
+})
+
+describe('the Scan\'s ATS on a Resolution request (spec #41)', () => {
+  const emailField = {
+    frameId: 0, fid: 0, epoch: 5, label: 'Email', name: 'email', idAttr: null, kind: 'text' as const,
+    options: [], required: true, visible: true, currentValue: null, demographic: false,
+  }
+  const params = {
+    epoch: 5, url: 'https://jobs.lever.co/acme/1/apply', hostname: 'jobs.lever.co',
+    company: 'Acme', jobText: '', fields: [emailField],
+  }
+  const first = (requestId: string, ats?: string) =>
+    HostRequestSchema.parse({ requestId, method: 'resolve.first', params: ats === undefined ? params : { ...params, ats } })
+  const logged = () => vi.mocked(log).mock.calls.filter((c) => c[1] === 'resolve.first')
+
+  beforeEach(() => { setProfile(db, { email: 'ada@example.com' }) })
+
+  it('accepts a request with no ATS, and logs it as generic', async () => {
+    const r = await handleRequest(deps, first(crypto.randomUUID()))
+    expect(r.ok).toBe(true)
+    expect(logged()).toEqual([['info', 'resolve.first', expect.objectContaining({ ats: 'generic' })]])
+  })
+
+  it('names the ATS in its log line, and answers the same for every ATS', async () => {
+    const answers = []
+    for (const ats of ['lever', 'greenhouse', 'generic', undefined]) {
+      const r = await handleRequest(deps, first(crypto.randomUUID(), ats))
+      expect(r.ok).toBe(true)
+      answers.push((r as { result: unknown }).result)
+    }
+    expect(logged().map((c) => (c[2] as { ats: string }).ats)).toEqual(['lever', 'greenhouse', 'generic', 'generic'])
+    expect(answers[0]).toMatchObject({ resolutions: [expect.objectContaining({ value: 'ada@example.com' })] })
+    for (const a of answers) expect(a).toEqual(answers[0])
+  })
+
+  it('names the ATS on the Mapping request\'s log line too', async () => {
+    codexComplete.mockResolvedValueOnce([{ ref: '0:0', decision: 'custom', knownKey: null, answerId: null }])
+    const r = await handleRequest(deps, HostRequestSchema.parse({ requestId: crypto.randomUUID(), method: 'resolve.mapping', params: { ...params, ats: 'lever' } }))
+    expect(r.ok).toBe(true)
+    expect(vi.mocked(log).mock.calls.filter((c) => c[1] === 'resolve.mapping'))
+      .toEqual([['info', 'resolve.mapping', expect.objectContaining({ ats: 'lever' })]])
   })
 })

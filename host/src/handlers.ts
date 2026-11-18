@@ -1,12 +1,13 @@
 import type Database from 'better-sqlite3'
 import {
-  FACT_MAX_CHARS, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
-  type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type SelfCheck,
+  FACT_MAX_CHARS, HostRequestSchema, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
+  type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type ResolveParams, type SelfCheck,
 } from '@jff/shared'
+import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  checkApplied, getAnswerBank, getCachedResponse, getProfile, getSelector,
+  checkApplied, getAnswerBank, getCachedResponse, getProfile, getSelector, clearSelector,
   insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
   markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
   setProfile, upsertAnswer,
@@ -78,6 +79,23 @@ export async function handleRequest(deps: HandlerDeps, req: HostRequest): Promis
   return response
 }
 
+/** A request as it arrives on stdin: parsed against the schema, refused as a
+ *  bad_request when it does not fit, handled when it does. */
+export async function handleRaw(deps: HandlerDeps, raw: unknown): Promise<HostResponse> {
+  const parsed = HostRequestSchema.safeParse(raw)
+  if (parsed.success) return handleRequest(deps, parsed.data)
+  const requestId = typeof (raw as { requestId?: unknown })?.requestId === 'string'
+    ? (raw as { requestId: string }).requestId : 'unknown'
+  return fail(requestId, 'bad_request', parsed.error.message)
+}
+
+/** One log line per Resolution request, naming the Scan's ATS (spec #41) so a
+ *  log reads without the page. The ATS is logged and nothing branches on it:
+ *  every ATS gets the same answer. A request with none is generic. */
+function logResolution(method: 'resolve.first' | 'resolve.mapping', params: ResolveParams): void {
+  log('info', method, { ats: params.ats ?? 'generic', epoch: params.epoch, fields: params.fields.length })
+}
+
 function safe<T>(fn: () => T): { ok: true; value: T } | { ok: false; error: unknown } {
   try { return { ok: true, value: fn() } } catch (error) { return { ok: false, error } }
 }
@@ -115,9 +133,11 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
 
       // No model: the host never hands this step a runner.
       case 'resolve.first':
+        logResolution(req.method, req.params)
         return ok(req.requestId, resolveFirst(db, req.params))
 
       case 'resolve.mapping':
+        logResolution(req.method, req.params)
         return ok(req.requestId, await resolveMapping(waterfallDeps(deps), req.params))
 
       case 'generate': {
@@ -202,6 +222,11 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         saveSelector(db, req.params.hostname, req.params.purpose, req.params.selector)
         return ok(req.requestId, { selector: req.params.selector })
 
+      // "Not the job description" (spec #41). A site with no saved spot
+      // answers cleared: false and nothing changes.
+      case 'selector.clear':
+        return ok(req.requestId, { cleared: clearSelector(db, req.params.hostname, req.params.purpose) })
+
       case 'mapping.confirm':
         saveLearnedMapping(db, normalizeQuestion(req.params.label), req.params.fieldKey)
         return ok(req.requestId, { label: normalizeQuestion(req.params.label), fieldKey: req.params.fieldKey })
@@ -221,6 +246,15 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
 
       case 'applied.list':
         return ok(req.requestId, { jobs: listApplied(db) })
+
+      // A Capture is written here and goes nowhere else. The log names its ATS
+      // and size, never its content.
+      case 'capture.save': {
+        const { capturesDir, privateStringsPath } = deps.config
+        const out = saveCapture(req.params, { capturesDir, privateStringsPath })
+        log('info', 'capture.save', { ats: req.params.ats, chars: req.params.page.html.length, saved: out.ok })
+        return out.ok ? ok(req.requestId, { path: out.path }) : fail(req.requestId, 'bad_request', out.reason)
+      }
 
       case 'facts.extract':
         return ok(req.requestId, await runFactsExtract(deps.codex, req.params.cvText, { model: deps.models.factsExtract, timeoutMs: 240_000 }))

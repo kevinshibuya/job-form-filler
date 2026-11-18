@@ -62,4 +62,16 @@ describe('loadConfig models', () => {
     const cfg = await loadWith({ authCachePath: '/tmp/hijacked.json' })
     expect(cfg.authCachePath).toBe(join(home, 'authcheck.json'))
   })
+
+  it('keeps Captures in the app directory, whatever config.json says', async () => {
+    const saved = process.env.JFF_PRIVATE_STRINGS
+    delete process.env.JFF_PRIVATE_STRINGS
+    try {
+      const cfg = await loadWith({ capturesDir: '/tmp/elsewhere', privateStringsPath: '/tmp/none.txt' })
+      expect(cfg.capturesDir).toBe(join(home, 'captures'))
+      expect(cfg.privateStringsPath).toBe(join(home, 'private-strings.txt'))
+    } finally {
+      if (saved !== undefined) process.env.JFF_PRIVATE_STRINGS = saved
+    }
+  })
 })

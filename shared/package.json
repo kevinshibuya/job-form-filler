@@ -5,7 +5,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./privateStrings": { "types": "./src/privateStrings.d.mts", "default": "./src/privateStrings.mjs" }
+  },
   "scripts": { "build": "tsc -b" },
   "dependencies": { "zod": "^3.23.0" }
 }
