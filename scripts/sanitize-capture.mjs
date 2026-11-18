@@ -4,7 +4,7 @@
 // from a real site holds the employer's text, its board's addresses and that
 // site's contact addresses and browser keys.
 //
-//   node scripts/sanitize-capture.mjs [--posting] [--company <name>]... <captured.html|capture.json> <fixture.html>
+//   node scripts/sanitize-capture.mjs [--posting | --email] [--company <name>]... <captured.html|capture.json> <fixture.html>
 //
 // It takes either a raw page file or a Capture, the JSON file "Save a capture"
 // writes: from a Capture it takes the cleaned page and the tab's address, and
@@ -18,7 +18,14 @@
 // holds no form: the fixture step keeps the posting's element and its ancestors
 // instead, replaces every word of its prose, headings included, with placeholder
 // text at least as long as the tool's minimum for Job posting text, and names
-// Job posting ids "posting-id". Last, the shared private-strings rules replace
+// Job posting ids "posting-id". With `--email` the page applies by email and may
+// hold no form: the privacy step keeps each mailto: link, and the fixture step
+// keeps the Job posting, every mailto: link and every address in text with
+// their ancestors. Each address becomes `address-<n>@example.org`, numbered in
+// page order and one per address whatever its case; a mailto: link keeps its
+// recipients and its subject, which is decoded, cleaned like the page's text
+// and encoded again. The posting's prose is replaced around its addresses and
+// the page keeps its declared language. Last, the shared private-strings rules replace
 // denylist strings, addresses on real domains and credential-shaped strings, and
 // it refuses to write a fixture the guard would still reject. The Company is
 // read from the page's title and its board address, as the list of ATSes says
@@ -28,7 +35,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { JSDOM } from 'jsdom'
-import { cleanForPrivacy, companyNames, cutToFixture, cutToPosting } from '@jff/shared'
+import { cleanForPrivacy, companyNames, cutToEmail, cutToFixture, cutToPosting } from '@jff/shared'
 import { redactPrivate, scanLine } from '../shared/src/privateStrings.mjs'
 import { loadDenylist } from './check-private.mjs'
 
@@ -39,20 +46,36 @@ export { FIXTURE_COMPANY as COMPANY, PLACEHOLDER_PROSE, companyNames } from '@jf
  * name, no address and no key left in it. `companies` adds names of the Company
  * the page does not give away in its title or board address. With `posting`,
  * the page's Job posting instead of its form, with none of its prose left.
+ * With `email`, the page's Job posting, mailto: links and addresses, each
+ * address a numbered placeholder.
  */
-export function sanitizeCapture(html, denylist = [], { companies: extra = [], addresses = [], posting = false } = {}) {
+export function sanitizeCapture(html, denylist = [], { companies: extra = [], addresses = [], posting = false, email = false } = {}) {
+  if (posting && email) throw new Error('sanitize-capture: a page takes one cut, --posting or --email')
   const dom = new JSDOM(html)
   const doc = dom.window.document
   // Read before cleaning: the privacy step drops the head's meta and links.
   const companies = companyNames(doc, extra, addresses)
+  const lang = declaredLanguage(doc)
   // On a Capture's page this runs a second time, which changes nothing.
-  cleanForPrivacy(doc)
-  if (posting) {
+  cleanForPrivacy(doc, { keepMailto: email })
+  if (email) {
+    if (!cutToEmail(doc, companies, (text) => redactPrivate(text, denylist))) {
+      throw new Error('sanitize-capture: the page holds no mailto: link and no address')
+    }
+    if (lang && !doc.documentElement.getAttribute('lang')) doc.documentElement.setAttribute('lang', lang)
+  } else if (posting) {
     if (!cutToPosting(doc, companies)) throw new Error('sanitize-capture: the page holds no Job posting')
   } else if (!cutToFixture(doc, companies)) {
     throw new Error('sanitize-capture: the page holds no form and no Control')
   }
   return redactPrivate(dom.serialize(), denylist)
+}
+
+/** The page's language, as its root or a content-language meta declares it. */
+function declaredLanguage(doc) {
+  const fromRoot = doc.documentElement.getAttribute('lang')?.trim()
+  if (fromRoot) return fromRoot
+  return doc.querySelector('meta[http-equiv="content-language" i]')?.getAttribute('content')?.trim() || null
 }
 
 const NEITHER = 'sanitize-capture: the file is neither a page nor a Capture: a page is HTML, a Capture is the JSON "Save a capture" writes'
@@ -79,27 +102,29 @@ export function readSource(text) {
 }
 
 /** The fixture made from a raw page file's text or a Capture file's text. */
-export function fixtureFrom(text, denylist = [], { companies = [], posting = false } = {}) {
+export function fixtureFrom(text, denylist = [], { companies = [], posting = false, email = false } = {}) {
   const { html, addresses } = readSource(text)
-  return sanitizeCapture(html, denylist, { companies, addresses, posting })
+  return sanitizeCapture(html, denylist, { companies, addresses, posting, email })
 }
 
 function parseArgs(argv) {
   const companies = []
   const files = []
   let posting = false
+  let email = false
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--company') companies.push(argv[++i] ?? '')
     else if (argv[i] === '--posting') posting = true
+    else if (argv[i] === '--email') email = true
     else files.push(argv[i])
   }
-  return { companies, files, posting }
+  return { companies, files, posting, email }
 }
 
 function main(argv) {
-  const { companies, posting, files: [source, target] } = parseArgs(argv)
-  if (!source || !target || companies.includes('')) {
-    console.error('usage: sanitize-capture.mjs [--posting] [--company <name>]... <captured.html|capture.json> <fixture.html>')
+  const { companies, posting, email, files: [source, target] } = parseArgs(argv)
+  if (!source || !target || companies.includes('') || (posting && email)) {
+    console.error('usage: sanitize-capture.mjs [--posting | --email] [--company <name>]... <captured.html|capture.json> <fixture.html>')
     return 2
   }
   const denylist = loadDenylist()
@@ -111,7 +136,7 @@ function main(argv) {
   try {
     const text = readFileSync(source, 'utf8')
     if (readSource(text).cut) console.error('sanitize-capture: this Capture\'s page was cut at its size limit; the form may be missing its end.')
-    clean = fixtureFrom(text, denylist, { companies, posting })
+    clean = fixtureFrom(text, denylist, { companies, posting, email })
   } catch (error) {
     console.error(`${error instanceof Error ? error.message : String(error)}. Nothing written.`)
     return 1
