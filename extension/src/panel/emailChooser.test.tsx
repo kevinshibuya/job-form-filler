@@ -209,7 +209,8 @@ describe('a page with Fields and an address', () => {
     fireEvent.click(offer)
     expect(candidates()).toEqual(['address-1@example.org', 'address-2@example.org'])
     expect(typedInput()).not.toBeNull()
-    // The click is what sends the Apply address pick, and nothing else (#71).
-    await waitFor(() => { expect(host.methods.slice(before)).toEqual(['applyAddress.pick']) })
+    // The click is what sends the Apply address pick (#71), after the Revisit
+    // check over the candidates (#76), and nothing else.
+    await waitFor(() => { expect(host.methods.slice(before)).toEqual(['applied.check', 'applyAddress.pick']) })
   })
 })

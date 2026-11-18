@@ -166,7 +166,7 @@ export function createFakeHostPort(): HostPort {
         // A1: the canned persona has applied to NOTHING — the revisit badge
         // (Task 7) reads `applied` off this shape, so the miss must be an
         // explicit null, never a missing key answering {}.
-        'applied.check': { applied: null },
+        'applied.check': { applied: null, appliedByAddress: null },
         'applied.list': { jobs: [] },
         'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString(), channel: 'form' },
         'applied.get': { id: 0, proseAnswers: [], emails: [] },

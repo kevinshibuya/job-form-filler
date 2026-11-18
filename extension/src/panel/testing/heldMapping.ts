@@ -125,7 +125,16 @@ export interface HeldMappingHost {
   pickText: string | null
   /** When true no Scan reaches the page: the inject never answers. */
   holdScan: boolean
+  /** Every `applied.check` request, in order, as its params (ticket #76). */
+  appliedChecks: AppliedCheckParams[]
+  /** What `applied.check` answers. Defaults to no Applied job either way. */
+  appliedCheck: (p: AppliedCheckParams) => AppliedCheckReply | { error: { kind: HostErrorKind; message: string } } | Promise<AppliedCheckReply>
 }
+
+export interface AppliedCheckParams { url: string; applyAddresses?: string[] }
+/** An Applied job as `applied.check` answers it. */
+export interface AppliedCheckJob { id: number; url: string; canonicalUrl: string; company: string | null; jobTitle: string | null; markedAt: string; channel: 'form' | 'email' }
+export interface AppliedCheckReply { applied: AppliedCheckJob | null; appliedByAddress: AppliedCheckJob | null }
 
 export function installHeldMappingHost(): HeldMappingHost {
   const host = {} as HeldMappingHost
@@ -138,6 +147,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       held: [], firstRequests: [], firstCompanies: [], frameUrl: 'https://jobs.example.com/apply', mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
       picks: [], pick: () => ({ position: null }), learned: [],
       addresses: [], addressPicks: [], addressPick: () => ({ position: null }), emailDrafts: [], emailDraft: draftReply, otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
+      appliedChecks: [], appliedCheck: () => ({ applied: null, appliedByAddress: null }),
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -185,6 +195,12 @@ export function installHeldMappingHost(): HeldMappingHost {
         const pp = params as EmailDraftParams
         host.emailDrafts.push(pp)
         const answer = await host.emailDraft(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'applied.check') {
+        const pp = params as AppliedCheckParams
+        host.appliedChecks.push(pp)
+        const answer = await host.appliedCheck(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
       if (method === 'wording.learn') {

@@ -16,6 +16,7 @@ import { EmailReview } from './EmailReview'
 import type { SessionMailHandover } from './mailApp'
 import { emailDraftOwed, emailDraftParams, emailRedraftParams, replaceEmailDraft, requestEmailDraft, type EmailDraftUi, type RedraftAsk } from './emailDraft'
 import { addressPickParams, requestAddressPick, type AddressPickUi } from './applyAddressPick'
+import { requestAddressRevisit, revisitWords, type RevisitWaiting } from './addressRevisit'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
 import { jobTextLine, offersNotTheJob } from './jobTextLine'
@@ -135,11 +136,16 @@ interface SessionRuntime {
   /** Set from the moment a Draft is considered until it settles, so two
    *  routes that choose the Apply address at once start one Draft. */
   emailDraftBusy: boolean
+  /** Set while the Revisit check before the pick is out, so a second route
+   *  to the pick does not ask twice and pick behind the first one's back.
+   *  An address the user chooses is never held by it. */
+  revisitBusy: boolean
 }
 
 const newRuntime = (gen: number): SessionRuntime => ({
   gen, epoch: 0, scanSeq: 0, mappingEpoch: null, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
   generateAll: null, generatePaused: null, addressPick: null, addressPickSeq: 0, emailDraft: null, emailDraftBusy: false,
+  revisitBusy: false,
 })
 
 /**
@@ -1100,6 +1106,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           site: s.startUrl === '' ? registrableDomain(url) : s.site,
           // The badge described a page; this scan re-decides it.
           appliedHit: null,
+          addressRevisit: null,
         }))
       }
       // A4: the applied badge outranks the scan itself — but never the user's
@@ -1263,7 +1270,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           : null
         return next
       })
-      if (autoPick.params !== null) void pickApplyAddress(sc, autoPick.params)
+      if (autoPick.params !== null) void pickAfterRevisit(sc, autoPick.params)
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
       const pickStillCurrent = (): boolean => mountedRef.current && alive(sc) && rt.epoch === out.epoch
       runPicks(target, sc.gen, picksOwed(out.resolutions, out.fields, out.fill), pickStillCurrent)
@@ -1845,6 +1852,59 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (landed.chosen) await startEmailDraft(sc)
   }
 
+  /**
+   * The Revisit check by Apply address (spec #66, ticket #76): asks the
+   * Native host whether one of these addresses was already mailed. A hit
+   * keeps the badge in the Session with what waits for "Draft anyway", and
+   * answers true: the caller stops there. A Session that already passed a
+   * Revisit badge, or a failed check, goes on. A check whose page is gone
+   * answers true too, since what waited describes nothing.
+   */
+  const revisitStops = async (sc: { target: number; gen: number }, addresses: string[], waiting: RevisitWaiting): Promise<boolean> => {
+    const rt = runtimeOf(sc.target)
+    const guarded = waiting.kind === 'pick'
+    if (guarded && rt.revisitBusy) return true
+    const seen: { passed: boolean; startUrl: string } = { passed: false, startUrl: '' }
+    await applyToSession(sc.target, sc.gen, (s) => { seen.passed = s.revisitPassed; seen.startUrl = s.startUrl; return s })
+    if (seen.passed) return false
+    if (guarded) rt.revisitBusy = true
+    try {
+      const tab = await getTab(sc.target)
+      if (!alive(sc)) return true
+      const url = tab?.url !== undefined && tab.url !== '' ? tab.url : seen.startUrl
+      if (url === '') return false
+      const hit = await requestAddressRevisit(portRef.current, url, addresses)
+      if (!alive(sc)) return true
+      if (hit === null) return false
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, addressRevisit: { ...hit, waiting } }))
+      return true
+    } finally {
+      if (guarded) rt.revisitBusy = false
+    }
+  }
+
+  /** The Apply address pick after the Revisit check over every candidate: a
+   *  duplicate is caught before any AI call. */
+  const pickAfterRevisit = async (sc: { target: number; gen: number }, params: ApplyAddressPickParams): Promise<void> => {
+    if (await revisitStops(sc, params.candidates.map((c) => c.address), { kind: 'pick' })) return
+    await pickApplyAddress(sc, params)
+  }
+
+  /** "Draft anyway" on the Revisit badge by Apply address: the Session
+   *  records the pass, and what waited runs. */
+  const onDraftAnyway = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || owner.addressRevisit === null) return
+    const waiting = owner.addressRevisit.waiting
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    await applyToSession(sc.target, sc.gen, (s) => ({ ...s, addressRevisit: null, revisitPassed: true }))
+    if (waiting.kind === 'choose') { await onChooseApplyAddress(waiting.address, waiting.how); return }
+    const tab = await getTab(sc.target)
+    const now = sessionRef.current
+    if (!alive(sc) || now === null || now.tabId !== sc.target || now.applyAddress !== null || now.applyCandidates.length === 0) return
+    await pickApplyAddress(sc, addressPickParams(now, tab?.title ?? ''))
+  }
+
   /** The Draft's state on its session's runtime, and on screen when that
    *  session is shown. A runtime pruned with its tab is not rebuilt. */
   const setEmailDraftFor = (tabId: number, v: EmailDraftUi | null): void => {
@@ -1956,7 +2016,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const tab = await getTab(sc.target)
     const now = sessionRef.current
     if (!alive(sc) || now === null || now.tabId !== sc.target || now.applyAddress !== null || now.applyCandidates.length === 0) return
-    await pickApplyAddress(sc, addressPickParams(now, tab?.title ?? ''))
+    await pickAfterRevisit(sc, addressPickParams(now, tab?.title ?? ''))
   }
 
   /**
@@ -1968,6 +2028,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const owner = sessionRef.current
     if (owner === null) return
     const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    // An address whose Draft is still to come is checked first, as the pick's
+    // candidates are (ticket #76). A change of address under a Draft starts none.
+    if (owner.emailDraft === null && await revisitStops(sc, [address], { kind: 'choose', address, how })) return
     await applyToSession(sc.target, sc.gen, (s) => ({ ...s, applyAddress: address, applyAddressChosenBy: how }))
     const port = portRef.current
     if (port !== null && owner.jobText.trim() === '') {
@@ -2377,7 +2440,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                 type="button" className={`${BTN} ml-2`}
                 onClick={() => {
                   runtimeOf(session.tabId).appliedOverride = true
-                  writeSession((s) => ({ ...s, appliedHit: null }))
+                  writeSession((s) => ({ ...s, appliedHit: null, revisitPassed: true }))
                   setScanNonce((n) => n + 1)
                 }}
               >
@@ -2385,6 +2448,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
               </button>
             </div>
           )}
+      {/* The Revisit badge by Apply address (ticket #76): the same badge in
+          other words. The badge by Canonical URL wins: a Scan that shows it
+          stops before any candidate is asked about. */}
+      {markedMsg === null && session?.appliedHit == null && session?.addressRevisit != null && (
+        <div className={BANNER_BASE} role="status" data-jff-revisit-address="1">
+          {revisitWords(session.addressRevisit)}
+          <button type="button" className={`${BTN} ml-2`} onClick={() => { void onDraftAnyway() }}>
+            Draft anyway
+          </button>
+        </div>
+      )}
       {submitPrompt && (
         <div className={BANNER_BASE} role="status" data-jff-submit-prompt="1">
           Looks like this application was submitted. Mark as applied?

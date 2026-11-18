@@ -2,6 +2,7 @@ import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, isAtsOrGeneric, 
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { SessionEmailDraftSchema, type SessionEmailDraft } from './emailDraft'
 import { SessionMailHandoverSchema, type SessionMailHandover } from './mailApp'
+import { AddressRevisitSchema, type AddressRevisit } from './addressRevisit'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
 import type { ScanUiState } from './ScanStatus'
@@ -89,6 +90,14 @@ export interface Session {
    *  Mark applied records this and not the rows as they read by then. Null
    *  while the mail app was never opened. */
   mailHandover: SessionMailHandover | null
+  /** The Revisit badge by Apply address (ticket #76): the Applied job a
+   *  candidate or a chosen address was already mailed for, and the pick or
+   *  Draft that waits for "Draft anyway". Null while there is no badge. */
+  addressRevisit: AddressRevisit | null
+  /** Set when the user passed a Revisit badge: "Draft anyway" on the badge by
+   *  Apply address, or "Scan anyway" on the badge by Canonical URL. It
+   *  outlives a reopened panel. */
+  revisitPassed: boolean
 }
 
 /** S4: answers are keyed by the NORMALIZED label, so a carry survives a field
@@ -153,6 +162,8 @@ export function newSession(tabId: number, startUrl = ''): Session {
     applyAddressChosenBy: null,
     emailDraft: null,
     mailHandover: null,
+    addressRevisit: null,
+    revisitPassed: false,
   }
 }
 
@@ -455,6 +466,9 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.emailDraft != null && !SessionEmailDraftSchema.safeParse(raw.emailDraft).success) return null
     // A row stored before "Open in my mail app" handed nothing over.
     if (raw.mailHandover != null && !SessionMailHandoverSchema.safeParse(raw.mailHandover).success) return null
+    // A row stored before the Revisit badge by Apply address has none, and passed none.
+    if (raw.addressRevisit != null && !AddressRevisitSchema.safeParse(raw.addressRevisit).success) return null
+    if (raw.revisitPassed !== undefined && typeof raw.revisitPassed !== 'boolean') return null
     const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
     return {
       ...(raw as unknown as Session),
@@ -469,6 +483,8 @@ export function parseStoredSession(raw: unknown): Session | null {
       // with an unedited subject.
       emailDraft: applyAddress === null || raw.emailDraft == null ? null : SessionEmailDraftSchema.parse(raw.emailDraft),
       mailHandover: (raw.mailHandover as SessionMailHandover | null | undefined) ?? null,
+      addressRevisit: (raw.addressRevisit as AddressRevisit | null | undefined) ?? null,
+      revisitPassed: raw.revisitPassed ?? false,
     }
   } catch {
     return null

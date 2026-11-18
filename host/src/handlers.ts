@@ -7,7 +7,7 @@ import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  checkApplied, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
+  checkApplied, checkAppliedByAddress, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
   insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
   markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
   setProfile, upsertAnswer,
@@ -299,7 +299,10 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       }
 
       case 'applied.check':
-        return ok(req.requestId, { applied: checkApplied(db, req.params.url) })
+        return ok(req.requestId, {
+          applied: checkApplied(db, req.params.url),
+          appliedByAddress: checkAppliedByAddress(db, req.params.applyAddresses ?? []),
+        })
 
       case 'applied.list':
         return ok(req.requestId, { jobs: listApplied(db) })

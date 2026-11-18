@@ -348,7 +348,13 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
       email: HandedOverEmailSchema.optional(),
     }).refine((p) => p.email === undefined || p.channel !== 'form', 'a mark with an Application email goes by email'),
   }),
-  z.object({ requestId: z.string().min(1), method: z.literal('applied.check'), params: z.object({ url: z.string().min(1) }) }),
+  // `applyAddresses` (spec #66): the page's candidate addresses. The reply
+  // gains `appliedByAddress`, the Applied job whose Application email went to
+  // one of them, compared without regard to case, or null.
+  z.object({
+    requestId: z.string().min(1), method: z.literal('applied.check'),
+    params: z.object({ url: z.string().min(1), applyAddresses: z.array(z.string()).optional() }),
+  }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.list'), params: z.object({}).passthrough() }),
   // One Applied job's stored texts, read when the user opens it (spec #66).
   z.object({ requestId: z.string().min(1), method: z.literal('applied.get'), params: z.object({ id: z.number().int().positive() }) }),

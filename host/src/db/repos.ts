@@ -384,6 +384,22 @@ export function checkApplied(db: Database.Database, url: string): AppliedJob | n
   return row === undefined ? null : toApplied(row)
 }
 
+/** The Applied job whose Application email went to one of these addresses,
+ *  compared without regard to case, or null (spec #66). An email handed to
+ *  the mail app counts: its mark keeps the Apply address. The newest such
+ *  email wins. */
+export function checkAppliedByAddress(db: Database.Database, addresses: readonly string[]): AppliedJob | null {
+  const wanted = [...new Set(addresses.map((a) => a.trim().toLowerCase()).filter((a) => a !== ''))]
+  if (wanted.length === 0) return null
+  const row = db.prepare(
+    `SELECT ${APPLIED_COLUMNS.split(', ').map((c) => `j.${c}`).join(', ')}
+     FROM application_emails e JOIN applied_jobs j ON j.id = e.applied_job_id
+     WHERE lower(e.apply_address) IN (${wanted.map(() => '?').join(', ')})
+     ORDER BY e.sent_at DESC, e.id DESC LIMIT 1`,
+  ).get(...wanted) as RawApplied | undefined
+  return row === undefined ? null : toApplied(row)
+}
+
 export function listApplied(db: Database.Database): AppliedJob[] {
   return (db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
 }
