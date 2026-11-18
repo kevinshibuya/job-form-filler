@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0010
+---
+
 # LLM calls spawn the `claude` and `codex` CLIs
 
 The tool needs a language model but has no budget line of its own, so it shells

@@ -2,7 +2,9 @@
 
 A Chrome extension that reads a job application form, proposes values from the
 user's own stored facts and past answers, drafts free-text answers with AI, and
-fills the page on approval. It never submits.
+fills the page on approval. It never submits a form. When a Job posting takes
+applications by email, it drafts the Application email and sends it only on the
+user's click.
 
 ## Language
 
@@ -157,8 +159,8 @@ The user's own local writing about past projects, used as reference for Drafts.
 _Avoid_: notes, portfolio
 
 **Generation**:
-Writing a new free-text answer with AI for a Prose Field nothing stored can
-cover.
+Writing new text with AI: a free-text answer for a Prose Field nothing stored
+can cover, or the body of an Application email.
 _Avoid_: AI answer, completion
 
 **Prose Field**:
@@ -177,7 +179,7 @@ The text Generation produces, until the user approves it.
 _Avoid_: answer, generated answer, response
 
 **Draft check**:
-The second model's reading of a Draft before the user sees it. It flags what the
+A second reading of a Draft by AI before the user sees it. It flags what the
 Resume and Profile do not support; the Draft is still shown, with the warning.
 _Avoid_: review (the user's own act), validation
 
@@ -204,19 +206,21 @@ _Avoid_: hallucination guard
 **Session**:
 One application in progress on one tab, surviving tab switches, wizard steps and
 sign-in detours until it is applied, discarded or the tab closes. A Session on a
-cross-site detour is parked.
+cross-site detour is parked. One that ended neither applied nor discarded is
+abandoned.
 _Avoid_: browser session, session storage, working session (a Claude Code
 session)
 
 **Mark applied**:
-The user recording that a Job posting was submitted. It ends the Session and
-creates an Applied job.
+Recording that a Job posting was submitted. The user does it for a form; a Send
+does it for an Application email. It ends the Session and creates an Applied job.
 _Avoid_: submit, complete
 
 **Applied job**:
-A Job posting the user has marked applied, with the date. The older applications
-log of save events is not an Applied job.
-_Avoid_: application, applications table
+A Job posting marked applied, with the date and whether it went by form or by
+email. One that went by email keeps its Application email. The older
+applications log of save events is not an Applied job.
+_Avoid_: application, applications table, sent job
 
 **Submission detection**:
 Noticing that a page looks like a confirmation and asking whether to Mark
@@ -225,8 +229,81 @@ _Avoid_: auto-mark
 
 **Revisit badge**:
 The "Already applied on <date>" notice shown instead of a Scan on an Applied job,
-with "Scan anyway" as the way past it.
+with "Scan anyway" as the way past it. It also appears when the page's Apply
+address was already mailed, naming that Applied job.
 _Avoid_: applied banner, warning
+
+**Outcome**:
+How an Applied job has gone so far, kept as dated stages the user records: no
+reply, rejected, replied, interview, offer.
+_Avoid_: status, result, pipeline
+
+**Win**:
+An Applied job that ever reached interview, whatever came after.
+_Avoid_: success, conversion
+
+**Win rate**:
+Wins among the Applied jobs that have an Outcome beyond no reply or are older
+than thirty days.
+_Avoid_: conversion rate, success rate
+
+### Applying by email
+
+**Apply address**:
+The email address a Job posting asks applications to be sent to. It is always
+one found on the page, never one the tool composed.
+_Avoid_: recipient, contact email, employer email
+
+**Application email**:
+The message that applies to a Job posting by email: its subject, body and
+attachments. Its body is a Draft until the user approves it.
+_Avoid_: email (alone, which is the user's own address, a Known key), message,
+cover letter
+
+**Mail account**:
+A mailbox the user has connected so the tool can send from it.
+_Avoid_: email provider, connector, inbox
+
+**Sender address**:
+The address an Application email is sent from: the Mail account's own, or
+another address that account is allowed to send as.
+_Avoid_: from address, alias
+
+**Send**:
+The user's click that mails a reviewed Application email. Nothing else the tool
+does submits an application, and a Send never happens without that click.
+_Avoid_: submit, auto-send, sent (as a state: a posting that was sent is an
+Applied job)
+
+### AI
+
+**Provider**:
+One signed-in AI account the tool can run models on, such as a Claude Code or a
+Codex sign-in. Two accounts of the same kind are two Providers.
+_Avoid_: AI helper, instance, connector, vendor
+
+**Task**:
+One named kind of work the tool hands to AI, such as Mapping, Generation or the
+Draft check.
+_Avoid_: LLM call, prompt, job
+
+**Model assignment**:
+The Provider, model and effort a Task runs on, chosen by the user.
+_Avoid_: routing, model override
+
+**AI call**:
+One execution of a Task on a Provider.
+_Avoid_: request, completion, run
+
+**Usage**:
+The tokens AI calls spent, counted as input, cached and output. It is never a
+money figure.
+_Avoid_: cost, spend, consumption
+
+**Limit window**:
+A Provider's rolling allowance, such as its session window, its weekly window or
+a weekly window for one model.
+_Avoid_: quota, rate limit, cap
 
 ### Setup and surfaces
 
@@ -237,7 +314,7 @@ _Avoid_: setup, first run
 
 **Self-check**:
 The startup readiness check: is the Native host reachable, is its store
-writable, are both AI helpers installed and signed in.
+writable, is each Provider installed and signed in.
 _Avoid_: health check, auth probe (the sign-in part of a Self-check)
 
 **Native host**:
@@ -247,4 +324,6 @@ _Avoid_: host, backend, server, helper
 
 **Side panel**:
 The extension's own panel beside the page, where Scan, Review and Fill happen.
+It belongs to the tab it was opened on: it is hidden on other tabs and returns
+with its own.
 _Avoid_: popup, sidebar, panel
