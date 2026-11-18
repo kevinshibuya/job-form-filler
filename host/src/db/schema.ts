@@ -1,5 +1,6 @@
-import type Database from 'better-sqlite3'
-
+// The schema as it stood before versioned migrations: migration 1
+// (./migrations.ts). Frozen: a change to the shape is the next migration, never
+// an edit here.
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS profile (
   key   TEXT PRIMARY KEY,
@@ -79,7 +80,3 @@ CREATE TABLE IF NOT EXISTS applied_jobs (
   marked_at     TEXT NOT NULL
 );
 `
-
-export function migrate(db: Database.Database): void {
-  db.exec(SCHEMA_SQL)
-}

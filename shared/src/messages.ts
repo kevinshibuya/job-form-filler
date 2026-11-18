@@ -158,7 +158,9 @@ export const SelfCheckSchema = z.object({
   auth: z.object({ ok: z.boolean(), detail: z.string() }),
   codex: z.object({ ok: z.boolean(), path: z.string(), detail: z.string() }),
   codexAuth: z.object({ ok: z.boolean(), detail: z.string() }),
-  db: z.object({ ok: z.boolean(), path: z.string() }),
+  // detail: why the database is not usable, when the host knows (a file from a
+  // newer version of the tool). Absent on older hosts.
+  db: z.object({ ok: z.boolean(), path: z.string(), detail: z.string().optional() }),
 })
 export type SelfCheck = z.infer<typeof SelfCheckSchema>
 

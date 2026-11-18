@@ -103,6 +103,8 @@ describe('learned wordings', () => {
     const old = openDb(path)
     // The database as it was before ticket #35: no learned_wordings table.
     old.exec('DROP TABLE learned_wordings')
+    // ...and no schema version: versioned migrations (ticket #68) came later.
+    old.pragma('user_version = 0')
     setProfile(old, { email: 'ada@example.com', fullName: 'Ada Lovelace' })
     setAnswerBank(old, { relocate: 'yes' })
     upsertAnswer(old, { questionNormalized: 'q', questionRaw: 'Q?', answer: 'A', language: 'en', reusability: 'reusable' })

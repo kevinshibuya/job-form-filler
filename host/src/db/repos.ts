@@ -2,7 +2,7 @@ import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import { isProfileKey, norm, type FieldKey } from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
-import { migrate } from './schema.js'
+import { MIGRATIONS, migrate, type Migration } from './migrations.js'
 
 const REQUEST_LOG_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -44,15 +44,44 @@ function toQa(r: RawQa): QaRow {
   }
 }
 
-export function openDb(path: string): Database.Database {
+/**
+ * How long a statement waits for another Native host's lock before it fails.
+ * Each panel document runs its own Native host, so several can share the file;
+ * writes are short, but a migration on a large table may hold the lock a while,
+ * and a request that waits beats one that fails. Set past better-sqlite3's own
+ * 5s default on purpose, so this is the wait in force.
+ */
+const BUSY_TIMEOUT_MS = 15_000
+
+/**
+ * Opens the database and brings it to the last of `migrations`. Throws
+ * DatabaseTooNew (./migrations.ts), with the file untouched by any request,
+ * when a newer version of the tool wrote it.
+ */
+export function openDb(path: string, migrations: readonly Migration[] = MIGRATIONS): Database.Database {
   const db = new DatabaseCtor(path)
-  // WAL: the panel's single port is the only client, but WAL also survives a
-  // host crash mid-write far better than the default rollback journal.
+  // The busy timeout and WAL together let several Native host processes share
+  // the file: readers never block, and a writer waits for another's lock. WAL
+  // also survives a crash mid-write far better than the rollback journal.
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`)
   if (path !== ':memory:') db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
-  migrate(db)
+  try {
+    migrate(db, migrations)
+  } catch (e) {
+    db.close()
+    throw e
+  }
   // The idempotency ledger only needs to survive a reconnect, not a career.
   pruneRequestLog(db, new Date(Date.now() - REQUEST_LOG_TTL_MS).toISOString())
+  return db
+}
+
+/** The refused file (a newer version of the tool wrote it), opened so nothing
+ *  can write to it: no migration, no pruning, SQLite itself refuses a write. */
+export function openDbReadOnly(path: string): Database.Database {
+  const db = new DatabaseCtor(path, { readonly: true, fileMustExist: true })
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`)
   return db
 }
 

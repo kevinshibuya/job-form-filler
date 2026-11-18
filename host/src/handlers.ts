@@ -54,6 +54,10 @@ export interface HandlerDeps {
   /** Resolved per-task model ids; every LLM call names one. */
   models: ResolvedModels
   selfCheckFn: () => Promise<SelfCheck>
+  /** Set when the database was refused (a newer version of the tool wrote it):
+   *  every request but the Self-check answers this reason and touches nothing,
+   *  and `db` is a read-only handle. */
+  dbRefusal?: string
 }
 
 const waterfallDeps = (deps: HandlerDeps): WaterfallDeps =>
@@ -64,6 +68,9 @@ const fail = (requestId: string, kind: HostErrorKind, message: string): HostResp
   ({ requestId, ok: false, error: { kind, message } })
 
 export async function handleRequest(deps: HandlerDeps, req: HostRequest): Promise<HostResponse> {
+  // Before the replay lookup: a refused database is not read either.
+  if (deps.dbRefusal !== undefined && req.method !== 'selfCheck') return fail(req.requestId, 'db', deps.dbRefusal)
+
   // Idempotency: a repeated requestId replays the stored SUCCESS verbatim so a
   // dropped connection re-fetches rather than re-running a paid claude call.
   const cached = safe(() => getCachedResponse(deps.db, req.requestId))

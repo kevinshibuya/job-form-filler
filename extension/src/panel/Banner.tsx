@@ -28,7 +28,7 @@ export function SelfCheckBanner({ check, error }: { check: SelfCheck | null; err
   if (!check.auth.ok) problems.push(check.auth.detail)
   if (!check.codex.ok) problems.push(check.codex.detail)
   if (!check.codexAuth.ok) problems.push(check.codexAuth.detail)
-  if (!check.db.ok) problems.push(`Database not writable at ${check.db.path}.`)
+  if (!check.db.ok) problems.push(check.db.detail ?? `Database not writable at ${check.db.path}.`)
 
   if (problems.length === 0) {
     return (
