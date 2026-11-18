@@ -34,6 +34,33 @@ describe('scanLine', () => {
     expect(hits).toEqual([{ rule: 'private-string', detail: 'denylist entry 1' }])
   })
 
+  // Google's secrets, as a Desktop client's sign-in hands them out (spec #66, ticket #67).
+  const google = {
+    'access token': ['ya29', `a0AfB_${'byXk3mQ9'.repeat(8)}`].join('.'),
+    'refresh token': ['1', '', `0gKz7${'Xb4_Tq-9'.repeat(5)}`].join('/'),
+    'client secret': ['GOCSPX', `Ab3dE${'fG7hJ'.repeat(5)}x`].join('-'),
+    'client id': `${'1234567'.repeat(2)}-${'a1b2c3d4'.repeat(4)}.${['apps', 'googleusercontent', 'com'].join('.')}`,
+  }
+
+  for (const [shape, secret] of Object.entries(google)) {
+    it(`flags a Google ${shape} without echoing it whole`, () => {
+      const hits = scanLine(`{"value": "${secret}"}`)
+      expect(hits.map((hit) => hit.rule)).toEqual(['credential'])
+      expect(hits[0].detail).not.toContain(secret)
+    })
+  }
+
+  it('passes the placeholders the recorded Gmail transcripts carry', () => {
+    const placeholders = [
+      '"access_token": "ACCESS_TOKEN_PLACEHOLDER"',
+      '"refresh_token": "REFRESH_TOKEN_PLACEHOLDER"',
+      'client_id=CLIENT_ID_PLACEHOLDER.apps.googleusercontent.com&client_secret=CLIENT_SECRET_PLACEHOLDER',
+      '"id": "MESSAGE_ID_PLACEHOLDER", "threadId": "THREAD_ID_PLACEHOLDER"',
+      'redirect_uri=http%3A%2F%2F127.0.0.1%3A49152%2F, see https://oauth2.googleapis.com/token',
+    ]
+    for (const line of placeholders) expect(scanLine(line)).toEqual([])
+  })
+
   it('allows the third-party strings the captured fixtures carry, even glued to escaped markup', () => {
     expect(scanLine('"\\u003enoreply@github.com\\u003c"')).toEqual([])
   })
