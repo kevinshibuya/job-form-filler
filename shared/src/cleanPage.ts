@@ -455,6 +455,10 @@ export function cutToEmail(doc: Document, companies: readonly string[], cleanTex
   ]
   keepOnly(doc, roots)
   freshHead(doc, `Apply by email at ${FIXTURE_COMPANY}`)
+  // The root keeps its language and direction and nothing else: a site
+  // builder's ids there name the real site.
+  const root = doc.documentElement
+  for (const { name } of Array.from(root.attributes)) if (name !== 'lang' && name !== 'dir') root.removeAttribute(name)
 
   const place = addressPlaceholders()
   const swap = (text: string): string => text.replace(ADDRESS, place)

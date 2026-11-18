@@ -34,7 +34,7 @@ const longProse = 'Initech builds TPS reports for the whole world and needs a ba
 
 /** A careers page that applies by email: one address in three mailto: links and
  *  once in text, written in two cases, and a second address in the footer. */
-const careersPage = `<!doctype html><html lang="de"><head>
+const careersPage = `<!doctype html><html lang="de" dir="ltr" data-wf-site="5f2b9c0d1e3a4b6c7d8e9f01" data-wf-page="5f2b9c0d1e3a4b6c7d8e9f02" class="w-mod-js"><head>
   <title>Initech Careers | Backend Engineer</title>
   <meta property="og:site_name" content="Initech">
   <link rel="canonical" href="${web}careers.initech.io/backend">
@@ -112,6 +112,11 @@ describe('sanitizeCapture with the email cut, on a careers page', () => {
     expect(doc.title).toContain('Acme')
     expect(doc.querySelector('script, link')).toBeNull()
     expect(clean).not.toMatch(/https?:\/\//)
+  })
+
+  it('keeps only the language and direction on the root, so a site builder\'s ids there do not name the site', () => {
+    expect([...doc.documentElement.attributes].map((a) => a.name).sort()).toEqual(['dir', 'lang'])
+    expect(clean).not.toContain('5f2b9c0d1e3a4b6c7d8e9f0')
   })
 
   it('leaves nothing the guard would refuse', () => {
