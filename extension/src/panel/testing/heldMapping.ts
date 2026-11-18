@@ -214,6 +214,7 @@ export const draftReply = (p: EmailDraftParams): EmailDraftResult => ({
   subject: p.pageSubject ?? 'Application for the analyst role',
   body: `${DRAFT_PROSE}\n\nBest regards,\nAda Lovelace`,
   model: 'claude-opus-5-5',
+  language: p.language ?? 'en',
   missingLinks: [],
   unsupportedClaims: [],
   unchecked: false,

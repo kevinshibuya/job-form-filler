@@ -457,7 +457,9 @@ export function parseStoredSession(raw: unknown): Session | null {
       applyCandidates: (raw.applyCandidates as ApplyAddressCandidate[] | undefined) ?? [],
       applyAddress,
       applyAddressChosenBy: applyAddress === null ? null : (raw.applyAddressChosenBy as ApplyAddressChoice | null | undefined) ?? null,
-      emailDraft: applyAddress === null ? null : (raw.emailDraft as SessionEmailDraft | null | undefined) ?? null,
+      // Parsed, so a Draft stored before the language switch reads as English
+      // with an unedited subject.
+      emailDraft: applyAddress === null || raw.emailDraft == null ? null : SessionEmailDraftSchema.parse(raw.emailDraft),
     }
   } catch {
     return null

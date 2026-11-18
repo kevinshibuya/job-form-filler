@@ -13,7 +13,7 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { EmailChooser } from './EmailChooser'
 import { EmailReview } from './EmailReview'
-import { emailDraftOwed, emailDraftParams, requestEmailDraft, type EmailDraftUi } from './emailDraft'
+import { emailDraftOwed, emailDraftParams, emailRedraftParams, replaceEmailDraft, requestEmailDraft, type EmailDraftUi, type RedraftAsk } from './emailDraft'
 import { addressPickParams, requestAddressPick, type AddressPickUi } from './applyAddressPick'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
@@ -1883,7 +1883,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (outcome.kind === 'failed') { setEmailDraftFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
       await applyToSession(sc.target, sc.gen, (s) => (s.emailDraft !== null
         ? s
-        : { ...s, emailDraft: { ...outcome.draft, edited: false, pageSubject: params.pageSubject } }))
+        : { ...s, emailDraft: { ...outcome.draft, edited: false, subjectEdited: false, pageSubject: params.pageSubject } }))
       setEmailDraftFor(sc.target, null)
     } finally {
       rt.emailDraftBusy = false
@@ -1896,11 +1896,49 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (sc !== null) void startEmailDraft(sc)
   }
 
-  /** A hand edit to the Draft. An edit to the body marks the text as edited. */
+  /** A hand edit to the Draft. An edit to the body marks the text as edited;
+   *  an edited subject stays through a new Draft. */
   const onEditEmail = (patch: { subject: string } | { body: string }): void => {
     writeSession((s) => (s.emailDraft === null
       ? s
-      : { ...s, emailDraft: { ...s.emailDraft, ...patch, ...('body' in patch ? { edited: true } : {}) } }))
+      : { ...s, emailDraft: { ...s.emailDraft, ...patch, ...('body' in patch ? { edited: true } : { subjectEdited: true }) } }))
+  }
+
+  /**
+   * Regenerate, or the language switch (ticket #73): a new Draft in place of
+   * the one the Session holds, asked with the language and the user's
+   * instruction. Review has already asked the user before losing their
+   * edits. A failure leaves the Draft as it was and says why.
+   */
+  const onRedraftEmail = async (ask: RedraftAsk): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || owner.emailDraft === null) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const rt = runtimesRef.current.get(sc.target)
+    if (rt === undefined || rt.emailDraftBusy || !alive(sc)) return
+    rt.emailDraftBusy = true
+    try {
+      const [tab, cv] = await Promise.all([getTab(sc.target), loadResumeText().catch(() => null)])
+      if (!alive(sc)) return
+      const plan: { params: EmailDraftParams | null } = { params: null }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        plan.params = s.emailDraft === null || s.jobText.trim() === '' ? null : emailRedraftParams(s, s.emailDraft, tab?.title ?? '', cv, ask)
+        return s
+      })
+      const params = plan.params
+      if (params === null) {
+        setEmailDraftFor(sc.target, { kind: 'failed', reason: 'It needs the job description. Paste it in the box above, or click Pick job description.' })
+        return
+      }
+      setEmailDraftFor(sc.target, { kind: 'drafting' })
+      const outcome = await requestEmailDraft(portRef.current, params)
+      if (!alive(sc)) { setEmailDraftFor(sc.target, null); return }
+      if (outcome.kind === 'failed') { setEmailDraftFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
+      await applyToSession(sc.target, sc.gen, (s) => (s.emailDraft === null ? s : { ...s, emailDraft: replaceEmailDraft(s.emailDraft, outcome.draft) }))
+      setEmailDraftFor(sc.target, null)
+    } finally {
+      rt.emailDraftBusy = false
+    }
   }
 
   /** "Apply by email instead" beside a form (spec #66): the pick runs on this click and no sooner. */
@@ -2454,6 +2492,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       onSubject={(subject) => onEditEmail({ subject })}
                       onBody={(body) => onEditEmail({ body })}
                       onDraft={onDraftEmail}
+                      onRedraft={(ask) => { void onRedraftEmail(ask) }}
                     />
                   )}
                 />

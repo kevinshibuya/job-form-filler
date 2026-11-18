@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import {
-  EmailDraftResultSchema,
-  type ApplyAddressCandidate, type EmailDraftParams, type EmailDraftResult, type HostErrorKind,
+  EmailDraftResultSchema, EmailLanguageSchema,
+  type ApplyAddressCandidate, type EmailDraftParams, type EmailDraftResult, type EmailLanguage, type HostErrorKind,
 } from '@jff/shared'
 import type { HostPort } from './port'
 
@@ -12,11 +12,15 @@ import type { HostPort } from './port'
  */
 
 /**
- * The Draft as the Session holds it: the reply, whether the user edited the
- * body since, and the subject the page set when it was asked for, or null.
+ * The Draft as the Session holds it: the reply with its language, whether the
+ * user edited the body since, whether they edited the subject, and the
+ * subject the page set when it was asked for, or null. A Draft stored before
+ * the language switch existed reads as English with an unedited subject.
  */
 export const SessionEmailDraftSchema = EmailDraftResultSchema.extend({
+  language: EmailLanguageSchema.default('en'),
   edited: z.boolean(),
+  subjectEdited: z.boolean().default(false),
   pageSubject: z.string().nullable(),
 })
 export type SessionEmailDraft = z.infer<typeof SessionEmailDraftSchema>
@@ -61,6 +65,39 @@ export function emailDraftParams(
     pageSubject: s.applyAddress === null ? null : pageSubjectFor(s.applyCandidates, s.applyAddress),
     ...(cvText === null ? {} : { cvText }),
   }
+}
+
+/** What a new Draft is asked for with: the language, and the user's instruction. */
+export interface RedraftAsk { language: EmailLanguage; instruction: string }
+
+/** A new Draft replaces hand edits only once the user says so (ticket #73). */
+export const redraftNeedsConfirm = (d: SessionEmailDraft): boolean => d.edited || d.subjectEdited
+
+/** The request for a new Draft of a Session's Application email: the first
+ *  one's, with the page subject the Draft was asked with, the language, and
+ *  the instruction when the user gave one. */
+export function emailRedraftParams(
+  s: { applyAddress: string | null; applyCandidates: ApplyAddressCandidate[]; company: string; jobText: string },
+  draft: SessionEmailDraft, title: string, cvText: string | null, ask: RedraftAsk,
+): EmailDraftParams {
+  const instruction = ask.instruction.trim()
+  return {
+    ...emailDraftParams(s, title, cvText),
+    pageSubject: draft.pageSubject,
+    language: ask.language,
+    ...(instruction === '' ? {} : { instruction }),
+  }
+}
+
+/**
+ * A new Draft in place of the one the Session holds. The body is the new one,
+ * links and signature assembled again by the Native host, and is no longer
+ * marked edited. The subject is rewritten only when the model wrote it and
+ * the user left it alone: a page subject and an edited subject stay.
+ */
+export function replaceEmailDraft(old: SessionEmailDraft, next: EmailDraftResult): SessionEmailDraft {
+  const subject = old.subjectEdited ? old.subject : old.pageSubject ?? next.subject
+  return { ...next, subject, edited: false, subjectEdited: old.subjectEdited, pageSubject: old.pageSubject }
 }
 
 /** Ask the Native host for the Draft. Never throws: a lost or malformed reply is a failed Draft. */

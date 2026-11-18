@@ -29,6 +29,8 @@ const input = (patch: Partial<ApplicationEmailInput> = {}): ApplicationEmailInpu
   cvText: 'Analyst at Example Ltd, 2019 to 2024.',
   projectNotes: 'Built an analytical engine.',
   pageSubject: null,
+  language: 'en',
+  instruction: null,
   ...patch,
 })
 

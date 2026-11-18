@@ -22,6 +22,7 @@ import { runFactsExtract } from './llm/factsExtract.js'
 import { runOptionPick } from './llm/optionPick.js'
 import { runApplyAddressPick } from './llm/applyAddressPick.js'
 import { draftApplicationEmail } from './llm/applicationEmail.js'
+import { postingLanguage } from './postingLanguage.js'
 import { learnWording } from './resolve/learnedWordings.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
@@ -243,6 +244,9 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
             cvText: req.params.cvText ?? null,
             projectNotes: readProjectNotes(deps.config.projectsPaths),
             pageSubject: req.params.pageSubject,
+            // The language the user switched to, or the Job posting's own.
+            language: req.params.language ?? postingLanguage(req.params.jobText),
+            instruction: req.params.instruction?.trim() || null,
           },
           profile,
         )

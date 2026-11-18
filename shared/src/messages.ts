@@ -167,12 +167,24 @@ export const EMAIL_LINK_KEYS = ['linkedin', 'github', 'portfolio'] as const
 export const EmailLinkKeySchema = z.enum(EMAIL_LINK_KEYS)
 export type EmailLinkKey = z.infer<typeof EmailLinkKeySchema>
 
+/** The languages an Application email is written in. */
+export const EMAIL_LANGUAGES = ['en', 'pt'] as const
+export const EmailLanguageSchema = z.enum(EMAIL_LANGUAGES)
+export type EmailLanguage = z.infer<typeof EmailLanguageSchema>
+
+/** The longest instruction a Draft request takes, in characters. */
+export const EMAIL_INSTRUCTION_MAX = 300
+
 /**
  * `email.draft`: what the Side panel holds for one Application email. The Job
  * posting text, the title and the page's subject are page content; the
  * Resume text is the user's own. The Native host reads the Profile itself.
  * `pageSubject` is the subject of the first `mailto:` link to the Apply
  * address, in page order, or null when the page gave none.
+ *
+ * `language` is the one the user switched to; without it the Native host
+ * decides from the Job posting text. `instruction` is the user's own text,
+ * such as "shorter", for Regenerate; one longer than the cap is refused.
  */
 export const EmailDraftParamsSchema = z.object({
   jobText: z.string().refine((s) => s.trim() !== '', 'an Application email needs Job posting text'),
@@ -180,6 +192,8 @@ export const EmailDraftParamsSchema = z.object({
   title: z.string().nullable(),
   pageSubject: z.string().nullable(),
   cvText: z.string().optional(),
+  language: EmailLanguageSchema.optional(),
+  instruction: z.string().max(EMAIL_INSTRUCTION_MAX).optional(),
 })
 export type EmailDraftParams = z.infer<typeof EmailDraftParamsSchema>
 
@@ -190,12 +204,13 @@ export type EmailDraftParams = z.infer<typeof EmailDraftParamsSchema>
  * not hold, left out of the body. `unsupportedClaims` quotes each sentence of
  * the prose the Draft check flagged, and each that holds a link or an
  * address. `unchecked` is true when the Draft check failed and the Draft is
- * shown without it (ADR 0004). `model` wrote the Draft.
+ * shown without it (ADR 0004). `model` wrote the Draft, in `language`.
  */
 export const EmailDraftResultSchema = z.object({
   subject: z.string(),
   body: z.string(),
   model: z.string(),
+  language: EmailLanguageSchema,
   missingLinks: z.array(EmailLinkKeySchema),
   unsupportedClaims: z.array(z.string()),
   unchecked: z.boolean(),
@@ -224,7 +239,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
       // B2b: extracted resume TEXT, trusted candidate-authored context. The raw
       // file still never crosses native messaging (user decision 2026-07-29).
       cvText: z.string().optional(),
-    }),
+      // Strict: Generation for a Prose Field takes no instruction (spec #66),
+      // so a request that carries one is refused, not quietly trimmed.
+    }).strict(),
   }),
   z.object({
     requestId: z.string().min(1), method: z.literal('facts.extract'),

@@ -146,3 +146,85 @@ describe('email.draft', () => {
     expect(await handleRequest(deps, req)).toMatchObject({ ok: true })
   })
 })
+
+// Ticket #73: the Draft's language, and Regenerate's instruction.
+
+const PT_POSTING: EmailDraftParams = {
+  ...POSTING,
+  jobText: 'A Acme está contratando uma pessoa analista. Você vai trabalhar com o nosso time de finanças. Envie seu currículo e o link do seu GitHub para o e-mail da vaga.',
+}
+const ES_POSTING: EmailDraftParams = {
+  ...POSTING,
+  jobText: 'Acme busca una persona analista para su equipo. Trabajarás con los equipos de producto y finanzas. Envía tu currículum y un enlace a tu GitHub a la dirección del puesto.',
+}
+
+describe('email.draft, the language', () => {
+  it('drafts a Portuguese posting in Portuguese: the writer is told so, the sign-off is Portuguese, and the reply names the language', async () => {
+    const out = await drafted(PT_POSTING)
+    expect(out.language).toBe('pt')
+    expect(writerPrompt()).toMatch(/Write in Portuguese/)
+    expect(out.body).toMatch(/Atenciosamente,\nAda Lovelace$/)
+  })
+
+  it('drafts an English posting in English', async () => {
+    const out = await drafted(POSTING)
+    expect(out.language).toBe('en')
+    expect(writerPrompt()).toMatch(/Write in English/)
+    expect(out.body).toMatch(/Best regards,\nAda Lovelace$/)
+  })
+
+  it('drafts a posting in a language the Profile does not list in English', async () => {
+    const out = await drafted(ES_POSTING)
+    expect(out.language).toBe('en')
+    expect(writerPrompt()).toMatch(/Write in English/)
+  })
+
+  it('drafts in the language the request names, whatever the posting is in', async () => {
+    expect((await drafted({ ...PT_POSTING, language: 'en' })).language).toBe('en')
+    expect(writerPrompt()).toMatch(/Write in English/)
+    claudeComplete.mockClear()
+    expect((await drafted({ ...POSTING, language: 'pt' })).language).toBe('pt')
+    expect(writerPrompt()).toMatch(/Write in Portuguese/)
+  })
+
+  it('refuses a language other than English and Portuguese', async () => {
+    expect(await draft({ ...POSTING, language: 'es' })).toMatchObject({ ok: false, error: { kind: 'bad_request' } })
+    expect(claudeComplete).not.toHaveBeenCalled()
+  })
+})
+
+describe('email.draft, the instruction', () => {
+  it('reaches the writer as the user\'s own text, outside the untrusted fence', async () => {
+    await drafted({ ...POSTING, instruction: 'Lead with the payments work, and keep it shorter.' })
+    const prompt = writerPrompt()
+    expect(prompt).toContain('Lead with the payments work, and keep it shorter.')
+    const fenced = prompt.match(/<job_post>[\s\S]*<\/job_post>/)![0]
+    expect(fenced).not.toContain('payments work')
+    expect(prompt.indexOf('payments work')).toBeGreaterThan(prompt.indexOf('</job_post>'))
+    expect(prompt).toMatch(/instruction[^\n]*\(trusted, typed by the candidate/i)
+  })
+
+  it('leaves the prompt without an instruction block when there is none, or only blanks', async () => {
+    await drafted(POSTING)
+    expect(writerPrompt()).not.toMatch(/candidate's instruction/i)
+    claudeComplete.mockClear()
+    await drafted({ ...POSTING, instruction: '   ' })
+    expect(writerPrompt()).not.toMatch(/candidate's instruction/i)
+  })
+
+  it('is refused over the cap, and no model is asked', async () => {
+    const r = await draft({ ...POSTING, instruction: 'x'.repeat(301) })
+    expect(r).toMatchObject({ ok: false, error: { kind: 'bad_request' } })
+    expect(claudeComplete).not.toHaveBeenCalled()
+    expect((await drafted({ ...POSTING, instruction: 'x'.repeat(300) })).body.length).toBeGreaterThan(0)
+  })
+
+  it('has no place in the request for a Prose Field\'s Generation', async () => {
+    const r = await handleRaw(deps, {
+      requestId: crypto.randomUUID(), method: 'generate',
+      params: { handle: { frameId: 0, fid: 1, epoch: 1 }, questionRaw: 'Why Acme?', jobText: POSTING.jobText, company: 'Acme', instruction: 'shorter' },
+    })
+    expect(r).toMatchObject({ ok: false, error: { kind: 'bad_request' } })
+    expect(claudeComplete).not.toHaveBeenCalled()
+  })
+})

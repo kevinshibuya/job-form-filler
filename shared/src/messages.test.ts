@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema, ApplyAddressPickResultSchema } from './messages.js'
 import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, FoundAddressSchema, isAddressShape } from './messages.js'
-import { EmailDraftResultSchema } from './messages.js'
+import { EMAIL_INSTRUCTION_MAX, EmailDraftResultSchema } from './messages.js'
 import { captureField, captureRefusal, captureResolution, CaptureSaveParamsSchema, withoutQuery } from './capture.js'
 import { JobTextReplySchema, JobTextSourceSchema } from './jobText.js'
 
@@ -534,8 +534,32 @@ describe('email.draft (#72)', () => {
   })
 
   it('the reply names its links from the three link Known keys only', () => {
-    const reply = { subject: 'S', body: 'B', model: 'claude-opus-5-5', missingLinks: ['github'], unsupportedClaims: [], unchecked: false }
+    const reply = { subject: 'S', body: 'B', model: 'claude-opus-5-5', language: 'en', missingLinks: ['github'], unsupportedClaims: [], unchecked: false }
     expect(EmailDraftResultSchema.safeParse(reply).success).toBe(true)
     expect(EmailDraftResultSchema.safeParse({ ...reply, missingLinks: ['email'] }).success).toBe(false)
+  })
+})
+
+describe('email.draft, language and instruction (#73)', () => {
+  const params = { jobText: 'Acme is hiring an analyst.', company: 'Acme', title: 'Analyst at Acme', pageSubject: null }
+  const parses = (p: object): boolean => HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params: p }).success
+
+  it('takes English or Portuguese, and an instruction up to the cap', () => {
+    expect(parses({ ...params, language: 'pt', instruction: 'shorter' })).toBe(true)
+    expect(parses({ ...params, language: 'es' })).toBe(false)
+    expect(parses({ ...params, instruction: 'x'.repeat(EMAIL_INSTRUCTION_MAX) })).toBe(true)
+    expect(parses({ ...params, instruction: 'x'.repeat(EMAIL_INSTRUCTION_MAX + 1) })).toBe(false)
+  })
+
+  it('the reply names its language', () => {
+    const reply = { subject: 'S', body: 'B', model: 'm', missingLinks: [], unsupportedClaims: [], unchecked: false }
+    expect(EmailDraftResultSchema.safeParse({ ...reply, language: 'pt' }).success).toBe(true)
+    expect(EmailDraftResultSchema.safeParse(reply).success).toBe(false)
+  })
+
+  it('a Prose Field\'s Generation takes no instruction', () => {
+    const gen = { handle: { frameId: 0, fid: 1, epoch: 1 }, questionRaw: 'Why Acme?', jobText: 'Acme', company: null }
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'generate', params: gen }).success).toBe(true)
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'generate', params: { ...gen, instruction: 'shorter' } }).success).toBe(false)
   })
 })

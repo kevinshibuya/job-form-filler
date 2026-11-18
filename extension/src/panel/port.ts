@@ -184,7 +184,7 @@ export function createFakeHostPort(): HostPort {
         'wording.learn': { learned: false },
         generate: { draft: '' },
         // The Application email: a canned Draft, checked, that asks for no link.
-        'email.draft': { subject: 'Application', body: 'Hello,\n\nFake Draft.\n\nBest regards,\nFake User', model: 'fake', missingLinks: [], unsupportedClaims: [], unchecked: false },
+        'email.draft': { subject: 'Application', body: 'Hello,\n\nFake Draft.\n\nBest regards,\nFake User', model: 'fake', language: 'en', missingLinks: [], unsupportedClaims: [], unchecked: false },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },
         // A Capture: the canned host writes nothing and says so.
