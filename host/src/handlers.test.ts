@@ -24,6 +24,9 @@ const runner = { complete } as unknown as HandlerDeps['runner']
 const codexComplete = vi.fn(async (_prompt: string, _schema?: unknown): Promise<unknown> => ({ draft: 'reviewed' }))
 const codex = { complete: codexComplete } as unknown as HandlerDeps['codex']
 
+/** The Generation model resolveModels({}) names: every reply carries it. */
+const WRITER = 'claude-opus-5-5'
+
 const genReq = (requestId: string) => ({
   requestId, method: 'generate' as const,
   params: { handle: { frameId: 0, fid: 3, epoch: 1 }, questionRaw: 'Why us?', jobText: '', company: null },
@@ -184,6 +187,7 @@ describe('handleRequest', () => {
     const r = await handleRequest(deps, genReq('gen-w1'))
     expect(r).toEqual({ requestId: 'gen-w1', ok: true, result: {
       draft: 'I would enjoy this role. I do not need any accommodations.',
+      model: WRITER,
       unsupportedClaims: ['I do not need any accommodations.'],
     } })
   })
@@ -213,26 +217,26 @@ describe('handleRequest', () => {
     complete.mockResolvedValueOnce({ draft: 'claude draft' })
     codexComplete.mockResolvedValueOnce({ draft: 'I would enjoy this role.', unsupported: ['I have no disability.'] })
     const only = await handleRequest(deps, genReq('gen-w4'))
-    expect(only).toEqual({ requestId: 'gen-w4', ok: true, result: { draft: 'I would enjoy this role.' } })
+    expect(only).toEqual({ requestId: 'gen-w4', ok: true, result: { draft: 'I would enjoy this role.', model: WRITER } })
   })
 
   it('gives no warning when the Draft check flags nothing, or replies in the old shape', async () => {
     complete.mockResolvedValueOnce({ draft: 'claude draft' })
     codexComplete.mockResolvedValueOnce({ draft: 'I would enjoy this role.', unsupported: [] })
     expect(await handleRequest(deps, genReq('gen-w5')))
-      .toEqual({ requestId: 'gen-w5', ok: true, result: { draft: 'I would enjoy this role.' } })
+      .toEqual({ requestId: 'gen-w5', ok: true, result: { draft: 'I would enjoy this role.', model: WRITER } })
 
     complete.mockResolvedValueOnce({ draft: 'claude draft' })
     codexComplete.mockResolvedValueOnce({ draft: 'I would enjoy this role.' })
     expect(await handleRequest(deps, genReq('gen-w6')))
-      .toEqual({ requestId: 'gen-w6', ok: true, result: { draft: 'I would enjoy this role.' } })
+      .toEqual({ requestId: 'gen-w6', ok: true, result: { draft: 'I would enjoy this role.', model: WRITER } })
   })
 
   it('returns the unchecked Draft with no unsupported-claim warning when the Draft check fails', async () => {
     complete.mockResolvedValueOnce({ draft: 'I do not need any accommodations.' })
     codexComplete.mockRejectedValueOnce(new CodexError('timeout', 'codex exec exceeded 120000ms'))
     expect(await handleRequest(deps, genReq('gen-w7')))
-      .toEqual({ requestId: 'gen-w7', ok: true, result: { draft: 'I do not need any accommodations.' } })
+      .toEqual({ requestId: 'gen-w7', ok: true, result: { draft: 'I do not need any accommodations.', model: WRITER } })
   })
 
   it('a claude failure surfaces as the host error and codex is never consulted', async () => {

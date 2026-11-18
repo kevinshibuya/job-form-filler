@@ -23,6 +23,17 @@ describe('selfCheck', () => {
     expect(r.node.version).toBe(process.version)
   })
 
+  it('reports a refused database with the reason, whatever the connection says', async () => {
+    const r = await selfCheck({
+      ...base, probeAuth: async () => ({ ok: true, detail: 'ok' }),
+      dbRefusal: 'The database comes from a newer version of the tool (schema version 9; this Native host knows up to 1).',
+    })
+    expect(r.db).toEqual({
+      ok: false, path: base.dbPath,
+      detail: 'The database comes from a newer version of the tool (schema version 9; this Native host knows up to 1).',
+    })
+  })
+
   it('reports claude not found when the configured path does not exist', async () => {
     const r = await selfCheck({ ...base, fileExists: () => false, probeAuth: async () => ({ ok: true, detail: 'ok' }) })
     expect(r.claude).toMatchObject({ ok: false })

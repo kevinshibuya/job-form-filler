@@ -54,6 +54,10 @@ export interface HandlerDeps {
   /** Resolved per-task model ids; every LLM call names one. */
   models: ResolvedModels
   selfCheckFn: () => Promise<SelfCheck>
+  /** Set when the database was refused (a newer version of the tool wrote it):
+   *  every request but the Self-check answers this reason and touches nothing,
+   *  and `db` is a read-only handle. */
+  dbRefusal?: string
 }
 
 const waterfallDeps = (deps: HandlerDeps): WaterfallDeps =>
@@ -64,6 +68,9 @@ const fail = (requestId: string, kind: HostErrorKind, message: string): HostResp
   ({ requestId, ok: false, error: { kind, message } })
 
 export async function handleRequest(deps: HandlerDeps, req: HostRequest): Promise<HostResponse> {
+  // Before the replay lookup: a refused database is not read either.
+  if (deps.dbRefusal !== undefined && req.method !== 'selfCheck') return fail(req.requestId, 'db', deps.dbRefusal)
+
   // Idempotency: a repeated requestId replays the stored SUCCESS verbatim so a
   // dropped connection re-fetches rather than re-running a paid claude call.
   const cached = safe(() => getCachedResponse(deps.db, req.requestId))
@@ -153,17 +160,20 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           projectNotes: readProjectNotes(deps.config.projectsPaths),
           references,
         }
-        const draft = await runGeneration(deps.runner, input, { model: deps.models.generate })
+        // The reply names the model that wrote the Draft, so the Side panel
+        // can keep it beside the text (spec #66).
+        const model = deps.models.generate
+        const draft = await runGeneration(deps.runner, input, { model })
         // B2d: claude draft → Draft check (codex) → final. ANY Draft check
         // failure degrades to the unchecked draft — codex never blocks
         // generation. A flagged sentence reaches the reply only when the final
         // Draft contains it (ADR 0004: the Draft is still shown, with the warning).
-        let reply: { draft: string; unsupportedClaims?: string[] } = { draft }
+        let reply: { draft: string; model: string; unsupportedClaims?: string[] } = { draft, model }
         try {
           const checked = await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft, retryTransient: false })
           const final = sanitizeDraft(checked.draft)
           const unsupportedClaims = claimsInDraft(final, checked.unsupported)
-          reply = unsupportedClaims.length === 0 ? { draft: final } : { draft: final, unsupportedClaims }
+          reply = unsupportedClaims.length === 0 ? { draft: final, model } : { draft: final, model, unsupportedClaims }
         } catch (e) {
           const kind = e instanceof CodexError ? e.kind : 'process'
           log('warn', 'codex review failed; returning unreviewed draft', {
@@ -239,6 +249,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'applied.mark':
         return ok(req.requestId, markApplied(db, {
           url: req.params.url, company: req.params.company, jobTitle: req.params.jobTitle,
+          channel: req.params.channel ?? 'form', proseAnswers: req.params.proseAnswers ?? [],
         }))
 
       case 'applied.check':

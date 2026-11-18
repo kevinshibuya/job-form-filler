@@ -1924,7 +1924,7 @@ describe('App — mark applied (A2)', () => {
     fireEvent.change(document.querySelector('[data-jff-company] input')!, { target: { value: 'Acme' } })
     fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
     await waitFor(() => expect(seen.params.length).toBe(1))
-    expect(seen.params[0]).toEqual({ url: 'https://jobs.acme.com/apply', company: 'Acme', jobTitle: 'Engineer at Acme' })
+    expect(seen.params[0]).toEqual({ url: 'https://jobs.acme.com/apply', company: 'Acme', jobTitle: 'Engineer at Acme', channel: 'form', proseAnswers: [] })
     // Session ended: rows gone, badge line up.
     await waitFor(() => expect(document.querySelector('[data-jff-rows]')).toBeNull())
     expect(document.querySelector('[data-jff-applied]')).not.toBeNull()

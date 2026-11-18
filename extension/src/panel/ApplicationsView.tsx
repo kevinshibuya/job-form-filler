@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { AppliedChannel } from '@jff/shared'
 import { MUTED, ROW_BASE } from './ui'
 
 export interface AppliedJobRow {
@@ -8,7 +9,11 @@ export interface AppliedJobRow {
   company: string | null
   jobTitle: string | null
   markedAt: string
+  /** How the application went out (spec #66). */
+  channel: AppliedChannel
 }
+
+const CHANNEL_LABEL: Record<AppliedChannel, string> = { form: 'Form', email: 'Email' }
 
 /** Stored urls are data, not trust: a `javascript:`/`data:` url in the DB would
  *  otherwise become a clickable link. Only http(s) earns an anchor. */
@@ -39,6 +44,7 @@ export function ApplicationsView({ load }: { load: () => Promise<AppliedJobRow[]
             <div className="flex items-baseline gap-1.5">
               <span className="font-semibold">{j.jobTitle ?? j.company ?? j.url}</span>
               <span className={`${MUTED} tabular-nums`}>{new Date(j.markedAt).toLocaleDateString()}</span>
+              <span className={MUTED} data-jff-app-channel={j.channel}>{CHANNEL_LABEL[j.channel]}</span>
             </div>
             {j.company !== null && <div className={`mt-0.5 ${MUTED}`}>{j.company}</div>}
             {isWebUrl(j.url)

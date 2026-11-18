@@ -1,4 +1,4 @@
-import { isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type Resolution } from '@jff/shared'
+import { isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
@@ -10,7 +10,19 @@ export const MAX_PERSISTED_OPTIONS = 100
 export const SESSION_SAVE_DEBOUNCE_MS = 500
 
 export type AnswerProvenance = 'user' | 'generated'
-export interface SessionAnswer { value: string; provenance: AnswerProvenance; fieldKey: FieldKey | null }
+export interface SessionAnswer {
+  value: string
+  provenance: AnswerProvenance
+  fieldKey: FieldKey | null
+  /** Set on the answer to a Prose Field: its question as the page wrote it,
+   *  which Mark applied keeps beside the Applied job (spec #66). Absent on
+   *  every other Field, and on a row stored before it was kept. */
+  prose?: { question: string }
+  /** The Draft this answer started from and the model that wrote it. It
+   *  outlives the user's edits, which are told apart by comparing the value
+   *  with it, and a new Draft replaces it. */
+  draft?: { text: string; model: string | null }
+}
 
 export interface Session {
   version: 1
@@ -158,6 +170,9 @@ export function rememberAnswer(
   ref: string,
   value: string,
   provenance: AnswerProvenance,
+  /** The model that wrote a Draft, from the `generate` reply; null when an
+   *  older Native host named none. Read only with provenance 'generated'. */
+  model: string | null = null,
 ): Session {
   const key = answerKeysByRef(s.fields).get(ref)
   if (key === undefined) return s
@@ -167,8 +182,42 @@ export function rememberAnswer(
     delete answers[key]
     return { ...s, answers }
   }
-  const fieldKey = s.resolutions.find((r) => refOf(r.handle) === ref)?.key ?? null
-  return { ...s, answers: { ...s.answers, [key]: { value, provenance, fieldKey } } }
+  const resolution = s.resolutions.find((r) => refOf(r.handle) === ref)
+  const fieldKey = resolution?.key ?? null
+  const answer: SessionAnswer = { value, provenance, fieldKey }
+  if (resolution?.fieldClass === 'prose' && fieldKey === null) {
+    answer.prose = { question: (s.fields.find((f) => refOf(f) === ref)?.label ?? '').trim() }
+  }
+  // A new Draft replaces the old one; the user's own write keeps the Draft it
+  // started from, so the edit can be told apart at Mark applied.
+  const draft = provenance === 'generated' ? { text: value, model } : s.answers[key]?.draft
+  if (draft !== undefined) answer.draft = draft
+  return { ...s, answers: { ...s.answers, [key]: answer } }
+}
+
+/**
+ * The prose answers a form Mark applied keeps (spec #66): one for each Prose
+ * Field the Session holds a non-empty text for, on this page or an earlier
+ * step of the same application. The text is what the Session holds now; a
+ * change made on the page after Fill is not read back. A text is AI-drafted
+ * when a Draft came back for it, and edited when it no longer equals that Draft.
+ */
+export function keptProseAnswers(s: Session): KeptProseAnswer[] {
+  const out: KeptProseAnswer[] = []
+  for (const a of Object.values(s.answers)) {
+    // A stored row is untrusted: anything not in the shape this module writes is skipped.
+    if (typeof a?.value !== 'string' || typeof a.prose?.question !== 'string') continue
+    if (a.value.trim() === '' || a.prose.question === '') continue
+    const draft = typeof a.draft?.text === 'string' ? a.draft : undefined
+    out.push({
+      question: a.prose.question,
+      text: a.value,
+      aiDrafted: draft !== undefined,
+      edited: draft !== undefined && draft.text !== a.value,
+      model: draft === undefined || typeof draft.model !== 'string' ? null : draft.model,
+    })
+  }
+  return out
 }
 
 /**

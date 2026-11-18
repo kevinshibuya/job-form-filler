@@ -47,6 +47,9 @@ export interface SelfCheckDeps {
   dbPath: string
   fileExists: (p: string) => boolean
   dbOk: () => boolean
+  /** Set when the host refused the database (a file from a newer version of
+   *  the tool): the reason, reported as the db check's detail. */
+  dbRefusal?: string
   readAuthCache: () => AuthCacheFile | null
   writeAuthCache: (file: AuthCacheFile) => void
   probeAuth: () => Promise<{ ok: boolean; detail: string }>
@@ -108,7 +111,10 @@ export async function selfCheck(deps: SelfCheckDeps): Promise<SelfCheck> {
     resolveAuth('codex', codexFound, file?.codex, deps.probeCodexAuth),
   ])
 
-  return { node, claude, auth, codex, codexAuth, db: { ok: deps.dbOk(), path: deps.dbPath } }
+  const db = deps.dbRefusal === undefined
+    ? { ok: deps.dbOk(), path: deps.dbPath }
+    : { ok: false, path: deps.dbPath, detail: deps.dbRefusal }
+  return { node, claude, auth, codex, codexAuth, db }
 }
 
 /* --------------------------------------------------------- real IO wiring */

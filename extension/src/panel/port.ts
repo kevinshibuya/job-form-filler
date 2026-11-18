@@ -168,7 +168,7 @@ export function createFakeHostPort(): HostPort {
         // explicit null, never a missing key answering {}.
         'applied.check': { applied: null },
         'applied.list': { jobs: [] },
-        'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString() },
+        'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString(), channel: 'form' },
         'answerBank.get': {},
         'selector.get': { selector: null },
         'selector.clear': { cleared: false },

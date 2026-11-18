@@ -1,8 +1,8 @@
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
-import { isProfileKey, norm, type FieldKey } from '@jff/shared'
+import { isProfileKey, norm, type AppliedChannel, type FieldKey, type KeptProseAnswer } from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
-import { migrate } from './schema.js'
+import { MIGRATIONS, migrate, type Migration } from './migrations.js'
 
 const REQUEST_LOG_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -44,15 +44,44 @@ function toQa(r: RawQa): QaRow {
   }
 }
 
-export function openDb(path: string): Database.Database {
+/**
+ * How long a statement waits for another Native host's lock before it fails.
+ * Each panel document runs its own Native host, so several can share the file;
+ * writes are short, but a migration on a large table may hold the lock a while,
+ * and a request that waits beats one that fails. Set past better-sqlite3's own
+ * 5s default on purpose, so this is the wait in force.
+ */
+const BUSY_TIMEOUT_MS = 15_000
+
+/**
+ * Opens the database and brings it to the last of `migrations`. Throws
+ * DatabaseTooNew (./migrations.ts), with the file untouched by any request,
+ * when a newer version of the tool wrote it.
+ */
+export function openDb(path: string, migrations: readonly Migration[] = MIGRATIONS): Database.Database {
   const db = new DatabaseCtor(path)
-  // WAL: the panel's single port is the only client, but WAL also survives a
-  // host crash mid-write far better than the default rollback journal.
+  // The busy timeout and WAL together let several Native host processes share
+  // the file: readers never block, and a writer waits for another's lock. WAL
+  // also survives a crash mid-write far better than the rollback journal.
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`)
   if (path !== ':memory:') db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
-  migrate(db)
+  try {
+    migrate(db, migrations)
+  } catch (e) {
+    db.close()
+    throw e
+  }
   // The idempotency ledger only needs to survive a reconnect, not a career.
   pruneRequestLog(db, new Date(Date.now() - REQUEST_LOG_TTL_MS).toISOString())
+  return db
+}
+
+/** The refused file (a newer version of the tool wrote it), opened so nothing
+ *  can write to it: no migration, no pruning, SQLite itself refuses a write. */
+export function openDbReadOnly(path: string): Database.Database {
+  const db = new DatabaseCtor(path, { readonly: true, fileMustExist: true })
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`)
   return db
 }
 
@@ -232,16 +261,21 @@ export interface AppliedJob {
   company: string | null
   jobTitle: string | null
   markedAt: string
+  channel: AppliedChannel
 }
 
 interface RawApplied {
   id: number; url: string; canonical_url: string
   company: string | null; job_title: string | null; marked_at: string
+  channel: AppliedChannel
 }
+
+// Named columns, never `*`: a row read for a list carries nothing heavy.
+const APPLIED_COLUMNS = 'id, url, canonical_url, company, job_title, marked_at, channel'
 
 const toApplied = (r: RawApplied): AppliedJob => ({
   id: r.id, url: r.url, canonicalUrl: r.canonical_url,
-  company: r.company, jobTitle: r.job_title, markedAt: r.marked_at,
+  company: r.company, jobTitle: r.job_title, markedAt: r.marked_at, channel: r.channel,
 })
 
 /** Upsert by canonical_url. `marked_at` is NOT in the update set: re-marking
@@ -252,29 +286,60 @@ const toApplied = (r: RawApplied): AppliedJob => ({
  *  and both are routine on a re-mark (the company guess misses on a step-2 url,
  *  the tab has not settled its title yet). A plain `excluded.company` there
  *  DELETES a company the first mark got right — a null is "I have nothing to
- *  say", never "erase what you know". */
+ *  say", never "erase what you know".
+ *
+ *  The channel is the latest mark's, and the kept prose answers are the latest
+ *  mark's too (spec #66): a later mark replaces them, in the same transaction
+ *  as the upsert. A prose answer with no text is not kept. */
 export function markApplied(
   db: Database.Database,
-  row: { url: string; company: string | null; jobTitle: string | null },
+  row: {
+    url: string; company: string | null; jobTitle: string | null
+    channel?: AppliedChannel; proseAnswers?: readonly KeptProseAnswer[]
+  },
 ): AppliedJob {
   const canonical = canonicalUrl(row.url)
-  db.prepare(
-    `INSERT INTO applied_jobs (url, canonical_url, company, job_title, marked_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(canonical_url) DO UPDATE SET
-       url = excluded.url,
-       company = COALESCE(excluded.company, company),
-       job_title = COALESCE(excluded.job_title, job_title)`,
-  ).run(row.url, canonical, row.company, row.jobTitle, new Date().toISOString())
-  const got = db.prepare(`SELECT * FROM applied_jobs WHERE canonical_url = ?`).get(canonical) as RawApplied
-  return toApplied(got)
+  const kept = (row.proseAnswers ?? []).filter((a) => a.text.trim() !== '')
+  const tx = db.transaction((): AppliedJob => {
+    db.prepare(
+      `INSERT INTO applied_jobs (url, canonical_url, company, job_title, marked_at, channel) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(canonical_url) DO UPDATE SET
+         url = excluded.url,
+         company = COALESCE(excluded.company, company),
+         job_title = COALESCE(excluded.job_title, job_title),
+         channel = excluded.channel`,
+    ).run(row.url, canonical, row.company, row.jobTitle, new Date().toISOString(), row.channel ?? 'form')
+    const got = toApplied(db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs WHERE canonical_url = ?`).get(canonical) as RawApplied)
+    db.prepare(`DELETE FROM applied_prose_answers WHERE applied_job_id = ?`).run(got.id)
+    const insert = db.prepare(
+      `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    kept.forEach((a, i) => {
+      insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model)
+    })
+    return got
+  })
+  return tx()
 }
 
 export function checkApplied(db: Database.Database, url: string): AppliedJob | null {
-  const row = db.prepare(`SELECT * FROM applied_jobs WHERE canonical_url = ?`)
+  const row = db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs WHERE canonical_url = ?`)
     .get(canonicalUrl(url)) as RawApplied | undefined
   return row === undefined ? null : toApplied(row)
 }
 
 export function listApplied(db: Database.Database): AppliedJob[] {
-  return (db.prepare(`SELECT * FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
+  return (db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
+}
+
+/** The prose answers kept beside one Applied job, in the order the mark sent them. */
+export function listKeptProseAnswers(db: Database.Database, appliedJobId: number): KeptProseAnswer[] {
+  const rows = db.prepare(
+    `SELECT question, text, ai_drafted, edited, model FROM applied_prose_answers
+     WHERE applied_job_id = ? ORDER BY position`,
+  ).all(appliedJobId) as { question: string; text: string; ai_drafted: number; edited: number; model: string | null }[]
+  return rows.map((r) => ({
+    question: r.question, text: r.text, aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model,
+  }))
 }
