@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { ApplyAddressPickParams, ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
+import type { ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
 import { CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
@@ -12,6 +12,8 @@ import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { EmailChooser } from './EmailChooser'
+import { EmailReview } from './EmailReview'
+import { emailDraftOwed, emailDraftParams, requestEmailDraft, type EmailDraftUi } from './emailDraft'
 import { addressPickParams, requestAddressPick, type AddressPickUi } from './applyAddressPick'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
@@ -126,11 +128,17 @@ interface SessionRuntime {
   addressPick: AddressPickUi | null
   /** Bumped when a pick starts. Only the newest pick's answer lands. */
   addressPickSeq: number
+  /** Spec #66: the Application email's Draft while it is out, or after it
+   *  failed. Never stored: the Session holds the Draft once it lands. */
+  emailDraft: EmailDraftUi | null
+  /** Set from the moment a Draft is considered until it settles, so two
+   *  routes that choose the Apply address at once start one Draft. */
+  emailDraftBusy: boolean
 }
 
 const newRuntime = (gen: number): SessionRuntime => ({
   gen, epoch: 0, scanSeq: 0, mappingEpoch: null, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
-  generateAll: null, generatePaused: null, addressPick: null, addressPickSeq: 0,
+  generateAll: null, generatePaused: null, addressPick: null, addressPickSeq: 0, emailDraft: null, emailDraftBusy: false,
 })
 
 /**
@@ -299,6 +307,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const rescanQueueRef = useRef<number[]>([])
   // A dead panel must not keep scanning: the injected `sleep` reads this.
   const mountedRef = useRef(true)
+  /** The next change of the job text box comes from a paste (spec #66). */
+  const pastedRef = useRef(false)
   // (tabId → the navigation last ACTED on). navSignals' fallback dedupe is
   // one-directional: Chrome can emit a combined tabs.onUpdated
   // {status:'loading', url} AHEAD of onCommitted, i.e. TWO identical
@@ -354,6 +364,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [generatingRefs, setGeneratingRefs] = useState<ReadonlySet<string>>(new Set())
   const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
   const [addressPick, setAddressPick] = useState<AddressPickUi | null>(null)
+  const [emailDraftUi, setEmailDraftUi] = useState<EmailDraftUi | null>(null)
   const [generatePaused, setGeneratePaused] = useState<{ done: number; total: number } | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   /** Where the last Capture was saved, or why it was not. */
@@ -564,6 +575,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setGeneratePaused(s === null ? null : runtimeOf(s.tabId).generatePaused)
     // Like the batch, the Apply address pick belongs to its session.
     setAddressPick(s === null ? null : runtimeOf(s.tabId).addressPick)
+    setEmailDraftUi(s === null ? null : runtimeOf(s.tabId).emailDraft)
     setMarkedMsg(null)
   }
 
@@ -1773,6 +1785,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       }
       await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick' }))
       if (inScope(sc)) clearActionFailure()
+      // An Application email that waited for the job text starts now.
+      void startEmailDraft(sc)
       const tab = await getTab(sc.target)
       if (!inScope(sc)) return
       const hostname = hostnameOf(tab?.url)
@@ -1814,7 +1828,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     if (!alive(sc)) { setAddressPickFor(sc.target, null); return }
     if (outcome.kind === 'failed') { setAddressPickFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
     if (outcome.kind === 'none') { setAddressPickFor(sc.target, { kind: 'none' }); return }
-    const landed: { ended: AddressPickUi | null } = { ended: null }
+    const landed: { ended: AddressPickUi | null; chosen: boolean } = { ended: null, chosen: false }
     await applyToSession(sc.target, sc.gen, (s) => {
       if (s.applyAddress !== null) return s
       // A newer Scan whose candidates no longer hold the address: the pick is none.
@@ -1822,9 +1836,71 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         landed.ended = { kind: 'none' }
         return s
       }
+      landed.chosen = true
       return { ...s, applyAddress: outcome.address, applyAddressChosenBy: 'pick' }
     })
     if (rt.addressPickSeq === seq) setAddressPickFor(sc.target, landed.ended)
+    // A pick is a choice of the Apply address: the Draft starts without a click.
+    if (landed.chosen) await startEmailDraft(sc)
+  }
+
+  /** The Draft's state on its session's runtime, and on screen when that
+   *  session is shown. A runtime pruned with its tab is not rebuilt. */
+  const setEmailDraftFor = (tabId: number, v: EmailDraftUi | null): void => {
+    const rt = runtimesRef.current.get(tabId)
+    if (rt === undefined) return
+    rt.emailDraft = v
+    if (mountedRef.current && sessionRef.current?.tabId === tabId) setEmailDraftUi(v)
+  }
+
+  /**
+   * The Application email's Draft (spec #66). It starts when the Session
+   * holds an Apply address and Job posting text and no Draft yet, so every
+   * route that completes those, a choice of the address, a paste or a pick
+   * of the text, calls this, and a Session that already holds a Draft never
+   * pays for a second one. Its answer lands in the Session that asked.
+   */
+  const startEmailDraft = async (sc: { target: number; gen: number }): Promise<void> => {
+    const rt = runtimesRef.current.get(sc.target)
+    if (rt === undefined || rt.emailDraftBusy || !alive(sc)) return
+    // A Session on screen that owes no Draft asks nothing, not even its tab.
+    const shown = sessionRef.current
+    if (shown !== null && shown.tabId === sc.target && !emailDraftOwed(shown)) return
+    rt.emailDraftBusy = true
+    try {
+      const [tab, cv] = await Promise.all([getTab(sc.target), loadResumeText().catch(() => null)])
+      if (!alive(sc)) return
+      const plan: { params: EmailDraftParams | null } = { params: null }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        plan.params = emailDraftOwed(s) ? emailDraftParams(s, tab?.title ?? '', cv) : null
+        return s
+      })
+      const params = plan.params
+      if (params === null) return
+      setEmailDraftFor(sc.target, { kind: 'drafting' })
+      const outcome = await requestEmailDraft(portRef.current, params)
+      if (!alive(sc)) { setEmailDraftFor(sc.target, null); return }
+      if (outcome.kind === 'failed') { setEmailDraftFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
+      await applyToSession(sc.target, sc.gen, (s) => (s.emailDraft !== null
+        ? s
+        : { ...s, emailDraft: { ...outcome.draft, edited: false, pageSubject: params.pageSubject } }))
+      setEmailDraftFor(sc.target, null)
+    } finally {
+      rt.emailDraftBusy = false
+    }
+  }
+
+  /** The Draft by hand: after a failure, or on a Session nothing drafted yet. */
+  const onDraftEmail = (): void => {
+    const sc = scopeNow()
+    if (sc !== null) void startEmailDraft(sc)
+  }
+
+  /** A hand edit to the Draft. An edit to the body marks the text as edited. */
+  const onEditEmail = (patch: { subject: string } | { body: string }): void => {
+    writeSession((s) => (s.emailDraft === null
+      ? s
+      : { ...s, emailDraft: { ...s.emailDraft, ...patch, ...('body' in patch ? { edited: true } : {}) } }))
   }
 
   /** "Apply by email instead" beside a form (spec #66): the pick runs on this click and no sooner. */
@@ -1849,17 +1925,20 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
     await applyToSession(sc.target, sc.gen, (s) => ({ ...s, applyAddress: address, applyAddressChosenBy: how }))
     const port = portRef.current
-    if (port === null || owner.jobText.trim() !== '') return
-    try {
-      const tab = await getTab(sc.target)
-      if (!alive(sc)) return
-      const read = await readPageJobText({ port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url) }, owner.epoch)
-      if (!alive(sc)) return
-      // What the user pasted or picked meanwhile is theirs.
-      await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource } : s))
-    } catch {
-      // A page the panel cannot reach leaves the paste box and the pick to the user.
+    if (port !== null && owner.jobText.trim() === '') {
+      try {
+        const tab = await getTab(sc.target)
+        if (!alive(sc)) return
+        const read = await readPageJobText({ port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url) }, owner.epoch)
+        if (!alive(sc)) return
+        // What the user pasted or picked meanwhile is theirs.
+        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource } : s))
+      } catch {
+        // A page the panel cannot reach leaves the paste box and the pick to the user.
+      }
     }
+    // The Draft starts now, or once the user pastes or picks the job text.
+    await startEmailDraft(sc)
   }
 
   /** "Not the job description" (spec #41): the Session's text goes, the source
@@ -2304,8 +2383,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         Job description (paste here if the scan could not find it)
         <textarea
           className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} disabled={session === null}
-          // Typing or pasting makes the text the user's from then on.
-          onChange={(e) => { const v = e.target.value; writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' })) }}
+          // Typing or pasting makes the text the user's from then on. A paste,
+          // and not each typed key, starts an Application email that waited
+          // for the text (spec #66).
+          onPaste={() => { pastedRef.current = true }}
+          onChange={(e) => {
+            const v = e.target.value
+            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' }))
+            if (!pastedRef.current) return
+            pastedRef.current = false
+            const sc = scopeNow()
+            if (sc !== null) void startEmailDraft(sc)
+          }}
         />
         {session !== null && (
           // Where the text came from (spec #41), right under the box.
@@ -2357,6 +2446,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                   pick={addressPick}
                   onOffer={() => { void onApplyByEmail() }}
                   onChoose={(address, how) => { void onChooseApplyAddress(address, how) }}
+                  review={(
+                    <EmailReview
+                      draft={session.emailDraft} ui={emailDraftUi}
+                      needsJobText={session.emailDraft === null && session.jobText.trim() === ''}
+                      resumeName={resumeName}
+                      onSubject={(subject) => onEditEmail({ subject })}
+                      onBody={(body) => onEditEmail({ body })}
+                      onDraft={onDraftEmail}
+                    />
+                  )}
                 />
               )}
               {listed.length > 0 && (

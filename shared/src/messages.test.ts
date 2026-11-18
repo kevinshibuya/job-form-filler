@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema, ApplyAddressPickResultSchema } from './messages.js'
 import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, FoundAddressSchema, isAddressShape } from './messages.js'
+import { EmailDraftResultSchema } from './messages.js'
 import { captureField, captureRefusal, captureResolution, CaptureSaveParamsSchema, withoutQuery } from './capture.js'
 import { JobTextReplySchema, JobTextSourceSchema } from './jobText.js'
 
@@ -517,5 +518,24 @@ describe('applyAddress.pick (#71)', () => {
     expect(ApplyAddressPickResultSchema.parse({ position: 0, address: 'careers@example.org' })).toEqual({ position: 0 })
     expect(ApplyAddressPickResultSchema.safeParse({ position: 'jobs@example.org' }).success).toBe(false)
     expect(ApplyAddressPickResultSchema.safeParse({ position: -1 }).success).toBe(false)
+  })
+})
+
+describe('email.draft (#72)', () => {
+  const params = { jobText: 'Acme is hiring an analyst.', company: 'Acme', title: 'Analyst at Acme', pageSubject: null }
+
+  it('takes the job text, the Company, the title, the page subject and the Resume text', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params }).success).toBe(true)
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params: { ...params, pageSubject: 'Application', cvText: 'cv' } }).success).toBe(true)
+  })
+
+  it('refuses a request with no job text', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params: { ...params, jobText: '  ' } }).success).toBe(false)
+  })
+
+  it('the reply names its links from the three link Known keys only', () => {
+    const reply = { subject: 'S', body: 'B', model: 'claude-opus-5-5', missingLinks: ['github'], unsupportedClaims: [], unchecked: false }
+    expect(EmailDraftResultSchema.safeParse(reply).success).toBe(true)
+    expect(EmailDraftResultSchema.safeParse({ ...reply, missingLinks: ['email'] }).success).toBe(false)
   })
 })

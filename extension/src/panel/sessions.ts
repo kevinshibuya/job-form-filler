@@ -1,5 +1,6 @@
 import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
+import { SessionEmailDraftSchema, type SessionEmailDraft } from './emailDraft'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
 import type { ScanUiState } from './ScanStatus'
@@ -79,6 +80,10 @@ export interface Session {
   applyAddress: string | null
   /** How `applyAddress` was chosen; null while there is none. */
   applyAddressChosenBy: ApplyAddressChoice | null
+  /** The Application email's Draft, with its flags, its model, the edited
+   *  mark and the page's subject, once one is written. It rides with the
+   *  Apply address through a re-Scan. */
+  emailDraft: SessionEmailDraft | null
 }
 
 /** S4: answers are keyed by the NORMALIZED label, so a carry survives a field
@@ -141,6 +146,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     applyCandidates: [],
     applyAddress: null,
     applyAddressChosenBy: null,
+    emailDraft: null,
   }
 }
 
@@ -439,6 +445,8 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.applyCandidates !== undefined && !ApplyAddressCandidateSchema.array().safeParse(raw.applyCandidates).success) return null
     if (raw.applyAddress != null && typeof raw.applyAddress !== 'string') return null
     if (raw.applyAddressChosenBy != null && !ApplyAddressChoiceSchema.safeParse(raw.applyAddressChosenBy).success) return null
+    // A row stored before the Application email has no Draft.
+    if (raw.emailDraft != null && !SessionEmailDraftSchema.safeParse(raw.emailDraft).success) return null
     const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
     return {
       ...(raw as unknown as Session),
@@ -449,6 +457,7 @@ export function parseStoredSession(raw: unknown): Session | null {
       applyCandidates: (raw.applyCandidates as ApplyAddressCandidate[] | undefined) ?? [],
       applyAddress,
       applyAddressChosenBy: applyAddress === null ? null : (raw.applyAddressChosenBy as ApplyAddressChoice | null | undefined) ?? null,
+      emailDraft: applyAddress === null ? null : (raw.emailDraft as SessionEmailDraft | null | undefined) ?? null,
     }
   } catch {
     return null

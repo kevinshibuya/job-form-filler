@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { isAddressShape, type AddressContext, type ApplyAddressCandidate, type ApplyAddressChoice } from '@jff/shared'
 import type { AddressPickUi } from './applyAddressPick'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
@@ -7,8 +7,8 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
  * The email flow of the Side panel (spec #66), the one module the main
  * component mounts for it. This ticket builds the choice of the Apply
  * address: the page's candidates listed with the places the page shows them,
- * a box to type an address, and the To row once one is chosen. Later tickets
- * of the spec add the Application email below the To row.
+ * a box to type an address, and the To row once one is chosen, with the
+ * Application email's rows below it.
  *
  * The candidate rows start from the Field rows (`ROW_BASE`, the bold first
  * line, the muted detail), and the boxes from the panel's text inputs.
@@ -34,6 +34,8 @@ export interface EmailChooserProps {
   onOffer: () => void
   /** A shape-checked address the user picked from the list or typed. */
   onChoose: (address: string, how: 'list' | 'typed') => void
+  /** The Application email's rows, shown under the To row. */
+  review?: ReactNode
 }
 
 function ContextLine({ context }: { context: AddressContext }) {
@@ -122,7 +124,7 @@ function PickLine({ pick }: { pick: AddressPickUi }) {
   )
 }
 
-export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, pick, onOffer, onChoose }: EmailChooserProps) {
+export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, pick, onOffer, onChoose, review }: EmailChooserProps) {
   // Beside a form the flow waits for a click, which sends nothing. A chosen
   // address opens it for good: it is stored with the Session.
   const [offerTaken, setOfferTaken] = useState(false)
@@ -145,7 +147,10 @@ export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, pi
     <section className="mt-4" data-jff-email="1">
       {pick !== null && applyAddress === null && <PickLine pick={pick} />}
       {applyAddress !== null && (
-        <ToRow address={applyAddress} chosenBy={chosenBy} onChoose={(a) => onChoose(a, 'typed')} />
+        <>
+          <ToRow address={applyAddress} chosenBy={chosenBy} onChoose={(a) => onChoose(a, 'typed')} />
+          {review}
+        </>
       )}
       {candidates.length > 0 && (
         <>

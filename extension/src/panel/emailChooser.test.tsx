@@ -159,7 +159,8 @@ describe('a page with no Fields and no address', () => {
     expect(sessionRow()?.applyAddressChosenBy).toBe('typed')
     // The text is read once there is an address to write to.
     await waitFor(() => { expect(sessionRow()?.jobText).toBe(JOB_TEXT) })
-    expect(hostRequests()).toEqual(['selector.get'])
+    // Then the Application email's one Draft starts (ticket #72).
+    await waitFor(() => { expect(hostRequests()).toEqual(['selector.get', 'email.draft']) })
     // The paste box and the pick work now that the Session holds an Apply address.
     expect(pickButton().disabled).toBe(false)
   }, 15_000)

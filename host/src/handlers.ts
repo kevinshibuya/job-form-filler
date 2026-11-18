@@ -21,6 +21,7 @@ import { claimsInDraft } from './llm/draftCheck.js'
 import { runFactsExtract } from './llm/factsExtract.js'
 import { runOptionPick } from './llm/optionPick.js'
 import { runApplyAddressPick } from './llm/applyAddressPick.js'
+import { draftApplicationEmail } from './llm/applicationEmail.js'
 import { learnWording } from './resolve/learnedWordings.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
@@ -225,6 +226,27 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'applyAddress.pick': {
         const position = await runApplyAddressPick(deps.codex, req.params, { model: deps.models.applyAddressPick, timeoutMs: 120_000 })
         return ok(req.requestId, { position })
+      }
+
+      // The Application email (spec #66). The writer drafts the prose; the
+      // links and the signature come from the Profile (ADR 0006), and a
+      // failed Draft check still answers the Draft, marked unchecked (ADR 0004).
+      case 'email.draft': {
+        const profile = getProfile(db)
+        const out = await draftApplicationEmail(
+          { writer: deps.runner, checker: deps.codex, models: { writer: deps.models.applicationEmail, checker: deps.models.reviewDraft } },
+          {
+            jobText: req.params.jobText,
+            company: req.params.company,
+            title: req.params.title,
+            profileSummary: buildProfileSummary(profile, getAnswerBank(db)),
+            cvText: req.params.cvText ?? null,
+            projectNotes: readProjectNotes(deps.config.projectsPaths),
+            pageSubject: req.params.pageSubject,
+          },
+          profile,
+        )
+        return ok(req.requestId, out)
       }
 
       // A Learned wording (ticket #35): the Option the user accepted for a

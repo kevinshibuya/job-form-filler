@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type Resolution,
+  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -111,6 +111,10 @@ export interface HeldMappingHost {
   addressPicks: ApplyAddressPickParams[]
   /** What `applyAddress.pick` answers: a position, or an error. Defaults to none. */
   addressPick: (p: ApplyAddressPickParams) => { position: number | null } | { error: { kind: HostErrorKind; message: string } } | Promise<{ position: number | null } | { error: { kind: HostErrorKind; message: string } }>
+  /** Every `email.draft` request, in order, as its params (spec #66). */
+  emailDrafts: EmailDraftParams[]
+  /** What `email.draft` answers: a Draft, or an error. Defaults to `draftReply`. */
+  emailDraft: (p: EmailDraftParams) => EmailDraftResult | { error: { kind: HostErrorKind; message: string } } | Promise<EmailDraftResult | { error: { kind: HostErrorKind; message: string } }>
   /** Frames beside the first that hold no Field, each with its addresses. */
   otherFrames: { frameId: number; url: string; addresses: FoundAddress[] }[]
   /** Every request the panel sent the Native host, as its method, in order. */
@@ -133,7 +137,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
       held: [], firstRequests: [], firstCompanies: [], frameUrl: 'https://jobs.example.com/apply', mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
       picks: [], pick: () => ({ position: null }), learned: [],
-      addresses: [], addressPicks: [], addressPick: () => ({ position: null }), otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
+      addresses: [], addressPicks: [], addressPick: () => ({ position: null }), emailDrafts: [], emailDraft: draftReply, otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -177,6 +181,12 @@ export function installHeldMappingHost(): HeldMappingHost {
         const answer = await host.addressPick(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
+      if (method === 'email.draft') {
+        const pp = params as EmailDraftParams
+        host.emailDrafts.push(pp)
+        const answer = await host.emailDraft(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
       if (method === 'wording.learn') {
         host.learned.push(params as LearnWordingParams)
         return { requestId, ok: true, result: { learned: true } }
@@ -194,6 +204,20 @@ export function installHeldMappingHost(): HeldMappingHost {
 
   return host
 }
+
+/** The prose of the fake host's Application email. */
+export const DRAFT_PROSE = 'Hello,\n\nI would like to apply for the analyst role. I build analytical engines.'
+
+/** The fake host's Application email: the page's subject when it set one,
+ *  the prose signed with the onboarded name, checked, flagging nothing. */
+export const draftReply = (p: EmailDraftParams): EmailDraftResult => ({
+  subject: p.pageSubject ?? 'Application for the analyst role',
+  body: `${DRAFT_PROSE}\n\nBest regards,\nAda Lovelace`,
+  model: 'claude-opus-5-5',
+  missingLinks: [],
+  unsupportedClaims: [],
+  unchecked: false,
+})
 
 /** A Mapping reply to a held request: Mapping's decisions, or a model error. */
 export const mapped = (

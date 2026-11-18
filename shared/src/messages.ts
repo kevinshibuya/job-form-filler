@@ -159,6 +159,49 @@ export const ApplyAddressPickResultSchema = z.object({
 })
 export type ApplyAddressPickResult = z.infer<typeof ApplyAddressPickResultSchema>
 
+/* ---------------------------------------------- the Application email (#66) */
+
+/** The link Known keys a Job posting may ask an Application email to carry.
+ *  The model names which; the Values always come from the Profile. */
+export const EMAIL_LINK_KEYS = ['linkedin', 'github', 'portfolio'] as const
+export const EmailLinkKeySchema = z.enum(EMAIL_LINK_KEYS)
+export type EmailLinkKey = z.infer<typeof EmailLinkKeySchema>
+
+/**
+ * `email.draft`: what the Side panel holds for one Application email. The Job
+ * posting text, the title and the page's subject are page content; the
+ * Resume text is the user's own. The Native host reads the Profile itself.
+ * `pageSubject` is the subject of the first `mailto:` link to the Apply
+ * address, in page order, or null when the page gave none.
+ */
+export const EmailDraftParamsSchema = z.object({
+  jobText: z.string().refine((s) => s.trim() !== '', 'an Application email needs Job posting text'),
+  company: z.string().nullable(),
+  title: z.string().nullable(),
+  pageSubject: z.string().nullable(),
+  cvText: z.string().optional(),
+})
+export type EmailDraftParams = z.infer<typeof EmailDraftParamsSchema>
+
+/**
+ * The reply to `email.draft`. `body` is the assembled plain text: the model's
+ * prose, then the requested links from the Profile, then the signature.
+ * `missingLinks` names each link the posting asks for that the Profile does
+ * not hold, left out of the body. `unsupportedClaims` quotes each sentence of
+ * the prose the Draft check flagged, and each that holds a link or an
+ * address. `unchecked` is true when the Draft check failed and the Draft is
+ * shown without it (ADR 0004). `model` wrote the Draft.
+ */
+export const EmailDraftResultSchema = z.object({
+  subject: z.string(),
+  body: z.string(),
+  model: z.string(),
+  missingLinks: z.array(EmailLinkKeySchema),
+  unsupportedClaims: z.array(z.string()),
+  unchecked: z.boolean(),
+})
+export type EmailDraftResult = z.infer<typeof EmailDraftResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -206,6 +249,8 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   // The Apply address pick (spec #66, ADR 0008): the page's candidates and
   // the Job posting they came with. It answers a position, never an address.
   z.object({ requestId: z.string().min(1), method: z.literal('applyAddress.pick'), params: ApplyAddressPickParamsSchema }),
+  // The Application email (spec #66): a Draft of its subject and body.
+  z.object({ requestId: z.string().min(1), method: z.literal('email.draft'), params: EmailDraftParamsSchema }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
   // "Not the job description" (spec #41): forget the spot saved for a site.
