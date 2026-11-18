@@ -2,6 +2,21 @@ import { describe, it, expect, vi } from 'vitest'
 import type { ContentMessage, EnumField, Resolution } from '@jff/shared'
 import type { HostPort } from './port'
 import { runMapping, runScan, ScanError, type ScanDeps } from './scan'
+import { postingReaderFor, readJobText } from '../content/jobpost'
+import type { FetchLike } from '../content/postingFetch'
+import { postingFixtureHtml } from '../content/fixtures/real'
+
+/** A posting long enough for the 400-character minimum. */
+const JD = `JOB POSTING ${'Build reliable systems with a small team. '.repeat(12)}`.trim()
+
+/** A page whose one form has two Fields and whose job text reply is `jobText`. */
+const jobTextPage = (jobText: { text: string; selector: string | null; source: string }) =>
+  vi.fn(async (_frameId: number | undefined, message: ContentMessage) => {
+    if (message.type === 'JFF_SCAN') return { replies: [{ frameId: 0, url: 'https://ats.example/apply', payload: { ok: true, scan: { epoch: message.epoch, fields: [field(0, 0), field(0, 1)], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+    if (message.type === 'JFF_JOBTEXT') return { replies: [{ frameId: 0, payload: { ok: true, jobText } }], failures: [] }
+    if (message.type === 'JFF_FILL') return { replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: message.epoch, filled: [], failed: [] } } }], failures: [] }
+    return { replies: [{ frameId: 0, payload: { ok: false } }], failures: [] }
+  })
 
 const field = (frameId: number, fid: number, patch: Partial<EnumField> = {}): EnumField => ({
   frameId: -1, fid, epoch: 0, label: `L${fid}`, name: `n${fid}`, idAttr: null, kind: 'text',
@@ -48,7 +63,7 @@ function makeDeps(over: Partial<ScanDeps> = {}) {
       disconnect: () => undefined,
     } as unknown as HostPort,
     getResume: async () => ({ name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' }),
-    pastedJobText: '',
+    heldJobText: '',
     ...over,
   }
   // Record AFTER merging `over`, not inside the default stub. Several tests below
@@ -131,7 +146,8 @@ function twoFrameDeps(over: {
   const made = makeDeps()
   let epoch = 0
   made.deps.nextEpoch = () => ++epoch
-  made.deps.pastedJobText = over.pasted ?? ''
+  made.deps.heldJobText = over.pasted ?? ''
+  made.deps.heldJobTextSource = over.pasted === undefined ? null : 'paste'
   made.deps.getResume = async () =>
     over.resume === true ? { name: 'cv.pdf', mimeType: 'application/pdf', dataBase64: 'AAA=' } : null
   made.deps.inject = vi.fn(async () => [0, 1])
@@ -228,16 +244,20 @@ describe('runScan', () => {
   })
 
   it('prefers pasted job text over scraping and never asks the page for it', async () => {
-    const { deps, sent } = makeDeps({ pastedJobText: 'PASTED JD' })
+    const { deps, sent } = makeDeps({ heldJobText: 'PASTED JD', heldJobTextSource: 'paste' })
     const out = await runScan(deps)
     expect(out.jobText).toBe('PASTED JD')
     expect(sent.map((m) => m.type)).not.toContain('JFF_JOBTEXT')
   })
 
-  it('saves a newly discovered job_description selector for this hostname', async () => {
-    const { deps } = makeDeps()
-    await runScan(deps)
-    expect(deps.port.request).toHaveBeenCalledWith('selector.save', expect.objectContaining({ selector: '#jd', purpose: 'job_description' }))
+  // Spec #41, turned around: a heuristic's spot is used for this Scan and never saved.
+  it('never saves the spot a heuristic found', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: JD, selector: '#jd', source: 'heuristic' }) })
+    const out = await runScan(deps)
+    expect(out.jobText).toBe(JD)
+    expect(out.jobTextSource).toBe('heuristic')
+    const methods = (deps.port.request as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
+    expect(methods).not.toContain('selector.save')
   })
 
   it('auto-fills only tier=auto resolutions and never page-sourced ones', async () => {
@@ -865,7 +885,7 @@ describe('the two Resolution steps', () => {
     return { port, calls }
   }
   const pending = [field(0, 1, { frameId: 0, epoch: 3, label: 'Why us?' }), field(0, 2, { frameId: 0, epoch: 3, label: 'Salary' })]
-  const scan = { epoch: 3, jobText: 'JD', pending }
+  const scan = { epoch: 3, ats: 'generic' as const, jobText: 'JD', pending }
   const res = (fid: number, patch: Partial<Resolution>): Resolution => ({
     handle: { frameId: 0, fid, epoch: 3 }, tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: 'custom', ...patch,
   })
@@ -926,5 +946,220 @@ describe('the two Resolution steps', () => {
     const sendToTab = vi.fn(async () => ({ replies: [], failures: [] }))
     expect(await runMapping({ port, sendToTab }, scan, () => false)).toBeNull()
     expect(sendToTab).not.toHaveBeenCalled()
+  })
+})
+
+describe('the Company on a Scan (spec #41)', () => {
+  /** One frame holds the form, at `frameUrl`, on a tab at `url` titled `title`. */
+  function companyDeps({ url, title, frameUrl = url, company = null }: { url: string; title: string; frameUrl?: string; company?: string | null }) {
+    const made = makeDeps({ url, hostname: new URL(url).hostname, title, company })
+    const inner = made.deps.sendToTab
+    made.deps.inject = vi.fn(async () => [0, 2])
+    made.deps.sendToTab = vi.fn(async (frameId, message) => {
+      if (message.type !== 'JFF_SCAN') return inner(frameId, message)
+      const scan = (fields: EnumField[]) => ({ ok: true, scan: { epoch: message.epoch, fields, unreachableWidgets: 0, activeCaptcha: false } })
+      return {
+        replies: [
+          { frameId: 0, url, payload: scan([]) },
+          { frameId: 2, url: frameUrl, payload: scan([field(0, 0, { label: 'Email', required: true }), field(0, 1, { label: 'Why us?', required: true })]) },
+        ],
+        failures: [],
+      }
+    })
+    made.deps.getResume = async () => null
+    const port = made.deps.port.request as unknown as ReturnType<typeof vi.fn>
+    const firstRequests = () => port.mock.calls.filter(([m]) => m === 'resolve.first').map(([, p]) => p as { company: string | null })
+    return { ...made, firstRequests }
+  }
+
+  it('the first Resolution request carries the Company read from the elected frame\'s Lever address', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/acme-rockets/123/apply', title: 'Apply' })
+    const out = await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme Rockets' })])
+    expect(out.company).toBe('Acme Rockets')
+    expect(out.companyGuessed).toBe(true)
+  })
+
+  it('reads the elected frame\'s address, not the tab\'s, for an ATS form inside an iframe', async () => {
+    const s = companyDeps({
+      url: 'https://www.acme.com/careers/1', title: 'Careers',
+      frameUrl: 'https://boards.greenhouse.io/embed/job_app?for=acme-rockets&token=1',
+    })
+    const out = await runScan(s.deps)
+    expect(out.election?.frameId).toBe(2)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme Rockets' })])
+  })
+
+  it('the title pattern comes before the address', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/acmerockets/123/apply', title: 'Acme Rockets - Senior Engineer' })
+    await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme Rockets' })])
+  })
+
+  it('a Company the user typed is sent and never replaced', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/acme-rockets/123/apply', title: 'Acme Rockets - Senior Engineer', company: 'Initech' })
+    const out = await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Initech' })])
+    expect(out.company).toBe('Initech')
+    expect(out.companyGuessed).toBe(false)
+  })
+
+  it('a page on an unknown site sends the generic guess', async () => {
+    const s = companyDeps({ url: 'https://jobs.acme.com/apply', title: 'Careers' })
+    await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: 'Acme' })])
+  })
+
+  it('a page on a known ATS hostname never sends the ATS\'s name', async () => {
+    const s = companyDeps({ url: 'https://jobs.lever.co/lever/123/apply', title: 'Apply' })
+    const out = await runScan(s.deps)
+    expect(s.firstRequests()).toEqual([expect.objectContaining({ company: null })])
+    expect(out.company).toBeNull()
+    expect(out.companyGuessed).toBe(false)
+  })
+})
+
+describe('the Job posting text and its source (spec #41)', () => {
+  const methodsOf = (deps: ScanDeps): string[] => (deps.port.request as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+
+  it('a paste is used as it is, the page is asked nothing, and the source is the paste', async () => {
+    const { deps, sent } = makeDeps({ heldJobText: 'Short paste', heldJobTextSource: 'paste' })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: 'Short paste', jobTextSource: 'paste' })
+    expect(sent.map((m) => m.type)).not.toContain('JFF_JOBTEXT')
+    expect(methodsOf(deps)).not.toContain('selector.get')
+  })
+
+  it('a paste of 50 characters is kept', async () => {
+    const paste = 'p'.repeat(50)
+    const { deps } = makeDeps({ heldJobText: paste, heldJobTextSource: 'paste' })
+    expect((await runScan(deps)).jobText).toBe(paste)
+  })
+
+  it('a paste is cut to the 50,000-character cap', async () => {
+    const { deps } = makeDeps({ heldJobText: 'p'.repeat(60_000), heldJobTextSource: 'paste' })
+    expect((await runScan(deps)).jobText).toHaveLength(50_000)
+  })
+
+  it('a heuristic result of 50 characters is refused, and the source is nothing found', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: 'h'.repeat(50), selector: '#jd', source: 'heuristic' }) })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: '', jobTextSource: 'none' })
+  })
+
+  it('a spot the user picked is read through the saved selector, and the source is the pick', async () => {
+    const page = jobTextPage({ text: JD, selector: '#jd', source: 'learned' })
+    const { deps, sent } = makeDeps({ sendToTab: page })
+    ;(deps.port.request as ReturnType<typeof vi.fn>).mockImplementation(async (method: string) => {
+      if (method === 'selector.get') return { ok: true, result: { selector: '#jd' } }
+      if (method === 'resolve.first') return { ok: true, result: { epoch: 1, resolutions: [], pending: [] } }
+      return { ok: true, result: {} }
+    })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: JD, jobTextSource: 'pick' })
+    expect(sent.find((m) => m.type === 'JFF_JOBTEXT')).toMatchObject({ selector: '#jd' })
+    expect(methodsOf(deps)).not.toContain('selector.save')
+  })
+
+  it('the ATS module\'s text comes before a pick and a heuristic, and the source is the ATS', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: JD, selector: null, source: 'ats' }) })
+    expect(await runScan(deps)).toMatchObject({ jobText: JD, jobTextSource: 'ats' })
+  })
+
+  it('a Scan that finds no text says nothing found', async () => {
+    const { deps } = makeDeps({ sendToTab: jobTextPage({ text: '', selector: null, source: 'none' }) })
+    expect(await runScan(deps)).toMatchObject({ jobText: '', jobTextSource: 'none' })
+  })
+
+  it('a second Scan of the Session keeps the source the first recorded, and asks the page nothing', async () => {
+    const { deps, sent } = makeDeps({ heldJobText: JD, heldJobTextSource: 'heuristic' })
+    const out = await runScan(deps)
+    expect(out).toMatchObject({ jobText: JD, jobTextSource: 'heuristic' })
+    expect(sent.map((m) => m.type)).not.toContain('JFF_JOBTEXT')
+  })
+
+  it('a Session saved before the source was kept reuses its text with no source', async () => {
+    const { deps } = makeDeps({ heldJobText: 'Older text' })
+    expect(await runScan(deps)).toMatchObject({ jobText: 'Older text', jobTextSource: null })
+  })
+})
+
+// Spec #41, #52: on Lever the Job posting text comes from the posting's page.
+// The fake top frame answers the job text request with the page script's own
+// reader, under the frame's address and with a stubbed fetch.
+describe('the Job posting text from the posting\'s page (spec #41)', () => {
+  const LEVER_APPLY = 'https://jobs.lever.co/acme/0000-posting/apply'
+  const LEVER_POSTING = 'https://jobs.lever.co/acme/0000-posting'
+  const HEURISTIC = `HEURISTIC ${'Text the form page holds. '.repeat(20)}`
+
+  const fixtureFetch = () => vi.fn<FetchLike>(async () => new Response(postingFixtureHtml('lever-posting'), { status: 200 }))
+
+  /** A page at `url` whose top frame runs the page script's job text reading. */
+  function pageAt(url: string, fetch: FetchLike) {
+    document.body.innerHTML = `<main>${HEURISTIC}</main>`
+    return vi.fn(async (_frameId: number | undefined, message: ContentMessage) => {
+      if (message.type === 'JFF_SCAN') return { replies: [{ frameId: 0, url, payload: { ok: true, scan: { epoch: message.epoch, fields: [field(0, 0), field(0, 1)], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+      if (message.type === 'JFF_JOBTEXT') {
+        const jobText = await readJobText(document, message.selector, postingReaderFor(url, fetch))
+        return { replies: [{ frameId: 0, payload: { ok: true, jobText } }], failures: [] }
+      }
+      if (message.type === 'JFF_FILL') return { replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: message.epoch, filled: [], failed: [] } } }], failures: [] }
+      return { replies: [{ frameId: 0, payload: { ok: false } }], failures: [] }
+    })
+  }
+
+  const scanAt = (url: string, fetch: FetchLike, over: Partial<ScanDeps> = {}) =>
+    makeDeps({ sendToTab: pageAt(url, fetch), hostname: new URL(url).hostname, ...over })
+
+  it('a Scan on a Lever apply page holds the fixture\'s text, and the source is the ATS', async () => {
+    const fetch = fixtureFetch()
+    const out = await runScan(scanAt(LEVER_APPLY, fetch).deps)
+    expect(out.ats).toBe('lever')
+    expect(out.jobTextSource).toBe('ats')
+    expect(out.jobText).toContain('Placeholder text where the Job posting described the role.')
+    expect(out.jobText).not.toContain('HEURISTIC')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls[0]![0]).toBe(LEVER_POSTING)
+    expect(fetch.mock.calls[0]![1]).toMatchObject({ credentials: 'omit' })
+  })
+
+  it('a second Scan in the same Session makes no second fetch and keeps the source', async () => {
+    const fetch = fixtureFetch()
+    const { deps } = scanAt(LEVER_APPLY, fetch)
+    const first = await runScan(deps)
+    // The Session keeps the text and its source, as the Side panel hands them back.
+    deps.heldJobText = first.jobText
+    deps.heldJobTextSource = first.jobTextSource
+    const second = await runScan(deps)
+    expect(second).toMatchObject({ jobText: first.jobText, jobTextSource: 'ats' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a paste wins, and with a paste no fetch is made', async () => {
+    const fetch = fixtureFetch()
+    const out = await runScan(scanAt(LEVER_APPLY, fetch, { heldJobText: 'My pasted posting', heldJobTextSource: 'paste' }).deps)
+    expect(out).toMatchObject({ jobText: 'My pasted posting', jobTextSource: 'paste' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('a posting page that fails goes on to the pick, then the heuristic, and the Scan does not fail', async () => {
+    const fetch = vi.fn<FetchLike>(async () => { throw new TypeError('Failed to fetch') })
+    const out = await runScan(scanAt(LEVER_APPLY, fetch).deps)
+    expect(out).toMatchObject({ jobTextSource: 'heuristic' })
+    expect(out.jobText).toContain('HEURISTIC')
+    expect(out.fields.length).toBeGreaterThan(0)
+  })
+
+  it('a posting page that holds less than the minimum goes on to the next source', async () => {
+    const fetch = vi.fn<FetchLike>(async () => new Response('<div class="posting-page">Cookie notice</div>', { status: 200 }))
+    expect((await runScan(scanAt(LEVER_APPLY, fetch).deps)).jobTextSource).toBe('heuristic')
+  })
+
+  it('a Scan on an Ashby, a Greenhouse or an unknown page makes no fetch', async () => {
+    const fetch = fixtureFetch()
+    for (const url of ['https://jobs.ashbyhq.com/acme/0000/application', 'https://boards.greenhouse.io/acme/jobs/1', 'https://careers.example/apply']) {
+      expect((await runScan(scanAt(url, fetch).deps)).jobTextSource).toBe('heuristic')
+    }
+    expect(fetch).not.toHaveBeenCalled()
   })
 })

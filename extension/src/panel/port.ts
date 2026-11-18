@@ -171,6 +171,7 @@ export function createFakeHostPort(): HostPort {
         'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString() },
         'answerBank.get': {},
         'selector.get': { selector: null },
+        'selector.clear': { cleared: false },
         // Resolution in two requests: the canned page has nothing to resolve,
         // so the first step leaves nothing pending and no Mapping is owed.
         'resolve.first': { epoch: 0, resolutions: [], pending: [] },
@@ -182,6 +183,8 @@ export function createFakeHostPort(): HostPort {
         generate: { draft: '' },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },
+        // A Capture: the canned host writes nothing and says so.
+        'capture.save': { path: '(fake host: nothing saved)' },
       }
       return { ok: true, result: (canned[method] ?? {}) as T }
     },

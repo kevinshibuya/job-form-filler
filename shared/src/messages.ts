@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { CityPartsSchema, EnumFieldSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
 import { FIELD_KEYS } from './keys.js'
+import { CaptureSaveParamsSchema } from './capture.js'
 
 // Re-exported so `./messages.js` alone carries the field-identity types it
 // builds its request/response schemas from (see shared/src/messages.test.ts).
@@ -45,6 +46,10 @@ export const ResolveParamsSchema = z.object({
   company: z.string().nullable(),
   jobText: z.string(),
   fields: z.array(EnumFieldSchema),
+  /** The Scan's ATS (an `AtsOrGeneric`), for the host's log only: the host
+   *  branches on nothing. Optional, and any string, so a panel and a host a
+   *  release apart still talk; an absent one reads as `generic`. */
+  ats: z.string().min(1).max(64).optional(),
 })
 export type ResolveParams = z.infer<typeof ResolveParamsSchema>
 
@@ -128,6 +133,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('wording.learn'), params: LearnWordingParamsSchema }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.get'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('selector.save'), params: z.object({ hostname: z.string(), purpose: z.literal('job_description'), selector: z.string() }) }),
+  // "Not the job description" (spec #41): forget the spot saved for a site.
+  // A site with none is not an error.
+  z.object({ requestId: z.string().min(1), method: z.literal('selector.clear'), params: z.object({ hostname: z.string().min(1), purpose: z.literal('job_description') }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('mapping.confirm'), params: z.object({ label: z.string(), fieldKey: z.enum(FIELD_KEYS) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('qa.list'), params: z.object({ page: z.number().int().nonnegative() }) }),
   z.object({
@@ -137,6 +145,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.check'), params: z.object({ url: z.string().min(1) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('applied.list'), params: z.object({}).passthrough() }),
+  // A Capture (spec #41): the cleaned page and what the Scan decided, written
+  // to the user's machine and nowhere else.
+  z.object({ requestId: z.string().min(1), method: z.literal('capture.save'), params: CaptureSaveParamsSchema }),
 ])
 export type HostRequest = z.infer<typeof HostRequestSchema>
 export type HostMethod = HostRequest['method']
@@ -224,6 +235,14 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   // A3: the panel's submission-detection needs the page's VISIBLE text after a
   // wizard-step re-scan; jobText heuristics answer a different question.
   z.object({ type: z.literal('JFF_PAGETEXT'), epoch: z.number().int().nonnegative() }),
+  // A Capture (spec #41): the frame cleans a copy of its page and hands back
+  // only that. `held`: the Values the Side panel knows for this frame's Fields,
+  // by fid, beside what each Control shows itself, so a committed dropdown
+  // choice shown as ordinary text is blanked inside its own widget.
+  z.object({
+    type: z.literal('JFF_CAPTURE'), epoch: z.number().int().nonnegative(),
+    held: z.array(z.object({ fid: z.number().int().nonnegative(), value: z.string() })),
+  }),
   z.object({
     type: z.literal('JFF_FILL_RESUME'),
     epoch: z.number().int().nonnegative(),
@@ -252,6 +271,10 @@ export const ScanResultSchema = z.object({
    *  resume. Optional so a stale content script simply omits it, and an absent
    *  list reads as none. */
   attachedUploads: z.array(z.string()).optional(),
+  /** #49: this document already took the Resume once, through an upload it
+   *  kept, so a second Scan sends none. Optional like `attachedUploads`: a
+   *  stale content script omits it, and absent reads as not uploaded. */
+  resumeUploaded: z.boolean().optional(),
 })
 export type ScanResult = z.infer<typeof ScanResultSchema>
 

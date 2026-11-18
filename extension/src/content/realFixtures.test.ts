@@ -72,17 +72,16 @@ function headingLevel(el: Element): number {
 beforeEach(() => { document.documentElement.innerHTML = '<head></head><body></body>' })
 
 describe('loadRealFixture', () => {
-  it('holds the ten real-page fixtures', () => {
-    expect([...REAL_FIXTURES].sort()).toEqual([
-      'based-in-yes-no', 'greenhouse-accommodation', 'greenhouse-hosted-a', 'greenhouse-hosted-b',
-      'greenhouse-hosted-resume-attached', 'greenhouse-hosted-resume-uploading', 'greenhouse-self-id',
-      'lever-marketing-consent', 'lever-pronoun-group', 'lever-source-group',
-    ])
+  // Every fixture in the folder is checked by the tests below, so a new fixture
+  // needs no edit here.
+  it('finds the fixtures in the folder', () => {
+    expect(REAL_FIXTURES.length).toBeGreaterThan(0)
   })
 
   it.each(REAL_FIXTURES)('loads %s by name, and Enumeration finds a Field in it', (name) => {
     loadRealFixture(name)
-    expect(document.querySelector(CONTROL)).not.toBeNull()
+    // A listing page's only Control can be a button drawn as a combobox (#53).
+    expect(document.querySelector(`${CONTROL}, [role="combobox"]`)).not.toBeNull()
     const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
     expect(fields.length).toBeGreaterThan(0)
   })
@@ -220,9 +219,72 @@ describe('each real-page fixture shows its review finding', () => {
     expect(cover.querySelector('.file-upload__filename')).toBeNull()
   })
 
+  it('every Greenhouse fixture: each file picker\'s own label reads "Attach", and its question sits on the group around it', () => {
+    for (const name of REAL_FIXTURES.filter((n) => n.startsWith('greenhouse'))) {
+      loadRealFixture(name)
+      const pickers = Array.from(document.querySelectorAll('input[type="file"]'))
+      expect(pickers.length).toBeGreaterThan(0)
+      for (const picker of pickers) {
+        expect(labelOf(picker)).toBe('Attach')
+        const group = picker.closest('[role="group"][aria-labelledby]')!
+        expect(group.querySelectorAll('input[type="file"]')).toHaveLength(1)
+        expect(text(byId(group.getAttribute('aria-labelledby')!))).not.toBe('Attach')
+      }
+    }
+  })
+
+  it('lever-source-group: a demographic dropdown sits inside its own label, beside every one of its Options', () => {
+    loadRealFixture('lever-source-group')
+    const select = Array.from(document.querySelectorAll('select')).find((s) => /^Gender/.test(labelOf(s)))!
+    expect(select.closest('label')).not.toBeNull()
+    expect(labelOf(select)).toContain('Male')
+  })
+
+  it('recruitee-file-inputs: five file pickers with no name, no id and no label of their own sit in the fieldset of custom questions, beside a labelled CV upload', () => {
+    loadRealFixture('recruitee-file-inputs')
+    const pickers = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+    const anonymous = pickers.filter((p) => !p.name && !p.id && !p.required)
+    expect(anonymous).toHaveLength(5)
+    const questions = anonymous[0]!.closest('fieldset')!
+    expect(text(questions.querySelector('legend'))).toBe('Questions')
+    for (const picker of anonymous) {
+      expect(picker.closest('fieldset')).toBe(questions)
+      expect(['', 'Upload a file']).toContain(labelOf(picker))
+    }
+    expect(questions.querySelectorAll(CONTROL).length).toBeGreaterThan(anonymous.length)
+    const cv = pickers.find((p) => p.name === 'candidate.cv')!
+    expect(cv.required).toBe(true)
+    expect(labelOf(cv)).toMatch(/^CV or resume/)
+    expect(cv.closest('fieldset')).toBeNull()
+  })
+
   it('greenhouse-accommodation: a Control whose label asks about accommodation', () => {
     loadRealFixture('greenhouse-accommodation')
     const controls = Array.from(document.querySelectorAll(CONTROL))
     expect(controls.some((c) => /accommodat/i.test(labelOf(c)))).toBe(true)
+  })
+})
+
+describe('whether Enumeration finds a real page\'s Fields inside a form (#53)', () => {
+  const ATS_FORMS = REAL_FIXTURES.filter((name) => /^(greenhouse|lever)-/.test(name))
+
+  it('covers every Greenhouse and Lever fixture', () => {
+    expect(ATS_FORMS.length).toBeGreaterThanOrEqual(9)
+  })
+
+  it.each(ATS_FORMS)('%s: every Field is inside a form', (name) => {
+    loadRealFixture(name)
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    expect(fields.length).toBeGreaterThan(0)
+    expect(fields.filter((f) => f.inForm !== true)).toEqual([])
+  })
+
+  it('listing-language-dropdown: one Field, a dropdown that holds a Value and is not inside a form', () => {
+    loadRealFixture('listing-language-dropdown')
+    const { fields } = enumerateFields({ root: document, epoch: 1, measure: allVisible })
+    expect(fields).toHaveLength(1)
+    expect(['select', 'combobox']).toContain(fields[0]!.kind)
+    expect(fields[0]!.currentValue).not.toBeNull()
+    expect(fields[0]!.inForm).toBe(false)
   })
 })

@@ -45,6 +45,13 @@ export function resumeAttached(attachedUploads: readonly string[]): boolean {
   return attachedUploads.some((label) => RESUME_LABEL_RE.test(label))
 }
 
+/** The Resume line reads "already on the page" when the page shows a resume
+ *  attached (#37) or the elected frame's document kept the one this extension
+ *  uploaded on an earlier Scan (#49). */
+export function resumeOnPage(attachedUploads: readonly string[], resumeUploaded: boolean): boolean {
+  return resumeUploaded || resumeAttached(attachedUploads)
+}
+
 /** Highest POSITIVE score wins; ties go to document order. Zero positive
  *  candidates -> null: no upload, and the panel notes it (A9). A resume the
  *  page already shows attached -> null too: no second resume (#37). */

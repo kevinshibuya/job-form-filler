@@ -23,15 +23,13 @@
  * kept there — a missed badge, never corruption. Deliberate.
  */
 
-/** Hosts where ref/source are known to be tracking, never identity.
- *  Extensible: adding an ATS is a one-line edit. Matched by domain-boundary
- *  suffix on the normalized hostname, so every subdomain is covered. */
-const ATS_HOSTS = ['greenhouse.io', 'ashbyhq.com'] as const
+import { findAts } from '@jff/shared'
 
-/** `host` is already lowercased and www.-stripped. Suffix match must land on a
- *  domain boundary so `notgreenhouse.io` never counts as `greenhouse.io`. */
-const isAtsHost = (host: string): boolean =>
-  ATS_HOSTS.some((ats) => host === ats || host.endsWith(`.${ats}`))
+/** Hosts where ref/source are known to be tracking, never identity: the ATSes
+ *  of the shared list whose switch is on. Adding an ATS is one edit there. The
+ *  list matches on a domain boundary, so `notgreenhouse.io` never counts as
+ *  `greenhouse.io` and every subdomain is covered. */
+const isAtsHost = (host: string): boolean => findAts(host)?.stripsTrackingParams === true
 
 const isTracking = (key: string, atsHost: boolean): boolean => {
   const k = key.toLowerCase()

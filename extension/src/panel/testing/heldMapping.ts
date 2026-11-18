@@ -77,6 +77,10 @@ export interface HeldMappingHost {
   mappingFor: (fields: EnumField[]) => Resolution[]
   held: Held[]
   firstRequests: EnumField[][]
+  /** The Company each `resolve.first` request carried, in order. */
+  firstCompanies: (string | null)[]
+  /** The address the page's one frame reports with its Scan reply. */
+  frameUrl: string
   mappingCount: number
   /** fid → what the page holds. */
   page: Record<number, string>
@@ -111,18 +115,19 @@ export function installHeldMappingHost(): HeldMappingHost {
     Object.assign(host, {
       fields: [], firstValues: {}, firstCandidates: {}, firstPatch: {}, firstNeedsInput: [], nothingPending: false, holdFirst: false,
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
-      held: [], firstRequests: [], mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
+      held: [], firstRequests: [], firstCompanies: [], frameUrl: 'https://jobs.example.com/apply', mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
       picks: [], pick: () => ({ position: null }), learned: [],
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
-      const p = params as { epoch: number; fields: EnumField[] }
+      const p = params as { epoch: number; fields: EnumField[]; company?: string | null }
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'selector.get') return { requestId, ok: true, result: { selector: null } }
       if (method === 'resolve.first') {
         host.firstRequests.push(p.fields)
+        host.firstCompanies.push(p.company ?? null)
         if (host.holdFirst) return await new Promise<HostResponse>(() => {})
         const decided = p.fields.filter((f) =>
           host.nothingPending || f.fid in host.firstValues || host.firstNeedsInput.includes(f.fid))
@@ -219,7 +224,7 @@ function fakeChrome(host: HeldMappingHost): unknown {
         const m = msg?.message
         if (msg?.kind === 'toContent' && m?.type === 'JFF_SCAN') {
           host.scans++
-          return { ok: true, replies: [{ frameId: 0, url: 'https://jobs.example.com/apply', payload: { ok: true, scan: { epoch: m.epoch, fields: host.fields, unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+          return { ok: true, replies: [{ frameId: 0, url: host.frameUrl, payload: { ok: true, scan: { epoch: m.epoch, fields: host.fields, unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
         }
         if (msg?.kind === 'toContent' && m?.type === 'JFF_FILL') {
           // The page takes every value it is sent, and reports it filled,
