@@ -11,12 +11,13 @@ import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
+import { EmailChooser } from './EmailChooser'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
 import { jobTextLine, offersNotTheJob } from './jobTextLine'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget, resumeOnPage } from './resumeTarget'
-import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { fillEntry, MAPPING_LOST, readPageJobText, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
@@ -49,6 +50,19 @@ export const electedFrameName = (e: ElectionOutcome | null): string => {
   if (e.url !== null) { try { host = new URL(e.url).host } catch { /* keep frame id */ } }
   return `${host} (score ${e.score})`
 }
+
+/** Spec #66: the Session has started the email flow, holding a candidate or
+ *  an Apply address, so the Job posting text controls work with no Field. */
+export const emailStarted = (s: Session): boolean => s.applyCandidates.length > 0 || s.applyAddress !== null
+
+/**
+ * Spec #66: whether the email flow shows. After a settled Scan with no
+ * CAPTCHA: with a candidate or an Apply address, and on an empty page to
+ * offer typing one.
+ */
+const showsEmailFlow = (s: Session): boolean =>
+  s.lastOutcome !== null && !s.activeCaptcha
+  && (emailStarted(s) || (s.fields.length === 0 && s.lastOutcome.kind === 'empty'))
 
 /**
  * S2: the per-session state that is NEVER persisted, because it describes work
@@ -305,6 +319,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [scanning, setScanning] = useState(false)
   const [view, setView] = useState<'session' | 'editor' | 'applications'>('session')
   const [facts, setFacts] = useState<Record<string, string>>({})
+  /** The user's own email address, never an Apply address candidate (spec
+   *  #66). A ref, so a Scan reads the value the Profile holds now. */
+  const ownEmailRef = useRef<string | null>(null)
   const [factsLoaded, setFactsLoaded] = useState(false)
   const [resumeName, setResumeName] = useState<string | null>(null)
   // B2b: extracted CV text, loaded once (lazily re-extracted for a pre-B2a
@@ -868,6 +885,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       port.request<Record<string, string>>('profile.get', {}),
       port.request<Record<string, string>>('answerBank.get', {}),
     ]).then(([p, b]) => {
+      ownEmailRef.current = p.ok ? p.result.email ?? null : null
       setFacts({ ...(p.ok ? p.result : {}), ...(b.ok ? b.result : {}) })
       setFactsLoaded(true)
       setFactsOk(p.ok && b.ok)
@@ -1149,6 +1167,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         url,
         title: tab.title ?? '',
         company: known === '' ? null : known,
+        ownEmail: ownEmailRef.current,
       })
       // The bound tab navigated or closed while this scan ran: these fields,
       // resolutions and counts describe a page that is gone, and every JFF_FILL
@@ -1164,6 +1183,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // DISTINCT frames: a frame that errored first-pass and replied on the retry
         // contributes two reports but is still one frame on the page.
         // The ATS rides along so the empty state can say where its form is.
+        // Spec #66: no Field and an address is a posting that takes email.
+        : out.fields.length === 0 && out.candidates.length > 0
+          ? { kind: 'email', frames: new Set(out.frameReports.map((r) => r.frameId)).size, candidates: out.candidates.length }
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size, ats: out.ats }
         : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
         : doneOutcome(out.fill.filled.length, first.settled)
@@ -1196,6 +1218,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
+        applyCandidates: out.candidates,
         // What the user typed while the Scan ran is theirs.
         ...(s.jobTextSource === 'paste' && s.jobText.trim() !== ''
           ? {}
@@ -1708,7 +1731,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const onPickJobText = async (): Promise<void> => {
     const owner = sessionRef.current
-    if (owner === null || fields.length === 0 || picking) return
+    if (owner === null || (fields.length === 0 && !emailStarted(owner)) || picking) return
     const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
     // The picked text — and the selector learned from it — describe the page the
     // pick started on; everything below this await is dropped once that page is gone.
@@ -1741,6 +1764,30 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setScanStatus({ kind: 'action_failed', reason: `Pick failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       if (tabIdRef.current === sc.target) setPicking(false)
+    }
+  }
+
+  /**
+   * The Apply address the user picked from the list or typed (spec #66). A
+   * Session that holds no Job posting text reads the page's now: a Scan with
+   * no candidate left it unread so as to cost the Native host nothing.
+   */
+  const onChooseApplyAddress = async (address: string, how: 'list' | 'typed'): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    await applyToSession(sc.target, sc.gen, (s) => ({ ...s, applyAddress: address, applyAddressChosenBy: how }))
+    const port = portRef.current
+    if (port === null || owner.jobText.trim() !== '') return
+    try {
+      const tab = await getTab(sc.target)
+      if (!alive(sc)) return
+      const read = await readPageJobText({ port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url) }, owner.epoch)
+      if (!alive(sc)) return
+      // What the user pasted or picked meanwhile is theirs.
+      await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource } : s))
+    } catch {
+      // A page the panel cannot reach leaves the paste box and the pick to the user.
     }
   }
 
@@ -2198,7 +2245,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             )}
           </span>
         )}
-        <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0 || picking} onClick={onPickJobText}>
+        <button type="button" className={`${BTN} mt-1`} disabled={(fields.length === 0 && (session === null || !emailStarted(session))) || picking} onClick={onPickJobText}>
           {busyLabel(picking, 'Pick job description', 'Picking… (click the description on the page)')}
         </button>
       </label>
@@ -2230,6 +2277,15 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                     )
                   : (
                     <>
+              {showsEmailFlow(session) && (
+                // Keyed by tab: what is open in one tab's flow stays there.
+                <EmailChooser
+                  key={session.tabId}
+                  candidates={session.applyCandidates} applyAddress={session.applyAddress} chosenBy={session.applyAddressChosenBy}
+                  hasFields={session.fields.length > 0}
+                  onChoose={(address, how) => { void onChooseApplyAddress(address, how) }}
+                />
+              )}
               {listed.length > 0 && (
                 <section className="mt-4" data-jff-rows="1">
                   {(generateEligible.length > 0 || generateAll !== null) && (

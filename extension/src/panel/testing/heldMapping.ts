@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type Resolution,
+  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -105,6 +105,18 @@ export interface HeldMappingHost {
   pick: (p: OptionPickParams) => { position: number | null } | { error: { kind: HostErrorKind; message: string } } | Promise<{ position: number | null }>
   /** Every `wording.learn` request, in order, as its params (ticket #35). */
   learned: LearnWordingParams[]
+  /** The addresses the page's one frame reports with its Scan reply (spec #66). */
+  addresses: FoundAddress[]
+  /** Frames beside the first that hold no Field, each with its addresses. */
+  otherFrames: { frameId: number; url: string; addresses: FoundAddress[] }[]
+  /** Every request the panel sent the Native host, as its method, in order. */
+  methods: string[]
+  /** What the page answers a JFF_JOBTEXT with. Defaults to nothing found. */
+  jobText: JobTextReply
+  /** The text a JFF_PICK picks, or null to cancel the pick. */
+  pickText: string | null
+  /** When true no Scan reaches the page: the inject never answers. */
+  holdScan: boolean
 }
 
 export function installHeldMappingHost(): HeldMappingHost {
@@ -117,11 +129,13 @@ export function installHeldMappingHost(): HeldMappingHost {
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
       held: [], firstRequests: [], firstCompanies: [], frameUrl: 'https://jobs.example.com/apply', mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
       picks: [], pick: () => ({ position: null }), learned: [],
+      addresses: [], otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       const p = params as { epoch: number; fields: EnumField[]; company?: string | null }
+      host.methods.push(method)
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'selector.get') return { requestId, ok: true, result: { selector: null } }
@@ -220,11 +234,30 @@ function fakeChrome(host: HeldMappingHost): unknown {
     },
     runtime: {
       sendMessage: vi.fn(async (msg: { kind?: string; message?: { type?: string; epoch?: number; fills?: { handle: FieldHandle; value?: string; candidates?: string[] }[] } }) => {
-        if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+        if (msg?.kind === 'inject') {
+          if (host.holdScan) return await new Promise(() => {})
+          return { ok: true, frames: [0, ...host.otherFrames.map((f) => f.frameId)] }
+        }
         const m = msg?.message
         if (msg?.kind === 'toContent' && m?.type === 'JFF_SCAN') {
           host.scans++
-          return { ok: true, replies: [{ frameId: 0, url: host.frameUrl, payload: { ok: true, scan: { epoch: m.epoch, fields: host.fields, unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+          const scan = (fields: EnumField[], addresses: FoundAddress[]): unknown =>
+            ({ ok: true, scan: { epoch: m.epoch, fields, unreachableWidgets: 0, activeCaptcha: false, addresses } })
+          return {
+            ok: true,
+            replies: [
+              { frameId: 0, url: host.frameUrl, payload: scan(host.fields, host.addresses) },
+              ...host.otherFrames.map((f) => ({ frameId: f.frameId, url: f.url, payload: scan([], f.addresses) })),
+            ],
+            failures: [],
+          }
+        }
+        if (msg?.kind === 'toContent' && m?.type === 'JFF_PICK') {
+          const pick = host.pickText === null ? { ok: false, error: 'pick_cancelled' } : { ok: true, pick: { selector: '#job', text: host.pickText } }
+          return { ok: true, replies: [{ frameId: 0, payload: pick }], failures: [] }
+        }
+        if (msg?.kind === 'toContent' && m?.type === 'JFF_JOBTEXT') {
+          return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: host.jobText } }], failures: [] }
         }
         if (msg?.kind === 'toContent' && m?.type === 'JFF_FILL') {
           // The page takes every value it is sent, and reports it filled,

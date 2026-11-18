@@ -1,4 +1,4 @@
-import { isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
+import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
@@ -71,6 +71,14 @@ export interface Session {
   frameReports: FrameReport[]
   lastOutcome: ScanUiState | null
   appliedHit: { markedAt: string } | null
+  /** Spec #66: the last settled Scan's Apply address candidates. A row
+   *  stored before they were kept has none. */
+  applyCandidates: ApplyAddressCandidate[]
+  /** The address the Application email goes to, once one is chosen. It
+   *  outlives a re-Scan: it is the user's choice, not the page's. */
+  applyAddress: string | null
+  /** How `applyAddress` was chosen; null while there is none. */
+  applyAddressChosenBy: ApplyAddressChoice | null
 }
 
 /** S4: answers are keyed by the NORMALIZED label, so a carry survives a field
@@ -130,6 +138,9 @@ export function newSession(tabId: number, startUrl = ''): Session {
     frameReports: [],
     lastOutcome: null,
     appliedHit: null,
+    applyCandidates: [],
+    applyAddress: null,
+    applyAddressChosenBy: null,
   }
 }
 
@@ -424,12 +435,20 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.ats !== undefined && typeof raw.ats !== 'string') return null
     // A row stored before the job text source was kept has none (spec #41).
     if (raw.jobTextSource != null && !JobTextSourceSchema.safeParse(raw.jobTextSource).success) return null
+    // A row stored before the email flow has no candidates and no Apply address (spec #66).
+    if (raw.applyCandidates !== undefined && !ApplyAddressCandidateSchema.array().safeParse(raw.applyCandidates).success) return null
+    if (raw.applyAddress != null && typeof raw.applyAddress !== 'string') return null
+    if (raw.applyAddressChosenBy != null && !ApplyAddressChoiceSchema.safeParse(raw.applyAddressChosenBy).success) return null
+    const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
     return {
       ...(raw as unknown as Session),
       waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
       resumeUploaded: raw.resumeUploaded ?? false,
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
       jobTextSource: (raw.jobTextSource as JobTextSource | null | undefined) ?? null,
+      applyCandidates: (raw.applyCandidates as ApplyAddressCandidate[] | undefined) ?? [],
+      applyAddress,
+      applyAddressChosenBy: applyAddress === null ? null : (raw.applyAddressChosenBy as ApplyAddressChoice | null | undefined) ?? null,
     }
   } catch {
     return null

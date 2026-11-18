@@ -1,8 +1,9 @@
 import {
   atsIdOf, atsModule, JOB_TEXT_MAX, JOB_TEXT_MIN, JobTextReplySchema,
-  type AtsModule, type JobTextReply, type JobTextSource, type AtsOrGeneric, type CityParts, type ContentMessage, type EnumField, type FieldHandle, type FillReport,
+  type ApplyAddressCandidate, type AtsModule, type FoundAddress, type JobTextReply, type JobTextSource, type AtsOrGeneric, type CityParts, type ContentMessage, type EnumField, type FieldHandle, type FillReport,
   type HostErrorKind, type PhoneParts, type Resolution, type ResolveFirstResult, type ResolveMappingResult,
 } from '@jff/shared'
+import { mergeCandidates } from './applyAddressCandidates'
 import { guessScanCompany } from './company'
 import { electFrame } from './election'
 import { refOf } from './group'
@@ -80,6 +81,9 @@ export interface ScanDeps {
   /** The ATS module of a Scan's ATS. Defaults to the shared registry; a test
    *  hands the Scan a module with a rule no real module has yet. */
   moduleFor?: (ats: AtsOrGeneric) => AtsModule
+  /** The user's own email address, the `email` Known key's value, which is
+   *  never an Apply address candidate (spec #66). */
+  ownEmail?: string | null
 }
 
 /** An address's hostname, or '' when it has none (`about:blank`, a srcdoc
@@ -189,6 +193,8 @@ export interface ScanOutcome {
   /** Where `jobText` came from. Null when the Session's text was kept before
    *  the source was, or when the Scan never looked. */
   jobTextSource: JobTextSource | null
+  /** Spec #66: the page's Apply address candidates, merged from every frame. */
+  candidates: ApplyAddressCandidate[]
   llmError: { kind: HostErrorKind; message: string } | null
   frameReports: FrameReport[]
 }
@@ -198,7 +204,7 @@ const SOURCE_OF_REPLY: Record<JobTextReply['source'], JobTextSource> = {
   ats: 'ats', learned: 'pick', heuristic: 'heuristic', none: 'none',
 }
 
-interface JobTextOutcome { jobText: string; jobTextSource: JobTextSource | null }
+export interface JobTextOutcome { jobText: string; jobTextSource: JobTextSource | null }
 
 /** The Session's text, cut to the cap, with the source it was recorded with.
  *  A text with no source is one kept before the source was. */
@@ -216,7 +222,19 @@ function heldJobText(deps: ScanDeps): JobTextOutcome {
 async function scanJobText(deps: ScanDeps, epoch: number): Promise<JobTextOutcome> {
   const held = heldJobText(deps)
   if (held.jobText !== '') return held
-  const hostname = deps.hostname ?? ''
+  return readPageJobText({ port: deps.port, sendToTab: deps.sendToTab, hostname: deps.hostname ?? '' }, epoch)
+}
+
+/**
+ * The page's own Job posting text: the spot the user picked for the site, the
+ * ATS module, or a heuristic, held to the minimum. A Scan reads it when the
+ * Session holds none, and so does the email flow when the user types an Apply
+ * address on a page whose Scan did not (spec #66).
+ */
+export async function readPageJobText(
+  deps: Pick<ScanDeps, 'port' | 'sendToTab'> & { hostname: string }, epoch: number,
+): Promise<JobTextOutcome> {
+  const hostname = deps.hostname
   const learned = await deps.port.request<{ selector: string | null }>('selector.get', { hostname, purpose: 'job_description' })
   const selector = learned.ok ? learned.result.selector : null
   const { replies } = await deps.sendToTab(0, { type: 'JFF_JOBTEXT', epoch, selector })
@@ -232,7 +250,7 @@ async function scanJobText(deps: ScanDeps, epoch: number): Promise<JobTextOutcom
 interface ScanPayload {
   ok: boolean
   error?: string
-  scan?: { epoch: number; fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean; attachedUploads?: string[]; resumeUploaded?: boolean }
+  scan?: { epoch: number; fields: EnumField[]; unreachableWidgets: number; activeCaptcha: boolean; attachedUploads?: string[]; resumeUploaded?: boolean; addresses?: FoundAddress[] }
 }
 
 interface Enumeration {
@@ -243,6 +261,8 @@ interface Enumeration {
   attachedUploads: Map<number, string[]>
   /** The frames whose document already kept the Resume (#49). */
   resumeUploaded: Set<number>
+  /** Spec #66: each frame's addresses, by frame id. */
+  addresses: Map<number, FoundAddress[]>
   reports: FrameReport[]
 }
 
@@ -255,6 +275,7 @@ async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumer
   let activeCaptcha = false
   const attachedUploads = new Map<number, string[]>()
   const resumeUploaded = new Set<number>()
+  const addresses = new Map<number, FoundAddress[]>()
   for (const r of replies) {
     const p = r.payload as ScanPayload
     if (p?.ok !== true || p.scan === undefined) {
@@ -268,11 +289,13 @@ async function enumerateAllFrames(deps: ScanDeps, epoch: number): Promise<Enumer
     attachedUploads.set(r.frameId, p.scan.attachedUploads ?? [])
     // A stale content script omits the flag too: it reads as not uploaded.
     if (p.scan.resumeUploaded === true) resumeUploaded.add(r.frameId)
+    // And it omits the addresses: none.
+    addresses.set(r.frameId, p.scan.addresses ?? [])
     // The content script cannot know its own frame id, so the panel stamps it here.
     for (const f of p.scan.fields) fields.push({ ...f, frameId: r.frameId, epoch })
     reports.push({ frameId: r.frameId, url: r.url ?? null, fields: p.scan.fields.length, error: null })
   }
-  return { fields, unreachableWidgets, activeCaptcha, attachedUploads, resumeUploaded, reports }
+  return { fields, unreachableWidgets, activeCaptcha, attachedUploads, resumeUploaded, addresses, reports }
 }
 
 async function injectAndEnumerate(deps: ScanDeps): Promise<{ epoch: number; frameCount: number; enumd: Enumeration }> {
@@ -309,13 +332,44 @@ export async function runScan(deps: ScanDeps): Promise<ScanOutcome> {
   return { ...out, company, companyGuessed: company !== null && knownCompany(deps) === null }
 }
 
+/** The frames' address lists in page order, the top frame first. */
+const addressesInPageOrder = (byFrame: Map<number, FoundAddress[]>): FoundAddress[][] =>
+  [...byFrame.entries()].sort(([a], [b]) => a - b).map(([, list]) => list)
+
+/** What a Scan learns of the page's addresses: the candidates of its latest
+ *  enumeration, kept as it re-enumerates. */
+interface AddressTrack { candidates: ApplyAddressCandidate[] }
+
 async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | 'companyGuessed'>> {
+  const track: AddressTrack = { candidates: [] }
+  const out = await scanFields(deps, track)
+  return { ...out, candidates: track.candidates }
+}
+
+async function scanFields(deps: ScanDeps, track: AddressTrack): Promise<Omit<ScanOutcome, 'company' | 'companyGuessed' | 'candidates'>> {
   const tabHostname = deps.hostname ?? ''
+  const seeAddresses = (e: Enumeration): void => {
+    track.candidates = mergeCandidates(addressesInPageOrder(e.addresses), deps.ownEmail ?? null)
+  }
+  /**
+   * Spec #66: a page with no Fields and at least one candidate is a Job
+   * posting that takes applications by email, so its text is read as on a
+   * form. With no candidate it costs the Native host nothing.
+   */
+  const noFormJobText = async (epochNow: number, reports: FrameReport[]): Promise<JobTextOutcome> => {
+    if (track.candidates.length === 0) return heldJobText(deps)
+    try {
+      return await scanJobText(deps, epochNow)
+    } catch (e) {
+      throw new ScanError(e instanceof Error ? e.message : String(e), reports)
+    }
+  }
   const moduleFor = deps.moduleFor ?? atsModule
   const noElectionAts = (reports: FrameReport[]): AtsOrGeneric =>
     scanAts(tabHostname, null, reports.map((r) => r.url))
   // PHASE 0 — first enumeration, with ONE delayed retry on an all-empty result.
   let { epoch, frameCount, enumd } = await injectAndEnumerate(deps)
+  seeAddresses(enumd)
   if (enumd.fields.length === 0) {
     if (enumd.activeCaptcha) {
       // NO retry under an observed challenge. The challenge frame churns during
@@ -334,6 +388,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     await deps.sleep(RETRY_DELAY_MS)
     try {
       ;({ epoch, frameCount, enumd } = await injectAndEnumerate(deps))
+      seeAddresses(enumd)
     } catch (e) {
       // The retry runs under the SAME evidence contract as everything below: a
       // relay that dies here must not throw away the first pass's per-frame rows,
@@ -342,11 +397,12 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
     }
     enumd.reports = [...firstErrors, ...enumd.reports]
     if (enumd.fields.length === 0) {
-      // An empty page must cost zero host round-trips: no selector.get, no resolve.
+      // An empty page must cost zero host round-trips: no selector.get, no
+      // resolve. One with an address on it reads its Job posting text (spec #66).
       return {
         epoch, ats: noElectionAts(enumd.reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
         unreachableWidgets: enumd.unreachableWidgets, activeCaptcha: enumd.activeCaptcha,
-        ...heldJobText(deps), llmError: null, frameReports: enumd.reports,
+        ...(enumd.activeCaptcha ? heldJobText(deps) : await noFormJobText(epoch, enumd.reports)), llmError: null, frameReports: enumd.reports,
       }
     }
   }
@@ -374,10 +430,11 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
   kept = dropModuleJunk(kept, election?.frameId ?? null, moduleFor(ats))
   if (isNotAForm(kept)) {
     // #53: a lone dropdown outside any form (a listing page's language picker)
-    // is no form. Like an empty page, it costs zero host round-trips.
+    // is no form. Like an empty page, it costs zero host round-trips, unless
+    // it shows an address (spec #66).
     return {
       epoch, ats: noElectionAts(reports), fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false,
-      unreachableWidgets, activeCaptcha, ...heldJobText(deps), llmError: null, frameReports: reports,
+      unreachableWidgets, activeCaptcha, ...(activeCaptcha ? heldJobText(deps) : await noFormJobText(epoch, reports)), llmError: null, frameReports: reports,
     }
   }
   const electedOf = (fs: EnumField[]): EnumField[] =>
@@ -430,6 +487,7 @@ async function scanPage(deps: ScanDeps): Promise<Omit<ScanOutcome, 'company' | '
       epoch = deps.nextEpoch()
       deps.onProgress({ phase: 'enumerating', frames: frameCount })
       const again = await enumerateAllFrames(deps, epoch)
+      seeAddresses(again)
       fields = again.fields
       kept = dropJunk(fields)
       unreachableWidgets = again.unreachableWidgets

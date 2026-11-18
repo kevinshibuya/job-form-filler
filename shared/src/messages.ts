@@ -283,6 +283,51 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
 ])
 export type ContentMessage = z.infer<typeof ContentMessageSchema>
 
+/* ------------------------------------------------- the Apply address (#66) */
+
+/** Where a page shows an address: a `mailto:` link, with its link text and its
+ *  `subject` parameter (null when it has none), or the visible text, with the
+ *  sentence around the address. A link's `body`, `cc` and `bcc` never travel. */
+export const AddressContextSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('mailto'), linkText: z.string(), subject: z.string().nullable() }),
+  z.object({ kind: z.literal('text'), sentence: z.string() }),
+])
+export type AddressContext = z.infer<typeof AddressContextSchema>
+
+/** One address a frame's page script found, in the place it found it. */
+export const FoundAddressSchema = z.object({ address: z.string(), context: AddressContextSchema })
+export type FoundAddress = z.infer<typeof FoundAddressSchema>
+
+/** One address the Side panel offers as the Apply address, with each place
+ *  the page shows it, in page order. */
+export const ApplyAddressCandidateSchema = z.object({ address: z.string(), contexts: z.array(AddressContextSchema) })
+export type ApplyAddressCandidate = z.infer<typeof ApplyAddressCandidateSchema>
+
+/** How the Session's Apply address was chosen: by the model's pick among the
+ *  candidates, by the user from the candidate list, or typed by the user. */
+export const ApplyAddressChoiceSchema = z.enum(['pick', 'list', 'typed'])
+export type ApplyAddressChoice = z.infer<typeof ApplyAddressChoiceSchema>
+
+/** The longest sentence a text context keeps, and a link text too. */
+export const ADDRESS_SENTENCE_MAX = 200
+/** The most contexts one candidate keeps. */
+export const ADDRESS_CONTEXTS_MAX = 3
+/** The most candidates the Side panel offers. */
+export const APPLY_CANDIDATES_MAX = 10
+/** The most addresses one frame reports, after its repeats are dropped. */
+export const FRAME_ADDRESSES_MAX = 50
+
+const ADDRESS_SHAPE = /^[^\s@<>()[\]",;:]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
+
+/**
+ * Whether a string is shaped like an email address: one `@`, something before
+ * it, and a dotted domain after it. Shape only: nothing says the address
+ * exists. The caller trims what the user typed.
+ */
+export function isAddressShape(s: string): boolean {
+  return ADDRESS_SHAPE.test(s)
+}
+
 // Both schemas below have a REAL runtime consumer: the content script `safeParse`s
 // its own JFF_SCAN / JFF_FILL reply before returning it (Task 14 Step 5, Task 15
 // Step 5). Validating our own output is the cheapest guard against enumerator or
@@ -302,6 +347,9 @@ export const ScanResultSchema = z.object({
    *  kept, so a second Scan sends none. Optional like `attachedUploads`: a
    *  stale content script omits it, and absent reads as not uploaded. */
   resumeUploaded: z.boolean().optional(),
+  /** Spec #66: the addresses this frame's document shows, in page order.
+   *  Optional so a stale content script simply omits it: absent reads as none. */
+  addresses: z.array(FoundAddressSchema).optional(),
 })
 export type ScanResult = z.infer<typeof ScanResultSchema>
 

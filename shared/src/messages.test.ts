@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema } from './messages.js'
+import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, FoundAddressSchema, isAddressShape } from './messages.js'
 import { captureField, captureRefusal, captureResolution, CaptureSaveParamsSchema, withoutQuery } from './capture.js'
 import { JobTextReplySchema, JobTextSourceSchema } from './jobText.js'
 
@@ -447,5 +448,51 @@ describe('the Job posting text source (spec #41)', () => {
     const ok = CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'heuristic' })
     expect(ok.success && ok.data.jobTextSource).toBe('heuristic')
     expect(CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'guess' }).success).toBe(false)
+  })
+})
+
+describe('the addresses a Scan collects (spec #66)', () => {
+  const reply = { epoch: 1, fields: [], unreachableWidgets: 0, activeCaptcha: false }
+  const mailto = { address: 'jobs@example.org', context: { kind: 'mailto', linkText: 'Mail us', subject: 'Application' } }
+  const text = { address: 'jobs@example.org', context: { kind: 'text', sentence: 'Write to jobs@example.org.' } }
+
+  it('a Scan reply carries each address with its mailto or text context', () => {
+    const scan = ScanResultSchema.parse({ ...reply, addresses: [mailto, text] })
+    expect(scan.addresses).toEqual([mailto, text])
+  })
+
+  it('a mailto context with no subject says so with null', () => {
+    const none = { address: 'a@example.org', context: { kind: 'mailto', linkText: 'a@example.org', subject: null } }
+    expect(FoundAddressSchema.parse(none)).toEqual(none)
+  })
+
+  it('accepts a reply from a stale page script that omits the addresses', () => {
+    expect(ScanResultSchema.parse(reply).addresses).toBeUndefined()
+  })
+
+  it('refuses a context of another kind, or a mailto context that carries a body', () => {
+    expect(ScanResultSchema.safeParse({ ...reply, addresses: [{ address: 'a@example.org', context: { kind: 'image', alt: 'x' } }] }).success).toBe(false)
+    const withBody = FoundAddressSchema.parse({ address: 'a@example.org', context: { kind: 'mailto', linkText: 'x', subject: null, body: 'secret' } })
+    expect(JSON.stringify(withBody)).not.toContain('secret')
+  })
+
+  it('a candidate is one address with its contexts', () => {
+    const c = { address: 'jobs@example.org', contexts: [mailto.context, text.context] }
+    expect(ApplyAddressCandidateSchema.parse(c)).toEqual(c)
+  })
+
+  it('an Apply address is chosen one of three ways', () => {
+    expect(ApplyAddressChoiceSchema.options).toEqual(['pick', 'list', 'typed'])
+  })
+})
+
+describe('the shape check of an address (spec #66)', () => {
+  it('takes an address with one @ and a dotted domain', () => {
+    for (const a of ['ada@example.com', 'ada.lovelace+jobs@mail.example.org', 'Ada_L-1@sub.example.org']) expect(isAddressShape(a)).toBe(true)
+  })
+
+  it('refuses what is not shaped like one', () => {
+    for (const a of ['', 'ada', 'ada@', '@example.com', 'ada@example', 'ada example.com', 'ada@exa mple.com', 'a@b@example.com', 'ada@example.', 'ada@.example.com', ' ada@example.com', 'ada at example dot com'])
+      expect(isAddressShape(a), a).toBe(false)
   })
 })
