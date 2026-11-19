@@ -4,15 +4,15 @@
 
 import { snapshotKey } from './snapshotKey'
 import { broadcast, isInjectableFrameUrl, type RelayDeps } from './relay'
+import { openTabPanel } from './tabPanel'
 
 chrome.runtime.onInstalled.addListener(() => {
   // Must stay false: openPanelOnActionClick would suppress action.onClicked.
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
 })
 
-chrome.action.onClicked.addListener((tab) => {
-  if (tab.id != null) void chrome.sidePanel.open({ tabId: tab.id })
-})
+// The manifest declares no panel: a tab has one only where the action enabled it.
+chrome.action.onClicked.addListener((tab) => { openTabPanel(chrome.sidePanel, tab) })
 
 type RelayRequest =
   | { kind: 'inject'; tabId: number }

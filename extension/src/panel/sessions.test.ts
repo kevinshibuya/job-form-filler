@@ -176,17 +176,37 @@ describe('sessions module (S1/S6)', () => {
     expect(warn).toHaveBeenCalled()                  // eviction is data loss: never silent
   })
 
-  it('eviction never targets the DISPLAYED session, even when parked', async () => {
+  it('eviction never targets the session of a tab whose Side panel is open, even when parked', async () => {
     const { rows, area, failNextSet } = fakeArea()
-    const store = createSessionStore(area, 0, { getDisplayedTabId: () => 1 })
+    const store = createSessionStore(area, 0, { openPanelTabIds: async () => new Set([1, 3]) })
     store.save({ ...newSession(1, 'https://old.com'), parked: true, createdAt: 100 })
     store.save({ ...newSession(2, 'https://newer.com'), parked: true, createdAt: 200 })
+    store.save({ ...newSession(3, 'https://older.com'), parked: true, createdAt: 50 })
     await store.flush()
     failNextSet.on = true
     store.save(newSession(7, 'https://active.com'))
     await store.flush()
-    expect(rows[sessionKey(1)]).toBeDefined()        // displayed: protected
-    expect(rows[sessionKey(2)]).toBeUndefined()      // next-oldest parked evicted instead
+    expect(rows[sessionKey(1)]).toBeDefined()        // its panel is open: protected
+    expect(rows[sessionKey(3)]).toBeDefined()        // another open panel: protected too
+    expect(rows[sessionKey(2)]).toBeUndefined()      // the oldest unprotected parked row goes instead
+    expect(rows[sessionKey(7)]).toBeDefined()
+  })
+
+  it('evicts nothing when the open panels cannot be known: the write waits in pending and warns', async () => {
+    // A wrong guess removes a Session another panel is showing. A row that
+    // waits in pending only risks not surviving a close.
+    const { rows, area, failNextSet } = fakeArea()
+    const warn = vi.fn()
+    const store = createSessionStore(area, 0, { onWarn: warn, openPanelTabIds: async () => null })
+    store.save({ ...newSession(1, 'https://old.com'), parked: true, createdAt: 100 })
+    await store.flush()
+    failNextSet.on = true
+    store.save(newSession(7, 'https://active.com'))
+    await store.flush()
+    expect(rows[sessionKey(1)]).toBeDefined()
+    expect(rows[sessionKey(7)]).toBeUndefined()
+    expect(warn).toHaveBeenCalled()
+    await store.flush()
     expect(rows[sessionKey(7)]).toBeDefined()
   })
 

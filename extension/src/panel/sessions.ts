@@ -545,7 +545,10 @@ export interface SessionStore {
 
 export interface SessionStoreOpts {
   onWarn?: () => void
-  getDisplayedTabId?: () => number | null
+  /** The tabs whose Side panel is open now, or null when that cannot be known.
+   *  Several panels share the area, and making room for a write never removes
+   *  a Session one of them shows. Null evicts nothing. Unset, nothing is spared. */
+  openPanelTabIds?: () => Promise<ReadonlySet<number> | null>
 }
 
 export function createSessionStore(
@@ -624,17 +627,22 @@ export function createSessionStore(
     }, debounceMs)
   }
 
-  /** Oldest PARKED stored session, excluding the row being written and the
-   *  displayed one. Runs INSIDE the caller's lock link (one link, per contract). */
+  /** Oldest PARKED stored session, excluding the row being written and every
+   *  tab whose Side panel is open. Runs INSIDE the caller's lock link (one
+   *  link, per contract). */
   const evictOne = async (writingTabId: number): Promise<boolean> => {
-    const displayed = opts.getDisplayedTabId?.() ?? null
+    let open: ReadonlySet<number> | null = new Set()
+    if (opts.openPanelTabIds !== undefined) {
+      try { open = await opts.openPanelTabIds() } catch { open = null }
+    }
+    if (open === null) return false
     const all = await area.get(null)
     let victim: Session | null = null
     for (const [key, raw] of Object.entries(all)) {
       if (!SESSION_KEY_RE.test(key)) continue
       const s = parseStoredSession(raw)
       if (s === null || !s.parked) continue
-      if (s.tabId === writingTabId || s.tabId === displayed) continue
+      if (s.tabId === writingTabId || open.has(s.tabId)) continue
       if (victim === null || s.createdAt < victim.createdAt) victim = s
     }
     if (victim === null) return false

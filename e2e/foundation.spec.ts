@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
+import { builtManifest, launchWithExtension, panelUrl, type LaunchedExtension } from './ext'
 import { seedResume } from './seed'
 import { startFixtureServer } from './static-server'
 
@@ -44,14 +44,14 @@ async function openFixtureTab(file = 'fixture-form.html'): Promise<Harness> {
   // page through `send`/`panel.evaluate`, which need no binding at all.
   //
   // Bound to a real tab it would bind to THIS fixture — `boot()` is async
-  // (windows.getCurrent → tabs.query({active:true}) → prune → load) and the
+  // (tabs.query({active:true}) → prune → load) and the
   // active-tab query routinely resolves after the fixture tab is created and
   // activated. Its auto-scan then re-stamps the content script with a fresh
   // `newSession()` epoch of Date.now() magnitude, which is exactly how the
   // stale-epoch and submit-snapshot tests kept failing order-dependently
   // (`Received: 1785524502101` against a test-stamped `epoch: 40`).
   //
-  // -1 specifically: override mode ignores `activated`, `store.load(-1)` is
+  // -1 specifically: a panel never follows another tab, `store.load(-1)` is
   // null, `prune` keeps -1 in `live`, and the auto-scan effect hits
   // `getTab(-1)` → null and returns BEFORE `inject` — so there is no relay
   // traffic AND no console error, which `afterAll`'s empty-consoleErrors
@@ -77,6 +77,10 @@ async function openFixtureTab(file = 'fixture-form.html'): Promise<Harness> {
     close: async () => { await panel.close(); await target.close() },
   }
 }
+
+test('the built manifest declares no Side panel, so no tab has one the action did not enable', () => {
+  expect(builtManifest()).not.toHaveProperty('side_panel')
+})
 
 test('the side panel document renders', async () => {
   const panel = await ext.context.newPage()

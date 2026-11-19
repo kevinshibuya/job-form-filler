@@ -16,8 +16,9 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'chrome120',
-    // The settings page is a page of its own, not named in the manifest, so it
-    // is a build input here. It keeps its path, which settings/open.ts names.
-    rollupOptions: { input: { settings: 'src/settings/index.html' } },
+    // Neither page is named in the manifest, so each is a build input here and
+    // keeps its path: settings/open.ts names the settings page, tabPanel.ts the
+    // Side panel (enabled per tab, never declared).
+    rollupOptions: { input: { settings: 'src/settings/index.html', panel: 'src/panel/index.html' } },
   },
 })

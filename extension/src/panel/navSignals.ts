@@ -4,7 +4,6 @@ export const NAV_FALLBACK_DEDUPE_MS = 1500
 
 export type NavEvent =
   | { type: 'navigated'; tabId: number; frameId: number; url: string }
-  | { type: 'activated'; tabId: number }
   | { type: 'removed'; tabId: number }
 
 /**
@@ -12,12 +11,12 @@ export type NavEvent =
  * url — the TRM/Ashby reference job submits inside a cross-origin IFRAME and
  * Workday wizards are History-API SPAs; `tabs.onUpdated` sees neither, so it
  * stays only as a deduped fallback. `chrome.tabs.Tab.url` may still hold the
- * pre-nav url, which is why the event's url is the one forwarded. Activation
- * is filtered to the panel's own window (multi-window rule); removal always
- * forwards. The module reports raw events for ALL tabs — routing them to
- * sessions is the panel's job.
+ * pre-nav url, which is why the event's url is the one forwarded. Tab
+ * activation is no signal: a panel is bound to one tab and follows no other.
+ * The module reports raw events for ALL tabs; dropping other tabs' is the
+ * panel's job.
  */
-export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => void): () => void {
+export function createNavSignals(onEvent: (e: NavEvent) => void): () => void {
   const lastWebNav = new Map<number, number>()
   const navigated = (d: { tabId: number; frameId: number; url: string }): void => {
     lastWebNav.set(d.tabId, Date.now())
@@ -35,10 +34,6 @@ export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => voi
     if (t !== undefined && Date.now() - t < NAV_FALLBACK_DEDUPE_MS) return
     onEvent({ type: 'navigated', tabId: id, frameId: 0, url: change.url })
   }
-  const onActivated = (info: chrome.tabs.TabActiveInfo): void => {
-    if (info.windowId !== windowId) return
-    onEvent({ type: 'activated', tabId: info.tabId })
-  }
   const onRemoved = (id: number): void => {
     // F11: the dedupe window is 1.5s wide and a closed tab emits no further
     // navigations, so this entry is dead weight the moment the tab is gone.
@@ -51,13 +46,11 @@ export function createNavSignals(windowId: number, onEvent: (e: NavEvent) => voi
   chrome.webNavigation.onCommitted.addListener(onCommitted)
   chrome.webNavigation.onHistoryStateUpdated.addListener(onHistory)
   chrome.tabs.onUpdated.addListener(onUpdated)
-  chrome.tabs.onActivated.addListener(onActivated)
   chrome.tabs.onRemoved.addListener(onRemoved)
   return () => {
     chrome.webNavigation.onCommitted.removeListener(onCommitted)
     chrome.webNavigation.onHistoryStateUpdated.removeListener(onHistory)
     chrome.tabs.onUpdated.removeListener(onUpdated)
-    chrome.tabs.onActivated.removeListener(onActivated)
     chrome.tabs.onRemoved.removeListener(onRemoved)
   }
 }

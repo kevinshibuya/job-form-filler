@@ -24,7 +24,8 @@ export default defineManifest({
   // activeTab deliberately excludes. Injection is still on demand (Scan button).
   host_permissions: ['<all_urls>'],
   background: { service_worker: 'src/background.ts', type: 'module' },
-  side_panel: { default_path: 'src/panel/index.html' },
+  // No side_panel entry: a declared panel shows on every tab. The service
+  // worker enables the panel per tab on the action click (src/tabPanel.ts).
   action: { default_title: 'Open job-form-filler' },
   // NO web_accessible_resources: content.js is injected with
   // executeScript({ files }), which reads the extension's own bundle directly.

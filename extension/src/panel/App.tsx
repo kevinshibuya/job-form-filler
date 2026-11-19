@@ -26,6 +26,7 @@ import { fillEntry, MAPPING_LOST, readPageJobText, runMapping, runScan, ScanErro
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
+import { openPanelTabIds } from './openPanels'
 import { createSessionStore, keptProseAnswers, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
 import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
@@ -287,26 +288,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const sessionRef = useRef<Session | null>(null)
   const [tabId, setTabId] = useState<number | null>(null)
   const tabIdRef = useRef<number | null>(null)
-  // ?tabId= pins the panel to one tab (e2e/test harness); `activated` is then
-  // not ours to follow.
-  const overrideModeRef = useRef(false)
-  // Monotonic swap counter plus the tab the in-flight swap is heading TO (`null`
-  // when none is). `seq` is what makes only the LATEST swap's async work commit
-  // to the display; `target` is what lets an `onRemoved` invalidate ONLY the work
-  // that would put the REMOVED tab on screen. Held as one object so a bump can
-  // never leave a stale target behind.
-  const swapRef = useRef<{ seq: number; target: number | null }>({ seq: 0, target: null })
-
-  /** Invalidate every swap currently in flight; returns the new sequence number,
-   *  which the caller's own swap (if any) then owns. */
-  const bumpSwap = (target: number | null = null): number => {
-    const seq = swapRef.current.seq + 1
-    swapRef.current = { seq, target }
-    return seq
-  }
+  // The panel is bound to ONE tab for its whole life: the one in its address
+  // (`?tabId=`), or, without one, the tab active as it starts. It never follows
+  // another (spec #66: the Side panel belongs to its tab).
   const runtimesRef = useRef(new Map<number, SessionRuntime>())
-  // The GLOBAL single-flight latch: tab switching must never multiply the paid
-  // `claude -p` resolves.
+  // The panel's single-flight latch: one paid `claude -p` resolve at a time.
   const scanningRef = useRef(false)
   /** The tab the running scan is for; null while none runs. */
   const scanTargetRef = useRef<number | null>(null)
@@ -327,10 +313,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // The last SETTLED scan outcome. An action_failed line is transient: when the
   // retried action succeeds the panel goes back to what the scan said.
   const lastOutcomeRef = useRef<ScanUiState | null>(null)
-  // O3: the scan gate as `onScan` must read it. It has to be a REF: the nav
-  // signal listeners are registered once at mount, so `onNavigatedBackground`'s
-  // `onScan` closure would forever see the mount-time (closed, 'pending') gate
-  // and silently refuse every background re-scan for the life of the panel.
+  // O3: the scan gate as `onScan` must read it. It has to be a REF: `onScan`
+  // is also reached from closures made once at mount (a queued re-scan's
+  // drain), which would otherwise see the mount-time (closed, 'pending') gate.
   const scanGateRef = useRef(false)
 
   /* -------------------------------------------------- panel-global UI state */
@@ -390,8 +375,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   if (storeRef.current === null) {
     storeRef.current = createSessionStore(chrome.storage.session, SESSION_SAVE_DEBOUNCE_MS, {
       onWarn: () => setStorageWarning(true),
-      // S14 eviction protection: the row on screen is never the victim.
-      getDisplayedTabId: () => sessionRef.current?.tabId ?? null,
+      // Several panels share session storage: eviction never removes the
+      // Session of a tab whose Side panel is open, this one's included.
+      openPanelTabIds: () => openPanelTabIds(tabIdRef.current),
     })
   }
   const store = storeRef.current
@@ -646,112 +632,23 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   /* ------------------------------------------------- S2/S5 session routing */
 
-  /** Tab switch. Ordering is binding: save the OUTGOING session (the very object
-   *  last displayed), flush it, and only THEN swap the display — otherwise the
-   *  incoming render can race the outgoing write. No scan: re-scanning on every
-   *  tab activation would spend one batched `claude -p` resolve per switch. */
-  const swapTo = async (next: number): Promise<void> => {
-    // Chrome re-activates the already-active tab in several flows; a repeat is a
-    // no-op, never a re-swap. But "already on screen" is NOT "nothing in flight":
-    // `tabIdRef` is assigned at the very END of a swap, so the user coming
-    // straight back to the tab they left lands HERE while the swap toward the
-    // other tab is still parked on its flush/load — and a bare return leaves that
-    // swap's seq untouched, so it commits and displays a tab the user is not
-    // looking at. Nothing repairs that: the tab on screen would be the ACTIVE
-    // one, so no further `activated` is coming, and the next Scan would inject
-    // and FILL the OTHER tab's page. Cancel the outbound swap instead.
-    if (tabIdRef.current === next) {
-      const heading = swapRef.current.target
-      if (heading !== null && heading !== next) bumpSwap()
-      return
-    }
-    const seq = bumpSwap(next)
-    const outgoing = sessionRef.current
-    if (outgoing !== null) {
-      store.save(outgoing)
-      await store.flush()
-      if (seq !== swapRef.current.seq) return
-    }
-    const incoming = await store.load(next)
-    if (seq !== swapRef.current.seq) return
-    swapRef.current = { seq, target: null }
-    tabIdRef.current = next
-    setTabId(next)
-    display(incoming)
-  }
-
+  /** This panel's own tab closed. Its document goes with it; what can still
+   *  run before then must not resurrect the Session. */
   const onTabRemoved = async (dead: number): Promise<void> => {
-    const wasDisplayed = tabIdRef.current === dead
-    // Chrome activates the successor tab BEFORE it emits `removed`, so when the
-    // ACTIVE tab is closed a swap toward a different, LIVE tab is routinely
-    // already in flight here. Invalidating it would strand the panel bound to the
-    // tab that just died — and since the successor is already active, no further
-    // `activated` is coming to repair it. So a removal invalidates only the work
-    // that would put the REMOVED tab on screen; a swap heading elsewhere commits.
-    const swapping = swapRef.current.target
-    const swapIsRescue = swapping !== null && swapping !== dead
-    if (!swapIsRescue && (wasDisplayed || swapping === dead)) bumpSwap()
     endRuntime(dead)
     lastNavRef.current.delete(dead)
-    // F11: the tab is GONE — nothing will ever consult its runtime again except
-    // a settle already in flight, and that settle is refused either way
-    // (`genOf` answers null for a pruned tab). Dropping it here is what keeps
-    // `runtimesRef` from growing for the whole life of the panel, one entry per
-    // tab ever seen. Deliberately NOT done by `endRuntime`: Mark applied and
-    // Discard end a session on a tab that stays OPEN and keeps navigating, and
-    // that tab needs its runtime (and its bumped generation).
+    // F11: a settle still in flight is refused once the runtime is gone (`genOf`
+    // answers null). Deliberately NOT done by `endRuntime`: Mark applied and
+    // Discard end a session on a tab that stays open and needs its runtime.
     runtimesRef.current.delete(dead)
     // Tombstones the session: no later save can bring the row back.
     await store.remove(dead)
-    // The rescuing swap owns the display; blanking here would fight it (and lose
-    // the empty state to a repaint a beat later anyway).
-    if (wasDisplayed && !swapIsRescue && tabIdRef.current === dead) display(null)
-  }
-
-  /**
-   * S7 constraint 6: a navigation on a tab NOBODY is looking at. The relay is
-   * target-bound now, so its eventual re-scan reaches the right page and its
-   * outcome routes to its own row — the visible panel never flickers.
-   *
-   * Classification runs INSIDE the mutate fn, which the store calls exactly once
-   * on its lock: read, classify and write are then one atomic step against the
-   * row that is really there (a load-then-write pair could classify against a
-   * row another writer had already replaced).
-   */
-  const onNavigatedBackground = async (ev: { tabId: number; frameId: number; url: string }): Promise<void> => {
-    const last = lastNavRef.current.get(ev.tabId)
-    if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
-    const rt = runtimeOf(ev.tabId)
-    const acted = { rescan: false }
-    await mutateSession(ev.tabId, (s) => {
-      // A background tab with no session has nothing to route. Lazy creation on
-      // a navigation is a DISPLAYED-tab affordance — that tab is the one the
-      // user is applying on; minting a session for every background navigation
-      // would fill session storage with pages nobody asked about.
-      if (s === null) return null
-      if (ev.frameId !== 0 && ev.frameId !== s.election?.frameId) return null
-      lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() })
-      const same = ev.url === '' || s.site === '' || sameApplication(ev.url, s.startUrl)
-      if (!same) {
-        if (s.parked) return null
-        rt.gen = nextGen()
-        rt.navRescan = null
-        // Drops a re-scan this session had already queued: parked pages never
-        // spend a resolve.
-        rt.pendingRescan = false
-        return { ...s, parked: true }
-      }
-      rt.gen = nextGen()
-      rt.navRescan = { prevFields: s.fields.length }
-      acted.rescan = true
-      return clearScanResults({ ...s, parked: false })
-    })
-    // onScan queues this behind the global latch when a scan is already running.
-    if (acted.rescan) await onScan(ev.tabId)
+    display(null)
   }
 
   const onNavigated = (ev: { tabId: number; frameId: number; url: string }): void => {
-    if (tabIdRef.current !== ev.tabId) { void onNavigatedBackground(ev).catch(swallow); return }
+    // Another tab's navigation is that tab's panel's business, never this one's.
+    if (tabIdRef.current !== ev.tabId) return
     const last = lastNavRef.current.get(ev.tabId)
     if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
     const record = (): void => { lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() }) }
@@ -819,27 +716,24 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }
 
   const onNavEvent = (e: NavEvent): void => {
-    if (e.type === 'activated') {
-      if (overrideModeRef.current) return
-      void swapTo(e.tabId)
+    if (e.type === 'removed') {
+      // Another tab's panel closed with its tab. Its Session goes too, as the
+      // boot's prune would sweep it on the next open.
+      if (e.tabId !== tabIdRef.current) { void store.remove(e.tabId).catch(swallow); return }
+      void onTabRemoved(e.tabId)
       return
     }
-    if (e.type === 'removed') { void onTabRemoved(e.tabId); return }
     onNavigated(e)
   }
 
   useEffect(() => {
     let cancelled = false
     let stop: (() => void) | null = null
-    // ?tabId= lets the e2e smoke drive the panel as an ordinary page; the real
-    // side panel binds to the active tab of its own window.
+    // The service worker always puts the tab in the panel's address. A panel
+    // opened without one (the tests) binds once to the active tab as it starts.
     const override = new URLSearchParams(location.search).get('tabId')
-    overrideModeRef.current = override !== null
 
     const boot = async (): Promise<void> => {
-      let windowId = -1
-      try { windowId = (await chrome.windows.getCurrent()).id ?? -1 } catch { /* no window api */ }
-      if (cancelled) return
       let bound = override === null ? null : Number(override)
       if (bound === null) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
@@ -871,7 +765,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         setTabId(bound)
         display(restored)
       }
-      try { stop = createNavSignals(windowId, onNavEvent) } catch { /* no navigation apis */ }
+      try { stop = createNavSignals(onNavEvent) } catch { /* no navigation apis */ }
       setBooted(true)
     }
     void boot()
@@ -923,10 +817,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }, [check])
 
   // Snapshot pushes arrive stamped by the SERVICE WORKER with the sender's
-  // tabId/frameId (the content script can know neither). S7: the stamp is
-  // ROUTING, not a filter — `m.tabId` is compared against the sessions, not
-  // against the active tab, so a background form's snapshot reaches ITS row
-  // instead of being thrown away. Stale epochs are still rejected: handles from
+  // tabId/frameId (the content script can know neither), and every open panel
+  // hears every push. Each takes only its own tab's: another tab's snapshot is
+  // that tab's panel's to merge. Stale epochs are still rejected: handles from
   // an old scan must never leak into a save. The service worker's own
   // storage.session fallback (`jff:snap:*`) is untouched by any of this.
   useEffect(() => {
@@ -934,6 +827,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const m = raw as { kind?: string; tabId?: number; frameId?: number; snap?: { epoch: number; values: Record<number, string> } }
       if (m?.kind !== 'snapshotPush' || m.snap === undefined || typeof m.tabId !== 'number') return
       const tabId = m.tabId
+      if (tabId !== tabIdRef.current) return
       const epoch = m.snap.epoch
       const frameId = m.frameId ?? 0
       const values = m.snap.values
@@ -947,8 +841,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (epoch === s.epoch) writeSession(merge)
         return
       }
-      // Background: the epoch check runs against the row `fn` is handed
-      // (stored-or-pending), because only that row knows which scan it describes.
+      // Not on screen yet (a Scan still minting its session): the epoch check
+      // runs against the row `fn` is handed, which knows which scan it describes.
       void mutateSession(tabId, (row) => (row === null || row.epoch !== epoch ? null : merge(row))).catch(swallow)
     }
     chrome.runtime.onMessage.addListener(onMsg)
@@ -2174,12 +2068,6 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  `store.remove` writes through and TOMBSTONES the tab, so a settle still in
    *  flight can never resurrect it. */
   const endSession = async (id: number): Promise<void> => {
-    // Same rule as `onTabRemoved` (Task 14, Finding 2): invalidate only the work
-    // that would put THIS session's tab on screen. An unconditional bump here
-    // cancelled a swap already heading to a different, live tab — Discard or
-    // Mark applied clicked during a tab switch stranded the panel on the tab it
-    // had just ended.
-    if (swapRef.current.target === id) bumpSwap()
     endRuntime(id)
     lastNavRef.current.delete(id)
     await store.remove(id)
