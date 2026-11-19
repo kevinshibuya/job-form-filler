@@ -28,10 +28,11 @@ const ALLOWED_HOME_NAMES = new Set(['you', 'me', 'user', 'username', 'name', 'ru
 const ASSET_SUFFIX = /\.(png|jpe?g|gif|svg|webp|avif|ico|css|m?js|tsx?|map|json|html)$/
 export const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
 const HOME_PATH = /(?:\/Users\/|\/home\/|[A-Za-z]:\\Users\\)([A-Za-z0-9._-]+)/g
-// Google's, last: an OAuth access token (`ya29.`), a refresh token (`1//`), a
-// client secret (`GOCSPX-`) and a client id (`<project number>-<id>.apps.googleusercontent.com`).
+// Google's, last: an OAuth access token (`ya29.`), a refresh token (`1//`, or
+// `1%2F%2F` inside a form body), a client secret (`GOCSPX-`) and a client id
+// (`<project number>-<id>.apps.googleusercontent.com`).
 export const SECRET =
-  /sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|ya29\.[0-9A-Za-z_.-]{20,}|(?<![0-9A-Za-z])1\/\/[0-9A-Za-z_-]{20,}|GOCSPX-[0-9A-Za-z_-]{20,}|[0-9]{6,}-[0-9a-z]{20,}\.apps\.googleusercontent\.com/g
+  /sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|ya29\.[0-9A-Za-z_.-]{20,}|(?<![0-9A-Za-z])1\/\/[0-9A-Za-z_-]{20,}|(?<![0-9A-Za-z])1%2[Ff]%2[Ff][0-9A-Za-z_-]{20,}|GOCSPX-[0-9A-Za-z_-]{20,}|[0-9]{6,}-[0-9a-z]{20,}\.apps\.googleusercontent\.com/g
 
 /** True for an address on a test domain, or one the allowlist names. */
 export function emailAllowed(address) {

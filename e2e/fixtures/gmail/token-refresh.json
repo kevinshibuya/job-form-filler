@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://oauth2.googleapis.com/token",
+    "headers": {
+      "content-type": "application/x-www-form-urlencoded"
+    },
+    "body": "grant_type=refresh_token&refresh_token=REFRESH_TOKEN_PLACEHOLDER&client_id=CLIENT_ID_PLACEHOLDER.apps.googleusercontent.com&client_secret=CLIENT_SECRET_PLACEHOLDER"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\n  \"access_token\": \"ACCESS_TOKEN_PLACEHOLDER\",\n  \"expires_in\": 3599,\n  \"scope\": \"https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/userinfo.email openid\",\n  \"token_type\": \"Bearer\",\n  \"id_token\": \"ID_TOKEN_PLACEHOLDER\"\n}"
+  }
+}

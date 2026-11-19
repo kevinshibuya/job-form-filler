@@ -38,6 +38,7 @@ describe('scanLine', () => {
   const google = {
     'access token': ['ya29', `a0AfB_${'byXk3mQ9'.repeat(8)}`].join('.'),
     'refresh token': ['1', '', `0gKz7${'Xb4_Tq-9'.repeat(5)}`].join('/'),
+    'refresh token in a form body': ['1', '', `0gKz7${'Xb4_Tq-9'.repeat(5)}`].join('%2F'),
     'client secret': ['GOCSPX', `Ab3dE${'fG7hJ'.repeat(5)}x`].join('-'),
     'client id': `${'1234567'.repeat(2)}-${'a1b2c3d4'.repeat(4)}.${['apps', 'googleusercontent', 'com'].join('.')}`,
   }
