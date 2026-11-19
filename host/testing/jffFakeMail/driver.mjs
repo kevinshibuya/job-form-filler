@@ -1,7 +1,9 @@
 // Test-only. A Mail account driver that reaches no network (spec #66), for the
 // request handler tests and the browser test. It lives outside host/src, so
-// the Native host's shipped output never holds it; the build proof greps
-// host/dist for the marker below.
+// the Native host's shipped output never holds it. The build proof greps
+// host/dist for the marker, which is also this directory's name: tsc copies
+// no module from here into dist, but an import of one from shipped code
+// carries the path, and with it the marker, into dist.
 export const FAKE_MAIL_MARKER = 'jffFakeMail'
 
 /** A Mail account failure, shaped as host/src/mail/account.ts's MailError. */

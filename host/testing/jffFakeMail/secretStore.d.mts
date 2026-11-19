@@ -1,4 +1,4 @@
-import type { SecretStore } from '../src/mail/secretStore.js'
+import type { SecretStore } from '../../src/mail/secretStore.js'
 
 export declare const FAKE_MAIL_MARKER: 'jffFakeMail'
 

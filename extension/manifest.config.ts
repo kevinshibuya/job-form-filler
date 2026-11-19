@@ -12,7 +12,9 @@ export default defineManifest({
   manifest_version: 3,
   name: 'job-form-filler',
   version: '1.0.0',
-  description: 'Fills job application forms from a local answer memory. Never submits.',
+  // The promise (ADR 0012): Fill never submits a form, and an Application
+  // email leaves only on the user's click. Chrome caps this at 132 characters.
+  description: 'Fills job application forms from a local answer memory. Never submits a form. Sends an Application email only on your click.',
   // Pins the extension ID. Native messaging allowed_origins cannot wildcard, so a
   // drifting ID silently breaks the host connection.
   key,
