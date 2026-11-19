@@ -12,8 +12,8 @@ import { getProfile, openDb, setProfile } from './db/repos.js'
 import { encodeMessage, FrameReader } from './framing.js'
 import { resolveModels } from './llm/models.js'
 import { startHost, type HostDeps } from './startHost.js'
-import { createFakeMailDriver } from '../testing/fakeMailDriver.mjs'
-import { createFakeSecretStore } from '../testing/fakeSecretStore.mjs'
+import { createFakeMailDriver } from '../testing/jffFakeMail/driver.mjs'
+import { createFakeSecretStore } from '../testing/jffFakeMail/secretStore.mjs'
 
 // The host log is a file under the real home directory: no test writes to it.
 vi.mock('./log.js', () => ({ log: vi.fn() }))

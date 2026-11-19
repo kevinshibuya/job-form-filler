@@ -10,8 +10,8 @@ import { handleRaw, type HandlerDeps } from './handlers.js'
 import { resolveModels } from './llm/models.js'
 import { log } from './log.js'
 import { createMailRequests } from './mail/requests.js'
-import { createFakeMailDriver, mailError, type FakeMailDriver } from '../testing/fakeMailDriver.mjs'
-import { createFakeSecretStore, type FakeSecretStore } from '../testing/fakeSecretStore.mjs'
+import { createFakeMailDriver, mailError, type FakeMailDriver } from '../testing/jffFakeMail/driver.mjs'
+import { createFakeSecretStore, type FakeSecretStore } from '../testing/jffFakeMail/secretStore.mjs'
 
 // The host log is a file under the real home directory: no test writes to it.
 vi.mock('./log.js', () => ({ log: vi.fn() }))

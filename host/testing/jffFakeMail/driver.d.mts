@@ -1,4 +1,4 @@
-import type { ConnectedAccount, MailAccountDriver, OutgoingEmail, SenderAddressEntry, SignedInAccount, StoredClient } from '../src/mail/account.js'
+import type { ConnectedAccount, MailAccountDriver, OutgoingEmail, SenderAddressEntry, SignedInAccount, StoredClient } from '../../src/mail/account.js'
 import type { HostErrorKind } from '@jff/shared'
 
 export declare const FAKE_MAIL_MARKER: 'jffFakeMail'
