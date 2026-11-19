@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { MailWizard } from './MailWizard'
+import { MailSection } from './MailSection'
 import { HAIRLINE, MUTED, NAV_GROUND, PAGE_GROUND } from './look'
 
 /** A 16px line icon, as the reference's nav items carry. */
@@ -25,7 +25,7 @@ interface Section {
  * theirs here, and the nav, the breadcrumb and the anchor follow.
  */
 const SECTIONS: readonly Section[] = [
-  { id: 'mail', label: 'Mail', icon: <MailIcon />, content: () => <MailWizard /> },
+  { id: 'mail', label: 'Mail', icon: <MailIcon />, content: () => <MailSection /> },
 ]
 
 const sectionFromHash = (): Section =>

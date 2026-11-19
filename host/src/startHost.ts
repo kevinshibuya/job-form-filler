@@ -9,6 +9,9 @@ import type { ClaudeRunner } from './llm/claudeCli.js'
 import type { CodexRunner } from './llm/codexCli.js'
 import type { ResolvedModels } from './llm/models.js'
 import { log } from './log.js'
+import type { MailAccountDriver } from './mail/account.js'
+import { createMailRequests } from './mail/requests.js'
+import type { SecretStore } from './mail/secretStore.js'
 import { selfCheck, type SelfCheckDeps } from './selfcheck.js'
 
 /** Everything the Native host runs on. The shipped entry (index.ts) builds the
@@ -21,6 +24,9 @@ export interface HostDeps {
   openDb: (path: string) => Database.Database
   runner: ClaudeRunner
   codex: CodexRunner
+  /** The Mail account: its driver and where its secrets live. The shipped
+   *  entry passes the Gmail driver and the Keychain; a test passes fakes. */
+  mail: { driver: MailAccountDriver; secrets: SecretStore }
   /** The Self-check's own IO. Paths and the database's state come from here. */
   selfCheckIo: Omit<SelfCheckDeps, 'claudePath' | 'codexPath' | 'dbPath' | 'dbOk' | 'dbRefusal'>
   /** Native messaging frames in. */
@@ -43,6 +49,7 @@ export function startHost(deps: HostDeps): void {
 
   const handlerDeps: HandlerDeps = {
     db, runner: deps.runner, codex: deps.codex, config, models: deps.models,
+    mail: createMailRequests(deps.mail),
     ...(refusal === undefined ? {} : { dbRefusal: refusal }),
     selfCheckFn: () => selfCheck({
       ...deps.selfCheckIo,

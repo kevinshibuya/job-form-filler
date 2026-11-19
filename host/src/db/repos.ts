@@ -2,7 +2,7 @@ import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import {
   isProfileKey, norm,
-  type AppliedChannel, type AppliedTexts, type ApplicationEmail, type EmailLanguage, type EmailRoute, type FieldKey, type KeptProseAnswer,
+  type AppliedChannel, type AppliedTexts, type ApplicationEmail, type EmailLanguage, type EmailRoute, type FieldKey, type KeptProseAnswer, type MailKind,
 } from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
 import { MIGRATIONS, migrate, type Migration } from './migrations.js'
@@ -413,4 +413,47 @@ export function listKeptProseAnswers(db: Database.Database, appliedJobId: number
   return rows.map((r) => ({
     question: r.question, text: r.text, aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model,
   }))
+}
+
+/* ------------------------------------------------------------ Mail account */
+
+export type MailAccountState = 'connected' | 'needs_reconnect'
+
+/** The one Mail account, as the database holds it. Its secrets are in the
+ *  Keychain (spec #66): nothing here is one. */
+export interface MailAccountRow {
+  kind: MailKind
+  address: string
+  clientId: string
+  connectedAt: string
+  state: MailAccountState
+  lastSenderAddress: string | null
+}
+
+export function getMailAccount(db: Database.Database): MailAccountRow | null {
+  const r = db.prepare(
+    `SELECT kind, address, client_id, connected_at, state, last_sender_address FROM mail_account WHERE id = 1`,
+  ).get() as {
+    kind: MailKind; address: string; client_id: string; connected_at: string; state: MailAccountState; last_sender_address: string | null
+  } | undefined
+  return r === undefined ? null : {
+    kind: r.kind, address: r.address, clientId: r.client_id, connectedAt: r.connected_at,
+    state: r.state, lastSenderAddress: r.last_sender_address,
+  }
+}
+
+/** Writes the one Mail account as just connected. A second connect replaces
+ *  the first; the last used Sender address survives only for the same address. */
+export function saveMailAccount(
+  db: Database.Database,
+  row: { kind: MailKind; address: string; clientId: string; connectedAt: string },
+): void {
+  db.prepare(
+    `INSERT INTO mail_account (id, kind, address, client_id, connected_at, state, last_sender_address)
+     VALUES (1, @kind, @address, @clientId, @connectedAt, 'connected', NULL)
+     ON CONFLICT(id) DO UPDATE SET
+       kind = excluded.kind, client_id = excluded.client_id, connected_at = excluded.connected_at, state = 'connected',
+       last_sender_address = CASE WHEN address = excluded.address THEN last_sender_address ELSE NULL END,
+       address = excluded.address`,
+  ).run(row)
 }

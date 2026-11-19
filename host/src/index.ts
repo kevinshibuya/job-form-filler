@@ -7,6 +7,9 @@ import { createClaudeRunner } from './llm/claudeCli.js'
 import { createCodexRunner } from './llm/codexCli.js'
 import { resolveModels } from './llm/models.js'
 import { log } from './log.js'
+import { createGmailDriver } from './mail/gmail.js'
+import { realHttp } from './mail/net.js'
+import { createKeychainStore } from './mail/secretStore.js'
 import { realAuthCache, realFileExists, realProbeAuth, realProbeCodexAuth } from './selfcheck.js'
 import { startHost } from './startHost.js'
 
@@ -21,6 +24,7 @@ startHost({
   openDb: (path) => openDb(path),
   runner: createClaudeRunner({ claudePath: config.claudePath }),
   codex: createCodexRunner({ codexPath: config.codexPath }),
+  mail: { driver: createGmailDriver({ http: realHttp }), secrets: createKeychainStore() },
   selfCheckIo: {
     fileExists: realFileExists,
     probeAuth: realProbeAuth(config.claudePath, models.claudeAuthProbe),

@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import type { MailStatus } from '@jff/shared'
+import { createHostPort, type HostPort } from '../panel/port'
+import { ConnectSteps } from './ConnectSteps'
 import { asksProjectId, CONSOLE_STEPS, stepLink, type ConsoleStep } from './consoleSteps'
 import { loadWizard, saveWizard, type WizardState } from './wizardStore'
 import { CARD, CODE, H_SECTION, LINK_BUTTON, MUTED, TEXT_ACTION, FIELD } from './look'
@@ -94,9 +97,14 @@ function StepCard({ step, state, onProjectId, onToggle }: {
  * Google client in the Cloud console, one card each, in the research
  * document's order. It starts from the Onboarding view (a heading, one muted
  * sentence, then the inputs) laid out in the settings page's groups. It links
- * to the console and stops there: nothing here acts on Google's pages.
+ * to the console and stops there: nothing here acts on Google's pages. Its
+ * last two steps take the downloaded client file and Connect.
  */
-export function MailWizard() {
+export function MailWizard({ port = createHostPort, onConnected = () => {} }: {
+  /** The Native host, asked for only when Connect is clicked. */
+  port?: () => HostPort
+  onConnected?: (status: MailStatus) => void
+} = {}) {
   const [state, setState] = useState<WizardState | null>(null)
 
   useEffect(() => {
@@ -132,6 +140,7 @@ export function MailWizard() {
               onToggle={() => toggle(state, step.n)}
             />
           ))}
+          <ConnectSteps first={CONSOLE_STEPS.length + 1} port={port} onConnected={onConnected} />
         </ol>
       )}
     </section>

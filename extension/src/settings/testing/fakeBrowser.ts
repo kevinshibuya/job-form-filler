@@ -52,6 +52,9 @@ export function installFakeBrowser(): FakeBrowser {
   }
 
   beforeEach(() => {
+    // The page talks to the fake Native host port (panel/port.ts), which
+    // answers canned data unless a test installs window.__jffHostBridge.
+    window.history.replaceState(null, '', '/?jffFakeHost=1')
     browser.local = {}
     browser.session = {}
     browser.clipboard = []

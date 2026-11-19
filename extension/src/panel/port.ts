@@ -188,6 +188,8 @@ export function createFakeHostPort(): HostPort {
         'email.draft': { subject: 'Application', body: 'Hello,\n\nFake Draft.\n\nBest regards,\nFake User', model: 'fake', language: 'en', missingLinks: [], unsupportedClaims: [], unchecked: false },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },
+        // The Mail account: the canned host has none, so the settings page shows the wizard.
+        'mail.status': { state: 'none' },
         // A Capture: the canned host writes nothing and says so.
         'capture.save': { path: '(fake host: nothing saved)' },
       }
