@@ -21,6 +21,12 @@ export function panelUrl(extensionId: string, query = ''): string {
   return `chrome-extension://${extensionId}/${path}${query}`
 }
 
+/** The settings page's address. vite.config.ts makes it a build input, which
+ *  keeps its source path in the bundle. */
+export function settingsUrl(extensionId: string, hash = ''): string {
+  return `chrome-extension://${extensionId}/src/settings/index.html${hash}`
+}
+
 export interface LaunchedExtension {
   context: BrowserContext
   extensionId: string
@@ -37,7 +43,9 @@ export async function launchWithExtension(): Promise<LaunchedExtension> {
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: 'chromium',
     headless: true,
-    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`],
+    // --mute-audio: a test browser never plays sound through the machine's
+    // speakers, whatever its pages autoplay.
+    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`, '--mute-audio'],
   })
 
   const consoleErrors: string[] = []

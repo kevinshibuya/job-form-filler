@@ -31,6 +31,7 @@ import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
+import { openSettingsPage, settingsUrl } from '../settings/open'
 
 /**
  * `chrome.tabs.Tab.url` is `''` — not `undefined` — for a tab that has not committed
@@ -2373,8 +2374,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     >
       <header className="flex items-center justify-between border-b border-neutral-200 pb-2 dark:border-neutral-700">
         <h1 className="m-0 text-[13px] font-semibold tracking-wide" data-jff-title="1">job-form-filler</h1>
-        <span className="text-neutral-500 tabular-nums dark:text-neutral-400" data-jff-tab={String(tabId ?? '')}>
-          {tabId === null ? 'no tab' : `tab ${tabId}`}
+        <span className="flex items-center gap-3">
+          <span className="text-neutral-500 tabular-nums dark:text-neutral-400" data-jff-tab={String(tabId ?? '')}>
+            {tabId === null ? 'no tab' : `tab ${tabId}`}
+          </span>
+          <a
+            href={settingsUrl()} target="_blank" rel="noreferrer" data-jff-settings-link="1"
+            className="text-neutral-500 underline-offset-2 hover:text-blue-700 hover:underline dark:text-neutral-400 dark:hover:text-blue-300"
+            onClick={(e) => { e.preventDefault(); void openSettingsPage() }}
+          >
+            Settings
+          </a>
         </span>
       </header>
 

@@ -142,7 +142,7 @@ async function launchBrowser(headed) {
   const context = await chromium.launchPersistentContext(profile, {
     channel: 'chromium',
     headless: !headed,
-    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`],
+    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`, '--mute-audio'],
   })
   let [sw] = context.serviceWorkers()
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 15_000 })

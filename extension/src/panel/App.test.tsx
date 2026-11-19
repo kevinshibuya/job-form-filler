@@ -156,6 +156,7 @@ beforeEach(async () => {
         return { ok: true }
       }),
       onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+      getURL: (p: string) => `chrome-extension://jffextensionid/${p.replace(/^\//, '')}`,
     },
     // STATEFUL: the session store persists real rows here, and onScan sweeps
     // this tab's stale snapshot keys out of the same area.

@@ -342,6 +342,7 @@ function fakeChrome(host: HeldMappingHost): unknown {
         return { ok: true }
       }),
       onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+      getURL: (p: string) => `chrome-extension://jffextensionid/${p.replace(/^\//, '')}`,
     },
     storage: {
       session: {
