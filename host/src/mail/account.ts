@@ -3,8 +3,7 @@ import { HOST_ERROR_KINDS, type HostErrorKind, type MailKind } from '@jff/shared
 /**
  * A Mail account, as the Native host reaches it (spec #66). The interface has
  * three operations: connect, list Sender addresses and send, and the revoke
- * that Disconnect asks for. The Gmail driver is its only implementation. Send
- * is added by the ticket that builds it.
+ * that Disconnect asks for. The Gmail driver is its only implementation.
  */
 export interface MailAccountDriver {
   readonly kind: MailKind
@@ -28,6 +27,33 @@ export interface MailAccountDriver {
    * Throws a MailError when the provider refuses or cannot be reached.
    */
   revoke(refreshToken: string): Promise<void>
+  /**
+   * Sends one Application email from the account and answers the provider's
+   * message id and thread id. Throws a MailError: `not_authed` when the
+   * provider refuses the refresh token as invalid, `bad_request` for an
+   * email it will not build, and another kind for a refusal or a failure to
+   * reach the provider. Only the handler of `mail.send` calls it.
+   */
+  send(account: SignedInAccount, email: OutgoingEmail): Promise<SentEmail>
+}
+
+/**
+ * One Application email as the Native host hands it to the driver: one
+ * sender with its display name, one recipient, a subject, a plain-text body
+ * and the Resume as its one attachment. No HTML, no Cc, no Bcc (spec #66).
+ */
+export interface OutgoingEmail {
+  from: { address: string; displayName: string }
+  to: string
+  subject: string
+  body: string
+  attachment: { name: string; mimeType: string; data: Buffer }
+}
+
+/** What the provider answered a send with. */
+export interface SentEmail {
+  messageId: string
+  threadId: string
 }
 
 /** The client a past Connect stored: its id from the database, its secret

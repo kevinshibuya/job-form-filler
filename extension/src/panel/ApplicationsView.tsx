@@ -24,21 +24,22 @@ const isWebUrl = (raw: string): boolean => {
 const ROUTE_LABEL: Record<EmailRoute, string> = { tool: 'Sent from job-form-filler', mail_app: 'Handed to your mail app' }
 
 /** One kept Application email, read only: text, never a control. The body
- *  keeps its line breaks. */
+ *  keeps its line breaks. One the tool sent shows its Sender address, its
+ *  attachment names and the time it left (ticket #82). */
 function KeptEmail({ email }: { email: ApplicationEmail }) {
   return (
     <article className="mt-2 rounded-md border border-neutral-200 p-2 dark:border-neutral-700" data-jff-app-email="1">
       <div className={`text-[12px] ${MUTED}`}>
-        <span className="tabular-nums">{new Date(email.sentAt).toLocaleDateString()}</span> · {ROUTE_LABEL[email.route]}
+        <time className="tabular-nums" dateTime={email.sentAt} data-jff-app-email-time="1">{new Date(email.sentAt).toLocaleString()}</time> · {ROUTE_LABEL[email.route]}
       </div>
       <div className="mt-1 break-all text-[12px]" data-jff-app-email-to="1"><span className="font-semibold">To</span> {email.applyAddress}</div>
       {email.senderAddress !== null && (
-        <div className="break-all text-[12px]"><span className="font-semibold">From</span> {email.senderAddress}</div>
+        <div className="break-all text-[12px]" data-jff-app-email-from="1"><span className="font-semibold">From</span> {email.senderAddress}</div>
       )}
       <div className="mt-1 font-semibold" data-jff-app-email-subject="1">{email.subject}</div>
       <div className="mt-1 whitespace-pre-wrap break-words" data-jff-app-email-body="1">{email.body}</div>
       {email.attachmentNames.length > 0 && (
-        <div className={`mt-1 break-all text-[12px] ${MUTED}`}>Attached: {email.attachmentNames.join(', ')}</div>
+        <div className={`mt-1 break-all text-[12px] ${MUTED}`} data-jff-app-email-attachments="1">Attached: {email.attachmentNames.join(', ')}</div>
       )}
       {email.aiDrafted && (
         <div className={`mt-1 text-[12px] ${MUTED}`}>

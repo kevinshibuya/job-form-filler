@@ -468,3 +468,85 @@ export function saveMailAccount(
        address = excluded.address`,
   ).run(row)
 }
+
+/** Records the Sender address the last Application email left from: the
+ *  default of the next email Review while the list still holds it. */
+export function setLastSenderAddress(db: Database.Database, address: string): void {
+  db.prepare('UPDATE mail_account SET last_sender_address = ? WHERE id = 1').run(address)
+}
+
+/* ----------------------------------------------------------- send attempts */
+
+export type SendAttemptState = 'started' | 'sent' | 'failed' | 'abandoned'
+
+export interface SendAttempt {
+  requestId: string
+  canonicalUrl: string
+  applyAddress: string
+  state: SendAttemptState
+}
+
+/** The Apply address as a send attempt keeps it, so the lock compares it
+ *  without regard to case. */
+const attemptAddress = (a: string): string => a.trim().toLowerCase()
+
+/**
+ * Records a send attempt as `started` before Gmail is called (spec #66). The
+ * insert is the lock: it is refused for a request id already recorded
+ * (`same_request`), and for a Job posting and Apply address that already
+ * have a started attempt (`in_flight`). The database enforces both, so they
+ * hold across Native host processes.
+ */
+export function startSendAttempt(
+  db: Database.Database,
+  a: { requestId: string; url: string; applyAddress: string },
+): { ok: true } | { ok: false; why: 'same_request' | 'in_flight' } {
+  const now = new Date().toISOString()
+  try {
+    db.prepare(
+      `INSERT INTO send_attempts (request_id, canonical_url, apply_address, state, started_at, updated_at)
+       VALUES (?, ?, ?, 'started', ?, ?)`,
+    ).run(a.requestId, canonicalUrl(a.url), attemptAddress(a.applyAddress), now, now)
+    return { ok: true }
+  } catch (e) {
+    const code = (e as { code?: unknown }).code
+    if (code === 'SQLITE_CONSTRAINT_PRIMARYKEY') return { ok: false, why: 'same_request' }
+    if (code === 'SQLITE_CONSTRAINT_UNIQUE') return { ok: false, why: 'in_flight' }
+    throw e
+  }
+}
+
+export function setSendAttemptState(db: Database.Database, requestId: string, state: SendAttemptState): void {
+  db.prepare('UPDATE send_attempts SET state = ?, updated_at = ? WHERE request_id = ?').run(state, new Date().toISOString(), requestId)
+}
+
+export function getSendAttempt(db: Database.Database, requestId: string): SendAttempt | null {
+  const r = db.prepare('SELECT request_id, canonical_url, apply_address, state FROM send_attempts WHERE request_id = ?').get(requestId) as
+    { request_id: string; canonical_url: string; apply_address: string; state: SendAttemptState } | undefined
+  return r === undefined ? null : { requestId: r.request_id, canonicalUrl: r.canonical_url, applyAddress: r.apply_address, state: r.state }
+}
+
+/**
+ * A Send that went out, recorded in one transaction (spec #66): the Job
+ * posting marked applied by email, its Application email kept with Gmail's
+ * ids, the attempt `sent` and the Sender address recorded as the last used.
+ * A failure anywhere leaves none of them.
+ */
+export function recordSentEmail(
+  db: Database.Database,
+  r: {
+    requestId: string; url: string; company: string | null; jobTitle: string | null
+    email: NewApplicationEmail & { senderAddress: string }
+  },
+): AppliedJob {
+  const tx = db.transaction((): AppliedJob => {
+    const job = markApplied(db, { url: r.url, company: r.company, jobTitle: r.jobTitle, channel: 'email', email: r.email })
+    const moved = db.prepare(
+      `UPDATE send_attempts SET state = 'sent', updated_at = ? WHERE request_id = ? AND state = 'started'`,
+    ).run(new Date().toISOString(), r.requestId)
+    if (moved.changes !== 1) throw new Error(`send attempt ${r.requestId} is no longer started`)
+    setLastSenderAddress(db, r.email.senderAddress)
+    return job
+  })
+  return tx()
+}

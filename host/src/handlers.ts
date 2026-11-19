@@ -360,6 +360,12 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'mail.senders':
         if (deps.mail === undefined) return noMail(req.requestId)
         return ok(req.requestId, await deps.mail.senders(db))
+
+      // The only path to the driver's send (spec #66, ADR 0012): this
+      // request, which only the user's click on Send makes.
+      case 'mail.send':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.send(db, req.requestId, req.params))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req

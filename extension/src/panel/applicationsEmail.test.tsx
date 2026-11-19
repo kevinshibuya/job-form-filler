@@ -36,16 +36,26 @@ const OLDER: ApplicationEmail = {
   language: 'en', edited: false,
 }
 
+/** An Application email the tool sent through Gmail (ticket #82). */
+const SENT: ApplicationEmail = {
+  applyAddress: 'jobs@example.org', senderAddress: 'ada@work.example.com', subject: 'Application: Analyst',
+  body: 'Hello,\n\nI would like to apply.\n\nBest regards,\nAda Lovelace', attachmentNames: ['Ada Lovelace - Resume.pdf'],
+  sentAt: '2026-11-19T14:37:00.000Z', language: 'en', gmailMessageId: 'MESSAGE_ID_PLACEHOLDER', gmailThreadId: 'THREAD_ID_PLACEHOLDER',
+  route: 'tool', aiDrafted: true, edited: false, model: 'claude-opus-5-5',
+}
+
 let gets: unknown[]
+let emails: ApplicationEmail[]
 
 beforeEach(() => {
   gets = []
+  emails = [NEWER, OLDER]
   const base = window.__jffHostBridge!
   window.__jffHostBridge = async (req): Promise<HostResponse> => {
     if (req.method === 'applied.list') return { requestId: req.requestId, ok: true, result: { jobs: [EMAIL_JOB, FORM_JOB] } }
     if (req.method === 'applied.get') {
       gets.push(req.params)
-      const texts: AppliedTexts = { id: EMAIL_JOB.id, proseAnswers: [], emails: [NEWER, OLDER] }
+      const texts: AppliedTexts = { id: EMAIL_JOB.id, proseAnswers: [], emails }
       return { requestId: req.requestId, ok: true, result: texts }
     }
     return await base(req)
@@ -92,6 +102,21 @@ describe('the Applications view shows an email Applied job\'s Application email'
 
     fireEvent.click(within(rowOf('Analyst')).getByRole('button', { name: 'Hide the Application email' }))
     expect(document.querySelector('[data-jff-app-email]')).toBeNull()
+  }, 20_000)
+
+  it('shows a sent Application email\'s Sender address, attachment names and time', async () => {
+    emails = [SENT]
+    await applicationsShown()
+    fireEvent.click(within(rowOf('Analyst')).getByRole('button', { name: 'Show the Application email' }))
+    await waitFor(() => { expect(document.querySelector('[data-jff-app-email]')).not.toBeNull() })
+    const shown = document.querySelector<HTMLElement>('[data-jff-app-email]')!
+    expect(shown.querySelector('[data-jff-app-email-from]')?.textContent).toContain('ada@work.example.com')
+    expect(shown.querySelector('[data-jff-app-email-to]')?.textContent).toContain('jobs@example.org')
+    expect(shown.querySelector('[data-jff-app-email-attachments]')?.textContent).toContain('Ada Lovelace - Resume.pdf')
+    const time = shown.querySelector('time[data-jff-app-email-time]')
+    expect(time?.getAttribute('datetime')).toBe(SENT.sentAt)
+    expect(time?.textContent).toBe(new Date(SENT.sentAt).toLocaleString())
+    expect(shown.textContent).toMatch(/Sent from job-form-filler/)
   }, 20_000)
 
   it('says so when the texts cannot be read', async () => {

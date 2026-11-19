@@ -336,6 +336,55 @@ export type MailConnectStartResult = z.infer<typeof MailConnectStartResultSchema
 export const MailDisconnectResultSchema = z.object({ revoked: z.boolean(), warning: z.string().nullable() })
 export type MailDisconnectResult = z.infer<typeof MailDisconnectResultSchema>
 
+/** The largest Resume file `mail.send` carries, in bytes before encoding.
+ *  Chrome takes a message of 64 MiB to the Native host; base64 inside JSON
+ *  grows a file by a third, so 10 MB crosses with room to spare. */
+export const RESUME_FILE_MAX = 10_000_000
+
+/** The Resume file as `mail.send` carries it, its bytes base64-encoded. */
+export const ResumeFileSchema = z.object({
+  name: z.string().trim().min(1),
+  mimeType: z.string().min(1),
+  dataBase64: z.string().min(1).max(Math.ceil(RESUME_FILE_MAX / 3) * 4).regex(/^[A-Za-z0-9+/]*={0,2}$/, 'the Resume file is not base64'),
+})
+export type ResumeFile = z.infer<typeof ResumeFileSchema>
+
+const notBlank = (what: string) => z.string().refine((s) => s.trim() !== '', `an Application email needs ${what}`)
+
+/**
+ * `mail.send` (spec #66): everything one Send needs. The Job posting's start
+ * address, Company and title; the Apply address and the Sender address; the
+ * subject, the final body and its language; the Resume file with its name
+ * and type; and for the body whether AI drafted it, whether the user edited
+ * it and which model wrote it. The Native host checks the Sender address
+ * against the account's own list and keeps no Resume byte.
+ */
+export const MailSendParamsSchema = z.object({
+  url: z.string().min(1),
+  company: z.string().nullable(),
+  jobTitle: z.string().nullable(),
+  applyAddress: notBlank('a To address'),
+  senderAddress: notBlank('a Sender address'),
+  subject: notBlank('a subject'),
+  body: notBlank('a body'),
+  language: EmailLanguageSchema,
+  resume: ResumeFileSchema,
+  aiDrafted: z.boolean(),
+  edited: z.boolean(),
+  model: z.string().nullable(),
+}).strict()
+export type MailSendParams = z.infer<typeof MailSendParamsSchema>
+
+/** The reply to a `mail.send` that went out: the Applied job it marked and
+ *  Gmail's message id and thread id. */
+export const MailSendResultSchema = z.object({
+  appliedJobId: z.number().int(),
+  markedAt: z.string(),
+  gmailMessageId: z.string(),
+  gmailThreadId: z.string(),
+})
+export type MailSendResult = z.infer<typeof MailSendResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -437,6 +486,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   // The Sender addresses: asked when an email Review opens and when the
   // settings page shows the account.
   z.object({ requestId: z.string().min(1), method: z.literal('mail.senders'), params: z.object({}).passthrough() }),
+  // Send (spec #66): one click, one request. It is never replayed from the
+  // request log either: the send attempt it records is its guard.
+  z.object({ requestId: z.string().min(1), method: z.literal('mail.send'), params: MailSendParamsSchema }),
 ])
 export type HostRequest = z.infer<typeof HostRequestSchema>
 export type HostMethod = HostRequest['method']

@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto'
 import {
-  MailError, type ConnectedAccount, type MailAccountDriver, type PendingConnect, type SenderAddressEntry, type SignedInAccount,
+  MailError, type ConnectedAccount, type MailAccountDriver, type OutgoingEmail, type PendingConnect, type SenderAddressEntry,
+  type SentEmail, type SignedInAccount,
 } from './account.js'
 import { startLoopbackListener, type LoopbackListener } from './loopback.js'
+import { buildMessage } from './mime.js'
 import { googleOnly, type HttpCall } from './net.js'
 
 /**
@@ -25,6 +27,7 @@ export const CONSENT_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 export const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 export const REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
 export const SEND_AS_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs'
+export const SEND_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'
 
 /** An access token is asked for again this long before Google says it expires. */
 const TOKEN_MARGIN_MS = 60_000
@@ -220,6 +223,30 @@ export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
         others.push({ address: e.sendAsEmail, displayName: name })
       }
       return [own, ...others]
+    },
+
+    // One message, built here, through Gmail's send call (the research
+    // transcript's request). A refusal names Gmail's own reason; the message
+    // and its attachment never go in an error.
+    async send(account: SignedInAccount, email: OutgoingEmail): Promise<SentEmail> {
+      const raw = Buffer.from(buildMessage(email), 'utf8').toString('base64url')
+      const token = await accessToken(account)
+      const res = await call({
+        method: 'POST', url: SEND_URL,
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ raw }),
+      }, 'send the Application email')
+      const json = jsonOf(res.body)
+      if (res.status !== 200) {
+        if (res.status === 401) tokens.delete(account.refreshToken)
+        const error = typeof json.error === 'object' && json.error !== null ? json.error as Record<string, unknown> : {}
+        const why = typeof error.message === 'string' && error.message !== '' ? `: ${error.message}` : ''
+        throw new MailError('process', `Gmail refused the Application email (${res.status}${why}). Nothing was sent.`)
+      }
+      if (typeof json.id !== 'string' || json.id === '' || typeof json.threadId !== 'string' || json.threadId === '') {
+        throw new MailError('invalid_output', 'Gmail answered the send without a message id and a thread id.')
+      }
+      return { messageId: json.id, threadId: json.threadId }
     },
 
     // The research document's Revocation: a POST of the refresh token, which

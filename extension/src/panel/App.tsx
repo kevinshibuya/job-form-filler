@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendersResultSchema, MailStatusSchema, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -13,7 +13,7 @@ import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { EmailChooser } from './EmailChooser'
 import { EmailReview } from './EmailReview'
-import type { SessionMailHandover } from './mailApp'
+import { mailHandoverOf, type SessionMailHandover } from './mailApp'
 import { emailDraftOwed, emailDraftParams, emailRedraftParams, replaceEmailDraft, requestEmailDraft, type EmailDraftUi, type RedraftAsk } from './emailDraft'
 import { addressPickParams, requestAddressPick, type AddressPickUi } from './applyAddressPick'
 import { requestAddressRevisit, revisitWords, type RevisitWaiting } from './addressRevisit'
@@ -366,6 +366,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
   const [marking, setMarking] = useState(false)
+  /** A Send is in flight (ticket #82); the ref closes the gap before the
+   *  disabled button renders, so two quick clicks make one request. */
+  const [sending, setSending] = useState(false)
+  const sendingRef = useRef(false)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' | 'save_fact' } | null>(null)
   const [submitPrompt, setSubmitPrompt] = useState(false)
 
@@ -2124,6 +2129,57 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     }
   }
 
+  /**
+   * Send (spec #66, ticket #82): the only path to `mail.send`, and the only
+   * event that mails anything (ADR 0012). One click, no dialog. The request
+   * carries the email as the Review shows it, the Resume file and the body's
+   * marks; the Native host checks the Sender address, sends, and marks the
+   * Job posting applied by email. A Send that went out ends the Session as
+   * Mark applied does; one that failed leaves the Draft for another click.
+   */
+  const onSendEmail = async (senderAddress: string): Promise<void> => {
+    const port = portRef.current
+    const s = sessionRef.current
+    if (port === null || s === null || s.startUrl === '' || s.parked || sendingRef.current || marking) return
+    const email = mailHandoverOf({ applyAddress: s.applyAddress, emailDraft: s.emailDraft })
+    if (email === null) return
+    const target = s.tabId
+    const gen = runtimeOf(target).gen
+    sendingRef.current = true
+    setSending(true)
+    setSendError(null)
+    try {
+      const resume = await loadResume()
+      if (resume === null) { setSendError('No Resume is stored to attach. Add one above, then click Send.'); return }
+      const tab = await getTab(target)
+      // The page this Session described is gone: its title names another posting.
+      if (genOf(target) !== gen) return
+      const title = (tab?.title ?? '').trim()
+      const params: MailSendParams = {
+        url: s.startUrl,
+        company: s.company.trim() === '' ? null : s.company.trim(),
+        jobTitle: title === '' ? null : title,
+        applyAddress: email.applyAddress,
+        senderAddress,
+        subject: email.subject,
+        body: email.body,
+        language: email.language,
+        resume: { name: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64 },
+        aiDrafted: email.aiDrafted,
+        edited: email.edited,
+        model: email.model,
+      }
+      const r = await port.request('mail.send', params)
+      if (!r.ok) { setSendError(r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message); return }
+      const sent = MailSendResultSchema.safeParse(r.result)
+      await endSession(target)
+      setMarkedMsg({ markedAt: sent.success ? sent.data.markedAt : new Date().toISOString() })
+    } finally {
+      sendingRef.current = false
+      setSending(false)
+    }
+  }
+
   /** S5 names explicit discard as a deletion path of its own. */
   const onDiscard = async (): Promise<void> => {
     const s = sessionRef.current
@@ -2500,7 +2556,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                   pick={addressPick}
                   onOffer={() => { void onApplyByEmail() }}
                   onChoose={(address, how) => { void onChooseApplyAddress(address, how) }}
-                  review={(
+                  review={(toPending) => (
                     <EmailReview
                       draft={session.emailDraft} ui={emailDraftUi}
                       needsJobText={session.emailDraft === null && session.jobText.trim() === ''}
@@ -2518,6 +2574,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       senderAddress={session.senderAddress}
                       onSender={(address) => { writeSession((s) => ({ ...s, senderAddress: address })) }}
                       onReconnect={() => { void openSettingsPage() }}
+                      toPending={toPending}
+                      onSend={(sender) => { void onSendEmail(sender) }}
+                      sending={sending}
+                      sendError={sendError}
                     />
                   )}
                 />

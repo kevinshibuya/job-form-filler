@@ -34,8 +34,10 @@ export interface EmailChooserProps {
   onOffer: () => void
   /** A shape-checked address the user picked from the list or typed. */
   onChoose: (address: string, how: 'list' | 'typed') => void
-  /** The Application email's rows, shown under the To row. */
-  review?: ReactNode
+  /** The Application email's rows, shown under the To row. As a function it
+   *  is told whether the To box holds an edit not yet taken: empty, refused by
+   *  the shape check, or not yet committed. */
+  review?: ReactNode | ((toPending: boolean) => ReactNode)
 }
 
 function ContextLine({ context }: { context: AddressContext }) {
@@ -75,11 +77,16 @@ function TypedBox({ onChoose }: { onChoose: (address: string) => void }) {
 }
 
 /** The chosen Apply address, editable under the same shape check. */
-function ToRow({ address, chosenBy, onChoose }: { address: string; chosenBy: ApplyAddressChoice | null; onChoose: (address: string) => void }) {
+function ToRow({ address, chosenBy, onChoose, onPending }: {
+  address: string; chosenBy: ApplyAddressChoice | null; onChoose: (address: string) => void
+  /** Whether the box differs from the chosen address. */
+  onPending: (pending: boolean) => void
+}) {
   const [value, setValue] = useState(address)
   const [error, setError] = useState<string | null>(null)
   // A choice made elsewhere (the list) replaces what the box shows.
   useEffect(() => { setValue(address); setError(null) }, [address])
+  useEffect(() => { onPending(value.trim() !== address) }, [value, address])
   const commit = (): void => {
     const next = value.trim()
     if (next === address) { setError(null); return }
@@ -125,6 +132,7 @@ function PickLine({ pick }: { pick: AddressPickUi }) {
 }
 
 export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, pick, onOffer, onChoose, review }: EmailChooserProps) {
+  const [toPending, setToPending] = useState(false)
   // Beside a form the flow waits for a click, which sends nothing. A chosen
   // address opens it for good: it is stored with the Session.
   const [offerTaken, setOfferTaken] = useState(false)
@@ -148,8 +156,8 @@ export function EmailChooser({ candidates, applyAddress, chosenBy, hasFields, pi
       {pick !== null && applyAddress === null && <PickLine pick={pick} />}
       {applyAddress !== null && (
         <>
-          <ToRow address={applyAddress} chosenBy={chosenBy} onChoose={(a) => onChoose(a, 'typed')} />
-          {review}
+          <ToRow address={applyAddress} chosenBy={chosenBy} onChoose={(a) => onChoose(a, 'typed')} onPending={setToPending} />
+          {typeof review === 'function' ? review(toPending) : review}
         </>
       )}
       {candidates.length > 0 && (

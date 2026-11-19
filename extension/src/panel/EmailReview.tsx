@@ -19,7 +19,9 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
  * waits for that answer. With a connected account the Review also asks for
  * its Sender addresses and shows the Sender address row; when the sign-in
  * died, Reconnect stands where Send will be and the Draft stays as it is
- * (ticket #81).
+ * (ticket #81). With the account connected and its Sender addresses read,
+ * Send stands first in that row (ticket #82): one button that names both
+ * addresses, and no dialog after the click.
  */
 
 const LINK_NAME: Record<EmailLinkKey, string> = { linkedin: 'LinkedIn', github: 'GitHub', portfolio: 'portfolio' }
@@ -61,6 +63,14 @@ export interface EmailReviewProps {
   onSender: (address: string) => void
   /** Reconnect: opens the settings page, where the sign-in runs again. */
   onReconnect: () => void
+  /** The To box holds an edit not yet taken: Send waits for it. */
+  toPending: boolean
+  /** Send: the one path to `mail.send`, from the Sender address shown. */
+  onSend: (senderAddress: string) => void
+  /** A Send is in flight. */
+  sending: boolean
+  /** Why the last Send failed, or null. */
+  sendError: string | null
 }
 
 function NoDraft({ ui, needsJobText, onDraft }: Pick<EmailReviewProps, 'ui' | 'needsJobText' | 'onDraft'>) {
@@ -160,8 +170,25 @@ function Redraft({ draft, ui, onRedraft }: { draft: SessionEmailDraft; ui: Email
  * written or checked, or the To address, the subject or the body is empty.
  * It marks nothing: Mark applied stays the user's click.
  */
-function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect }: {
+/**
+ * Send (ticket #82): "Send from <Sender address> to <Apply address>". It is
+ * disabled while the Draft is being written or checked, while a Send is in
+ * flight, when the To address, the subject or the body is empty, and when no
+ * Resume is stored to attach. The click sends at once.
+ */
+export interface SendAction {
+  from: string
+  to: string
+  disabled: boolean
+  sending: boolean
+  error: string | null
+  onSend: () => void
+}
+
+function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect, send }: {
   email: SessionMailHandover | null; resumeName: string | null; handedOver: boolean; onOpen: (email: SessionMailHandover) => void
+  /** Set when the account is connected and its Sender addresses are read. */
+  send: SendAction | null
   /** Set when there is no Mail account: Connect shows beside the action. */
   onConnect: (() => void) | null
   /** Set when the account's sign-in died: Reconnect shows where Send will be. */
@@ -169,12 +196,28 @@ function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect }
 }) {
   return (
     <div className={ROW} data-jff-email-send="1">
+      {send !== null && (
+        <div className="mb-2">
+          <button
+            type="button" className={`${BTN_PRIMARY} max-w-full whitespace-normal break-all text-left`} disabled={send.disabled}
+            data-jff-email-sendmail="1" onClick={() => { if (!send.disabled) send.onSend() }}
+          >
+            {`Send from ${send.from} to ${send.to}`}
+          </button>
+          {send.sending && <p className={`mt-1 text-[12px] ${MUTED}`} role="status" data-jff-email-sending="1">Sending…</p>}
+          {send.error !== null && (
+            <p className="mt-1 whitespace-pre-line text-[12px] text-red-600 dark:text-red-400" role="alert" data-jff-email-send-error="1">
+              {`The Application email was not sent. ${send.error}`}
+            </p>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {email === null
-          ? <button type="button" className={BTN_PRIMARY} disabled data-jff-email-mailapp="1">Open in my mail app</button>
+          ? <button type="button" className={send === null ? BTN_PRIMARY : BTN} disabled data-jff-email-mailapp="1">Open in my mail app</button>
           : (
               <a
-                className={`${BTN_PRIMARY} inline-block no-underline`} href={mailtoAddress(email)} target="_blank" rel="noreferrer"
+                className={`${send === null ? BTN_PRIMARY : BTN} inline-block no-underline`} href={mailtoAddress(email)} target="_blank" rel="noreferrer"
                 data-jff-email-mailapp="1" onClick={() => onOpen(email)}
               >
                 Open in my mail app
@@ -281,7 +324,7 @@ function SenderRow({ list, choice, onSender }: { list: MailSendersResult; choice
 
 export function EmailReview({
   draft, ui, needsJobText, resumeName, to, handedOver, onOpenMailApp, onSubject, onBody, onDraft, onRedraft, readMailStatus, onConnect,
-  readSenders, senderAddress, onSender, onReconnect,
+  readSenders, senderAddress, onSender, onReconnect, toPending, onSend, sending, sendError,
 }: EmailReviewProps) {
   const { mail, senders } = useMailAccount(readMailStatus, readSenders)
   if (draft === null) return <NoDraft ui={ui} needsJobText={needsJobText} onDraft={onDraft} />
@@ -289,6 +332,13 @@ export function EmailReview({
   const busy = ui?.kind === 'drafting'
   // A flagged sentence the user has since edited away is no longer shown.
   const claims = draft.unsupportedClaims.filter((c) => draft.body.includes(c))
+  const from = mail?.state === 'connected' && senders !== null ? senderOf(senders, senderAddress) : null
+  const toAddress = (to ?? '').trim()
+  const send: SendAction | null = from === null ? null : {
+    from, to: toAddress, sending, error: sendError,
+    disabled: busy || sending || toPending || toAddress === '' || draft.subject.trim() === '' || draft.body.trim() === '' || resumeName === null,
+    onSend: () => onSend(from),
+  }
   return (
     <div className="mt-2 grid gap-2" data-jff-email-review="1">
       {mail?.state === 'connected' && senders !== null && <SenderRow list={senders} choice={senderAddress} onSender={onSender} />}
@@ -340,6 +390,7 @@ export function EmailReview({
         resumeName={resumeName} handedOver={handedOver} onOpen={onOpenMailApp}
         onConnect={mail?.state === 'none' ? onConnect : null}
         reconnect={mail?.state === 'needs_reconnect' ? { address: mail.address, onReconnect } : null}
+        send={send}
       />
     </div>
   )

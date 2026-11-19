@@ -1,8 +1,14 @@
 import type Database from 'better-sqlite3'
-import type { MailConnectStartResult, MailDisconnectResult, MailSendersResult, MailStatus } from '@jff/shared'
-import { deleteMailAccount, getMailAccount, getProfile, saveMailAccount, setMailAccountState } from '../db/repos.js'
+import type { MailConnectStartResult, MailDisconnectResult, MailSendParams, MailSendResult, MailSendersResult, MailStatus } from '@jff/shared'
+import {
+  deleteMailAccount, getMailAccount, getProfile, recordSentEmail, saveMailAccount, setMailAccountState, setSendAttemptState,
+  startSendAttempt, type MailAccountRow,
+} from '../db/repos.js'
 import { profileName } from '../llm/applicationEmail.js'
-import { asMailError, MailError, type MailAccountDriver, type PendingConnect, type StoredClient } from './account.js'
+import { log } from '../log.js'
+import {
+  asMailError, MailError, type MailAccountDriver, type PendingConnect, type SenderAddressEntry, type SignedInAccount, type StoredClient,
+} from './account.js'
 import { secretAccount, type SecretStore } from './secretStore.js'
 
 /**
@@ -29,6 +35,9 @@ export interface MailRequests {
   connectFinish(db: Database.Database): Promise<MailStatus>
   disconnect(db: Database.Database): Promise<MailDisconnectResult>
   senders(db: Database.Database): Promise<MailSendersResult>
+  /** One Send: the attempt first, then the Sender address check, the
+   *  driver's send, and on success the record in one transaction. */
+  send(db: Database.Database, requestId: string, params: MailSendParams): Promise<MailSendResult>
 }
 
 const NEEDS_RECONNECT =
@@ -44,6 +53,19 @@ const notRevoked = (why: string): string =>
   'To remove its access at Google too, open your Google Account, then Security, then Third-party connections.'
 
 
+const NO_ACCOUNT = 'No Mail account is connected. Connect one in the settings page.'
+
+const IN_FLIGHT =
+  'A Send of an Application email to this address for this Job posting is already under way. Nothing was sent again.'
+
+const SAME_REQUEST = 'This Send was already made once. Nothing was sent again. Click Send to make a new one.'
+
+/** The email left Gmail, and recording it failed. The attempt stays started,
+ *  so no click sends it a second time. */
+const sentNotRecorded = (why: string): string =>
+  `The Application email was sent, but recording it failed (${why}). Check your Sent folder; ` +
+  'the Job posting is not marked applied yet, and Send stays locked for this address so it does not go out twice.'
+
 const realTimeout = (ms: number): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, ms).unref() })
 
@@ -55,6 +77,34 @@ export function createMailRequests(deps: MailRequestDeps): MailRequests {
   const status = (db: Database.Database): MailStatus => {
     const row = getMailAccount(db)
     return row === null ? { state: 'none' } : { state: row.state, kind: row.kind, address: row.address, connectedAt: row.connectedAt }
+  }
+
+  /** The account with its secrets, or a MailError. A missing secret, or a
+   *  sign-in Google refuses, marks the account "needs reconnect". */
+  async function signedIn(db: Database.Database): Promise<{ row: MailAccountRow; account: SignedInAccount }> {
+    const row = getMailAccount(db)
+    if (row === null) throw new MailError('bad_request', NO_ACCOUNT)
+    if (row.state === 'needs_reconnect') throw new MailError('not_authed', NEEDS_RECONNECT)
+    const [refreshToken, clientSecret] = await Promise.all([
+      deps.secrets.get(secretAccount(row.kind, row.address, 'refresh_token')),
+      deps.secrets.get(secretAccount(row.kind, row.address, 'client_secret')),
+    ])
+    if (refreshToken === null || clientSecret === null) {
+      setMailAccountState(db, 'needs_reconnect')
+      throw new MailError('not_authed', NEEDS_RECONNECT)
+    }
+    return { row, account: { address: row.address, clientId: row.clientId, clientSecret, refreshToken } }
+  }
+
+  /** A call to the provider; one Google refuses as a dead sign-in marks the
+   *  account "needs reconnect". */
+  async function withSignIn<T>(db: Database.Database, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run()
+    } catch (e) {
+      if (asMailError(e)?.kind === 'not_authed') setMailAccountState(db, 'needs_reconnect')
+      throw e
+    }
   }
 
   return {
@@ -109,29 +159,65 @@ export function createMailRequests(deps: MailRequestDeps): MailRequests {
     // (`not_authed` from the driver) marks the account "needs reconnect": a
     // network failure or a Gmail error leaves it connected.
     async senders(db) {
-      const row = getMailAccount(db)
-      if (row === null) throw new MailError('bad_request', 'No Mail account is connected. Connect one in the settings page.')
-      if (row.state === 'needs_reconnect') throw new MailError('not_authed', NEEDS_RECONNECT)
-      const [refreshToken, clientSecret] = await Promise.all([
-        deps.secrets.get(secretAccount(row.kind, row.address, 'refresh_token')),
-        deps.secrets.get(secretAccount(row.kind, row.address, 'client_secret')),
-      ])
-      if (refreshToken === null || clientSecret === null) {
-        setMailAccountState(db, 'needs_reconnect')
-        throw new MailError('not_authed', NEEDS_RECONNECT)
-      }
-      let list
-      try {
-        list = await deps.driver.senderAddresses({ address: row.address, clientId: row.clientId, clientSecret, refreshToken })
-      } catch (e) {
-        if (asMailError(e)?.kind === 'not_authed') setMailAccountState(db, 'needs_reconnect')
-        throw e
-      }
+      const { row, account } = await signedIn(db)
+      const list = await withSignIn(db, () => deps.driver.senderAddresses(account))
       const name = profileName(getProfile(db)) ?? ''
       return {
         address: row.address,
         senders: list.map((s) => ({ address: s.address, displayName: s.displayName ?? name })),
         lastUsed: row.lastSenderAddress,
+      }
+    },
+
+    // Send (spec #66). The attempt is recorded before anything else can
+    // fail, and before Gmail is called: its insert is the lock. Every
+    // failure from here to the driver's answer is a definite one, so the
+    // attempt becomes failed and the user may click again. The Resume's
+    // bytes live in this call alone: no log line, row or reply holds them.
+    async send(db, requestId, p) {
+      const started = startSendAttempt(db, { requestId, url: p.url, applyAddress: p.applyAddress })
+      if (!started.ok) throw new MailError('bad_request', started.why === 'in_flight' ? IN_FLIGHT : SAME_REQUEST)
+
+      let sent
+      let sender: SenderAddressEntry
+      try {
+        const { account } = await signedIn(db)
+        // The Native host reads the list itself: the panel's choice is not trusted.
+        const list = await withSignIn(db, () => deps.driver.senderAddresses(account))
+        const wanted = p.senderAddress.trim().toLowerCase()
+        const found = list.find((s) => s.address.toLowerCase() === wanted)
+        if (found === undefined) {
+          throw new MailError('bad_request',
+            `${p.senderAddress.trim()} is not an address this Mail account may send as. Pick a Sender address from the list. Nothing was sent.`)
+        }
+        sender = { address: found.address, displayName: found.displayName ?? profileName(getProfile(db)) ?? '' }
+        sent = await withSignIn(db, () => deps.driver.send(account, {
+          from: { address: sender.address, displayName: sender.displayName ?? '' },
+          to: p.applyAddress.trim(),
+          subject: p.subject,
+          body: p.body,
+          attachment: { name: p.resume.name.trim(), mimeType: p.resume.mimeType, data: Buffer.from(p.resume.dataBase64, 'base64') },
+        }))
+      } catch (e) {
+        setSendAttemptState(db, requestId, 'failed')
+        throw e
+      }
+
+      try {
+        const job = recordSentEmail(db, {
+          requestId, url: p.url, company: p.company, jobTitle: p.jobTitle,
+          email: {
+            applyAddress: p.applyAddress.trim(), senderAddress: sender.address, subject: p.subject, body: p.body,
+            attachmentNames: [p.resume.name.trim()], language: p.language,
+            gmailMessageId: sent.messageId, gmailThreadId: sent.threadId, route: 'tool',
+            aiDrafted: p.aiDrafted, edited: p.edited, model: p.model,
+          },
+        })
+        return { appliedJobId: job.id, markedAt: job.markedAt, gmailMessageId: sent.messageId, gmailThreadId: sent.threadId }
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e)
+        log('error', 'sent, not recorded', { requestId, message: why })
+        throw new MailError('db', sentNotRecorded(why))
       }
     },
 

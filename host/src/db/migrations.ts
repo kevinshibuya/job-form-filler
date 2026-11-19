@@ -85,6 +85,27 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `),
   },
+  {
+    version: 5,
+    name: 'send attempts',
+    // The Native host records a send attempt before it calls Gmail, and the
+    // insert is the lock (spec #66): unique on the request id, and one
+    // `started` attempt per Job posting and Apply address. The database
+    // enforces both, so they hold across Native host processes. The Apply
+    // address is kept trimmed and in lower case, so the index compares it
+    // without regard to case.
+    up: (db) => db.exec(`
+      CREATE TABLE send_attempts (
+        request_id    TEXT PRIMARY KEY,
+        canonical_url TEXT NOT NULL,
+        apply_address TEXT NOT NULL,
+        state         TEXT NOT NULL CHECK (state IN ('started', 'sent', 'failed', 'abandoned')),
+        started_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX send_attempts_one_started ON send_attempts (canonical_url, apply_address) WHERE state = 'started';
+    `),
+  },
 ]
 
 /** The file carries a schema version this Native host does not know: a newer

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendersResult, type MailStatus, type Resolution,
+  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -133,10 +133,20 @@ export interface HeldMappingHost {
   mailStatus: () => MailStatusAnswer | Promise<MailStatusAnswer>
   /** What `mail.senders` answers (ticket #81). Defaults to the own address alone. */
   mailSenders: () => MailSendersAnswer | Promise<MailSendersAnswer>
+  /** Every `mail.send` request, in order, as its params (ticket #82). */
+  mailSends: MailSendParams[]
+  /** What `mail.send` answers. Defaults to a Send that went out. */
+  mailSend: (p: MailSendParams) => MailSendAnswer | Promise<MailSendAnswer>
 }
 
 export type MailStatusAnswer = MailStatus | { error: { kind: HostErrorKind; message: string } }
 export type MailSendersAnswer = MailSendersResult | { error: { kind: HostErrorKind; message: string } }
+export type MailSendAnswer = MailSendResult | { error: { kind: HostErrorKind; message: string } }
+
+/** What the fake host answers a Send that went out with. */
+export const SENT: MailSendResult = {
+  appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z', gmailMessageId: 'MESSAGE_ID_PLACEHOLDER', gmailThreadId: 'THREAD_ID_PLACEHOLDER',
+}
 
 export interface AppliedCheckParams { url: string; applyAddresses?: string[] }
 /** An Applied job as `applied.check` answers it. */
@@ -157,6 +167,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       appliedChecks: [], appliedCheck: () => ({ applied: null, appliedByAddress: null }),
       mailStatus: () => ({ state: 'none' }),
       mailSenders: () => ({ address: 'ada@example.com', senders: [{ address: 'ada@example.com', displayName: 'Ada Lovelace' }], lastUsed: null }),
+      mailSends: [], mailSend: () => SENT,
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -218,6 +229,12 @@ export function installHeldMappingHost(): HeldMappingHost {
       }
       if (method === 'mail.senders') {
         const answer = await host.mailSenders()
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'mail.send') {
+        const pp = params as MailSendParams
+        host.mailSends.push(pp)
+        const answer = await host.mailSend(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
       if (method === 'wording.learn') {

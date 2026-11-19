@@ -23,6 +23,8 @@ const PERSONA = {
  * makes connect refuse the file with that message. `senders` is the "Send
  * mail as" list it answers after the account's own address, which has no
  * name; `sendersFail` makes the list throw, as a dead sign-in does.
+ * `send` records each email and answers the ids `MESSAGE_ID_PLACEHOLDER_<n>`
+ * and `THREAD_ID_PLACEHOLDER_<n>`; `sendFails` makes it throw.
  */
 export function createFakeMailDriver(opts = {}) {
   const account = { ...PERSONA, ...(opts.account ?? {}) }
@@ -53,6 +55,21 @@ export function createFakeMailDriver(opts = {}) {
     async revoke(refreshToken) {
       driver.revoked.push(refreshToken)
       if (driver.revokeFails !== null) throw driver.revokeFails
+    },
+    /** Every send, in order: the account it went from and the email, its
+     *  attachment's bytes as a Buffer. */
+    sent: [],
+    /** Set to an error to make send throw it, as a refusal from Gmail does. */
+    sendFails: opts.sendFails ?? null,
+    /** Called with each send before it settles; what it returns (a promise
+     *  too) is awaited, so a test can look at the database mid-Send or hold
+     *  the Send open. */
+    onSend: opts.onSend ?? null,
+    async send(signedIn, email) {
+      driver.sent.push({ account: { ...signedIn }, email: { ...email, from: { ...email.from }, attachment: { ...email.attachment } } })
+      if (driver.onSend !== null) await driver.onSend(signedIn, email)
+      if (driver.sendFails !== null) throw driver.sendFails
+      return { messageId: `MESSAGE_ID_PLACEHOLDER_${driver.sent.length}`, threadId: `THREAD_ID_PLACEHOLDER_${driver.sent.length}` }
     },
     async connect(client) {
       if (typeof client === 'string') driver.clientFiles.push(client)

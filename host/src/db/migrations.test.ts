@@ -180,6 +180,47 @@ describe('openDb migrations', () => {
     db.close()
   })
 
+  it('opens a database from before send attempts with its rows kept, and no send attempt in it', () => {
+    const path = tempDbPath()
+    // The shape the Native host left before ticket #82: every migration up to
+    // the Mail account, with rows in it.
+    const before = openDb(path, MIGRATIONS.slice(0, 4))
+    setProfile(before, { email: 'ada@example.com' })
+    saveMailAccount(before, { kind: 'gmail', address: 'ada@example.com', clientId: 'CLIENT_ID_PLACEHOLDER.apps.googleusercontent.com', connectedAt: '2026-11-19T12:00:00.000Z' })
+    const tables = ['profile', 'mail_account']
+    const rowsBefore = tables.map((t) => before.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all())
+    before.close()
+
+    const db = openDb(path)
+    expect(version(db)).toBe(MIGRATIONS.length)
+    expect(tables.map((t) => db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all())).toEqual(rowsBefore)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM send_attempts').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('makes the send attempt insert a lock: unique on the request id, one started attempt per Job posting and Apply address', () => {
+    const db = openDb(':memory:')
+    const insert = (requestId: string, patch: { url?: string; to?: string; state?: string } = {}): unknown => db.prepare(
+      `INSERT INTO send_attempts (request_id, canonical_url, apply_address, state, started_at, updated_at)
+       VALUES (?, ?, ?, ?, '2026-11-19T12:00:00.000Z', '2026-11-19T12:00:00.000Z')`,
+    ).run(requestId, patch.url ?? 'careers.example.com/jobs/1', patch.to ?? 'jobs@example.org', patch.state ?? 'started')
+
+    expect(() => insert('r1')).not.toThrow()
+    // The same request id, whatever else it carries.
+    expect(() => insert('r1', { url: 'careers.example.com/jobs/2', state: 'failed' })).toThrow(/UNIQUE|PRIMARY/)
+    // A second started attempt for the same Job posting and Apply address.
+    expect(() => insert('r2')).toThrow(/UNIQUE/)
+    // Another Apply address, or another Job posting, is a Send of its own.
+    expect(() => insert('r3', { to: 'hr@example.org' })).not.toThrow()
+    expect(() => insert('r4', { url: 'careers.example.com/jobs/2' })).not.toThrow()
+    // Once the first is no longer started, a new one may start.
+    db.prepare(`UPDATE send_attempts SET state = 'failed' WHERE request_id = 'r1'`).run()
+    expect(() => insert('r5')).not.toThrow()
+    expect(() => insert('r6', { state: 'failed' })).not.toThrow()
+    expect(() => insert('r7', { state: 'lost' })).toThrow(/CHECK/)
+    db.close()
+  })
+
   it('refuses a channel other than form or email', () => {
     const db = openDb(':memory:')
     expect(() => db.prepare(`INSERT INTO applied_jobs (url, canonical_url, marked_at, channel)
