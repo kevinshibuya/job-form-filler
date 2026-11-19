@@ -366,6 +366,12 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'mail.send':
         if (deps.mail === undefined) return noMail(req.requestId)
         return ok(req.requestId, await deps.mail.send(db, req.requestId, req.params))
+
+      // "It arrived" (ticket #83): the user's answer to an outcome the tool
+      // could not know. It calls nothing.
+      case 'mail.send.arrived':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, deps.mail.arrived(db, req.params))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req

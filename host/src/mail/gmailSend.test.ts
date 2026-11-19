@@ -256,10 +256,35 @@ describe('the Gmail driver sends', () => {
   it('reports Google out of reach as a failure that names no Resume byte', async () => {
     const http = async (req: HttpRequest): Promise<HttpResponse> => {
       if (req.url === REFRESH.request.url) return REFRESH.response
-      throw new Error('getaddrinfo ENOTFOUND gmail.googleapis.com')
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND gmail.googleapis.com'), { code: 'ENOTFOUND' }) })
     }
     const err = await failure(createGmailDriver({ http }).send(ACCOUNT, EMAIL))
     expect(err.kind).toBe('process')
     expect(err.message).not.toContain(RESUME.toString('base64').slice(0, 40))
+  })
+
+  it('reports a connection lost during the send as timeout: whether it left is unknown (ticket #83)', async () => {
+    for (const lost of [
+      new TypeError('fetch failed', { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) }),
+      Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }),
+    ]) {
+      const http = async (req: HttpRequest): Promise<HttpResponse> => {
+        if (req.url === REFRESH.request.url) return REFRESH.response
+        throw lost
+      }
+      const err = await failure(createGmailDriver({ http }).send(ACCOUNT, EMAIL))
+      expect(err.kind).toBe('timeout')
+      expect(err.message).toMatch(/unknown/)
+      expect(err.message).not.toContain(RESUME.toString('base64').slice(0, 40))
+    }
+  })
+
+  it('reports a 200 with no message id as timeout, not as a failure', async () => {
+    const http = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url === REFRESH.request.url) return REFRESH.response
+      return { status: 200, headers: {}, body: '{}' }
+    }
+    const err = await failure(createGmailDriver({ http }).send(ACCOUNT, EMAIL))
+    expect(err.kind).toBe('timeout')
   })
 })

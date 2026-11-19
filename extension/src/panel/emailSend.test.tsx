@@ -160,6 +160,8 @@ describe('one click', () => {
       aiDrafted: true,
       edited: true,
       model: draftReply({ jobText: JOB_TEXT, company: null, title: null, pageSubject: null }).model,
+      resend: false,
+      abandonAttempt: null,
     })
   }, 20_000)
 

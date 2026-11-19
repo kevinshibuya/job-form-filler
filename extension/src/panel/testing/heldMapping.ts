@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
+  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendArrivedParams, type MailSendArrivedResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -137,15 +137,22 @@ export interface HeldMappingHost {
   mailSends: MailSendParams[]
   /** What `mail.send` answers. Defaults to a Send that went out. */
   mailSend: (p: MailSendParams) => MailSendAnswer | Promise<MailSendAnswer>
+  /** The request id of every `mail.send`, in order (ticket #83). */
+  mailSendIds: string[]
+  /** Every `mail.send.arrived` request, in order, as its params (ticket #83). */
+  mailArrivals: MailSendArrivedParams[]
+  /** What `mail.send.arrived` answers. Defaults to the Applied job it marked. */
+  mailArrived: (p: MailSendArrivedParams) => MailSendArrivedAnswer | Promise<MailSendArrivedAnswer>
 }
 
 export type MailStatusAnswer = MailStatus | { error: { kind: HostErrorKind; message: string } }
 export type MailSendersAnswer = MailSendersResult | { error: { kind: HostErrorKind; message: string } }
 export type MailSendAnswer = MailSendResult | { error: { kind: HostErrorKind; message: string } }
+export type MailSendArrivedAnswer = MailSendArrivedResult | { error: { kind: HostErrorKind; message: string } }
 
 /** What the fake host answers a Send that went out with. */
 export const SENT: MailSendResult = {
-  appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z', gmailMessageId: 'MESSAGE_ID_PLACEHOLDER', gmailThreadId: 'THREAD_ID_PLACEHOLDER',
+  outcome: 'sent', appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z', gmailMessageId: 'MESSAGE_ID_PLACEHOLDER', gmailThreadId: 'THREAD_ID_PLACEHOLDER',
 }
 
 export interface AppliedCheckParams { url: string; applyAddresses?: string[] }
@@ -167,7 +174,8 @@ export function installHeldMappingHost(): HeldMappingHost {
       appliedChecks: [], appliedCheck: () => ({ applied: null, appliedByAddress: null }),
       mailStatus: () => ({ state: 'none' }),
       mailSenders: () => ({ address: 'ada@example.com', senders: [{ address: 'ada@example.com', displayName: 'Ada Lovelace' }], lastUsed: null }),
-      mailSends: [], mailSend: () => SENT,
+      mailSends: [], mailSend: () => SENT, mailSendIds: [],
+      mailArrivals: [], mailArrived: () => ({ appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z' }),
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -234,7 +242,14 @@ export function installHeldMappingHost(): HeldMappingHost {
       if (method === 'mail.send') {
         const pp = params as MailSendParams
         host.mailSends.push(pp)
+        host.mailSendIds.push(requestId)
         const answer = await host.mailSend(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'mail.send.arrived') {
+        const pp = params as MailSendArrivedParams
+        host.mailArrivals.push(pp)
+        const answer = await host.mailArrived(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
       if (method === 'wording.learn') {

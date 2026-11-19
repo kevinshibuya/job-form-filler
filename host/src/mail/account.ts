@@ -31,8 +31,11 @@ export interface MailAccountDriver {
    * Sends one Application email from the account and answers the provider's
    * message id and thread id. Throws a MailError: `not_authed` when the
    * provider refuses the refresh token as invalid, `bad_request` for an
-   * email it will not build, and another kind for a refusal or a failure to
-   * reach the provider. Only the handler of `mail.send` calls it.
+   * email it will not build, `timeout` when the call to the provider began
+   * and no usable answer came back, so whether the email left is unknown
+   * (ticket #83), and another kind for a refusal or a failure to reach the
+   * provider before anything was sent. Only the handler of `mail.send`
+   * calls it.
    */
   send(account: SignedInAccount, email: OutgoingEmail): Promise<SentEmail>
 }

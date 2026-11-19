@@ -516,37 +516,113 @@ export function startSendAttempt(
   }
 }
 
+/** Moves a started attempt to `state`. One no longer started is left as it
+ *  is: a user's "Send again" or "It arrived" settled it first. */
 export function setSendAttemptState(db: Database.Database, requestId: string, state: SendAttemptState): void {
-  db.prepare('UPDATE send_attempts SET state = ?, updated_at = ? WHERE request_id = ?').run(state, new Date().toISOString(), requestId)
+  db.prepare(`UPDATE send_attempts SET state = ?, updated_at = ? WHERE request_id = ? AND state = 'started'`)
+    .run(state, new Date().toISOString(), requestId)
 }
+
+/** "Send again" (ticket #83): the started attempt the user gave up on
+ *  becomes `abandoned`. One no longer started is left as it is. */
+export function abandonSendAttempt(db: Database.Database, requestId: string): void {
+  setSendAttemptState(db, requestId, 'abandoned')
+}
+
+type RawAttempt = { request_id: string; canonical_url: string; apply_address: string; state: SendAttemptState }
+const toAttempt = (r: RawAttempt): SendAttempt =>
+  ({ requestId: r.request_id, canonicalUrl: r.canonical_url, applyAddress: r.apply_address, state: r.state })
 
 export function getSendAttempt(db: Database.Database, requestId: string): SendAttempt | null {
   const r = db.prepare('SELECT request_id, canonical_url, apply_address, state FROM send_attempts WHERE request_id = ?').get(requestId) as
-    { request_id: string; canonical_url: string; apply_address: string; state: SendAttemptState } | undefined
-  return r === undefined ? null : { requestId: r.request_id, canonicalUrl: r.canonical_url, applyAddress: r.apply_address, state: r.state }
+    RawAttempt | undefined
+  return r === undefined ? null : toAttempt(r)
+}
+
+/** The latest attempt in `state` for a Job posting and Apply address, or null. */
+export function findSendAttempt(db: Database.Database, url: string, applyAddress: string, state: SendAttemptState): SendAttempt | null {
+  const r = db.prepare(
+    `SELECT request_id, canonical_url, apply_address, state FROM send_attempts
+     WHERE canonical_url = ? AND apply_address = ? AND state = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
+  ).get(canonicalUrl(url), attemptAddress(applyAddress), state) as RawAttempt | undefined
+  return r === undefined ? null : toAttempt(r)
+}
+
+/** What a sent attempt answered, as `recordSentEmail` kept it. */
+export interface SentAnswer {
+  appliedJobId: number
+  markedAt: string
+  gmailMessageId: string
+  gmailThreadId: string
+}
+
+/** The answer a sent attempt gave, or null when it is not sent or holds
+ *  none (one the user settled with "It arrived"). */
+export function getSentAnswer(db: Database.Database, requestId: string): SentAnswer | null {
+  const r = db.prepare(`SELECT answer FROM send_attempts WHERE request_id = ? AND state = 'sent'`).get(requestId) as
+    { answer: string | null } | undefined
+  return r?.answer == null ? null : JSON.parse(r.answer) as SentAnswer
 }
 
 /**
  * A Send that went out, recorded in one transaction (spec #66): the Job
  * posting marked applied by email, its Application email kept with Gmail's
- * ids, the attempt `sent` and the Sender address recorded as the last used.
- * A failure anywhere leaves none of them.
+ * ids, the attempt `sent` with its answer kept, and the Sender address
+ * recorded as the last used. A failure anywhere leaves none of them.
  */
 export function recordSentEmail(
   db: Database.Database,
   r: {
     requestId: string; url: string; company: string | null; jobTitle: string | null
-    email: NewApplicationEmail & { senderAddress: string }
+    email: NewApplicationEmail & { senderAddress: string; gmailMessageId: string; gmailThreadId: string }
   },
-): AppliedJob {
-  const tx = db.transaction((): AppliedJob => {
+): SentAnswer {
+  const tx = db.transaction((): SentAnswer => {
     const job = markApplied(db, { url: r.url, company: r.company, jobTitle: r.jobTitle, channel: 'email', email: r.email })
+    const answer: SentAnswer = {
+      appliedJobId: job.id, markedAt: job.markedAt, gmailMessageId: r.email.gmailMessageId, gmailThreadId: r.email.gmailThreadId,
+    }
     const moved = db.prepare(
-      `UPDATE send_attempts SET state = 'sent', updated_at = ? WHERE request_id = ? AND state = 'started'`,
-    ).run(new Date().toISOString(), r.requestId)
+      `UPDATE send_attempts SET state = 'sent', answer = ?, updated_at = ? WHERE request_id = ? AND state = 'started'`,
+    ).run(JSON.stringify(answer), new Date().toISOString(), r.requestId)
     if (moved.changes !== 1) throw new Error(`send attempt ${r.requestId} is no longer started`)
     setLastSenderAddress(db, r.email.senderAddress)
-    return job
+    return answer
+  })
+  return tx()
+}
+
+/**
+ * "It arrived" (ticket #83), in one transaction: the Job posting marked
+ * applied by email, the Application email kept with no Gmail ids, and the
+ * attempt `sent`. An attempt already sent records nothing again and answers
+ * its Applied job; one failed or abandoned is refused. An attempt the Native
+ * host never recorded (the request died before it arrived) is recorded as
+ * sent here.
+ */
+export function recordArrivedEmail(
+  db: Database.Database,
+  r: { requestId: string; url: string; company: string | null; jobTitle: string | null; email: NewApplicationEmail },
+): { ok: true; job: AppliedJob } | { ok: false; state: SendAttemptState } {
+  const tx = db.transaction((): { ok: true; job: AppliedJob } | { ok: false; state: SendAttemptState } => {
+    const attempt = getSendAttempt(db, r.requestId)
+    if (attempt?.state === 'sent') {
+      const job = checkApplied(db, r.url)
+      if (job !== null) return { ok: true, job }
+    }
+    if (attempt !== null && attempt.state !== 'started' && attempt.state !== 'sent') return { ok: false, state: attempt.state }
+    const job = markApplied(db, { url: r.url, company: r.company, jobTitle: r.jobTitle, channel: 'email', email: r.email })
+    const now = new Date().toISOString()
+    if (attempt === null) {
+      db.prepare(
+        `INSERT INTO send_attempts (request_id, canonical_url, apply_address, state, started_at, updated_at)
+         VALUES (?, ?, ?, 'sent', ?, ?)`,
+      ).run(r.requestId, canonicalUrl(r.url), attemptAddress(r.email.applyAddress), now, now)
+    } else {
+      db.prepare(`UPDATE send_attempts SET state = 'sent', updated_at = ? WHERE request_id = ?`).run(now, r.requestId)
+    }
+    if (r.email.senderAddress !== null) setLastSenderAddress(db, r.email.senderAddress)
+    return { ok: true, job }
   })
   return tx()
 }

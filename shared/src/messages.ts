@@ -372,18 +372,69 @@ export const MailSendParamsSchema = z.object({
   aiDrafted: z.boolean(),
   edited: z.boolean(),
   model: z.string().nullable(),
+  /** The user chose to send again (ticket #83): set only after "Send again"
+   *  or when the Session's `revisitPassed` is set. Without it a Send to a Job
+   *  posting and Apply address that already went out is refused. */
+  resend: z.boolean(),
+  /** "Send again" on an outcome the tool could not know: the request id of
+   *  the started attempt the user gave up on. It is abandoned before this
+   *  Send looks for one. */
+  abandonAttempt: z.string().min(1).nullable(),
 }).strict()
 export type MailSendParams = z.infer<typeof MailSendParamsSchema>
 
-/** The reply to a `mail.send` that went out: the Applied job it marked and
- *  Gmail's message id and thread id. */
-export const MailSendResultSchema = z.object({
+/** A `mail.send` that went out: the Applied job it marked and Gmail's
+ *  message id and thread id. */
+export const MailSendSentSchema = z.object({
+  outcome: z.literal('sent'),
   appliedJobId: z.number().int(),
   markedAt: z.string(),
   gmailMessageId: z.string(),
   gmailThreadId: z.string(),
 })
+export type MailSendSent = z.infer<typeof MailSendSentSchema>
+
+/** A `mail.send` whose outcome the tool cannot know (ticket #83): the call
+ *  to Gmail began and no answer came back, or another attempt for the same
+ *  Job posting and Apply address is still started. Nothing was marked, and
+ *  the user decides: "It arrived" or "Send again". `attemptRequestId` names
+ *  the started attempt either action settles. */
+export const MailSendUnknownSchema = z.object({
+  outcome: z.literal('unknown'),
+  attemptRequestId: z.string(),
+})
+export type MailSendUnknown = z.infer<typeof MailSendUnknownSchema>
+
+/** The reply to `mail.send`: it went out, or its outcome is unknown. A
+ *  definite failure is an error response. */
+export const MailSendResultSchema = z.discriminatedUnion('outcome', [MailSendSentSchema, MailSendUnknownSchema])
 export type MailSendResult = z.infer<typeof MailSendResultSchema>
+
+/**
+ * `mail.send.arrived` (ticket #83): "It arrived" on an outcome the tool could
+ * not know. The Job posting is marked applied by email and the Application
+ * email is kept as the Review showed it, with no Gmail ids; the attempt named
+ * by `attemptRequestId` stops being started.
+ */
+export const MailSendArrivedParamsSchema = z.object({
+  attemptRequestId: z.string().min(1),
+  url: z.string().min(1),
+  company: z.string().nullable(),
+  jobTitle: z.string().nullable(),
+  applyAddress: notBlank('a To address'),
+  senderAddress: notBlank('a Sender address'),
+  subject: notBlank('a subject'),
+  body: notBlank('a body'),
+  language: EmailLanguageSchema,
+  attachmentNames: z.array(z.string().trim().min(1)),
+  aiDrafted: z.boolean(),
+  edited: z.boolean(),
+  model: z.string().nullable(),
+}).strict()
+export type MailSendArrivedParams = z.infer<typeof MailSendArrivedParamsSchema>
+
+export const MailSendArrivedResultSchema = z.object({ appliedJobId: z.number().int(), markedAt: z.string() })
+export type MailSendArrivedResult = z.infer<typeof MailSendArrivedResultSchema>
 
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
@@ -489,6 +540,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   // Send (spec #66): one click, one request. It is never replayed from the
   // request log either: the send attempt it records is its guard.
   z.object({ requestId: z.string().min(1), method: z.literal('mail.send'), params: MailSendParamsSchema }),
+  // "It arrived" (ticket #83): the user's answer to an outcome the tool
+  // could not know. Never replayed either.
+  z.object({ requestId: z.string().min(1), method: z.literal('mail.send.arrived'), params: MailSendArrivedParamsSchema }),
 ])
 export type HostRequest = z.infer<typeof HostRequestSchema>
 export type HostMethod = HostRequest['method']

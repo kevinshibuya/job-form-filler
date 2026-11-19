@@ -87,6 +87,19 @@ export interface GmailDriverDeps {
   now?: () => number
 }
 
+/** Network failures that happen before a connection exists: nothing left the host. */
+const NEVER_CONNECTED = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED'])
+
+/** Whether a failed call never reached Google: its code, or its cause's
+ *  code as Node's fetch wraps it, names a failure before any connection. */
+function neverConnected(e: unknown): boolean {
+  for (let at: unknown = e, depth = 0; at !== null && typeof at === 'object' && depth < 3; at = (at as { cause?: unknown }).cause, depth++) {
+    const code = (at as { code?: unknown }).code
+    if (typeof code === 'string' && NEVER_CONNECTED.has(code)) return true
+  }
+  return false
+}
+
 /** The Gmail Mail account driver. */
 export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
   const http = googleOnly(deps.http)
@@ -231,11 +244,21 @@ export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
     async send(account: SignedInAccount, email: OutgoingEmail): Promise<SentEmail> {
       const raw = Buffer.from(buildMessage(email), 'utf8').toString('base64url')
       const token = await accessToken(account)
-      const res = await call({
-        method: 'POST', url: SEND_URL,
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ raw }),
-      }, 'send the Application email')
+      let res: { status: number; body: string }
+      try {
+        res = await http({
+          method: 'POST', url: SEND_URL,
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ raw }),
+        })
+      } catch (e) {
+        if (e instanceof MailError) throw e
+        const why = e instanceof Error ? e.message : String(e)
+        // A connection never made sent nothing. Any other loss came after
+        // the message may have left: its outcome is unknown (ticket #83).
+        if (neverConnected(e)) throw new MailError('process', `Could not reach Google to send the Application email: ${why}. Nothing was sent.`)
+        throw new MailError('timeout', `The connection to Gmail was lost while it took the Application email (${why}). Whether it was sent is unknown.`)
+      }
       const json = jsonOf(res.body)
       if (res.status !== 200) {
         if (res.status === 401) tokens.delete(account.refreshToken)
@@ -244,7 +267,8 @@ export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
         throw new MailError('process', `Gmail refused the Application email (${res.status}${why}). Nothing was sent.`)
       }
       if (typeof json.id !== 'string' || json.id === '' || typeof json.threadId !== 'string' || json.threadId === '') {
-        throw new MailError('invalid_output', 'Gmail answered the send without a message id and a thread id.')
+        // Gmail took it: an answer with no ids leaves the outcome unknown, not failed.
+        throw new MailError('timeout', 'Gmail answered the send without a message id and a thread id. Whether it was sent is unknown.')
       }
       return { messageId: json.id, threadId: json.threadId }
     },

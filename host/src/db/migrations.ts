@@ -106,6 +106,14 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX send_attempts_one_started ON send_attempts (canonical_url, apply_address) WHERE state = 'started';
     `),
   },
+  {
+    version: 6,
+    name: 'the answer a sent attempt gave',
+    // A Send whose response was lost is asked again with the same request
+    // id, and answers what it answered the first time without calling Gmail
+    // (ticket #83). The answer is kept beside its attempt, as JSON.
+    up: (db) => db.exec('ALTER TABLE send_attempts ADD COLUMN answer TEXT'),
+  },
 ]
 
 /** The file carries a schema version this Native host does not know: a newer

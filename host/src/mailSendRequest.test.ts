@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AppliedTexts, HostResponse, MailSendParams, MailSendResult, MailSendersResult } from '@jff/shared'
+import type { AppliedTexts, HostResponse, MailSendParams, MailSendResult, MailSendSent, MailSendersResult } from '@jff/shared'
 import { getMailAccount, getSendAttempt, listApplied, openDb, saveMailAccount, setProfile } from './db/repos.js'
 import { handleRaw, type HandlerDeps } from './handlers.js'
 import { resolveModels } from './llm/models.js'
@@ -48,6 +48,8 @@ const PARAMS: MailSendParams = {
   aiDrafted: true,
   edited: true,
   model: 'claude-opus-5-5',
+  resend: false,
+  abandonAttempt: null,
 }
 
 let db: Database.Database
@@ -144,8 +146,8 @@ describe('a Send that goes out', () => {
 
   it('leaves one Applied job by email, one Application email with both addresses and Gmail\'s two ids, and a sent attempt', async () => {
     const requestId = crypto.randomUUID()
-    const out = result<MailSendResult>(await send({}, requestId))
-    expect(out).toMatchObject({ gmailMessageId: 'MESSAGE_ID_PLACEHOLDER_1', gmailThreadId: 'THREAD_ID_PLACEHOLDER_1' })
+    const out = result<MailSendSent>(await send({}, requestId))
+    expect(out).toMatchObject({ outcome: 'sent', gmailMessageId: 'MESSAGE_ID_PLACEHOLDER_1', gmailThreadId: 'THREAD_ID_PLACEHOLDER_1' })
 
     const jobs = listApplied(db)
     expect(jobs).toHaveLength(1)
@@ -290,7 +292,8 @@ describe('one Send at a time per Job posting and Apply address', () => {
 
     // The same posting under another address of it, and the Apply address in another case.
     const second = await send({ url: 'https://careers.example.com/jobs/1', applyAddress: 'Jobs@Example.org' })
-    expect(second.ok).toBe(false)
+    // Ticket #83: the first attempt is still started, so the second's outcome is unknown.
+    expect(result<MailSendResult>(second).outcome).toBe('unknown')
     expect(driver.sent).toHaveLength(1)
 
     release()
@@ -314,7 +317,7 @@ describe('one Send at a time per Job posting and Apply address', () => {
     const first = send({}, crypto.randomUUID(), depsA)
     await vi.waitFor(() => { expect(driver.sent).toHaveLength(1) })
     const second = await send({}, crypto.randomUUID(), depsB)
-    expect(second.ok).toBe(false)
+    expect(result<MailSendResult>(second).outcome).toBe('unknown')
     expect(driver.sent).toHaveLength(1)
     release()
     result(await first)

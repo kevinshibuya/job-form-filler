@@ -4,6 +4,7 @@ import { DraftWarning } from './FieldRow'
 import { redraftNeedsConfirm, type EmailDraftUi, type RedraftAsk, type SessionEmailDraft } from './emailDraft'
 import { mailHandoverOf, mailtoAddress, type SessionMailHandover } from './mailApp'
 import { senderLabel, senderOf } from './senderAddress'
+import { BANNER_BASE } from './Banner'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
 
 /**
@@ -71,6 +72,22 @@ export interface EmailReviewProps {
   sending: boolean
   /** Why the last Send failed, or null. */
   sendError: string | null
+  /** Set when the last Send's outcome is unknown (ticket #83): the question
+   *  and its two actions show, and Send waits for the answer. */
+  sendUnknown: SendUnknownPrompt | null
+}
+
+/** "Outcome unknown" (ticket #83): the user settles it, the tool never does. */
+export interface SendUnknownPrompt {
+  /** "It arrived": the Job posting is marked applied by email. */
+  onArrived: () => void
+  /** "Send again", from the Sender address the row shows, or null when the
+   *  row shows none. */
+  onSendAgain: (senderAddress: string | null) => void
+  /** One of the two actions is in flight. */
+  busy: boolean
+  /** Why "It arrived" was not recorded, or null. */
+  error: string | null
 }
 
 function NoDraft({ ui, needsJobText, onDraft }: Pick<EmailReviewProps, 'ui' | 'needsJobText' | 'onDraft'>) {
@@ -185,8 +202,35 @@ export interface SendAction {
   onSend: () => void
 }
 
-function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect, send }: {
+/**
+ * The question after a Send whose outcome is unknown (ticket #83). It starts
+ * from the Submission detection prompt: one question, two actions. The tool
+ * asks for no scope that reads mail, so only the user can look.
+ */
+function SendUnknown({ prompt, from }: { prompt: SendUnknownPrompt; from: string | null }) {
+  return (
+    <div className={BANNER_BASE} role="status" data-jff-send-unknown="1">
+      The tool cannot tell whether the Application email went out. Check your Sent folder: the tool has no access to read your
+      mail, so it cannot look for you.
+      <span className="ml-2 inline-flex gap-2">
+        <button type="button" className={BTN} disabled={prompt.busy} data-jff-send-arrived="1" onClick={prompt.onArrived}>It arrived</button>
+        <button type="button" className={BTN} disabled={prompt.busy} data-jff-send-again="1" onClick={() => prompt.onSendAgain(from)}>
+          Send again
+        </button>
+      </span>
+      {prompt.error !== null && (
+        <p className="mt-1 whitespace-pre-line text-[12px] text-red-600 dark:text-red-400" role="alert" data-jff-send-arrived-error="1">
+          {prompt.error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect, send, unknown }: {
   email: SessionMailHandover | null; resumeName: string | null; handedOver: boolean; onOpen: (email: SessionMailHandover) => void
+  /** Set when the last Send's outcome is unknown. */
+  unknown: { prompt: SendUnknownPrompt; from: string | null } | null
   /** Set when the account is connected and its Sender addresses are read. */
   send: SendAction | null
   /** Set when there is no Mail account: Connect shows beside the action. */
@@ -212,6 +256,7 @@ function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect, 
           )}
         </div>
       )}
+      {unknown !== null && <SendUnknown prompt={unknown.prompt} from={unknown.from} />}
       <div className="flex flex-wrap items-center gap-2">
         {email === null
           ? <button type="button" className={send === null ? BTN_PRIMARY : BTN} disabled data-jff-email-mailapp="1">Open in my mail app</button>
@@ -324,7 +369,7 @@ function SenderRow({ list, choice, onSender }: { list: MailSendersResult; choice
 
 export function EmailReview({
   draft, ui, needsJobText, resumeName, to, handedOver, onOpenMailApp, onSubject, onBody, onDraft, onRedraft, readMailStatus, onConnect,
-  readSenders, senderAddress, onSender, onReconnect, toPending, onSend, sending, sendError,
+  readSenders, senderAddress, onSender, onReconnect, toPending, onSend, sending, sendError, sendUnknown,
 }: EmailReviewProps) {
   const { mail, senders } = useMailAccount(readMailStatus, readSenders)
   if (draft === null) return <NoDraft ui={ui} needsJobText={needsJobText} onDraft={onDraft} />
@@ -336,7 +381,9 @@ export function EmailReview({
   const toAddress = (to ?? '').trim()
   const send: SendAction | null = from === null ? null : {
     from, to: toAddress, sending, error: sendError,
-    disabled: busy || sending || toPending || toAddress === '' || draft.subject.trim() === '' || draft.body.trim() === '' || resumeName === null,
+    // An unknown outcome is settled by "It arrived" or "Send again", never by Send.
+    disabled: busy || sending || toPending || toAddress === '' || draft.subject.trim() === '' || draft.body.trim() === '' || resumeName === null
+      || sendUnknown !== null,
     onSend: () => onSend(from),
   }
   return (
@@ -391,6 +438,7 @@ export function EmailReview({
         onConnect={mail?.state === 'none' ? onConnect : null}
         reconnect={mail?.state === 'needs_reconnect' ? { address: mail.address, onReconnect } : null}
         send={send}
+        unknown={sendUnknown === null ? null : { prompt: sendUnknown, from }}
       />
     </div>
   )

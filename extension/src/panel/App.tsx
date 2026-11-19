@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendArrivedResultSchema, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendArrivedParams, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -371,6 +371,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  /** The last Send's outcome is unknown (ticket #83): the attempt the
+   *  user's answer settles, the Sender address it went from, and the tab
+   *  whose Session it belongs to. Cleared by "It arrived" or another Send. */
+  const [sendUnknown, setSendUnknown] = useState<{ tabId: number; attemptRequestId: string; senderAddress: string } | null>(null)
+  const [arriving, setArriving] = useState(false)
+  const [arrivedError, setArrivedError] = useState<string | null>(null)
   const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' | 'save_fact' } | null>(null)
   const [submitPrompt, setSubmitPrompt] = useState(false)
 
@@ -2136,8 +2142,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    * marks; the Native host checks the Sender address, sends, and marks the
    * Job posting applied by email. A Send that went out ends the Session as
    * Mark applied does; one that failed leaves the Draft for another click.
+   *
+   * One whose outcome is unknown (ticket #83) leaves the Draft too, and asks:
+   * the Native host answered so, or the request died on the way. The panel
+   * says the user chose to send again only after "Send again", which also
+   * names the attempt to abandon, or when the Session's `revisitPassed` is set.
    */
-  const onSendEmail = async (senderAddress: string): Promise<void> => {
+  const onSendEmail = async (senderAddress: string, abandonAttempt: string | null = null): Promise<void> => {
     const port = portRef.current
     const s = sessionRef.current
     if (port === null || s === null || s.startUrl === '' || s.parked || sendingRef.current || marking) return
@@ -2148,6 +2159,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     sendingRef.current = true
     setSending(true)
     setSendError(null)
+    setArrivedError(null)
     try {
       const resume = await loadResume()
       if (resume === null) { setSendError('No Resume is stored to attach. Add one above, then click Send.'); return }
@@ -2168,15 +2180,81 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         aiDrafted: email.aiDrafted,
         edited: email.edited,
         model: email.model,
+        resend: abandonAttempt !== null || s.revisitPassed,
+        abandonAttempt,
       }
-      const r = await port.request('mail.send', params)
-      if (!r.ok) { setSendError(r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message); return }
+      const requestId = crypto.randomUUID()
+      setSendUnknown(null)
+      const r = await port.request('mail.send', params, requestId)
+      if (!r.ok) {
+        // The request died on the way, or its deadline passed: the Native host
+        // may have sent it. Unknown is not failed.
+        if (r.error.kind === 'unreachable' || r.error.kind === 'timeout') {
+          setSendUnknown({ tabId: target, attemptRequestId: requestId, senderAddress })
+          return
+        }
+        setSendError(r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message)
+        return
+      }
       const sent = MailSendResultSchema.safeParse(r.result)
+      if (sent.success && sent.data.outcome === 'unknown') {
+        setSendUnknown({ tabId: target, attemptRequestId: sent.data.attemptRequestId, senderAddress })
+        return
+      }
       await endSession(target)
-      setMarkedMsg({ markedAt: sent.success ? sent.data.markedAt : new Date().toISOString() })
+      setMarkedMsg({ markedAt: sent.success && sent.data.outcome === 'sent' ? sent.data.markedAt : new Date().toISOString() })
     } finally {
       sendingRef.current = false
       setSending(false)
+    }
+  }
+
+  /**
+   * "It arrived" (ticket #83): the user found the email in their Sent folder.
+   * The Native host marks the Job posting applied by email and keeps the
+   * Application email as the Review shows it, with no Gmail ids, and the
+   * Session ends as it does after a Send that went out.
+   */
+  const onEmailArrived = async (): Promise<void> => {
+    const port = portRef.current
+    const s = sessionRef.current
+    const u = sendUnknown
+    if (port === null || s === null || u === null || u.tabId !== s.tabId || s.startUrl === '' || sendingRef.current) return
+    const email = mailHandoverOf({ applyAddress: s.applyAddress, emailDraft: s.emailDraft })
+    if (email === null) return
+    const target = s.tabId
+    const gen = runtimeOf(target).gen
+    sendingRef.current = true
+    setArriving(true)
+    setArrivedError(null)
+    try {
+      const [tab, resume] = await Promise.all([getTab(target), loadResume()])
+      if (genOf(target) !== gen) return
+      const title = (tab?.title ?? '').trim()
+      const params: MailSendArrivedParams = {
+        attemptRequestId: u.attemptRequestId,
+        url: s.startUrl,
+        company: s.company.trim() === '' ? null : s.company.trim(),
+        jobTitle: title === '' ? null : title,
+        applyAddress: email.applyAddress,
+        senderAddress: u.senderAddress,
+        subject: email.subject,
+        body: email.body,
+        language: email.language,
+        attachmentNames: resume === null ? [] : [resume.name],
+        aiDrafted: email.aiDrafted,
+        edited: email.edited,
+        model: email.model,
+      }
+      const r = await port.request('mail.send.arrived', params)
+      if (!r.ok) { setArrivedError(r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message); return }
+      const marked = MailSendArrivedResultSchema.safeParse(r.result)
+      setSendUnknown(null)
+      await endSession(target)
+      setMarkedMsg({ markedAt: marked.success ? marked.data.markedAt : new Date().toISOString() })
+    } finally {
+      sendingRef.current = false
+      setArriving(false)
     }
   }
 
@@ -2578,6 +2656,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       onSend={(sender) => { void onSendEmail(sender) }}
                       sending={sending}
                       sendError={sendError}
+                      sendUnknown={sendUnknown === null || sendUnknown.tabId !== session.tabId ? null : {
+                        onArrived: () => { void onEmailArrived() },
+                        onSendAgain: (sender) => { void onSendEmail(sender ?? sendUnknown.senderAddress, sendUnknown.attemptRequestId) },
+                        busy: sending || arriving,
+                        error: arrivedError,
+                      }}
                     />
                   )}
                 />
