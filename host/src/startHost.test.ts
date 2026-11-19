@@ -12,6 +12,8 @@ import { getProfile, openDb, setProfile } from './db/repos.js'
 import { encodeMessage, FrameReader } from './framing.js'
 import { resolveModels } from './llm/models.js'
 import { startHost, type HostDeps } from './startHost.js'
+import { createFakeMailDriver } from '../testing/fakeMailDriver.mjs'
+import { createFakeSecretStore } from '../testing/fakeSecretStore.mjs'
 
 // The host log is a file under the real home directory: no test writes to it.
 vi.mock('./log.js', () => ({ log: vi.fn() }))
@@ -71,6 +73,7 @@ function startInProcess(dbPath: string): {
     openDb: (path) => openDb(path),
     runner: { complete: vi.fn() } as unknown as HostDeps['runner'],
     codex: { complete: vi.fn() } as unknown as HostDeps['codex'],
+    mail: { driver: createFakeMailDriver(), secrets: createFakeSecretStore() },
     selfCheckIo: {
       fileExists: () => false,
       readAuthCache: () => null,

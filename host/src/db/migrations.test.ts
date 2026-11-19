@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import { DatabaseTooNew, MIGRATIONS, type Migration } from './migrations.js'
-import { getProfile, listApplicationEmails, listApplied, listKeptProseAnswers, markApplied, openDb, setProfile } from './repos.js'
+import { getMailAccount, getProfile, listApplicationEmails, listApplied, listKeptProseAnswers, markApplied, openDb, saveMailAccount, setProfile } from './repos.js'
 import { SCHEMA_SQL } from './schema.js'
 
 // The host log is a file under the real home directory: no test writes to it.
@@ -133,6 +133,50 @@ describe('openDb migrations', () => {
     expect(() => insert({ language: 'fr' })).toThrow(/CHECK/)
     expect(() => insert({ ai: 2 })).toThrow(/CHECK/)
     expect(() => insert({ job: 9999 })).toThrow(/FOREIGN KEY/)
+    db.close()
+  })
+
+  it('opens a database from before the Mail account with its rows kept, and no Mail account in it', () => {
+    const path = tempDbPath()
+    // The shape the Native host left before ticket #79: every migration up to
+    // the Application emails, with rows in it.
+    const before = openDb(path, MIGRATIONS.slice(0, 3))
+    setProfile(before, { email: 'ada@example.com', firstName: 'Ada' })
+    markApplied(before, {
+      url: 'https://jobs.example.com/4', company: 'Acme', jobTitle: 'Analyst', channel: 'email', proseAnswers: [],
+      email: {
+        applyAddress: 'jobs@example.org', senderAddress: null, subject: 'Application', body: 'Hello', attachmentNames: [],
+        language: 'en', gmailMessageId: null, gmailThreadId: null, route: 'mail_app', aiDrafted: true, edited: false, model: null,
+      },
+    })
+    const tables = ['profile', 'applied_jobs', 'application_emails']
+    const rowsBefore = tables.map((t) => before.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all())
+    before.close()
+
+    const db = openDb(path)
+    expect(version(db)).toBe(MIGRATIONS.length)
+    expect(tables.map((t) => db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all())).toEqual(rowsBefore)
+    expect(getMailAccount(db)).toBeNull()
+    db.close()
+  })
+
+  it('keeps one Mail account, of a kind and a state it knows', () => {
+    const db = openDb(':memory:')
+    saveMailAccount(db, { kind: 'gmail', address: 'ada@example.com', clientId: 'CLIENT_ID_PLACEHOLDER.apps.googleusercontent.com', connectedAt: '2026-11-19T12:00:00.000Z' })
+    saveMailAccount(db, { kind: 'gmail', address: 'ada@work.example.com', clientId: 'CLIENT_ID_PLACEHOLDER.apps.googleusercontent.com', connectedAt: '2026-11-20T12:00:00.000Z' })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM mail_account').get()).toEqual({ n: 1 })
+    expect(getMailAccount(db)).toEqual({
+      kind: 'gmail', address: 'ada@work.example.com', clientId: 'CLIENT_ID_PLACEHOLDER.apps.googleusercontent.com',
+      connectedAt: '2026-11-20T12:00:00.000Z', state: 'connected', lastSenderAddress: null,
+    })
+    const insert = (patch: Record<string, unknown>): unknown => db.prepare(
+      `INSERT OR REPLACE INTO mail_account (id, kind, address, client_id, connected_at, state)
+       VALUES (@id, @kind, 'ada@example.com', 'c', '2026-11-19T12:00:00.000Z', @state)`,
+    ).run({ id: 1, kind: 'gmail', state: 'connected', ...patch })
+    expect(() => insert({})).not.toThrow()
+    expect(() => insert({ id: 2 })).toThrow(/CHECK/)
+    expect(() => insert({ kind: 'outlook' })).toThrow(/CHECK/)
+    expect(() => insert({ state: 'asleep' })).toThrow(/CHECK/)
     db.close()
   })
 

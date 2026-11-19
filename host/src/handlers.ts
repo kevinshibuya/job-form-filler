@@ -28,6 +28,8 @@ import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
 import { log } from './log.js'
 import type { ResolvedModels } from './llm/models.js'
+import { asMailError } from './mail/account.js'
+import type { MailRequests } from './mail/requests.js'
 
 
 // A fact is one line. Normalise every incoming value, then refuse anything still
@@ -61,7 +63,13 @@ export interface HandlerDeps {
    *  every request but the Self-check answers this reason and touches nothing,
    *  and `db` is a read-only handle. */
   dbRefusal?: string
+  /** The Mail account requests. A host built without them refuses `mail.` requests. */
+  mail?: MailRequests
 }
+
+/** No request whose method starts with this is ever replayed from the request
+ *  log (spec #66): each one acts on the Mail account or reads its state now. */
+const NEVER_REPLAYED = 'mail.'
 
 const waterfallDeps = (deps: HandlerDeps): WaterfallDeps =>
   ({ db: deps.db, codex: deps.codex, mappingOpts: { model: deps.models.mapping, timeoutMs: 240_000 } })
@@ -73,6 +81,8 @@ const fail = (requestId: string, kind: HostErrorKind, message: string): HostResp
 export async function handleRequest(deps: HandlerDeps, req: HostRequest): Promise<HostResponse> {
   // Before the replay lookup: a refused database is not read either.
   if (deps.dbRefusal !== undefined && req.method !== 'selfCheck') return fail(req.requestId, 'db', deps.dbRefusal)
+
+  if (req.method.startsWith(NEVER_REPLAYED)) return compute(deps, req)
 
   // Idempotency: a repeated requestId replays the stored SUCCESS verbatim so a
   // dropped connection re-fetches rather than re-running a paid claude call.
@@ -105,6 +115,8 @@ export async function handleRaw(deps: HandlerDeps, raw: unknown): Promise<HostRe
 function logResolution(method: 'resolve.first' | 'resolve.mapping', params: ResolveParams): void {
   log('info', method, { ats: params.ats ?? 'generic', epoch: params.epoch, fields: params.fields.length })
 }
+
+const noMail = (requestId: string): HostResponse => fail(requestId, 'process', 'this Native host has no Mail account driver')
 
 function safe<T>(fn: () => T): { ok: true; value: T } | { ok: false; error: unknown } {
   try { return { ok: true, value: fn() } } catch (error) { return { ok: false, error } }
@@ -327,6 +339,19 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
 
       case 'facts.extract':
         return ok(req.requestId, await runFactsExtract(deps.codex, req.params.cvText, { model: deps.models.factsExtract, timeoutMs: 240_000 }))
+
+      // The Mail account (spec #66). Its secrets never reach a response.
+      case 'mail.status':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, deps.mail.status(db))
+
+      case 'mail.connect.start':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.connectStart(req.params.clientFile))
+
+      case 'mail.connect.finish':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.connectFinish(db))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req
@@ -335,6 +360,11 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
     if (e instanceof ClaudeError) return fail(req.requestId, e.kind, e.message)
     // Every CodexError kind exists in HOST_ERROR_KINDS, so the mapping is 1:1.
     if (e instanceof CodexError) return fail(req.requestId, e.kind, e.message)
+    const mail = asMailError(e)
+    if (mail !== null) {
+      log('warn', 'mail request failed', { method: req.method, kind: mail.kind, message: mail.message })
+      return fail(req.requestId, mail.kind, mail.message)
+    }
     const message = e instanceof Error ? e.message : String(e)
     log('error', 'handler failed', { method: req.method, message })
     return fail(req.requestId, 'db', message)

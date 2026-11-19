@@ -68,6 +68,23 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX application_emails_by_job ON application_emails (applied_job_id);
     `),
   },
+  {
+    version: 4,
+    name: 'the Mail account',
+    // One Mail account: its id is always 1. Its refresh token and client
+    // secret are in the Keychain, never here (spec #66).
+    up: (db) => db.exec(`
+      CREATE TABLE mail_account (
+        id                  INTEGER PRIMARY KEY CHECK (id = 1),
+        kind                TEXT NOT NULL CHECK (kind IN ('gmail')),
+        address             TEXT NOT NULL,
+        client_id           TEXT NOT NULL,
+        connected_at        TEXT NOT NULL,
+        state               TEXT NOT NULL CHECK (state IN ('connected', 'needs_reconnect')),
+        last_sender_address TEXT
+      );
+    `),
+  },
 ]
 
 /** The file carries a schema version this Native host does not know: a newer

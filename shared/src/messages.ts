@@ -277,6 +277,32 @@ export const AppliedTextsSchema = z.object({
 })
 export type AppliedTexts = z.infer<typeof AppliedTextsSchema>
 
+/* ------------------------------------------------------------ Mail account */
+
+/** The kinds of Mail account the Native host can reach. Gmail is the only one. */
+export const MAIL_KINDS = ['gmail'] as const
+export const MailKindSchema = z.enum(MAIL_KINDS)
+export type MailKind = z.infer<typeof MailKindSchema>
+
+/** The largest client file `mail.connect.start` takes. Google's is under 1 KB. */
+export const CLIENT_FILE_MAX = 64_000
+
+/**
+ * The reply to `mail.status` and to `mail.connect.finish`: no Mail account,
+ * one that is connected, or one whose sign-in died and needs reconnecting.
+ * `connectedAt` is when the account was connected, as an ISO date.
+ */
+export const MailStatusSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('none') }),
+  z.object({ state: z.literal('connected'), kind: MailKindSchema, address: z.string(), connectedAt: z.string() }),
+  z.object({ state: z.literal('needs_reconnect'), kind: MailKindSchema, address: z.string(), connectedAt: z.string() }),
+])
+export type MailStatus = z.infer<typeof MailStatusSchema>
+
+/** The reply to `mail.connect.start`: the address of Google's consent page. */
+export const MailConnectStartResultSchema = z.object({ consentUrl: z.string() })
+export type MailConnectStartResult = z.infer<typeof MailConnectStartResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -361,6 +387,15 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   // A Capture (spec #41): the cleaned page and what the Scan decided, written
   // to the user's machine and nowhere else.
   z.object({ requestId: z.string().min(1), method: z.literal('capture.save'), params: CaptureSaveParamsSchema }),
+  // The Mail account (spec #66). No `mail.` request is ever replayed from the
+  // request log. Connect is two requests: `start` takes the dropped client
+  // file and answers the consent address; `finish` waits for the sign-in.
+  z.object({ requestId: z.string().min(1), method: z.literal('mail.status'), params: z.object({}).passthrough() }),
+  z.object({
+    requestId: z.string().min(1), method: z.literal('mail.connect.start'),
+    params: z.object({ clientFile: z.string().min(1).max(CLIENT_FILE_MAX) }),
+  }),
+  z.object({ requestId: z.string().min(1), method: z.literal('mail.connect.finish'), params: z.object({}).passthrough() }),
 ])
 export type HostRequest = z.infer<typeof HostRequestSchema>
 export type HostMethod = HostRequest['method']
