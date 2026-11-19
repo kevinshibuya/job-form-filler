@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { MailStatus } from '@jff/shared'
+import type { HostErrorKind, MailDisconnectResult, MailStatus } from '@jff/shared'
 import { createHostPort, ERROR_COPY, type HostPort } from '../panel/port'
+import { BTN } from '../panel/ui'
 import { MailWizard } from './MailWizard'
 import { CARD, H_SECTION, MUTED } from './look'
 
@@ -8,20 +9,49 @@ import { CARD, H_SECTION, MUTED } from './look'
 const sinceDate = (iso: string): string =>
   new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 
-/** The connected Mail account: which address and since when (spec #66). */
-function MailAccount({ status }: { status: Exclude<MailStatus, { state: 'none' }> }) {
+/** The host's own message when it gives one, the generic copy otherwise. */
+const failure = (error: { kind: HostErrorKind; message: string }): string =>
+  error.message.trim() !== '' ? error.message : ERROR_COPY[error.kind]
+
+/** The connected Mail account: which address and since when, and Disconnect
+ *  beside it (spec #66). */
+function MailAccount({ status, port, onDisconnected }: {
+  status: Exclude<MailStatus, { state: 'none' }>
+  port: () => HostPort
+  onDisconnected: (result: MailDisconnectResult) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const disconnect = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    const res = await port().request<MailDisconnectResult>('mail.disconnect', {})
+    setBusy(false)
+    if (!res.ok) setError(failure(res.error))
+    else onDisconnected(res.result)
+  }
   return (
-    <section data-jff-mail-account={status.state}>
+    <section>
       <h2 className={H_SECTION}>Mail account</h2>
       <p className={`mt-0 mb-4 ${MUTED}`}>The tool sends an Application email from this account, and only on your click.</p>
-      <div className={`${CARD} px-5 py-4`}>
-        <p className={`m-0 text-[12px] ${MUTED}`}>Gmail</p>
-        <p className="mt-1 mb-0 text-[15px] font-medium">{status.address}</p>
-        <p className={`mt-1 mb-0 ${MUTED}`}>Connected since {sinceDate(status.connectedAt)}</p>
+      <div className={`${CARD} px-5 py-4`} data-jff-mail-account={status.state}>
+        <div className="flex items-start gap-4">
+          <div className="min-w-0 flex-1">
+            <p className={`m-0 text-[12px] ${MUTED}`}>Gmail</p>
+            <p className="mt-1 mb-0 text-[15px] font-medium">{status.address}</p>
+            <p className={`mt-1 mb-0 ${MUTED}`}>Connected since {sinceDate(status.connectedAt)}</p>
+          </div>
+          <button type="button" className={BTN} disabled={busy} onClick={() => { void disconnect() }}>
+            Disconnect
+          </button>
+        </div>
         {status.state === 'needs_reconnect' && (
           <p className="mt-3 mb-0 text-amber-700 dark:text-amber-400">
             The sign-in has expired or was revoked, so this account needs reconnecting before it can send.
           </p>
+        )}
+        {error !== null && (
+          <p role="alert" className="mt-3 mb-0 whitespace-pre-line text-red-700 dark:text-red-400">{error}</p>
         )}
       </div>
     </section>
@@ -38,6 +68,8 @@ export function MailSection() {
   const port = (): HostPort => (portRef.current ??= createHostPort())
   const [status, setStatus] = useState<MailStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** Why Google kept the token at the last Disconnect, shown over the wizard. */
+  const [warning, setWarning] = useState<string | null>(null)
 
   useEffect(() => {
     let live = true
@@ -62,6 +94,22 @@ export function MailSection() {
     )
   }
   if (status === null) return <p className={`m-0 ${MUTED}`}>Reading the Mail account…</p>
-  if (status.state === 'none') return <MailWizard port={port} onConnected={setStatus} />
-  return <MailAccount status={status} />
+  if (status.state === 'none') {
+    return (
+      <>
+        {warning !== null && (
+          <p role="status" data-jff-disconnect-warning="1" className="mt-0 mb-4 whitespace-pre-line text-amber-700 dark:text-amber-400">
+            {warning}
+          </p>
+        )}
+        <MailWizard port={port} onConnected={(s) => { setWarning(null); setStatus(s) }} />
+      </>
+    )
+  }
+  return (
+    <MailAccount
+      status={status} port={port}
+      onDisconnected={(r) => { setWarning(r.warning); setStatus({ state: 'none' }) }}
+    />
+  )
 }

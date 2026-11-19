@@ -21,6 +21,7 @@ export function gmailScopes(mode: SenderAddressesMode): string[] {
 
 export const CONSENT_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 export const TOKEN_URL = 'https://oauth2.googleapis.com/token'
+export const REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
 
 const WRONG_FILE =
   'This is not the client file of a Desktop app. In the Google Cloud console, create an OAuth client whose ' +
@@ -132,6 +133,27 @@ export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
         result,
         cancel: () => listener.close(new MailError('timeout', 'The sign-in was stopped before it came back. Nothing was connected.')),
       }
+    },
+
+    // The research document's Revocation: a POST of the refresh token, which
+    // Google answers 200 with `{}`. The token never goes in an error message.
+    async revoke(refreshToken: string): Promise<void> {
+      let res
+      try {
+        res = await http({
+          method: 'POST', url: REVOKE_URL,
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ token: refreshToken }).toString(),
+        })
+      } catch (e) {
+        if (e instanceof MailError) throw e
+        throw new MailError('process', `Could not reach Google to revoke the sign-in: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      if (res.status === 200) return
+      let json: Record<string, unknown> = {}
+      try { json = JSON.parse(res.body) as Record<string, unknown> } catch { /* below */ }
+      const what = typeof json.error === 'string' ? ` ${json.error}` : ''
+      throw new MailError('not_authed', `Google refused to revoke the sign-in (${res.status}${what}).`)
     },
   }
 }

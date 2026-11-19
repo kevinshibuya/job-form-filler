@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type Resolution,
+  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailStatus, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -129,7 +129,11 @@ export interface HeldMappingHost {
   appliedChecks: AppliedCheckParams[]
   /** What `applied.check` answers. Defaults to no Applied job either way. */
   appliedCheck: (p: AppliedCheckParams) => AppliedCheckReply | { error: { kind: HostErrorKind; message: string } } | Promise<AppliedCheckReply>
+  /** What `mail.status` answers (spec #66). Defaults to no Mail account. */
+  mailStatus: () => MailStatusAnswer | Promise<MailStatusAnswer>
 }
+
+export type MailStatusAnswer = MailStatus | { error: { kind: HostErrorKind; message: string } }
 
 export interface AppliedCheckParams { url: string; applyAddresses?: string[] }
 /** An Applied job as `applied.check` answers it. */
@@ -148,6 +152,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       picks: [], pick: () => ({ position: null }), learned: [],
       addresses: [], addressPicks: [], addressPick: () => ({ position: null }), emailDrafts: [], emailDraft: draftReply, otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
       appliedChecks: [], appliedCheck: () => ({ applied: null, appliedByAddress: null }),
+      mailStatus: () => ({ state: 'none' }),
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -201,6 +206,10 @@ export function installHeldMappingHost(): HeldMappingHost {
         const pp = params as AppliedCheckParams
         host.appliedChecks.push(pp)
         const answer = await host.appliedCheck(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'mail.status') {
+        const answer = await host.mailStatus()
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
       if (method === 'wording.learn') {

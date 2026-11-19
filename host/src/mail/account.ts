@@ -2,9 +2,9 @@ import { HOST_ERROR_KINDS, type HostErrorKind, type MailKind } from '@jff/shared
 
 /**
  * A Mail account, as the Native host reaches it (spec #66). The interface has
- * three operations: connect, list Sender addresses and send. The Gmail driver
- * is its only implementation. Connect is built here; the Sender addresses and
- * send are added by the tickets that build them.
+ * three operations: connect, list Sender addresses and send, and the revoke
+ * that Disconnect asks for. The Gmail driver is its only implementation. The
+ * Sender addresses and send are added by the tickets that build them.
  */
 export interface MailAccountDriver {
   readonly kind: MailKind
@@ -14,6 +14,11 @@ export interface MailAccountDriver {
    * MailError of kind `bad_request` for a client file of the wrong type.
    */
   connect(clientFile: string): Promise<PendingConnect>
+  /**
+   * Asks the provider to revoke this refresh token and every grant behind it.
+   * Throws a MailError when the provider refuses or cannot be reached.
+   */
+  revoke(refreshToken: string): Promise<void>
 }
 
 /** A sign-in in progress. */

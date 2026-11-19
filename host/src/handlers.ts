@@ -352,6 +352,10 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'mail.connect.finish':
         if (deps.mail === undefined) return noMail(req.requestId)
         return ok(req.requestId, await deps.mail.connectFinish(db))
+
+      case 'mail.disconnect':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.disconnect(db))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req

@@ -442,6 +442,11 @@ export function getMailAccount(db: Database.Database): MailAccountRow | null {
   }
 }
 
+/** Forgets the one Mail account's row. Its secrets live in the secret store. */
+export function deleteMailAccount(db: Database.Database): void {
+  db.prepare('DELETE FROM mail_account WHERE id = 1').run()
+}
+
 /** Writes the one Mail account as just connected. A second connect replaces
  *  the first; the last used Sender address survives only for the same address. */
 export function saveMailAccount(

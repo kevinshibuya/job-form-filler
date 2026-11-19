@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { EMAIL_INSTRUCTION_MAX, EMAIL_LANGUAGES, type EmailLanguage, type EmailLinkKey } from '@jff/shared'
+import { useEffect, useRef, useState } from 'react'
+import { EMAIL_INSTRUCTION_MAX, EMAIL_LANGUAGES, type EmailLanguage, type EmailLinkKey, type MailStatus } from '@jff/shared'
 import { DraftWarning } from './FieldRow'
 import { redraftNeedsConfirm, type EmailDraftUi, type RedraftAsk, type SessionEmailDraft } from './emailDraft'
 import { mailHandoverOf, mailtoAddress, type SessionMailHandover } from './mailApp'
@@ -13,6 +13,9 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
  * Regenerate and the language switch ask for a new Draft (ticket #73); with
  * hand edits in the subject or the body they ask first. Where Send will be,
  * "Open in my mail app" hands the email to the user's mail app (ticket #75).
+ * The Review asks for the Mail account when it opens; with none, Connect sits
+ * beside it and opens the settings page (ticket #80). Nothing about the Draft
+ * waits for that answer.
  */
 
 const LINK_NAME: Record<EmailLinkKey, string> = { linkedin: 'LinkedIn', github: 'GitHub', portfolio: 'portfolio' }
@@ -42,6 +45,10 @@ export interface EmailReviewProps {
   /** Ask for a new Draft in place of the one shown. Called after the user
    *  confirmed losing their edits, when there are any. */
   onRedraft: (ask: RedraftAsk) => void
+  /** Asks the Native host for the Mail account: null when it could not say. */
+  readMailStatus: () => Promise<MailStatus | null>
+  /** Opens the settings page, or focuses it when it is open. */
+  onConnect: () => void
 }
 
 function NoDraft({ ui, needsJobText, onDraft }: Pick<EmailReviewProps, 'ui' | 'needsJobText' | 'onDraft'>) {
@@ -141,21 +148,33 @@ function Redraft({ draft, ui, onRedraft }: { draft: SessionEmailDraft; ui: Email
  * written or checked, or the To address, the subject or the body is empty.
  * It marks nothing: Mark applied stays the user's click.
  */
-function MailApp({ email, resumeName, handedOver, onOpen }: {
+function MailApp({ email, resumeName, handedOver, onOpen, onConnect }: {
   email: SessionMailHandover | null; resumeName: string | null; handedOver: boolean; onOpen: (email: SessionMailHandover) => void
+  /** Set when there is no Mail account: Connect shows beside the action. */
+  onConnect: (() => void) | null
 }) {
   return (
     <div className={ROW} data-jff-email-send="1">
-      {email === null
-        ? <button type="button" className={BTN_PRIMARY} disabled data-jff-email-mailapp="1">Open in my mail app</button>
-        : (
-            <a
-              className={`${BTN_PRIMARY} inline-block no-underline`} href={mailtoAddress(email)} target="_blank" rel="noreferrer"
-              data-jff-email-mailapp="1" onClick={() => onOpen(email)}
-            >
-              Open in my mail app
-            </a>
-          )}
+      <div className="flex flex-wrap items-center gap-2">
+        {email === null
+          ? <button type="button" className={BTN_PRIMARY} disabled data-jff-email-mailapp="1">Open in my mail app</button>
+          : (
+              <a
+                className={`${BTN_PRIMARY} inline-block no-underline`} href={mailtoAddress(email)} target="_blank" rel="noreferrer"
+                data-jff-email-mailapp="1" onClick={() => onOpen(email)}
+              >
+                Open in my mail app
+              </a>
+            )}
+        {onConnect !== null && (
+          <button type="button" className={BTN} data-jff-email-connect="1" onClick={onConnect}>Connect</button>
+        )}
+      </div>
+      {onConnect !== null && (
+        <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-email-connect-note="1">
+          Connect a Gmail account in the settings page to send from here with your Resume attached.
+        </p>
+      )}
       <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-email-mailapp-note="1">
         {'Your mail app gets the address, the subject and the body, but not the Resume. '}
         {resumeName === null ? 'Attach your Resume there before you send.' : <>Attach <span className="break-all font-semibold">{resumeName}</span> there before you send.</>}
@@ -169,7 +188,25 @@ function MailApp({ email, resumeName, handedOver, onOpen }: {
   )
 }
 
-export function EmailReview({ draft, ui, needsJobText, resumeName, to, handedOver, onOpenMailApp, onSubject, onBody, onDraft, onRedraft }: EmailReviewProps) {
+/** The Mail account, asked for when the Review opens and again when the panel
+ *  gets the focus back, as it does after a Connect in the settings page. */
+function useMailStatus(read: () => Promise<MailStatus | null>): MailStatus | null {
+  const [mail, setMail] = useState<MailStatus | null>(null)
+  // `read` is a fresh closure on every render of the panel; the latest one asks.
+  const readRef = useRef(read)
+  readRef.current = read
+  useEffect(() => {
+    let live = true
+    const ask = (): void => { void readRef.current().then((s) => { if (live && s !== null) setMail(s) }, () => {}) }
+    ask()
+    window.addEventListener('focus', ask)
+    return () => { live = false; window.removeEventListener('focus', ask) }
+  }, [])
+  return mail
+}
+
+export function EmailReview({ draft, ui, needsJobText, resumeName, to, handedOver, onOpenMailApp, onSubject, onBody, onDraft, onRedraft, readMailStatus, onConnect }: EmailReviewProps) {
+  const mail = useMailStatus(readMailStatus)
   if (draft === null) return <NoDraft ui={ui} needsJobText={needsJobText} onDraft={onDraft} />
   // While a new Draft is written, the one shown takes no edit it would lose.
   const busy = ui?.kind === 'drafting'
@@ -223,6 +260,7 @@ export function EmailReview({ draft, ui, needsJobText, resumeName, to, handedOve
       <MailApp
         email={busy ? null : mailHandoverOf({ applyAddress: to, emailDraft: draft })}
         resumeName={resumeName} handedOver={handedOver} onOpen={onOpenMailApp}
+        onConnect={mail?.state === 'none' ? onConnect : null}
       />
     </div>
   )

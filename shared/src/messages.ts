@@ -303,6 +303,16 @@ export type MailStatus = z.infer<typeof MailStatusSchema>
 export const MailConnectStartResultSchema = z.object({ consentUrl: z.string() })
 export type MailConnectStartResult = z.infer<typeof MailConnectStartResultSchema>
 
+/**
+ * The reply to `mail.disconnect`. The secrets and the account's row are gone
+ * either way. `revoked` says Google revoked the refresh token; when it could
+ * not, `warning` says so, and the user can remove the tool's access in their
+ * Google account. With no account there was nothing to revoke: `revoked` is
+ * false and `warning` is null.
+ */
+export const MailDisconnectResultSchema = z.object({ revoked: z.boolean(), warning: z.string().nullable() })
+export type MailDisconnectResult = z.infer<typeof MailDisconnectResultSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
@@ -396,6 +406,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
     params: z.object({ clientFile: z.string().min(1).max(CLIENT_FILE_MAX) }),
   }),
   z.object({ requestId: z.string().min(1), method: z.literal('mail.connect.finish'), params: z.object({}).passthrough() }),
+  // Disconnect revokes the token at Google when it can, and forgets the
+  // account's secrets and its row whether or not Google answered.
+  z.object({ requestId: z.string().min(1), method: z.literal('mail.disconnect'), params: z.object({}).passthrough() }),
 ])
 export type HostRequest = z.infer<typeof HostRequestSchema>
 export type HostMethod = HostRequest['method']

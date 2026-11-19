@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailStatusSchema, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -2232,6 +2232,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     return r.result.jobs ?? []
   }
 
+  /** The Mail account (spec #66), for the email Review: null when the Native
+   *  host could not say. A failure here shows no banner: the Review still
+   *  offers the mail app, and nothing about the Draft waits for this. */
+  const readMailStatus = async (): Promise<MailStatus | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request('mail.status', {})
+    if (!r.ok) return null
+    const parsed = MailStatusSchema.safeParse(r.result)
+    return parsed.success ? parsed.data : null
+  }
+
   /** One Applied job's stored texts (spec #66), or null on a host failure or
    *  a malformed reply. */
   const loadAppliedTexts = async (id: number): Promise<AppliedTexts | null> => {
@@ -2488,6 +2500,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       onBody={(body) => onEditEmail({ body })}
                       onDraft={onDraftEmail}
                       onRedraft={(ask) => { void onRedraftEmail(ask) }}
+                      readMailStatus={readMailStatus}
+                      onConnect={() => { void openSettingsPage() }}
                     />
                   )}
                 />

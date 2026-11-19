@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
-import type { MailConnectStartResult, MailStatus } from '@jff/shared'
-import { getMailAccount, saveMailAccount } from '../db/repos.js'
-import { MailError, type MailAccountDriver, type PendingConnect } from './account.js'
+import type { MailConnectStartResult, MailDisconnectResult, MailStatus } from '@jff/shared'
+import { deleteMailAccount, getMailAccount, saveMailAccount } from '../db/repos.js'
+import { asMailError, MailError, type MailAccountDriver, type PendingConnect } from './account.js'
 import { secretAccount, type SecretStore } from './secretStore.js'
 
 /**
@@ -25,7 +25,15 @@ export interface MailRequests {
   status(db: Database.Database): MailStatus
   connectStart(clientFile: string): Promise<MailConnectStartResult>
   connectFinish(db: Database.Database): Promise<MailStatus>
+  disconnect(db: Database.Database): Promise<MailDisconnectResult>
 }
+
+/** What Disconnect answers when Google did not revoke the token. The account
+ *  and its secrets are gone all the same. */
+const notRevoked = (why: string): string =>
+  `The sign-in could not be revoked at Google (${why}). The tool has forgotten the account and its secrets. ` +
+  'To remove its access at Google too, open your Google Account, then Security, then Third-party connections.'
+
 
 const realTimeout = (ms: number): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, ms).unref() })
@@ -76,6 +84,28 @@ export function createMailRequests(deps: MailRequestDeps): MailRequests {
       await deps.secrets.set(secretAccount(kind, account.address, 'client_secret'), account.clientSecret)
       saveMailAccount(db, { kind, address: account.address, clientId: account.clientId, connectedAt: now().toISOString() })
       return status(db)
+    },
+
+    async disconnect(db) {
+      const row = getMailAccount(db)
+      if (row === null) return { revoked: false, warning: null }
+      const refresh = secretAccount(row.kind, row.address, 'refresh_token')
+      // Revoking is a courtesy to the user's Google account. Whatever Google
+      // answers, or fails to, the secrets and the row go below.
+      let warning: string | null = null
+      try {
+        const token = await deps.secrets.get(refresh)
+        if (token === null) warning = notRevoked('no refresh token was stored')
+        else await deps.driver.revoke(token)
+      } catch (e) {
+        warning = notRevoked(asMailError(e)?.message ?? (e instanceof Error ? e.message : String(e)))
+      }
+      // The secrets before the row: a failed delete leaves the row, so
+      // Disconnect can run again, and no secret outlives its account.
+      await deps.secrets.delete(refresh)
+      await deps.secrets.delete(secretAccount(row.kind, row.address, 'client_secret'))
+      deleteMailAccount(db)
+      return { revoked: warning === null, warning }
     },
   }
 }

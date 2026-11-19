@@ -31,6 +31,14 @@ export function createFakeMailDriver(opts = {}) {
     clientFiles: [],
     /** How many sign-ins were cancelled. */
     cancelled: 0,
+    /** Every refresh token revoke was given, in order. */
+    revoked: [],
+    /** Set to an error to make revoke throw it, as Google out of reach does. */
+    revokeFails: opts.revokeFails ?? null,
+    async revoke(refreshToken) {
+      driver.revoked.push(refreshToken)
+      if (driver.revokeFails !== null) throw driver.revokeFails
+    },
     async connect(clientFile) {
       driver.clientFiles.push(clientFile)
       if (opts.refuseClientFile !== undefined) throw mailError('bad_request', opts.refuseClientFile)
