@@ -34,6 +34,8 @@ beforeEach(() => {
     'mail.disconnect': () => { account = { state: 'none' }; return { ok: true, result: { revoked: true, warning: null } } },
     'mail.connect.start': () => ({ ok: true, result: { consentUrl: CONSENT } }),
     'mail.connect.finish': () => { account = CONNECTED; return { ok: true, result: CONNECTED } },
+    // A connected account lists its Sender addresses (ticket #81).
+    'mail.senders': () => ({ ok: true, result: { address: 'ada@example.com', senders: [{ address: 'ada@example.com', displayName: 'Ada Lovelace' }], lastUsed: null } }),
   }
   window.__jffHostBridge = async ({ requestId, method }): Promise<HostResponse> => {
     requests.push(method)
@@ -66,7 +68,7 @@ describe('Disconnect', () => {
     await connectedPage()
     fireEvent.click(disconnectButton())
     await waitFor(() => expect(document.querySelector('[data-jff-wizard-loaded]')).not.toBeNull())
-    expect(requests).toEqual(['mail.status', 'mail.disconnect'])
+    expect(requests).toEqual(['mail.status', 'mail.senders', 'mail.disconnect'])
     expect(within(mail()).queryByText('ada@example.com')).toBeNull()
     expect(document.querySelector('[data-jff-mail-account]')).toBeNull()
   })
@@ -93,7 +95,8 @@ describe('Disconnect', () => {
     fireEvent.click(disconnectButton())
     const alert = await within(mail()).findByRole('alert')
     expect(alert.textContent).toContain('Keychain refused')
-    expect(within(mail()).getByText('ada@example.com')).not.toBeNull()
+    // The account's address, which its Sender addresses list again (ticket #81).
+    expect(within(mail()).getByText('ada@example.com', { selector: '[data-jff-mail-address]' })).not.toBeNull()
     expect(document.querySelector('[data-jff-wizard]')).toBeNull()
   })
 
@@ -108,7 +111,7 @@ describe('Disconnect', () => {
     fireEvent.click(within(mail()).getByRole('button', { name: 'Connect' }))
 
     await waitFor(() => expect(within(mail()).getByText('ada@example.com')).not.toBeNull())
-    expect(requests).toEqual(['mail.status', 'mail.disconnect', 'mail.connect.start', 'mail.connect.finish'])
+    await waitFor(() => expect(requests).toEqual(['mail.status', 'mail.senders', 'mail.disconnect', 'mail.connect.start', 'mail.connect.finish', 'mail.senders']))
     expect(browser.opened).toEqual([CONSENT])
     expect(document.querySelector('[data-jff-disconnect-warning]')).toBeNull()
   })

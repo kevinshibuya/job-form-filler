@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailStatusSchema, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendersResultSchema, MailStatusSchema, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -2244,6 +2244,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     return parsed.success ? parsed.data : null
   }
 
+  /** The Sender addresses (ticket #81), for the email Review: the list,
+   *  `needs_reconnect` when Google refused the sign-in, or null when the
+   *  Native host could not say. A failure shows no banner, as above. */
+  const readMailSenders = async (): Promise<MailSendersResult | 'needs_reconnect' | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request('mail.senders', {})
+    if (!r.ok) return r.error.kind === 'not_authed' ? 'needs_reconnect' : null
+    const parsed = MailSendersResultSchema.safeParse(r.result)
+    return parsed.success ? parsed.data : null
+  }
+
   /** One Applied job's stored texts (spec #66), or null on a host failure or
    *  a malformed reply. */
   const loadAppliedTexts = async (id: number): Promise<AppliedTexts | null> => {
@@ -2502,6 +2514,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                       onRedraft={(ask) => { void onRedraftEmail(ask) }}
                       readMailStatus={readMailStatus}
                       onConnect={() => { void openSettingsPage() }}
+                      readSenders={readMailSenders}
+                      senderAddress={session.senderAddress}
+                      onSender={(address) => { writeSession((s) => ({ ...s, senderAddress: address })) }}
+                      onReconnect={() => { void openSettingsPage() }}
                     />
                   )}
                 />

@@ -3,22 +3,50 @@ import { HOST_ERROR_KINDS, type HostErrorKind, type MailKind } from '@jff/shared
 /**
  * A Mail account, as the Native host reaches it (spec #66). The interface has
  * three operations: connect, list Sender addresses and send, and the revoke
- * that Disconnect asks for. The Gmail driver is its only implementation. The
- * Sender addresses and send are added by the tickets that build them.
+ * that Disconnect asks for. The Gmail driver is its only implementation. Send
+ * is added by the ticket that builds it.
  */
 export interface MailAccountDriver {
   readonly kind: MailKind
   /**
-   * Reads the client file the user dropped and starts the sign-in: the
-   * consent address to open, and the sign-in waiting for its return. Throws a
-   * MailError of kind `bad_request` for a client file of the wrong type.
+   * Starts the sign-in: the consent address to open, and the sign-in waiting
+   * for its return. Given the client file the user dropped, it reads the
+   * client from it, and throws a MailError of kind `bad_request` for a file of
+   * the wrong type. Given the stored client, it is Reconnect.
    */
-  connect(clientFile: string): Promise<PendingConnect>
+  connect(client: string | StoredClient): Promise<PendingConnect>
+  /**
+   * The addresses the account may send as: its own address first, then each
+   * verified "Send mail as" address. `displayName` is the entry's own name,
+   * or null when it has none. Throws a MailError of kind `not_authed` when
+   * Google refuses the refresh token as invalid, and of another kind for any
+   * other failure. The access token it uses stays in this process's memory.
+   */
+  senderAddresses(account: SignedInAccount): Promise<SenderAddressEntry[]>
   /**
    * Asks the provider to revoke this refresh token and every grant behind it.
    * Throws a MailError when the provider refuses or cannot be reached.
    */
   revoke(refreshToken: string): Promise<void>
+}
+
+/** The client a past Connect stored: its id from the database, its secret
+ *  from the secret store. */
+export interface StoredClient {
+  clientId: string
+  clientSecret: string
+}
+
+/** A connected account with the secrets a call to the provider needs. */
+export interface SignedInAccount extends StoredClient {
+  address: string
+  refreshToken: string
+}
+
+/** One address the account may send as, as the provider lists it. */
+export interface SenderAddressEntry {
+  address: string
+  displayName: string | null
 }
 
 /** A sign-in in progress. */

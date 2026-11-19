@@ -20,7 +20,9 @@ const PERSONA = {
  * A fake Gmail driver. With `signIn: 'auto'` (the default) a sign-in returns
  * at once; with `signIn: 'manual'` it waits for `returnSignIn()` or
  * `refuseSignIn()`, and with `'never'` it never returns. `refuseClientFile`
- * makes connect refuse the file with that message.
+ * makes connect refuse the file with that message. `senders` is the "Send
+ * mail as" list it answers after the account's own address, which has no
+ * name; `sendersFail` makes the list throw, as a dead sign-in does.
  */
 export function createFakeMailDriver(opts = {}) {
   const account = { ...PERSONA, ...(opts.account ?? {}) }
@@ -29,6 +31,19 @@ export function createFakeMailDriver(opts = {}) {
     kind: 'gmail',
     /** Every client file connect was given, in order. */
     clientFiles: [],
+    /** Every stored client a Reconnect was given, in order. */
+    storedClients: [],
+    /** Every account the Sender addresses were asked for, in order. */
+    senderCalls: [],
+    /** The account's other verified addresses, after its own. */
+    senders: opts.senders ?? [],
+    /** Set to an error to make the Sender addresses throw it. */
+    sendersFail: opts.sendersFail ?? null,
+    async senderAddresses(signedIn) {
+      driver.senderCalls.push({ ...signedIn })
+      if (driver.sendersFail !== null) throw driver.sendersFail
+      return [{ address: signedIn.address, displayName: null }, ...driver.senders.map((s) => ({ ...s }))]
+    },
     /** How many sign-ins were cancelled. */
     cancelled: 0,
     /** Every refresh token revoke was given, in order. */
@@ -39,9 +54,10 @@ export function createFakeMailDriver(opts = {}) {
       driver.revoked.push(refreshToken)
       if (driver.revokeFails !== null) throw driver.revokeFails
     },
-    async connect(clientFile) {
-      driver.clientFiles.push(clientFile)
-      if (opts.refuseClientFile !== undefined) throw mailError('bad_request', opts.refuseClientFile)
+    async connect(client) {
+      if (typeof client === 'string') driver.clientFiles.push(client)
+      else driver.storedClients.push({ ...client })
+      if (typeof client === 'string' && opts.refuseClientFile !== undefined) throw mailError('bad_request', opts.refuseClientFile)
       let settle
       const result = new Promise((resolve, reject) => { settle = { resolve, reject } })
       result.catch(() => {})

@@ -299,6 +299,29 @@ export const MailStatusSchema = z.discriminatedUnion('state', [
 ])
 export type MailStatus = z.infer<typeof MailStatusSchema>
 
+/**
+ * A Sender address: one the Mail account may send as, with the display name
+ * an Application email from it carries. The name is the "Send mail as"
+ * entry's own, or the Profile name when the entry has none; empty when
+ * neither holds one.
+ */
+export const SenderAddressSchema = z.object({ address: z.string(), displayName: z.string() })
+export type SenderAddress = z.infer<typeof SenderAddressSchema>
+
+/**
+ * The reply to `mail.senders`: the account's own address, every address it
+ * may send as (its own first, then its verified "Send mail as" addresses),
+ * and the Sender address it last sent from, or null. A sign-in Google
+ * refuses answers `not_authed` instead, and the account then needs a
+ * reconnect.
+ */
+export const MailSendersResultSchema = z.object({
+  address: z.string(),
+  senders: z.array(SenderAddressSchema).min(1),
+  lastUsed: z.string().nullable(),
+})
+export type MailSendersResult = z.infer<typeof MailSendersResultSchema>
+
 /** The reply to `mail.connect.start`: the address of Google's consent page. */
 export const MailConnectStartResultSchema = z.object({ consentUrl: z.string() })
 export type MailConnectStartResult = z.infer<typeof MailConnectStartResultSchema>
@@ -401,14 +424,19 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
   // request log. Connect is two requests: `start` takes the dropped client
   // file and answers the consent address; `finish` waits for the sign-in.
   z.object({ requestId: z.string().min(1), method: z.literal('mail.status'), params: z.object({}).passthrough() }),
+  // With no client file, `start` is Reconnect: the sign-in runs again with
+  // the stored client.
   z.object({
     requestId: z.string().min(1), method: z.literal('mail.connect.start'),
-    params: z.object({ clientFile: z.string().min(1).max(CLIENT_FILE_MAX) }),
+    params: z.object({ clientFile: z.string().min(1).max(CLIENT_FILE_MAX).optional() }),
   }),
   z.object({ requestId: z.string().min(1), method: z.literal('mail.connect.finish'), params: z.object({}).passthrough() }),
   // Disconnect revokes the token at Google when it can, and forgets the
   // account's secrets and its row whether or not Google answered.
   z.object({ requestId: z.string().min(1), method: z.literal('mail.disconnect'), params: z.object({}).passthrough() }),
+  // The Sender addresses: asked when an email Review opens and when the
+  // settings page shows the account.
+  z.object({ requestId: z.string().min(1), method: z.literal('mail.senders'), params: z.object({}).passthrough() }),
 ])
 export type HostRequest = z.infer<typeof HostRequestSchema>
 export type HostMethod = HostRequest['method']

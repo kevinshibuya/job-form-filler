@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { EMAIL_INSTRUCTION_MAX, EMAIL_LANGUAGES, type EmailLanguage, type EmailLinkKey, type MailStatus } from '@jff/shared'
+import { EMAIL_INSTRUCTION_MAX, EMAIL_LANGUAGES, type EmailLanguage, type EmailLinkKey, type MailSendersResult, type MailStatus } from '@jff/shared'
 import { DraftWarning } from './FieldRow'
 import { redraftNeedsConfirm, type EmailDraftUi, type RedraftAsk, type SessionEmailDraft } from './emailDraft'
 import { mailHandoverOf, mailtoAddress, type SessionMailHandover } from './mailApp'
+import { senderLabel, senderOf } from './senderAddress'
 import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
 
 /**
@@ -15,7 +16,10 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE } from './ui'
  * "Open in my mail app" hands the email to the user's mail app (ticket #75).
  * The Review asks for the Mail account when it opens; with none, Connect sits
  * beside it and opens the settings page (ticket #80). Nothing about the Draft
- * waits for that answer.
+ * waits for that answer. With a connected account the Review also asks for
+ * its Sender addresses and shows the Sender address row; when the sign-in
+ * died, Reconnect stands where Send will be and the Draft stays as it is
+ * (ticket #81).
  */
 
 const LINK_NAME: Record<EmailLinkKey, string> = { linkedin: 'LinkedIn', github: 'GitHub', portfolio: 'portfolio' }
@@ -49,6 +53,14 @@ export interface EmailReviewProps {
   readMailStatus: () => Promise<MailStatus | null>
   /** Opens the settings page, or focuses it when it is open. */
   onConnect: () => void
+  /** Asks the Native host for the Sender addresses: `needs_reconnect` when
+   *  Google refused the sign-in, null when it could not say. */
+  readSenders: () => Promise<MailSendersResult | 'needs_reconnect' | null>
+  /** The Session's chosen Sender address, or null while none was chosen. */
+  senderAddress: string | null
+  onSender: (address: string) => void
+  /** Reconnect: opens the settings page, where the sign-in runs again. */
+  onReconnect: () => void
 }
 
 function NoDraft({ ui, needsJobText, onDraft }: Pick<EmailReviewProps, 'ui' | 'needsJobText' | 'onDraft'>) {
@@ -148,10 +160,12 @@ function Redraft({ draft, ui, onRedraft }: { draft: SessionEmailDraft; ui: Email
  * written or checked, or the To address, the subject or the body is empty.
  * It marks nothing: Mark applied stays the user's click.
  */
-function MailApp({ email, resumeName, handedOver, onOpen, onConnect }: {
+function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect }: {
   email: SessionMailHandover | null; resumeName: string | null; handedOver: boolean; onOpen: (email: SessionMailHandover) => void
   /** Set when there is no Mail account: Connect shows beside the action. */
   onConnect: (() => void) | null
+  /** Set when the account's sign-in died: Reconnect shows where Send will be. */
+  reconnect: { address: string; onReconnect: () => void } | null
 }) {
   return (
     <div className={ROW} data-jff-email-send="1">
@@ -169,7 +183,16 @@ function MailApp({ email, resumeName, handedOver, onOpen, onConnect }: {
         {onConnect !== null && (
           <button type="button" className={BTN} data-jff-email-connect="1" onClick={onConnect}>Connect</button>
         )}
+        {reconnect !== null && (
+          <button type="button" className={BTN} data-jff-email-reconnect="1" onClick={reconnect.onReconnect}>Reconnect</button>
+        )}
       </div>
+      {reconnect !== null && (
+        <p className="mt-1 text-[12px] text-amber-600 dark:text-amber-400" role="status" data-jff-email-reconnect-note="1">
+          {'The sign-in to '}<span className="break-all font-semibold">{reconnect.address}</span>
+          {' has expired or was revoked. Reconnect signs in again in the settings page, and this Draft stays here as it is.'}
+        </p>
+      )}
       {onConnect !== null && (
         <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-email-connect-note="1">
           Connect a Gmail account in the settings page to send from here with your Resume attached.
@@ -188,25 +211,79 @@ function MailApp({ email, resumeName, handedOver, onOpen, onConnect }: {
   )
 }
 
-/** The Mail account, asked for when the Review opens and again when the panel
- *  gets the focus back, as it does after a Connect in the settings page. */
-function useMailStatus(read: () => Promise<MailStatus | null>): MailStatus | null {
+/**
+ * The Mail account and, while it is connected, its Sender addresses: asked
+ * for when the Review opens and again when the panel gets the focus back, as
+ * it does after a Connect or a Reconnect in the settings page. A list that
+ * finds the sign-in dead turns the account to "needs reconnect" here, as the
+ * Native host has turned it.
+ */
+function useMailAccount(
+  readStatus: () => Promise<MailStatus | null>,
+  readSenders: () => Promise<MailSendersResult | 'needs_reconnect' | null>,
+): { mail: MailStatus | null; senders: MailSendersResult | null } {
   const [mail, setMail] = useState<MailStatus | null>(null)
-  // `read` is a fresh closure on every render of the panel; the latest one asks.
-  const readRef = useRef(read)
-  readRef.current = read
+  const [senders, setSenders] = useState<MailSendersResult | null>(null)
+  // The reads are fresh closures on every render of the panel; the latest ones ask.
+  const reads = useRef({ readStatus, readSenders })
+  reads.current = { readStatus, readSenders }
   useEffect(() => {
     let live = true
-    const ask = (): void => { void readRef.current().then((s) => { if (live && s !== null) setMail(s) }, () => {}) }
-    ask()
-    window.addEventListener('focus', ask)
-    return () => { live = false; window.removeEventListener('focus', ask) }
+    const ask = async (): Promise<void> => {
+      const s = await reads.current.readStatus()
+      if (!live || s === null) return
+      setMail(s)
+      if (s.state !== 'connected') { setSenders(null); return }
+      const list = await reads.current.readSenders()
+      if (!live) return
+      if (list === 'needs_reconnect') {
+        setMail({ ...s, state: 'needs_reconnect' })
+        setSenders(null)
+      } else if (list !== null) setSenders(list)
+    }
+    const onFocus = (): void => { void ask().catch(() => {}) }
+    onFocus()
+    window.addEventListener('focus', onFocus)
+    return () => { live = false; window.removeEventListener('focus', onFocus) }
   }, [])
-  return mail
+  return { mail, senders }
 }
 
-export function EmailReview({ draft, ui, needsJobText, resumeName, to, handedOver, onOpenMailApp, onSubject, onBody, onDraft, onRedraft, readMailStatus, onConnect }: EmailReviewProps) {
-  const mail = useMailStatus(readMailStatus)
+/**
+ * The Sender address row (ticket #81): a dropdown of the addresses the
+ * account may send as, each with its display name; with one address, that
+ * address alone. It shows the Session's choice while the list holds it, else
+ * the last used Sender address, else the account's own address.
+ */
+function SenderRow({ list, choice, onSender }: { list: MailSendersResult; choice: string | null; onSender: (address: string) => void }) {
+  const shown = senderOf(list, choice)
+  const only = list.senders.length === 1 ? list.senders[0]! : null
+  return (
+    <div className={ROW} data-jff-email-sender="1">
+      {only !== null
+        ? (
+            <>
+              <span className="font-semibold">Sender address</span>
+              <p className="mt-1 break-all">{senderLabel(only)}</p>
+            </>
+          )
+        : (
+            <label className="block">
+              <span className="font-semibold">Sender address</span>
+              <select className={`${INPUT} mt-1`} value={shown} onChange={(e) => onSender(e.target.value)}>
+                {list.senders.map((s) => <option key={s.address} value={s.address}>{senderLabel(s)}</option>)}
+              </select>
+            </label>
+          )}
+    </div>
+  )
+}
+
+export function EmailReview({
+  draft, ui, needsJobText, resumeName, to, handedOver, onOpenMailApp, onSubject, onBody, onDraft, onRedraft, readMailStatus, onConnect,
+  readSenders, senderAddress, onSender, onReconnect,
+}: EmailReviewProps) {
+  const { mail, senders } = useMailAccount(readMailStatus, readSenders)
   if (draft === null) return <NoDraft ui={ui} needsJobText={needsJobText} onDraft={onDraft} />
   // While a new Draft is written, the one shown takes no edit it would lose.
   const busy = ui?.kind === 'drafting'
@@ -214,6 +291,7 @@ export function EmailReview({ draft, ui, needsJobText, resumeName, to, handedOve
   const claims = draft.unsupportedClaims.filter((c) => draft.body.includes(c))
   return (
     <div className="mt-2 grid gap-2" data-jff-email-review="1">
+      {mail?.state === 'connected' && senders !== null && <SenderRow list={senders} choice={senderAddress} onSender={onSender} />}
       <div className={ROW} data-jff-email-subject="1">
         <label className="block">
           <span className="font-semibold">Subject</span>
@@ -261,6 +339,7 @@ export function EmailReview({ draft, ui, needsJobText, resumeName, to, handedOve
         email={busy ? null : mailHandoverOf({ applyAddress: to, emailDraft: draft })}
         resumeName={resumeName} handedOver={handedOver} onOpen={onOpenMailApp}
         onConnect={mail?.state === 'none' ? onConnect : null}
+        reconnect={mail?.state === 'needs_reconnect' ? { address: mail.address, onReconnect } : null}
       />
     </div>
   )

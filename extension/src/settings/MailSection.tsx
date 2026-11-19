@@ -1,35 +1,75 @@
 import { useEffect, useRef, useState } from 'react'
-import type { HostErrorKind, MailDisconnectResult, MailStatus } from '@jff/shared'
+import { MailSendersResultSchema, type MailDisconnectResult, type MailStatus, type SenderAddress } from '@jff/shared'
 import { createHostPort, ERROR_COPY, type HostPort } from '../panel/port'
-import { BTN } from '../panel/ui'
+import { BTN, BTN_PRIMARY } from '../panel/ui'
 import { MailWizard } from './MailWizard'
 import { CARD, H_SECTION, MUTED } from './look'
+import { failure, runSignIn } from './signIn'
 
 /** "November 19, 2026": the date a Mail account was connected. */
 const sinceDate = (iso: string): string =>
   new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 
-/** The host's own message when it gives one, the generic copy otherwise. */
-const failure = (error: { kind: HostErrorKind; message: string }): string =>
-  error.message.trim() !== '' ? error.message : ERROR_COPY[error.kind]
+const STATE_NAME: Record<Exclude<MailStatus, { state: 'none' }>['state'], string> = {
+  connected: 'Connected',
+  needs_reconnect: 'Needs reconnect',
+}
 
-/** The connected Mail account: which address and since when, and Disconnect
- *  beside it (spec #66). */
-function MailAccount({ status, port, onDisconnected }: {
+/**
+ * The connected Mail account (spec #66): which address, since when and in
+ * what state, its Sender addresses, and Disconnect beside it. When the
+ * sign-in died, Reconnect runs it again with the stored client, and the
+ * Sender addresses wait for it. A list that finds the sign-in dead turns the
+ * state to "Needs reconnect" here too.
+ */
+function MailAccount({ status, port, onStatus, onDisconnected }: {
   status: Exclude<MailStatus, { state: 'none' }>
   port: () => HostPort
+  onStatus: (status: MailStatus) => void
   onDisconnected: (result: MailDisconnectResult) => void
 }) {
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<'disconnect' | 'reconnect' | null>(null)
+  const [waiting, setWaiting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [senders, setSenders] = useState<SenderAddress[] | null>(null)
+
+  useEffect(() => {
+    if (status.state !== 'connected') return
+    let live = true
+    setSenders(null)
+    void port().request('mail.senders', {}).then((res) => {
+      if (!live) return
+      if (!res.ok) {
+        if (res.error.kind === 'not_authed') onStatus({ ...status, state: 'needs_reconnect' })
+        else setError(failure(res.error))
+        return
+      }
+      const parsed = MailSendersResultSchema.safeParse(res.result)
+      if (parsed.success) setSenders(parsed.data.senders)
+    })
+    return () => { live = false }
+  }, [status.state, status.address])
+
   const disconnect = async (): Promise<void> => {
-    setBusy(true)
+    setBusy('disconnect')
     setError(null)
     const res = await port().request<MailDisconnectResult>('mail.disconnect', {})
-    setBusy(false)
+    setBusy(null)
     if (!res.ok) setError(failure(res.error))
     else onDisconnected(res.result)
   }
+
+  const reconnect = async (): Promise<void> => {
+    setBusy('reconnect')
+    setError(null)
+    const done = await runSignIn(port(), null, () => setWaiting(true))
+    setBusy(null)
+    setWaiting(false)
+    if (!done.ok) setError(done.message)
+    else onStatus(done.status)
+  }
+
+  const died = status.state === 'needs_reconnect'
   return (
     <section>
       <h2 className={H_SECTION}>Mail account</h2>
@@ -38,17 +78,45 @@ function MailAccount({ status, port, onDisconnected }: {
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
             <p className={`m-0 text-[12px] ${MUTED}`}>Gmail</p>
-            <p className="mt-1 mb-0 text-[15px] font-medium">{status.address}</p>
+            <p className="mt-1 mb-0 text-[15px] font-medium" data-jff-mail-address="1">{status.address}</p>
             <p className={`mt-1 mb-0 ${MUTED}`}>Connected since {sinceDate(status.connectedAt)}</p>
+            <p
+              className={`mt-1 mb-0 font-medium ${died ? 'text-amber-700 dark:text-amber-400' : 'text-green-700 dark:text-green-400'}`}
+              data-jff-mail-state={status.state}
+            >
+              {STATE_NAME[status.state]}
+            </p>
           </div>
-          <button type="button" className={BTN} disabled={busy} onClick={() => { void disconnect() }}>
-            Disconnect
-          </button>
+          <div className="flex gap-2">
+            {died && (
+              <button type="button" className={BTN_PRIMARY} disabled={busy !== null} onClick={() => { void reconnect() }}>
+                Reconnect
+              </button>
+            )}
+            <button type="button" className={BTN} disabled={busy !== null} onClick={() => { void disconnect() }}>
+              Disconnect
+            </button>
+          </div>
         </div>
-        {status.state === 'needs_reconnect' && (
+        {died && (
           <p className="mt-3 mb-0 text-amber-700 dark:text-amber-400">
-            The sign-in has expired or was revoked, so this account needs reconnecting before it can send.
+            The sign-in has expired or was revoked, so this account needs reconnecting before it can send. Reconnect signs in again with the client you gave the wizard.
           </p>
+        )}
+        {waiting && <p className={`mt-3 mb-0 ${MUTED}`}>Waiting for the sign-in in the tab that opened…</p>}
+        {!died && senders !== null && (
+          <div className="mt-4" data-jff-sender-addresses="1">
+            <h3 className="m-0 text-[13px] font-medium">Sender addresses</h3>
+            <p className={`mt-1 mb-2 ${MUTED}`}>The addresses an Application email can go from. You choose one in each email&apos;s Review.</p>
+            <ul className="m-0 list-none p-0">
+              {senders.map((s) => (
+                <li key={s.address} className="py-1" data-jff-sender-address={s.address}>
+                  {s.displayName !== '' && <span className="font-medium">{s.displayName} </span>}
+                  <span className={MUTED}>{s.address}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {error !== null && (
           <p role="alert" className="mt-3 mb-0 whitespace-pre-line text-red-700 dark:text-red-400">{error}</p>
@@ -108,7 +176,7 @@ export function MailSection() {
   }
   return (
     <MailAccount
-      status={status} port={port}
+      status={status} port={port} onStatus={setStatus}
       onDisconnected={(r) => { setWarning(r.warning); setStatus({ state: 'none' }) }}
     />
   )

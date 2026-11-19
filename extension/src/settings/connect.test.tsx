@@ -31,6 +31,8 @@ beforeEach(() => {
     'mail.status': () => ({ ok: true, result: { state: 'none' } }),
     'mail.connect.start': () => ({ ok: true, result: { consentUrl: CONSENT } }),
     'mail.connect.finish': () => ({ ok: true, result: CONNECTED }),
+    // A connected account lists its Sender addresses (ticket #81).
+    'mail.senders': () => ({ ok: true, result: { address: 'ada@example.com', senders: [{ address: 'ada@example.com', displayName: 'Ada Lovelace' }], lastUsed: null } }),
   }
   window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
     requests.push({ method, params: params as Record<string, unknown> })
@@ -91,7 +93,7 @@ describe('Connect', () => {
 
     await waitFor(() => expect(within(mail()).getByText('ada@example.com')).not.toBeNull())
     expect(mail().textContent).toContain('Connected since November 19, 2026')
-    expect(methods()).toEqual(['mail.status', 'mail.connect.start', 'mail.connect.finish'])
+    await waitFor(() => expect(methods()).toEqual(['mail.status', 'mail.connect.start', 'mail.connect.finish', 'mail.senders']))
     expect(requests[1]!.params).toEqual({ clientFile: DESKTOP })
     // The sign-in opens in a tab of the same Chrome.
     expect(browser.opened).toEqual([CONSENT])

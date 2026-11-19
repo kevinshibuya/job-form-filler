@@ -447,6 +447,12 @@ export function deleteMailAccount(db: Database.Database): void {
   db.prepare('DELETE FROM mail_account WHERE id = 1').run()
 }
 
+/** Sets the one Mail account's state: "needs reconnect" once Google refused
+ *  its sign-in as invalid. A finished Connect sets it back to connected. */
+export function setMailAccountState(db: Database.Database, state: MailAccountState): void {
+  db.prepare('UPDATE mail_account SET state = ? WHERE id = 1').run(state)
+}
+
 /** Writes the one Mail account as just connected. A second connect replaces
  *  the first; the last used Sender address survives only for the same address. */
 export function saveMailAccount(

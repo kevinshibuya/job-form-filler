@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3'
-import type { MailConnectStartResult, MailDisconnectResult, MailStatus } from '@jff/shared'
-import { deleteMailAccount, getMailAccount, saveMailAccount } from '../db/repos.js'
-import { asMailError, MailError, type MailAccountDriver, type PendingConnect } from './account.js'
+import type { MailConnectStartResult, MailDisconnectResult, MailSendersResult, MailStatus } from '@jff/shared'
+import { deleteMailAccount, getMailAccount, getProfile, saveMailAccount, setMailAccountState } from '../db/repos.js'
+import { profileName } from '../llm/applicationEmail.js'
+import { asMailError, MailError, type MailAccountDriver, type PendingConnect, type StoredClient } from './account.js'
 import { secretAccount, type SecretStore } from './secretStore.js'
 
 /**
@@ -23,10 +24,18 @@ export interface MailRequestDeps {
  *  process is waiting for, which lives between `start` and `finish`. */
 export interface MailRequests {
   status(db: Database.Database): MailStatus
-  connectStart(clientFile: string): Promise<MailConnectStartResult>
+  /** With no client file, Reconnect: the sign-in with the stored client. */
+  connectStart(db: Database.Database, clientFile?: string): Promise<MailConnectStartResult>
   connectFinish(db: Database.Database): Promise<MailStatus>
   disconnect(db: Database.Database): Promise<MailDisconnectResult>
+  senders(db: Database.Database): Promise<MailSendersResult>
 }
+
+const NEEDS_RECONNECT =
+  'The sign-in to this Mail account has expired or was revoked. Click Reconnect to sign in again. Your Draft is kept.'
+
+const NOTHING_TO_RECONNECT =
+  'There is no stored client to reconnect with. Drop the client file in the settings page and click Connect.'
 
 /** What Disconnect answers when Google did not revoke the token. The account
  *  and its secrets are gone all the same. */
@@ -51,11 +60,21 @@ export function createMailRequests(deps: MailRequestDeps): MailRequests {
   return {
     status,
 
-    async connectStart(clientFile) {
+    async connectStart(db, clientFile) {
+      // Reconnect reads the stored client before anything stops: a refusal
+      // here leaves a sign-in in progress as it was.
+      let client: string | StoredClient
+      if (clientFile !== undefined) client = clientFile
+      else {
+        const row = getMailAccount(db)
+        const secret = row === null ? null : await deps.secrets.get(secretAccount(row.kind, row.address, 'client_secret'))
+        if (row === null || secret === null) throw new MailError('bad_request', NOTHING_TO_RECONNECT)
+        client = { clientId: row.clientId, clientSecret: secret }
+      }
       // One sign-in at a time: a new Connect stops the one before it.
       pending?.cancel()
       pending = null
-      const started = await deps.driver.connect(clientFile)
+      const started = await deps.driver.connect(client)
       // A refused return before `finish` waits on it must not go unhandled.
       started.result.catch(() => {})
       pending = started
@@ -84,6 +103,36 @@ export function createMailRequests(deps: MailRequestDeps): MailRequests {
       await deps.secrets.set(secretAccount(kind, account.address, 'client_secret'), account.clientSecret)
       saveMailAccount(db, { kind, address: account.address, clientId: account.clientId, connectedAt: now().toISOString() })
       return status(db)
+    },
+
+    // The Sender addresses. Only Google refusing the sign-in as invalid
+    // (`not_authed` from the driver) marks the account "needs reconnect": a
+    // network failure or a Gmail error leaves it connected.
+    async senders(db) {
+      const row = getMailAccount(db)
+      if (row === null) throw new MailError('bad_request', 'No Mail account is connected. Connect one in the settings page.')
+      if (row.state === 'needs_reconnect') throw new MailError('not_authed', NEEDS_RECONNECT)
+      const [refreshToken, clientSecret] = await Promise.all([
+        deps.secrets.get(secretAccount(row.kind, row.address, 'refresh_token')),
+        deps.secrets.get(secretAccount(row.kind, row.address, 'client_secret')),
+      ])
+      if (refreshToken === null || clientSecret === null) {
+        setMailAccountState(db, 'needs_reconnect')
+        throw new MailError('not_authed', NEEDS_RECONNECT)
+      }
+      let list
+      try {
+        list = await deps.driver.senderAddresses({ address: row.address, clientId: row.clientId, clientSecret, refreshToken })
+      } catch (e) {
+        if (asMailError(e)?.kind === 'not_authed') setMailAccountState(db, 'needs_reconnect')
+        throw e
+      }
+      const name = profileName(getProfile(db)) ?? ''
+      return {
+        address: row.address,
+        senders: list.map((s) => ({ address: s.address, displayName: s.displayName ?? name })),
+        lastUsed: row.lastSenderAddress,
+      }
     },
 
     async disconnect(db) {

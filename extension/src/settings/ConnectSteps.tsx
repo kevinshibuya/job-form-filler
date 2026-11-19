@@ -1,13 +1,9 @@
 import { useState, type DragEvent } from 'react'
-import type { MailConnectStartResult, MailStatus } from '@jff/shared'
-import { ERROR_COPY, type HostPort } from '../panel/port'
+import type { MailStatus } from '@jff/shared'
+import type { HostPort } from '../panel/port'
 import { BTN_PRIMARY } from '../panel/ui'
 import { CARD, MUTED } from './look'
-
-/** The host's own message when it gives one: it names the fix (a Desktop
- *  client, Connect again). The generic copy only when it says nothing. */
-const failure = (error: { kind: keyof typeof ERROR_COPY; message: string }): string =>
-  error.message.trim() !== '' ? error.message : ERROR_COPY[error.kind]
+import { runSignIn } from './signIn'
 
 const readText = (f: File): Promise<string> => new Promise((resolve, reject) => {
   const reader = new FileReader()
@@ -51,22 +47,13 @@ export function ConnectSteps({ first, port, onConnected }: {
     if (file === null) return
     setError(null)
     setPhase('starting')
-    const host = port()
-    const start = await host.request<MailConnectStartResult>('mail.connect.start', { clientFile: file.text })
-    if (!start.ok) {
-      setError(failure(start.error))
-      setPhase('idle')
-      return
-    }
-    await chrome.tabs.create({ url: start.result.consentUrl })
-    setPhase('waiting')
-    const done = await host.request<MailStatus>('mail.connect.finish', {})
+    const done = await runSignIn(port(), file.text, () => setPhase('waiting'))
     setPhase('idle')
     if (!done.ok) {
-      setError(failure(done.error))
+      setError(done.message)
       return
     }
-    onConnected(done.result)
+    onConnected(done.status)
   }
 
   return (

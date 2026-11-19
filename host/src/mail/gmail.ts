@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { MailError, type ConnectedAccount, type MailAccountDriver, type PendingConnect } from './account.js'
+import {
+  MailError, type ConnectedAccount, type MailAccountDriver, type PendingConnect, type SenderAddressEntry, type SignedInAccount,
+} from './account.js'
 import { startLoopbackListener, type LoopbackListener } from './loopback.js'
 import { googleOnly, type HttpCall } from './net.js'
 
@@ -22,6 +24,21 @@ export function gmailScopes(mode: SenderAddressesMode): string[] {
 export const CONSENT_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 export const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 export const REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
+export const SEND_AS_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs'
+
+/** An access token is asked for again this long before Google says it expires. */
+const TOKEN_MARGIN_MS = 60_000
+
+const SIGN_IN_DIED =
+  'Google refused the stored sign-in: it has expired or was revoked. Click Reconnect to sign in again. Your Draft is kept.'
+
+/** A parsed JSON body, or an empty object when it is not one. */
+function jsonOf(body: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(body) as unknown
+    return typeof v === 'object' && v !== null ? v as Record<string, unknown> : {}
+  } catch { return {} }
+}
 
 const WRONG_FILE =
   'This is not the client file of a Desktop app. In the Google Cloud console, create an OAuth client whose ' +
@@ -63,13 +80,56 @@ export interface GmailDriverDeps {
   http: HttpCall
   senderAddresses?: SenderAddressesMode
   listen?: (state: string) => Promise<LoopbackListener>
+  /** The clock an access token expires by, in milliseconds. */
+  now?: () => number
 }
 
 /** The Gmail Mail account driver. */
 export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
   const http = googleOnly(deps.http)
-  const scopes = gmailScopes(deps.senderAddresses ?? SENDER_ADDRESSES)
+  const mode = deps.senderAddresses ?? SENDER_ADDRESSES
+  const scopes = gmailScopes(mode)
   const listen = deps.listen ?? startLoopbackListener
+  const now = deps.now ?? Date.now
+  /** Access tokens, by the refresh token they came from. Memory only. */
+  const tokens = new Map<string, { token: string; until: number }>()
+
+  /** A call to Google; a failure to reach it is a MailError naming `what`. */
+  async function call(req: Parameters<typeof http>[0], what: string): Promise<{ status: number; body: string }> {
+    try {
+      return await http(req)
+    } catch (e) {
+      if (e instanceof MailError) throw e
+      throw new MailError('process', `Could not reach Google to ${what}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /** An access token from the refresh token (the research transcript's
+   *  order). Only `invalid_grant` means the sign-in died. */
+  async function accessToken(account: SignedInAccount): Promise<string> {
+    const held = tokens.get(account.refreshToken)
+    if (held !== undefined && held.until > now()) return held.token
+    const res = await call({
+      method: 'POST', url: TOKEN_URL,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token', refresh_token: account.refreshToken,
+        client_id: account.clientId, client_secret: account.clientSecret,
+      }).toString(),
+    }, 'refresh the sign-in')
+    const json = jsonOf(res.body)
+    if (res.status !== 200) {
+      if (json.error === 'invalid_grant') throw new MailError('not_authed', SIGN_IN_DIED)
+      const what = typeof json.error === 'string' ? ` ${json.error}` : ''
+      throw new MailError('process', `Google did not refresh the sign-in (${res.status}${what}). Try again in a moment.`)
+    }
+    if (typeof json.access_token !== 'string' || json.access_token === '') {
+      throw new MailError('invalid_output', 'Google\'s answer to a refresh held no access token.')
+    }
+    const seconds = typeof json.expires_in === 'number' ? json.expires_in : 0
+    tokens.set(account.refreshToken, { token: json.access_token, until: now() + seconds * 1000 - TOKEN_MARGIN_MS })
+    return json.access_token
+  }
 
   async function exchange(
     code: string, verifier: string, redirectUri: string, client: { clientId: string; clientSecret: string },
@@ -110,8 +170,8 @@ export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
 
   return {
     kind: 'gmail',
-    async connect(clientFile: string): Promise<PendingConnect> {
-      const client = parseClientFile(clientFile)
+    async connect(source): Promise<PendingConnect> {
+      const client = typeof source === 'string' ? parseClientFile(source) : source
       const verifier = b64url(randomBytes(32))
       const state = b64url(randomBytes(24))
       const listener = await listen(state)
@@ -133,6 +193,33 @@ export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
         result,
         cancel: () => listener.close(new MailError('timeout', 'The sign-in was stopped before it came back. Nothing was connected.')),
       }
+    },
+
+    // The account's own address, then each "Send mail as" entry Gmail has
+    // verified (answer 3: Gmail sends from the own address, silently, when
+    // From is any other). The primary entry carries no verificationStatus.
+    async senderAddresses(account): Promise<SenderAddressEntry[]> {
+      const token = await accessToken(account)
+      const own: SenderAddressEntry = { address: account.address, displayName: null }
+      if (mode === 'own address only') return [own]
+      const res = await call({ method: 'GET', url: SEND_AS_URL, headers: { authorization: `Bearer ${token}` } }, 'read the "Send mail as" addresses')
+      if (res.status !== 200) {
+        throw new MailError('process', `Gmail did not list the "Send mail as" addresses (${res.status}). Try again in a moment.`)
+      }
+      const entries = Array.isArray(jsonOf(res.body).sendAs) ? jsonOf(res.body).sendAs as Record<string, unknown>[] : []
+      const others: SenderAddressEntry[] = []
+      for (const e of entries) {
+        if (typeof e !== 'object' || e === null || typeof e.sendAsEmail !== 'string' || e.sendAsEmail === '') continue
+        const name = typeof e.displayName === 'string' && e.displayName.trim() !== '' ? e.displayName.trim() : null
+        if (e.sendAsEmail.toLowerCase() === account.address.toLowerCase()) {
+          own.displayName = name
+          continue
+        }
+        if (e.isPrimary !== true && e.verificationStatus !== 'accepted') continue
+        if (others.some((o) => o.address.toLowerCase() === (e.sendAsEmail as string).toLowerCase())) continue
+        others.push({ address: e.sendAsEmail, displayName: name })
+      }
+      return [own, ...others]
     },
 
     // The research document's Revocation: a POST of the refresh token, which
