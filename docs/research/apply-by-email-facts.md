@@ -90,7 +90,33 @@ The steps in order are under [Console steps](#console-steps). The run turned up 
 
 ## 6. Under per-tab side panel options, does each tab get its own panel document, does a tab opened from a panel tab stay without one, and can the panel be enabled and opened inside one click's user gesture?
 
-Pending: the run in real Chrome with the unpacked probe extension.
+Yes to all three, as long as the click handler calls `setOptions` and `open` in the same synchronous turn. Checked on 2026-11-18 by hand in the owner's real Google Chrome 157.0.8103.79 (arm64) on macOS 15.8.3, with Codex computer use doing the clicks.
+
+Google's text, from https://developer.chrome.com/docs/extensions/reference/api/sidePanel: setting a per-tab path makes "the panel for this tabId ... a different instance than the panel for the default tabId", and `open()` "may only be called in response to a user action".
+
+What was run: a scratch extension outside the repo, loaded unpacked. Its manifest declares no `side_panel`, so a tab has a panel only where the extension enabled one, and `openPanelOnActionClick` is off. The panel page shows the tab id it was opened for, a random document id and a counter, and keeps an event log.
+
+- **A, the toolbar button:** `chrome.action.onClicked` calls `chrome.sidePanel.setOptions({ tabId, path: 'panel.html?tab=<id>', enabled: true })` without awaiting it, then `chrome.sidePanel.open({ tabId })`.
+- **B, a menu item on the toolbar button:** `chrome.contextMenus.onClicked` awaits the same `setOptions`, then calls `open`.
+
+What came back:
+
+| Step | Seen |
+| --- | --- |
+| A on tab 1 | The panel opened as document `q62p0`. The counter was clicked to 3. |
+| Switch to tab 2 | No panel. |
+| A on tab 2 | The panel opened as a new document, `lclhn`. The counter was clicked to 1. |
+| Back to tab 1, then tab 2, with no clicks | Tab 1 showed `q62p0` at 3 and tab 2 showed `lclhn` at 1. Each tab kept its own live document. |
+| From tab 1's panel, `chrome.tabs.create`, and separately an `<a target="_blank">` link | Each opened a new foreground tab, and neither new tab had a panel. |
+| B on a third tab | No panel opened. The log read: `B open FAILED on tab <id>: sidePanel.open() may only be called in response to a user gesture.` |
+
+The log for A read `A open ok` on both tabs. The probe was removed from Chrome afterwards.
+
+What it means:
+
+- Each tab's panel is its own document, and it survives tab switches. A panel's state for one Job posting never leaks into another tab's.
+- A tab the panel opens, such as the Apply address's page or the Draft's mail link, starts with no panel. The user opens one there with the toolbar button if they want it.
+- The click handler must call `setOptions` and `open` together without an `await` between them. Awaiting `setOptions` first loses the gesture. B also differs from A in its trigger, a menu item rather than the toolbar button, so the run does not separate the two causes. The build uses A's pattern, which worked.
 
 ## 7. Do several Native host processes share the SQLite database safely?
 
