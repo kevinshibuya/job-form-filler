@@ -187,6 +187,17 @@ describe('one click', () => {
     expect(host.methods).not.toContain('applied.mark')
   }, 20_000)
 
+  it('that left Gmail and was not recorded never reads "was not sent"', async () => {
+    const recordFailed = 'The Application email was sent, but recording it failed (disk I/O error). Check your Sent folder; ' +
+      'the Job posting is not marked applied yet, and Send stays locked for this address so it does not go out twice.'
+    host.mailSend = () => ({ error: { kind: 'db', message: recordFailed } })
+    const button = await sendShown()
+    fireEvent.click(button)
+    await waitFor(() => { expect(sendError()).not.toBeNull() })
+    expect(sendError()!.textContent).toBe(recordFailed)
+    expect(sendError()!.textContent).not.toContain('was not sent')
+  }, 20_000)
+
   it('that failed leaves the Draft in place with the reason, and a second click sends', async () => {
     host.mailSend = () => ({ error: { kind: 'process', message: 'Gmail refused the Application email (400: Recipient address required). Nothing was sent.' } })
     const button = await sendShown()

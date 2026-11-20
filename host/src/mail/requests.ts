@@ -153,7 +153,17 @@ export function createMailRequests(deps: MailRequestDeps): MailRequests {
     return db.transaction((): MailSendResult | null => {
       const own = getSendAttempt(db, requestId)
       if (own !== null) return answerOf(db, own)
-      if (p.abandonAttempt !== null) abandonSendAttempt(db, p.abandonAttempt)
+      if (p.abandonAttempt !== null) {
+        // "Send again" settles a doubt. When the attempt it names has since
+        // landed as sent, the doubt is gone: answer that success, send nothing.
+        const named = getSendAttempt(db, p.abandonAttempt)
+        if (named?.state === 'sent') {
+          const answer = getSentAnswer(db, named.requestId)
+          if (answer === null) throw new MailError('bad_request', alreadySent(p.applyAddress.trim().toLowerCase()))
+          return { outcome: 'sent', ...answer }
+        }
+        abandonSendAttempt(db, p.abandonAttempt)
+      }
       const out = findSendAttempt(db, p.url, p.applyAddress, 'started')
       if (out !== null) return unknown(out.requestId)
       if (!p.resend && findSendAttempt(db, p.url, p.applyAddress, 'sent') !== null) {

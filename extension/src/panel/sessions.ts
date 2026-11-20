@@ -98,6 +98,10 @@ export interface Session {
    *  Apply address, or "Scan anyway" on the badge by Canonical URL. It
    *  outlives a reopened panel. */
   revisitPassed: boolean
+  /** Set when this Session issued a Send, before its request leaves; cleared
+   *  by a failure the Native host states. While set, `revisitPassed` no
+   *  longer makes a Send skip the host's "already sent" refusal. */
+  sendIssued: boolean
   /** The Sender address the user chose in the email Review (ticket #81), or
    *  null while they chose none and the default stands. */
   senderAddress: string | null
@@ -167,6 +171,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     mailHandover: null,
     addressRevisit: null,
     revisitPassed: false,
+    sendIssued: false,
     senderAddress: null,
   }
 }
@@ -473,6 +478,8 @@ export function parseStoredSession(raw: unknown): Session | null {
     // A row stored before the Revisit badge by Apply address has none, and passed none.
     if (raw.addressRevisit != null && !AddressRevisitSchema.safeParse(raw.addressRevisit).success) return null
     if (raw.revisitPassed !== undefined && typeof raw.revisitPassed !== 'boolean') return null
+    // A row stored before the Send mark issued none.
+    if (raw.sendIssued !== undefined && typeof raw.sendIssued !== 'boolean') return null
     // A row stored before the Sender address row has no choice in it.
     if (raw.senderAddress != null && typeof raw.senderAddress !== 'string') return null
     const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
@@ -491,6 +498,7 @@ export function parseStoredSession(raw: unknown): Session | null {
       mailHandover: (raw.mailHandover as SessionMailHandover | null | undefined) ?? null,
       addressRevisit: (raw.addressRevisit as AddressRevisit | null | undefined) ?? null,
       revisitPassed: raw.revisitPassed ?? false,
+      sendIssued: raw.sendIssued ?? false,
       senderAddress: (raw.senderAddress as string | null | undefined) ?? null,
     }
   } catch {

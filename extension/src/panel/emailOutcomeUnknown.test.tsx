@@ -149,6 +149,59 @@ describe('the choice to send again', () => {
     expect(host.mailSends[0]).toMatchObject({ resend: true, abandonAttempt: null })
     await waitFor(() => { expect(sessionRow()).toBeUndefined() })
   }, 20_000)
+
+  /** Past the Canonical URL badge, with the Send button shown. */
+  async function passedRevisit(): Promise<ReturnType<typeof render>> {
+    host.appliedCheck = () => ({ applied: APPLIED, appliedByAddress: null })
+    const view = render(<App />)
+    await waitFor(() => { expect(document.querySelector('[data-jff-applied]')).not.toBeNull() }, { timeout: 8_000 })
+    fireEvent.click(screen.getByRole('button', { name: 'Scan anyway' }))
+    await waitFor(() => { expect(sessionRow()?.revisitPassed).toBe(true) })
+    await waitFor(() => { expect(sendButton()).not.toBeNull() }, { timeout: 8_000 })
+    return view
+  }
+
+  it('is spent by a Send the Session issued: a panel that died mid-Send and came back sends without it', async () => {
+    // The host may have recorded that Send as sent; only its "already sent"
+    // refusal stands between a second click and a second email.
+    host.mailSend = () => new Promise<MailSendAnswer>(() => {})
+    const first = await passedRevisit()
+    fireEvent.click(sendButton()!)
+    await waitFor(() => { expect(host.mailSends).toHaveLength(1) })
+    expect(host.mailSends[0]).toMatchObject({ resend: true, abandonAttempt: null })
+    await waitFor(() => { expect(sessionRow()?.sendIssued).toBe(true) })
+    first.unmount()
+
+    host.mailSend = () => SENT
+    render(<App />)
+    await waitFor(() => { expect(sendButton()?.disabled).toBe(false) }, { timeout: 8_000 })
+    fireEvent.click(sendButton()!)
+    await waitFor(() => { expect(host.mailSends).toHaveLength(2) })
+    expect(host.mailSends[1]).toMatchObject({ resend: false, abandonAttempt: null })
+  }, 30_000)
+
+  it('comes back after a failure Gmail states, so the next Send still goes past the earlier Applied job', async () => {
+    host.mailSend = () => ({ error: { kind: 'process', message: 'Gmail refused the Application email (400). Nothing was sent.' } })
+    await passedRevisit()
+    fireEvent.click(sendButton()!)
+    await waitFor(() => { expect(sendError()).not.toBeNull() })
+    await waitFor(() => { expect(sessionRow()?.sendIssued).toBe(false) })
+    host.mailSend = () => SENT
+    fireEvent.click(sendButton()!)
+    await waitFor(() => { expect(host.mailSends).toHaveLength(2) })
+    expect(host.mailSends[1]).toMatchObject({ resend: true, abandonAttempt: null })
+  }, 30_000)
+
+  it('stays spent after the host\'s "already sent" refusal', async () => {
+    host.mailSend = () => ({ error: { kind: 'bad_request', message: 'An Application email to jobs@example.org for this Job posting was already sent. Nothing was sent again.' } })
+    await passedRevisit()
+    fireEvent.click(sendButton()!)
+    await waitFor(() => { expect(sendError()).not.toBeNull() })
+    await waitFor(() => { expect(sessionRow()?.sendIssued).toBe(true) })
+    fireEvent.click(sendButton()!)
+    await waitFor(() => { expect(host.mailSends).toHaveLength(2) })
+    expect(host.mailSends[1]).toMatchObject({ resend: false, abandonAttempt: null })
+  }, 30_000)
 })
 
 describe('a failure Gmail states', () => {

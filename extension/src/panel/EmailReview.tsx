@@ -251,7 +251,7 @@ function MailApp({ email, resumeName, handedOver, onOpen, onConnect, reconnect, 
           {send.sending && <p className={`mt-1 text-[12px] ${MUTED}`} role="status" data-jff-email-sending="1">Sending…</p>}
           {send.error !== null && (
             <p className="mt-1 whitespace-pre-line text-[12px] text-red-600 dark:text-red-400" role="alert" data-jff-email-send-error="1">
-              {`The Application email was not sent. ${send.error}`}
+              {send.error}
             </p>
           )}
         </div>

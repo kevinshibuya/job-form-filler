@@ -292,8 +292,10 @@ const toApplied = (r: RawApplied): AppliedJob => ({
  *  say", never "erase what you know".
  *
  *  The channel is the latest mark's, and the kept prose answers are the latest
- *  mark's too (spec #66): a later mark replaces them, in the same transaction
- *  as the upsert. A prose answer with no text is not kept.
+ *  mark's too (spec #66): a later form mark, or one that carries prose
+ *  answers, replaces them in the same transaction as the upsert. An email mark
+ *  with none leaves them: it has nothing to put in place of texts that were
+ *  sent to an employer. A prose answer with no text is not kept.
  *
  *  An `email` is the Application email the mark records, stored beside the
  *  Applied job in the same transaction. A later mark adds one and never
@@ -318,14 +320,16 @@ export function markApplied(
          channel = excluded.channel`,
     ).run(row.url, canonical, row.company, row.jobTitle, new Date().toISOString(), row.channel ?? 'form')
     const got = toApplied(db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs WHERE canonical_url = ?`).get(canonical) as RawApplied)
-    db.prepare(`DELETE FROM applied_prose_answers WHERE applied_job_id = ?`).run(got.id)
-    const insert = db.prepare(
-      `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    kept.forEach((a, i) => {
-      insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model)
-    })
+    if ((row.channel ?? 'form') === 'form' || kept.length > 0) {
+      db.prepare(`DELETE FROM applied_prose_answers WHERE applied_job_id = ?`).run(got.id)
+      const insert = db.prepare(
+        `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      kept.forEach((a, i) => {
+        insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model)
+      })
+    }
     if (row.email !== undefined) insertApplicationEmail(db, got.id, row.email)
     return got
   })

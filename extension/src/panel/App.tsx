@@ -159,6 +159,9 @@ const newRuntime = (gen: number): SessionRuntime => ({
  */
 const SCAN_ABORTED = 'jff:scan-aborted'
 
+/** The lead of a Send error that is known to have sent nothing. */
+const NOT_SENT = 'The Application email was not sent.'
+
 /**
  * The routed writers below are fired-and-forgotten by design (a snapshot push, a
  * background navigation, the epoch bump) and now reach `chrome.storage.session`,
@@ -2162,7 +2165,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setArrivedError(null)
     try {
       const resume = await loadResume()
-      if (resume === null) { setSendError('No Resume is stored to attach. Add one above, then click Send.'); return }
+      if (resume === null) { setSendError(`${NOT_SENT} No Resume is stored to attach. Add one above, then click Send.`); return }
       const tab = await getTab(target)
       // The page this Session described is gone: its title names another posting.
       if (genOf(target) !== gen) return
@@ -2180,11 +2183,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         aiDrafted: email.aiDrafted,
         edited: email.edited,
         model: email.model,
-        resend: abandonAttempt !== null || s.revisitPassed,
+        // A passed Revisit badge is consent to send past the Applied job the
+        // user saw, not past a Send this Session issued since: that one may
+        // have gone out while the panel was gone.
+        resend: abandonAttempt !== null || (s.revisitPassed && !s.sendIssued),
         abandonAttempt,
       }
       const requestId = crypto.randomUUID()
       setSendUnknown(null)
+      // Stored before the request leaves, so a panel that dies mid-Send
+      // comes back knowing it issued one.
+      await applyToSession(target, gen, (x) => ({ ...x, sendIssued: true }))
       const r = await port.request('mail.send', params, requestId)
       if (!r.ok) {
         // The request died on the way, or its deadline passed: the Native host
@@ -2193,7 +2202,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           setSendUnknown({ tabId: target, attemptRequestId: requestId, senderAddress })
           return
         }
-        setSendError(r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message)
+        // A failure the host states sent nothing, so the pass holds again. A
+        // `bad_request` keeps the Send spent: it is also the host's "already
+        // sent" refusal, the one answer that says an earlier Send went out.
+        if (r.error.kind !== 'bad_request') await applyToSession(target, gen, (x) => ({ ...x, sendIssued: false }))
+        const why = r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message
+        // `db` is also "sent, but recording it failed": no claim that it was not sent.
+        setSendError(r.error.kind === 'db' ? why : `${NOT_SENT} ${why}`)
         return
       }
       const sent = MailSendResultSchema.safeParse(r.result)

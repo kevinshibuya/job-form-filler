@@ -244,6 +244,18 @@ describe('the Gmail driver sends', () => {
     expect(err.message).toContain('400')
   })
 
+  it('reports a 5xx answer to the send as outcome unknown, never "Nothing was sent"', async () => {
+    // A server failure is not a refusal: Gmail may have taken the message
+    // before its front end answered 502, 503 or 504. Only a 4xx is definite.
+    for (const status of [500, 502, 503, 504]) {
+      const net = recorded({ request: SEND_OK.request, response: { status, body: JSON.stringify({ error: { code: status, message: 'Backend Error' } }) } })
+      const err = await failure(createGmailDriver({ http: net.http }).send(ACCOUNT, EMAIL))
+      expect(err.kind, `status ${status}`).toBe('timeout')
+      expect(err.message).not.toContain('Nothing was sent')
+      expect(err.message).toContain(String(status))
+    }
+  })
+
   it('reports a sign-in Google refuses as not_authed, and sends nothing', async () => {
     const dead = transcript('refresh-invalid-grant.json')
     const calls: HttpRequest[] = []

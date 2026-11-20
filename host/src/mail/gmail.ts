@@ -264,6 +264,9 @@ export function createGmailDriver(deps: GmailDriverDeps): MailAccountDriver {
         if (res.status === 401) tokens.delete(account.refreshToken)
         const error = typeof json.error === 'object' && json.error !== null ? json.error as Record<string, unknown> : {}
         const why = typeof error.message === 'string' && error.message !== '' ? `: ${error.message}` : ''
+        // A 5xx is a server failure, not a refusal: Gmail may have taken the
+        // message before its front end answered. Only a 4xx is definite.
+        if (res.status >= 500) throw new MailError('timeout', `Gmail answered the send with a server error (${res.status}${why}). Whether it was sent is unknown.`)
         throw new MailError('process', `Gmail refused the Application email (${res.status}${why}). Nothing was sent.`)
       }
       if (typeof json.id !== 'string' || json.id === '' || typeof json.threadId !== 'string' || json.threadId === '') {

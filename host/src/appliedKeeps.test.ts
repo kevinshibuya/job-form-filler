@@ -93,6 +93,18 @@ describe('applied.mark keeps a form application\'s prose answers', () => {
     expect(listKeptProseAnswers(db, first.id)).toEqual([replacement])
   })
 
+  it('keeps a form application\'s prose answers through a later email mark that carries none', async () => {
+    // The texts were sent to an employer; an email mark has nothing to replace them with.
+    const first = result<{ id: number }>(await mark({
+      url: 'https://jobs.example.com/6', company: 'Acme', jobTitle: 'Engineer', channel: 'form', proseAnswers: [WHY],
+    }))
+    result(await mark({
+      url: 'https://jobs.example.com/6', company: null, jobTitle: null,
+      email: { applyAddress: 'jobs@example.org', subject: 'Application: Engineer', body: 'Hello,\n\nAda Lovelace', language: 'en', aiDrafted: true, edited: false, model: 'claude-opus-5-5' },
+    }))
+    expect(listKeptProseAnswers(db, first.id)).toEqual([WHY])
+  })
+
   it('lists each Applied job with its channel and none of the stored texts', async () => {
     await mark({ url: 'https://jobs.example.com/6', company: 'Acme', jobTitle: 'A', channel: 'form', proseAnswers: [WHY] })
     await mark({ url: 'https://jobs.example.com/7', company: 'Acme', jobTitle: 'B', channel: 'email' })

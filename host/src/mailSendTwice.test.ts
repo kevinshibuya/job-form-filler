@@ -298,6 +298,28 @@ describe('"Send again"', () => {
     expect(driver.sent).toHaveLength(2)
     expect(listApplied(db)[0]).toMatchObject({ id: out.appliedJobId, channel: 'email' })
   })
+
+  it('answers the stored success, and calls nothing, when the attempt it abandons is now known to be sent', async () => {
+    // The user saw "outcome unknown"; the late answer then landed as sent
+    // before they clicked "Send again". The doubt is settled: no second email.
+    const held = holdSend()
+    const old = crypto.randomUUID()
+    const pending = send({}, old)
+    await vi.waitFor(() => { expect(driver.sent).toHaveLength(1) })
+    await vi.waitFor(() => { expect(deadline).not.toBeNull() })
+    deadline!()
+    expect(result<MailSendResult>(await pending)).toEqual({ outcome: 'unknown', attemptRequestId: old })
+    held.release()
+    await vi.waitFor(() => { expect(getSendAttempt(db, old)?.state).toBe('sent') })
+    driver.onSend = null
+
+    const first = listApplied(db)[0]
+    const out = sent(await send({ resend: true, abandonAttempt: old }))
+    expect(driver.sent).toHaveLength(1)
+    expect(out.appliedJobId).toBe(first?.id)
+    expect(getSendAttempt(db, old)?.state).toBe('sent')
+    expect(count('send_attempts')).toBe(1)
+  })
 })
 
 describe('a Job posting and Apply address that already have a sent attempt', () => {
