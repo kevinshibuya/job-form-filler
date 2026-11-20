@@ -87,6 +87,20 @@ export function parseLooseJson(text: string): unknown {
   throw new Error('no JSON value found in model output')
 }
 
+/**
+ * With `--output-format json` a failed call often says why only on stdout —
+ * an expired login exits 1 with an empty stderr and
+ * `{"is_error":true,"result":"Failed to authenticate: …"}`. Reading stderr
+ * alone turned that into "claude exited 1". Empty when stdout holds no such
+ * envelope.
+ */
+export function envelopeError(stdout: string): string {
+  try {
+    const env = JSON.parse(stdout) as { is_error?: unknown; result?: unknown } | null
+    return env?.is_error === true && typeof env.result === 'string' ? env.result.trim() : ''
+  } catch { return '' }
+}
+
 type FailureClass = 'terminal' | 'transient' | 'parse'
 
 export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sleep?: SleepFn } = {}): ClaudeRunner {
@@ -120,11 +134,12 @@ export function createClaudeRunner(opts: { claudePath?: string; run?: RunFn; sle
           if (res.timedOut) {
             kind = 'timeout'; message = `claude -p exceeded the call's time budget`; cls = 'transient'
           } else if (res.code !== 0) {
+            const reason = [res.stderr.trim(), envelopeError(res.stdout)].filter((s) => s !== '').join('\n')
             // RATE_LIMIT first: "authentication rate limit exceeded" also matches
             // AUTH_RE and must classify as rate_limit, not not_authed.
-            if (RATE_LIMIT_RE.test(res.stderr)) { kind = 'rate_limit'; message = 'claude subscription rate limit reached'; cls = 'terminal' }
-            else if (AUTH_RE.test(res.stderr)) { kind = 'not_authed'; message = 'claude CLI is not logged in'; cls = 'terminal' }
-            else { kind = 'process'; message = res.stderr.trim() || `claude exited ${res.code}`; cls = 'transient' }
+            if (RATE_LIMIT_RE.test(reason)) { kind = 'rate_limit'; message = 'claude subscription rate limit reached'; cls = 'terminal' }
+            else if (AUTH_RE.test(reason)) { kind = 'not_authed'; message = 'claude CLI is not logged in'; cls = 'terminal' }
+            else { kind = 'process'; message = reason || `claude exited ${res.code}`; cls = 'transient' }
           } else {
             try {
               const envelope: unknown = JSON.parse(res.stdout)

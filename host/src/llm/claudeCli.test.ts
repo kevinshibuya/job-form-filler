@@ -44,6 +44,30 @@ describe('createClaudeRunner', () => {
     expect(run).toHaveBeenCalledTimes(1)
   })
 
+  it('reads the failure from the stdout envelope when stderr is empty', async () => {
+    // What `claude -p --output-format json` prints when its OAuth login has
+    // expired: exit 1, nothing on stderr, the reason in the envelope's result.
+    const run = vi.fn(async (): Promise<RunResult> => ({
+      code: 1,
+      stdout: JSON.stringify({
+        type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error',
+        result: 'Failed to authenticate: this login reached its time limit and cannot be renewed. Run `claude auth login` to sign in again',
+      }),
+      stderr: '', timedOut: false,
+    }))
+    await expect(createClaudeRunner({ run, sleep: noSleep }).complete('p', Schema, OPTS))
+      .rejects.toMatchObject({ kind: 'not_authed' })
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('names an unclassified failure by the envelope result, not "claude exited N"', async () => {
+    const run = vi.fn(async (): Promise<RunResult> => ({
+      code: 1, stdout: JSON.stringify({ type: 'result', is_error: true, result: 'Model not found: claude-nope' }), stderr: '', timedOut: false,
+    }))
+    await expect(createClaudeRunner({ run, sleep: noSleep }).complete('p', Schema, { ...OPTS, retryTransient: false }))
+      .rejects.toMatchObject({ kind: 'process', message: 'Model not found: claude-nope' })
+  })
+
   it('classifies a usage limit as rate_limit and does not retry', async () => {
     const run = vi.fn(async (): Promise<RunResult> => ({ code: 1, stdout: '', stderr: 'Claude usage limit reached', timedOut: false }))
     await expect(createClaudeRunner({ run, sleep: noSleep }).complete('p', Schema, OPTS))
