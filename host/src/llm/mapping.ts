@@ -111,6 +111,7 @@ export function buildMappingPrompt(input: MappingInput): string {
     '- Return one entry per ref: no missing refs, no extra refs, no duplicates.',
     '- knownKey MUST be from the closed list. answerId MUST be one of the ids listed.',
     '- Do not write, guess, translate or paraphrase any answer text. You only classify.',
+    '- Reply with a bare JSON array of entries, [{"ref": ..., "decision": ..., "knownKey": ..., "answerId": ..., "fieldClass": ...}], not wrapped in an object.',
   ].join('\n')
 }
 
@@ -125,7 +126,9 @@ export function validateMappingResponse(
   requestedRefs: string[],
   candidateIds: number[],
 ): Map<string, MappingDecision> {
-  const parsed = MappingResponseSchema.safeParse(raw)
+  // A model may wrap the array as {"entries": [...]}, as Opus does: read through it.
+  const entries = raw !== null && typeof raw === 'object' && !Array.isArray(raw) && 'entries' in raw ? (raw as { entries: unknown }).entries : raw
+  const parsed = MappingResponseSchema.safeParse(entries)
   if (!parsed.success) return new Map()
   if (parsed.data.length !== requestedRefs.length) return new Map()
 

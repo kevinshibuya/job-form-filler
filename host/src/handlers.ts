@@ -190,8 +190,8 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           const unsupportedClaims = claimsInDraft(final, checked.unsupported)
           reply = unsupportedClaims.length === 0 ? { draft: final, model } : { draft: final, model, unsupportedClaims }
         } catch (e) {
-          const kind = e instanceof CodexError ? e.kind : 'process'
-          log('warn', 'codex review failed; returning unreviewed draft', {
+          const kind = e instanceof CodexError || e instanceof ClaudeError ? e.kind : 'process'
+          log('warn', 'Draft check failed; returning unreviewed draft', {
             kind, message: e instanceof Error ? e.message : String(e),
           })
         }
