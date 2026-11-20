@@ -58,7 +58,13 @@ const LINK_LABEL: Record<EmailLanguage, Record<EmailLinkKey, string>> = {
 const LANGUAGE_NAME: Record<EmailLanguage, string> = { en: 'English', pt: 'Portuguese' }
 
 /** The Draft check reads the prose as the answer to this question. */
-const DRAFT_CHECK_QUESTION = 'The body of a short plain-text email applying for this job, without links, addresses or a signature.'
+/** The Draft check keeps "the language of the question", so the question is
+ *  asked in the Draft's language: in English it turned a Portuguese Draft
+ *  back into English. */
+const DRAFT_CHECK_QUESTION: Record<EmailLanguage, string> = {
+  en: 'The body of a short plain-text email applying for this job, without links, addresses or a signature.',
+  pt: 'O corpo de um e-mail curto em texto simples, escrito em português, candidatando-se a esta vaga, sem links, endereços nem assinatura.',
+}
 
 const hasPageSubject = (s: string | null): s is string => s !== null && s.trim() !== ''
 
@@ -198,7 +204,7 @@ export async function draftApplicationEmail(
   let unchecked = false
   try {
     const checkInput: GenerationInput = {
-      question: DRAFT_CHECK_QUESTION, description: null,
+      question: DRAFT_CHECK_QUESTION[input.language], description: null,
       jobText: input.jobText, company: input.company,
       profileSummary: input.profileSummary, cvText: input.cvText, projectNotes: input.projectNotes,
       references: [],

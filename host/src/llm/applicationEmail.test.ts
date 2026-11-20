@@ -218,6 +218,21 @@ describe('draftApplicationEmail', () => {
     expect(prompt.slice(start, prompt.indexOf('</draft_under_review>', start))).toBe(PROSE)
   })
 
+  it('asks the Draft check in the Draft\'s language, so it keeps a Portuguese Draft in Portuguese', async () => {
+    // The check keeps "the language of the question": an English question
+    // turned a Portuguese Draft back into English under a Portuguese sign-off.
+    const w = writer({ body: 'Olá,\n\nGostaria de me candidatar à vaga.', subject: 'Candidatura', links: [] })
+    const c = checker({ draft: 'Olá,\n\nGostaria de me candidatar à vaga.', unsupported: [] })
+    await draftApplicationEmail({ writer: w.runner, checker: c.runner, models: MODELS }, input({ language: 'pt' }), PROFILE)
+    const prompt = c.complete.mock.calls[0]![0]
+    expect(prompt).toContain('em português')
+    expect(prompt).not.toContain('The body of a short plain-text email')
+
+    const en = checker({ draft: PROSE, unsupported: [] })
+    await draftApplicationEmail({ writer: writer({ body: PROSE, subject: 'Application', links: [] }).runner, checker: en.runner, models: MODELS }, input(), PROFILE)
+    expect(en.complete.mock.calls[0]![0]).toContain('The body of a short plain-text email')
+  })
+
   it('writes a plain-text body: a model subject is one line', async () => {
     const w = writer({ body: PROSE, subject: 'Application\nfor the role', links: [] })
     const out = await draftApplicationEmail({ writer: w.runner, checker: checker({ draft: PROSE, unsupported: [] }).runner, models: MODELS }, input(), PROFILE)
