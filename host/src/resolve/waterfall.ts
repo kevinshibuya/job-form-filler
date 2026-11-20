@@ -7,7 +7,7 @@ import {
 import {
   findExactAnswer, getAnswerById, getStoredValue, listReusableAnswers, touchAnswer,
 } from '../db/repos.js'
-import type { CallOpts } from '../llm/claudeCli.js'
+import { ClaudeError, type CallOpts } from '../llm/claudeCli.js'
 import { CodexError, type CodexRunner } from '../llm/codexCli.js'
 import { refOf, runMapping, type MappingCandidate, type MappingDecision } from '../llm/mapping.js'
 import { matchOptionSet, optionEqualTo } from './choiceSets.js'
@@ -395,7 +395,7 @@ async function mappingStep(
         fields: unresolved, jobText: input.jobText, company: input.company, candidates,
       }, deps.mappingOpts)
     } catch (e) {
-      const err = e instanceof CodexError ? e : new CodexError('process', String(e))
+      const err = e instanceof CodexError || e instanceof ClaudeError ? e : new CodexError('process', String(e))
       llmError = { kind: err.kind, message: err.message }
     }
 

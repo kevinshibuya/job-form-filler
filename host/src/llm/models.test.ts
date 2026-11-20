@@ -4,14 +4,14 @@ import { DEFAULT_MODELS, LLM_TASKS, resolveModels } from './models.js'
 describe('DEFAULT_MODELS', () => {
   it('pins the exact id per task from the harness model table', () => {
     expect(DEFAULT_MODELS).toEqual({
-      factsExtract: 'gpt-6.1-sol',
-      mapping: 'gpt-6.1-sol',
-      optionPick: 'gpt-6.1-sol',
-      applyAddressPick: 'gpt-6.1-sol',
+      factsExtract: 'claude-opus-5-5',
+      mapping: 'claude-opus-5-5',
+      optionPick: 'claude-opus-5-5',
+      applyAddressPick: 'claude-opus-5-5',
       applicationEmail: 'claude-opus-5-5',
       applicationEmailCheck: 'claude-opus-5-5',
       generate: 'claude-opus-5-5',
-      reviewDraft: 'gpt-6.1-sol',
+      reviewDraft: 'claude-opus-5-5',
       claudeAuthProbe: 'claude-opus-5-5',
       codexAuthProbe: 'gpt-6-luna',
     })

@@ -5,6 +5,7 @@ import { loadConfig } from './config.js'
 import { openDb } from './db/repos.js'
 import { createClaudeRunner } from './llm/claudeCli.js'
 import { createCodexRunner } from './llm/codexCli.js'
+import { createModelRoutedRunner } from './llm/routedRunner.js'
 import { resolveModels } from './llm/models.js'
 import { log } from './log.js'
 import { createGmailDriver } from './mail/gmail.js'
@@ -17,13 +18,15 @@ process.on('uncaughtException', (e) => { log('error', 'uncaught', { message: Str
 
 const config = loadConfig()
 const models = resolveModels(config.models)
+const claude = createClaudeRunner({ claudePath: config.claudePath })
 
 startHost({
   config,
   models,
   openDb: (path) => openDb(path),
-  runner: createClaudeRunner({ claudePath: config.claudePath }),
-  codex: createCodexRunner({ codexPath: config.codexPath }),
+  runner: claude,
+  // The structured tasks: each call goes to the CLI its model belongs to.
+  codex: createModelRoutedRunner(claude, createCodexRunner({ codexPath: config.codexPath })),
   mail: { driver: createGmailDriver({ http: realHttp }), secrets: createKeychainStore() },
   selfCheckIo: {
     fileExists: realFileExists,

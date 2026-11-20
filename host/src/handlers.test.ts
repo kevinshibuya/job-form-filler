@@ -298,16 +298,16 @@ describe('applied.* (A1)', () => {
     expect(jobs.map((j) => j.jobTitle)).toEqual(['B', 'A'])
   })
 
-  it('facts.extract runs on codex with the 240s budget and never touches claude', async () => {
+  it('facts.extract runs through the structured-task runner on claude-opus-5-5 with the 240s budget, never the writer', async () => {
     codexComplete.mockResolvedValueOnce({ email: 'k@x.com' })
     const r = await handleRequest(deps, { requestId: 'f1', method: 'facts.extract', params: { cvText: 'CV text' } })
     expect(r.ok).toBe(true)
     expect(codexComplete).toHaveBeenCalledTimes(1)
-    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-6.1-sol', timeoutMs: 240_000 })
+    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'claude-opus-5-5', timeoutMs: 240_000 })
     expect(complete).not.toHaveBeenCalled()
   })
 
-  it('resolve.mapping maps through codex with the 240s budget, not claude', async () => {
+  it('resolve.mapping maps through the structured-task runner on claude-opus-5-5 with the 240s budget, not the writer', async () => {
     codexComplete.mockResolvedValueOnce([{ ref: '0:1', decision: 'custom', knownKey: null, answerId: null }])
     const r = await handleRequest(deps, {
       requestId: 'r1', method: 'resolve.mapping',
@@ -323,7 +323,7 @@ describe('applied.* (A1)', () => {
     })
     expect(r.ok).toBe(true)
     expect(codexComplete).toHaveBeenCalledTimes(1)
-    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'gpt-6.1-sol', timeoutMs: 240_000 })
+    expect(codexComplete.mock.calls[0]![2]).toEqual({ model: 'claude-opus-5-5', timeoutMs: 240_000 })
     expect(complete).not.toHaveBeenCalled()
   })
 
