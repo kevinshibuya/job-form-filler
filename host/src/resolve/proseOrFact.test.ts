@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import type { EnumField, HostRequest, HostResponse, Resolution } from '@jff/shared'
 import { openDb, setProfile, upsertAnswer } from '../db/repos.js'
 import { handleRequest, type HandlerDeps } from '../handlers.js'
+import { ClaudeError } from '../llm/claudeCli.js'
 import { CodexError } from '../llm/codexCli.js'
 import { resolveModels } from '../llm/models.js'
 import { normalizeQuestion } from './normalize.js'
@@ -134,6 +135,12 @@ describe('Erring toward asking', () => {
     expect(out.llmError).toMatchObject({ kind: 'rate_limit' })
     expect(out.resolutions).toHaveLength(2)
     for (const res of out.resolutions) expect(res).toMatchObject({ tier: 'needs_input', fieldClass: 'personal_fact' })
+  })
+
+  it('keeps the kind of a Claude failure, so a Claude rate limit reads as a rate limit', async () => {
+    mapping.mockImplementation(async () => { throw new ClaudeError('rate_limit', 'claude subscription rate limit reached') })
+    const out = await mapped([WHY])
+    expect(out.llmError).toEqual({ kind: 'rate_limit', message: 'claude subscription rate limit reached' })
   })
 
   it('does the same when the reply is unusable as a whole', async () => {

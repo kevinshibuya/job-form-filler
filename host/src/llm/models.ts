@@ -12,23 +12,22 @@ export type LlmTask =
   | 'claudeAuthProbe'
   | 'codexAuthProbe'
 
-/** Exact ids from the harness model table. Claude writes prose, Codex runs the
- *  structured tasks. */
+/** Exact ids from the harness model table. Every product task runs on Opus
+ *  until spec B (#64) decides providers and models; the structured-task
+ *  runner sends a Claude id to the Claude CLI (routedRunner.ts), so a config
+ *  override back to a gpt id puts that task on codex again. The codex sign-in
+ *  probe stays on codex: it checks codex itself. */
 export const DEFAULT_MODELS: Readonly<Record<LlmTask, string>> = Object.freeze({
-  factsExtract: 'gpt-6.1-sol',
-  mapping: 'gpt-6.1-sol',
-  // Routed like Mapping: a structured choice among closed alternatives.
-  optionPick: 'gpt-6.1-sol',
-  // Spec #66: a structured choice among the page's addresses, like the Option pick.
-  applyAddressPick: 'gpt-6.1-sol',
-  // Spec #66: a writer Task like Generation, on the same runner interface.
+  factsExtract: 'claude-opus-5-5',
+  mapping: 'claude-opus-5-5',
+  optionPick: 'claude-opus-5-5',
+  applyAddressPick: 'claude-opus-5-5',
   applicationEmail: 'claude-opus-5-5',
-  // The Application email's Draft check runs on the Claude runner, off the
-  // codex window, until spec B decides how it is checked. A form answer's
-  // Draft check stays reviewDraft. Only a Claude model id works here.
+  // The Application email's Draft check, on the Claude runner (handlers.ts).
+  // Only a Claude model id works here.
   applicationEmailCheck: 'claude-opus-5-5',
   generate: 'claude-opus-5-5',
-  reviewDraft: 'gpt-6.1-sol',
+  reviewDraft: 'claude-opus-5-5',
   claudeAuthProbe: 'claude-opus-5-5',
   codexAuthProbe: 'gpt-6-luna',
 })

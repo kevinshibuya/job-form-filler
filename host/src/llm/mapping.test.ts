@@ -12,6 +12,10 @@ const candidates = [
 ]
 
 describe('buildMappingPrompt', () => {
+  it('asks for a bare JSON array of entries', () => {
+    expect(buildMappingPrompt({ fields: [], jobText: '', company: null, candidates: [] })).toContain('Reply with a bare JSON array of entries')
+  })
+
   const prompt = buildMappingPrompt({
     fields: [
       field(1, 'Anos de experiencia com React?'),
@@ -173,6 +177,19 @@ describe('validateMappingResponse', () => {
 
   it('returns an empty map for a non-array response', () => {
     expect(validateMappingResponse({ nope: true }, refs, ids).size).toBe(0)
+  })
+
+  it('reads the entries out of an {"entries": [...]} wrapper, as Opus wraps them', () => {
+    const out = validateMappingResponse({ entries: [
+      { ref: '0:1', decision: 'reuse_answer', knownKey: null, answerId: 11 },
+      { ref: '0:2', decision: 'custom', knownKey: null, answerId: null, fieldClass: 'prose' },
+    ] }, refs, ids)
+    expect(out.get('0:1')).toEqual({ decision: 'reuse_answer', knownKey: null, answerId: 11, fieldClass: null })
+    expect(out.get('0:2')).toEqual({ decision: 'custom', knownKey: null, answerId: null, fieldClass: 'prose' })
+  })
+
+  it('still fails closed on a wrapper whose entries miss a ref', () => {
+    expect(validateMappingResponse({ entries: [{ ref: '0:1', decision: 'custom', knownKey: null, answerId: null }] }, refs, ids).size).toBe(0)
   })
 })
 

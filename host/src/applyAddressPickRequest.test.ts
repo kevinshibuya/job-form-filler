@@ -107,10 +107,10 @@ describe('applyAddress.pick', () => {
     for (const other of ['Ada', 'Lovelace', 'ada@example.com', '5550100', 'Paris']) expect(prompt).not.toContain(other)
   })
 
-  it('runs on gpt-6.1-sol by default, through the structured-task runner', async () => {
+  it('runs on claude-opus-5-5 by default, through the structured-task runner', async () => {
     await pick(CAREERS)
     expect(codexComplete).toHaveBeenCalledTimes(1)
-    expect(codexComplete.mock.calls[0]![2]).toMatchObject({ model: 'gpt-6.1-sol' })
+    expect(codexComplete.mock.calls[0]![2]).toMatchObject({ model: 'claude-opus-5-5' })
     expect(claudeComplete).not.toHaveBeenCalled()
   })
 
