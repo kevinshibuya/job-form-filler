@@ -8,6 +8,12 @@ it from stored answers, and draft the free-text ones under human review.
 - Build proof: after `npm run build`, `grep -rl 'jffFakeHost' extension/dist | wc -l`
   must print 0. `JFF_TEST_SEAM` is a compile-time define that never reaches a
   bundle, so grepping for it proves nothing.
+- The Native host has the same proof: after `npm run build`,
+  `grep -rl 'jffFakeMail' host/dist | wc -l` must print 0. The fake Mail account
+  driver, the fake secret store and the browser test's host entry live in
+  `host/testing/jffFakeMail/`. tsc does not bundle, so the marker is that
+  directory's name: an import of a fake from `host/src` carries the path, and the
+  marker with it, into `host/dist`. Keep test-only host modules in that directory.
 - `npm run smoke` and `npm run verify` drive a real Chrome with the unpacked
   extension. They are not read-only and they leave a seam dist behind.
 - Run `npm run verify` only on an idle machine — check `uptime` first. Unit

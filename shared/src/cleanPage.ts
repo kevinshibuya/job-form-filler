@@ -13,6 +13,9 @@
  *  - cutToPosting: the same for a Job posting page. The posting's element and
  *    its ancestors only, every word of its prose replaced, the Company named
  *    "Acme".
+ *  - cutToEmail: the same for a page that applies by email. The posting, its
+ *    mailto: links and its addresses with their ancestors, each address
+ *    replaced whole by a numbered placeholder.
  *
  * Private strings, real e-mail addresses and credentials are replaced on the
  * serialised page by privateStrings.mjs, which every caller shares.
@@ -24,10 +27,13 @@ import { JOB_TEXT_MIN } from './jobText.js'
 export const FIXTURE_COMPANY = 'Acme'
 export const PLACEHOLDER_PROSE = 'Placeholder text where the Job posting described the role.'
 export const PLACEHOLDER_HEADING = 'Placeholder heading'
+/** The domain every placeholder address of the email cut is on. */
+export const PLACEHOLDER_ADDRESS_DOMAIN = 'example.org'
 
 
 const SHOW_COMMENT = 0x80
 const SHOW_TEXT = 0x4
+const SHOW_ELEMENT = 0x1
 
 const VALUELESS_INPUTS = new Set(['submit', 'button', 'reset', 'image'])
 const NOT_CONTROLS = new Set(['hidden', 'submit', 'button', 'reset', 'image'])
@@ -44,6 +50,9 @@ const ADDRESS_VALUE = /^\s*(?:[a-z][a-z0-9+.-]*:|\/|\.\.?\/)|:\/\//i
 const URL_IN_TEXT = /(?:https?:)?\/\/([A-Za-z0-9.-]+\.[A-Za-z]{2,})[^\s"'<>)]*/gi
 const BOARD_PATH = /\/jobs\/\d+/gi
 const HOST = /(?<![\w.-])(?:[a-z0-9-]+\.)+[a-z]{2,}(?![\w-])/gi
+/** An e-mail address, as the private-strings rules read one. */
+const ADDRESS = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
+const MAILTO = /^\s*mailto:/i
 
 /** Containers the ATSes put a Job posting's description in. Never one holding a Control. */
 const POSTING_PROSE = [
@@ -93,8 +102,10 @@ function nodesOf(doc: Document, root: Node, kind: number): Node[] {
 
 /** Drops scripts, styles, pictures, frames and comments, empties every typed
  *  Value, unticks every box, clears every selection and empties every
- *  attribute that holds an address. Every other element stays where it was. */
-export function cleanForPrivacy(doc: Document): void {
+ *  attribute that holds an address. Every other element stays where it was.
+ *  With `keepMailto`, an `href` that is a mailto: link stays for the email
+ *  cut, which replaces its addresses; the page script never passes it. */
+export function cleanForPrivacy(doc: Document, { keepMailto = false }: { keepMailto?: boolean } = {}): void {
   for (const el of Array.from(doc.querySelectorAll(DROPPED))) el.remove()
   for (const comment of nodesOf(doc, doc.documentElement, SHOW_COMMENT)) comment.parentNode?.removeChild(comment)
 
@@ -120,6 +131,7 @@ export function cleanForPrivacy(doc: Document): void {
 
   for (const el of [doc.documentElement, ...Array.from(doc.documentElement.querySelectorAll('*'))]) {
     for (const { name, value } of Array.from(el.attributes)) {
+      if (keepMailto && name === 'href' && MAILTO.test(value)) continue
       if (ADDRESS_ATTRS.has(name) || (name.startsWith('data-') && ADDRESS_VALUE.test(value))) {
         el.setAttribute(name, '')
       } else if (name === 'style' && /url\(/i.test(value)) {
@@ -199,6 +211,13 @@ function cutTo(doc: Document, root: Element, titled: string): void {
     for (const sibling of Array.from(parent.childNodes)) if (sibling !== keep) sibling.remove()
     keep = parent
   }
+  freshHead(doc, titled)
+}
+
+/** Replaces whatever the root holds besides the body with a head that has a
+ *  charset and `titled` and nothing else. */
+function freshHead(doc: Document, titled: string): void {
+  for (const child of Array.from(doc.documentElement.childNodes)) if (child !== doc.body) child.remove()
   const head = doc.createElement('head')
   const charset = doc.createElement('meta')
   charset.setAttribute('charset', 'utf-8')
@@ -291,17 +310,34 @@ function isUiWording(text: Text): boolean {
   return control !== null && control.closest(RUNNING_TEXT) === null
 }
 
+/** `text` with every run of words around a match of `keep` replaced by
+ *  `placeholder`, and each match left in its place. */
+function replaceAround(text: string, placeholder: string, keep: RegExp | null): string {
+  if (keep === null) return placeholder
+  const parts: string[] = []
+  let last = 0
+  for (const match of text.matchAll(keep)) {
+    const start = match.index ?? 0
+    if (text.slice(last, start).trim() !== '') parts.push(placeholder)
+    parts.push(match[0])
+    last = start + match[0].length
+  }
+  if (parts.length === 0 || text.slice(last).trim() !== '') parts.push(placeholder)
+  return parts.join(' ')
+}
+
 /** Replaces every word of prose under `root`, headings included, and keeps its
- *  elements. The text left is at least the minimum. */
-function replaceProse(doc: Document, root: Element): void {
+ *  elements. With `keep`, what matches it stays where it was among the
+ *  replaced words. The text left is at least the minimum. */
+function replaceProse(doc: Document, root: Element, keep: RegExp | null = null): void {
   const prose: Text[] = []
   for (const node of nodesOf(doc, root, SHOW_TEXT)) {
     const text = node as Text
     if (text.data.trim() === '' || isUiWording(text)) continue
     if (text.parentElement?.closest(HEADING)) {
-      text.data = PLACEHOLDER_HEADING
+      text.data = replaceAround(text.data, PLACEHOLDER_HEADING, keep)
     } else {
-      text.data = PLACEHOLDER_PROSE
+      text.data = replaceAround(text.data, PLACEHOLDER_PROSE, keep)
       prose.push(text)
     }
   }
@@ -310,7 +346,7 @@ function replaceProse(doc: Document, root: Element): void {
   const sentences = Math.ceil(short / (PLACEHOLDER_PROSE.length + 1))
   const more = Array.from({ length: sentences }, () => PLACEHOLDER_PROSE).join(' ')
   if (prose[0] !== undefined) {
-    prose[0].data = `${PLACEHOLDER_PROSE} ${more}`
+    prose[0].data = `${prose[0].data} ${more}`
   } else {
     const p = doc.createElement('p')
     p.textContent = more
@@ -331,6 +367,117 @@ export function cutToPosting(doc: Document, companies: readonly string[]): boole
   if (root === null) return false
   cutTo(doc, root, `Job posting at ${FIXTURE_COMPANY}`)
   replaceProse(doc, root)
+  scrubPage(doc, companies, true)
+  return true
+}
+
+/** A function that gives each address one placeholder, numbered in the order
+ *  it is first asked about, whatever the address's case. */
+function addressPlaceholders(): (address: string) => string {
+  const seen = new Map<string, string>()
+  return (address) => {
+    const key = address.toLowerCase()
+    let placeholder = seen.get(key)
+    if (placeholder === undefined) {
+      placeholder = `address-${seen.size + 1}@${PLACEHOLDER_ADDRESS_DOMAIN}`
+      seen.set(key, placeholder)
+    }
+    return placeholder
+  }
+}
+
+function decode(text: string): string {
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return text
+  }
+}
+
+/** A mailto: link with its recipients as placeholders and its subject cleaned
+ *  by `cleanSubject` and encoded again. Every other parameter is dropped. */
+function cleanMailto(href: string, place: (address: string) => string, cleanSubject: (subject: string) => string): string {
+  const rest = href.replace(MAILTO, '').trim()
+  const q = rest.indexOf('?')
+  const params = (q === -1 ? '' : rest.slice(q + 1)).split('&').map((pair) => {
+    const eq = pair.indexOf('=')
+    return eq === -1 ? { name: decode(pair).toLowerCase(), value: '' } : { name: decode(pair.slice(0, eq)).toLowerCase(), value: pair.slice(eq + 1) }
+  })
+  const recipients = [q === -1 ? rest : rest.slice(0, q), ...params.filter((p) => p.name === 'to').map((p) => p.value)]
+    .flatMap((part) => decode(part).split(','))
+    .flatMap((part) => Array.from(part.matchAll(ADDRESS), (match) => place(match[0])))
+  const subject = params.find((p) => p.name === 'subject')
+  const query = subject === undefined ? '' : `?subject=${encodeURIComponent(cleanSubject(decode(subject.value)))}`
+  return `mailto:${recipients.join(',')}${query}`
+}
+
+/** Every text node under `root` that holds an address. */
+function addressTexts(doc: Document, root: Node): Text[] {
+  const one = new RegExp(ADDRESS.source)
+  return nodesOf(doc, root, SHOW_TEXT).filter((node) => one.test((node as Text).data)) as Text[]
+}
+
+/** Drops every node under the body that is neither one of `roots`, inside one,
+ *  nor an ancestor of one. */
+function keepOnly(doc: Document, roots: readonly Node[]): void {
+  const prune = (parent: Node): void => {
+    for (const child of Array.from(parent.childNodes)) {
+      if (roots.some((root) => root.contains(child))) continue
+      if (roots.some((root) => child.contains(root))) prune(child)
+      else child.remove()
+    }
+  }
+  prune(doc.body)
+}
+
+/**
+ * The fixture's cuts for a page that applies by email, on a page
+ * cleanForPrivacy has cleaned with `keepMailto`: keeps the Job posting, every
+ * mailto: link and every address in text, with their ancestors, and nothing
+ * else of the page, and gives it a fresh head. Each address, in a link, an
+ * attribute or text, becomes `address-<n>@example.org`, numbered in page
+ * order, one per address whatever its case. A mailto: link keeps its
+ * recipients and its subject; the subject is decoded, cleaned like the page's
+ * text and then by `cleanText`, and encoded again. The posting's prose is
+ * replaced around the addresses it holds, and each of `companies` is named
+ * "Acme". False, and the page untouched, when it holds no mailto: link and no
+ * address in text.
+ */
+export function cutToEmail(doc: Document, companies: readonly string[], cleanText: (text: string) => string = (text) => text): boolean {
+  const links = Array.from(doc.body.querySelectorAll('[href]')).filter((el) => MAILTO.test(el.getAttribute('href') ?? ''))
+  const texts = addressTexts(doc, doc.body)
+  if (links.length === 0 && texts.length === 0) return false
+  const posting = postingRoot(doc)
+  const roots: Node[] = [
+    ...(posting === null ? [] : [posting]),
+    ...links,
+    ...texts.map((text) => (text.parentElement === null || text.parentElement === doc.body ? text : text.parentElement)),
+  ]
+  keepOnly(doc, roots)
+  freshHead(doc, `Apply by email at ${FIXTURE_COMPANY}`)
+  // The root keeps its language and direction and nothing else: a site
+  // builder's ids there name the real site.
+  const root = doc.documentElement
+  for (const { name } of Array.from(root.attributes)) if (name !== 'lang' && name !== 'dir') root.removeAttribute(name)
+
+  const place = addressPlaceholders()
+  const swap = (text: string): string => text.replace(ADDRESS, place)
+  const cleanSubject = (subject: string): string => cleanText(scrubText(swap(subject), companies, true))
+  for (const node of [doc.body, ...nodesOf(doc, doc.body, SHOW_ELEMENT | SHOW_TEXT)]) {
+    if (node.nodeType === node.TEXT_NODE) {
+      const text = node as Text
+      const clean = swap(text.data)
+      if (clean !== text.data) text.data = clean
+      continue
+    }
+    const el = node as Element
+    for (const { name, value } of Array.from(el.attributes)) {
+      const clean = name === 'href' && MAILTO.test(value) ? cleanMailto(value, place, cleanSubject) : swap(value)
+      if (clean !== value) el.setAttribute(name, clean)
+    }
+  }
+
+  if (posting !== null && posting.isConnected) replaceProse(doc, posting, ADDRESS)
   scrubPage(doc, companies, true)
   return true
 }

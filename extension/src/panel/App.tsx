@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { ContentMessage, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { CapturedPageSchema, isProfileKey, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
+import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendArrivedResultSchema, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendArrivedParams, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -11,20 +11,28 @@ import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
+import { EmailChooser } from './EmailChooser'
+import { EmailReview } from './EmailReview'
+import { mailHandoverOf, type SessionMailHandover } from './mailApp'
+import { emailDraftOwed, emailDraftParams, emailRedraftParams, replaceEmailDraft, requestEmailDraft, type EmailDraftUi, type RedraftAsk } from './emailDraft'
+import { addressPickParams, requestAddressPick, type AddressPickUi } from './applyAddressPick'
+import { requestAddressRevisit, revisitWords, type RevisitWaiting } from './addressRevisit'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
 import { jobTextLine, offersNotTheJob } from './jobTextLine'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget, resumeOnPage } from './resumeTarget'
-import { fillEntry, MAPPING_LOST, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
+import { fillEntry, MAPPING_LOST, readPageJobText, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
 import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
-import { createSessionStore, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
+import { openPanelTabIds } from './openPanels'
+import { createSessionStore, keptProseAnswers, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
 import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
 import { SNAPSHOT_KEY_RE } from '../snapshotKey'
+import { openSettingsPage, settingsUrl } from '../settings/open'
 
 /**
  * `chrome.tabs.Tab.url` is `''` — not `undefined` — for a tab that has not committed
@@ -49,6 +57,19 @@ export const electedFrameName = (e: ElectionOutcome | null): string => {
   if (e.url !== null) { try { host = new URL(e.url).host } catch { /* keep frame id */ } }
   return `${host} (score ${e.score})`
 }
+
+/** Spec #66: the Session has started the email flow, holding a candidate or
+ *  an Apply address, so the Job posting text controls work with no Field. */
+export const emailStarted = (s: Session): boolean => s.applyCandidates.length > 0 || s.applyAddress !== null
+
+/**
+ * Spec #66: whether the email flow shows. After a settled Scan with no
+ * CAPTCHA: with a candidate or an Apply address, and on an empty page to
+ * offer typing one.
+ */
+const showsEmailFlow = (s: Session): boolean =>
+  s.lastOutcome !== null && !s.activeCaptcha
+  && (emailStarted(s) || (s.fields.length === 0 && s.lastOutcome.kind === 'empty'))
 
 /**
  * S2: the per-session state that is NEVER persisted, because it describes work
@@ -105,11 +126,28 @@ interface SessionRuntime {
    *  or null. A Session whose rows wait on any other epoch waits on a request
    *  that is gone: the panel that sent it closed, or a newer Scan dropped it. */
   mappingEpoch: number | null
+  /** Spec #66: the Apply address pick of this session, while it is out and
+   *  after it ended without an address. Shown by the email flow, never stored:
+   *  a reopened panel shows the candidates, which is where none ends too. */
+  addressPick: AddressPickUi | null
+  /** Bumped when a pick starts. Only the newest pick's answer lands. */
+  addressPickSeq: number
+  /** Spec #66: the Application email's Draft while it is out, or after it
+   *  failed. Never stored: the Session holds the Draft once it lands. */
+  emailDraft: EmailDraftUi | null
+  /** Set from the moment a Draft is considered until it settles, so two
+   *  routes that choose the Apply address at once start one Draft. */
+  emailDraftBusy: boolean
+  /** Set while the Revisit check before the pick is out, so a second route
+   *  to the pick does not ask twice and pick behind the first one's back.
+   *  An address the user chooses is never held by it. */
+  revisitBusy: boolean
 }
 
 const newRuntime = (gen: number): SessionRuntime => ({
   gen, epoch: 0, scanSeq: 0, mappingEpoch: null, pendingRescan: false, appliedOverride: false, promptDismissedGen: -1, navRescan: null,
-  generateAll: null, generatePaused: null,
+  generateAll: null, generatePaused: null, addressPick: null, addressPickSeq: 0, emailDraft: null, emailDraftBusy: false,
+  revisitBusy: false,
 })
 
 /**
@@ -120,6 +158,9 @@ const newRuntime = (gen: number): SessionRuntime => ({
  * describing. Recognised (and swallowed) by onScan's own catch.
  */
 const SCAN_ABORTED = 'jff:scan-aborted'
+
+/** The lead of a Send error that is known to have sent nothing. */
+const NOT_SENT = 'The Application email was not sent.'
 
 /**
  * The routed writers below are fired-and-forgotten by design (a snapshot push, a
@@ -250,26 +291,11 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const sessionRef = useRef<Session | null>(null)
   const [tabId, setTabId] = useState<number | null>(null)
   const tabIdRef = useRef<number | null>(null)
-  // ?tabId= pins the panel to one tab (e2e/test harness); `activated` is then
-  // not ours to follow.
-  const overrideModeRef = useRef(false)
-  // Monotonic swap counter plus the tab the in-flight swap is heading TO (`null`
-  // when none is). `seq` is what makes only the LATEST swap's async work commit
-  // to the display; `target` is what lets an `onRemoved` invalidate ONLY the work
-  // that would put the REMOVED tab on screen. Held as one object so a bump can
-  // never leave a stale target behind.
-  const swapRef = useRef<{ seq: number; target: number | null }>({ seq: 0, target: null })
-
-  /** Invalidate every swap currently in flight; returns the new sequence number,
-   *  which the caller's own swap (if any) then owns. */
-  const bumpSwap = (target: number | null = null): number => {
-    const seq = swapRef.current.seq + 1
-    swapRef.current = { seq, target }
-    return seq
-  }
+  // The panel is bound to ONE tab for its whole life: the one in its address
+  // (`?tabId=`), or, without one, the tab active as it starts. It never follows
+  // another (spec #66: the Side panel belongs to its tab).
   const runtimesRef = useRef(new Map<number, SessionRuntime>())
-  // The GLOBAL single-flight latch: tab switching must never multiply the paid
-  // `claude -p` resolves.
+  // The panel's single-flight latch: one paid `claude -p` resolve at a time.
   const scanningRef = useRef(false)
   /** The tab the running scan is for; null while none runs. */
   const scanTargetRef = useRef<number | null>(null)
@@ -278,6 +304,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const rescanQueueRef = useRef<number[]>([])
   // A dead panel must not keep scanning: the injected `sleep` reads this.
   const mountedRef = useRef(true)
+  /** The next change of the job text box comes from a paste (spec #66). */
+  const pastedRef = useRef(false)
   // (tabId → the navigation last ACTED on). navSignals' fallback dedupe is
   // one-directional: Chrome can emit a combined tabs.onUpdated
   // {status:'loading', url} AHEAD of onCommitted, i.e. TWO identical
@@ -288,10 +316,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // The last SETTLED scan outcome. An action_failed line is transient: when the
   // retried action succeeds the panel goes back to what the scan said.
   const lastOutcomeRef = useRef<ScanUiState | null>(null)
-  // O3: the scan gate as `onScan` must read it. It has to be a REF: the nav
-  // signal listeners are registered once at mount, so `onNavigatedBackground`'s
-  // `onScan` closure would forever see the mount-time (closed, 'pending') gate
-  // and silently refuse every background re-scan for the life of the panel.
+  // O3: the scan gate as `onScan` must read it. It has to be a REF: `onScan`
+  // is also reached from closures made once at mount (a queued re-scan's
+  // drain), which would otherwise see the mount-time (closed, 'pending') gate.
   const scanGateRef = useRef(false)
 
   /* -------------------------------------------------- panel-global UI state */
@@ -305,6 +332,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [scanning, setScanning] = useState(false)
   const [view, setView] = useState<'session' | 'editor' | 'applications'>('session')
   const [facts, setFacts] = useState<Record<string, string>>({})
+  /** The user's own email address, never an Apply address candidate (spec
+   *  #66). A ref, so a Scan reads the value the Profile holds now. */
+  const ownEmailRef = useRef<string | null>(null)
   const [factsLoaded, setFactsLoaded] = useState(false)
   const [resumeName, setResumeName] = useState<string | null>(null)
   // B2b: extracted CV text, loaded once (lazily re-extracted for a pre-B2a
@@ -329,6 +359,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   // independent host requests, and completing one must not touch the others.
   const [generatingRefs, setGeneratingRefs] = useState<ReadonlySet<string>>(new Set())
   const [generateAll, setGenerateAll] = useState<{ done: number; total: number } | null>(null)
+  const [addressPick, setAddressPick] = useState<AddressPickUi | null>(null)
+  const [emailDraftUi, setEmailDraftUi] = useState<EmailDraftUi | null>(null)
   const [generatePaused, setGeneratePaused] = useState<{ done: number; total: number } | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   /** Where the last Capture was saved, or why it was not. */
@@ -337,6 +369,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
   const [marking, setMarking] = useState(false)
+  /** A Send is in flight (ticket #82); the ref closes the gap before the
+   *  disabled button renders, so two quick clicks make one request. */
+  const [sending, setSending] = useState(false)
+  const sendingRef = useRef(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  /** The last Send's outcome is unknown (ticket #83): the attempt the
+   *  user's answer settles, the Sender address it went from, and the tab
+   *  whose Session it belongs to. Cleared by "It arrived" or another Send. */
+  const [sendUnknown, setSendUnknown] = useState<{ tabId: number; attemptRequestId: string; senderAddress: string } | null>(null)
+  const [arriving, setArriving] = useState(false)
+  const [arrivedError, setArrivedError] = useState<string | null>(null)
   const [acting, setActing] = useState<{ ref: string; action: 'accept' | 'fill' | 'save_fact' } | null>(null)
   const [submitPrompt, setSubmitPrompt] = useState(false)
 
@@ -346,8 +389,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   if (storeRef.current === null) {
     storeRef.current = createSessionStore(chrome.storage.session, SESSION_SAVE_DEBOUNCE_MS, {
       onWarn: () => setStorageWarning(true),
-      // S14 eviction protection: the row on screen is never the victim.
-      getDisplayedTabId: () => sessionRef.current?.tabId ?? null,
+      // Several panels share session storage: eviction never removes the
+      // Session of a tab whose Side panel is open, this one's included.
+      openPanelTabIds: () => openPanelTabIds(tabIdRef.current),
     })
   }
   const store = storeRef.current
@@ -537,6 +581,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // the batch was still running.
     setGenerateAll(s === null ? null : runtimeOf(s.tabId).generateAll)
     setGeneratePaused(s === null ? null : runtimeOf(s.tabId).generatePaused)
+    // Like the batch, the Apply address pick belongs to its session.
+    setAddressPick(s === null ? null : runtimeOf(s.tabId).addressPick)
+    setEmailDraftUi(s === null ? null : runtimeOf(s.tabId).emailDraft)
     setMarkedMsg(null)
   }
 
@@ -599,112 +646,23 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   /* ------------------------------------------------- S2/S5 session routing */
 
-  /** Tab switch. Ordering is binding: save the OUTGOING session (the very object
-   *  last displayed), flush it, and only THEN swap the display — otherwise the
-   *  incoming render can race the outgoing write. No scan: re-scanning on every
-   *  tab activation would spend one batched `claude -p` resolve per switch. */
-  const swapTo = async (next: number): Promise<void> => {
-    // Chrome re-activates the already-active tab in several flows; a repeat is a
-    // no-op, never a re-swap. But "already on screen" is NOT "nothing in flight":
-    // `tabIdRef` is assigned at the very END of a swap, so the user coming
-    // straight back to the tab they left lands HERE while the swap toward the
-    // other tab is still parked on its flush/load — and a bare return leaves that
-    // swap's seq untouched, so it commits and displays a tab the user is not
-    // looking at. Nothing repairs that: the tab on screen would be the ACTIVE
-    // one, so no further `activated` is coming, and the next Scan would inject
-    // and FILL the OTHER tab's page. Cancel the outbound swap instead.
-    if (tabIdRef.current === next) {
-      const heading = swapRef.current.target
-      if (heading !== null && heading !== next) bumpSwap()
-      return
-    }
-    const seq = bumpSwap(next)
-    const outgoing = sessionRef.current
-    if (outgoing !== null) {
-      store.save(outgoing)
-      await store.flush()
-      if (seq !== swapRef.current.seq) return
-    }
-    const incoming = await store.load(next)
-    if (seq !== swapRef.current.seq) return
-    swapRef.current = { seq, target: null }
-    tabIdRef.current = next
-    setTabId(next)
-    display(incoming)
-  }
-
+  /** This panel's own tab closed. Its document goes with it; what can still
+   *  run before then must not resurrect the Session. */
   const onTabRemoved = async (dead: number): Promise<void> => {
-    const wasDisplayed = tabIdRef.current === dead
-    // Chrome activates the successor tab BEFORE it emits `removed`, so when the
-    // ACTIVE tab is closed a swap toward a different, LIVE tab is routinely
-    // already in flight here. Invalidating it would strand the panel bound to the
-    // tab that just died — and since the successor is already active, no further
-    // `activated` is coming to repair it. So a removal invalidates only the work
-    // that would put the REMOVED tab on screen; a swap heading elsewhere commits.
-    const swapping = swapRef.current.target
-    const swapIsRescue = swapping !== null && swapping !== dead
-    if (!swapIsRescue && (wasDisplayed || swapping === dead)) bumpSwap()
     endRuntime(dead)
     lastNavRef.current.delete(dead)
-    // F11: the tab is GONE — nothing will ever consult its runtime again except
-    // a settle already in flight, and that settle is refused either way
-    // (`genOf` answers null for a pruned tab). Dropping it here is what keeps
-    // `runtimesRef` from growing for the whole life of the panel, one entry per
-    // tab ever seen. Deliberately NOT done by `endRuntime`: Mark applied and
-    // Discard end a session on a tab that stays OPEN and keeps navigating, and
-    // that tab needs its runtime (and its bumped generation).
+    // F11: a settle still in flight is refused once the runtime is gone (`genOf`
+    // answers null). Deliberately NOT done by `endRuntime`: Mark applied and
+    // Discard end a session on a tab that stays open and needs its runtime.
     runtimesRef.current.delete(dead)
     // Tombstones the session: no later save can bring the row back.
     await store.remove(dead)
-    // The rescuing swap owns the display; blanking here would fight it (and lose
-    // the empty state to a repaint a beat later anyway).
-    if (wasDisplayed && !swapIsRescue && tabIdRef.current === dead) display(null)
-  }
-
-  /**
-   * S7 constraint 6: a navigation on a tab NOBODY is looking at. The relay is
-   * target-bound now, so its eventual re-scan reaches the right page and its
-   * outcome routes to its own row — the visible panel never flickers.
-   *
-   * Classification runs INSIDE the mutate fn, which the store calls exactly once
-   * on its lock: read, classify and write are then one atomic step against the
-   * row that is really there (a load-then-write pair could classify against a
-   * row another writer had already replaced).
-   */
-  const onNavigatedBackground = async (ev: { tabId: number; frameId: number; url: string }): Promise<void> => {
-    const last = lastNavRef.current.get(ev.tabId)
-    if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
-    const rt = runtimeOf(ev.tabId)
-    const acted = { rescan: false }
-    await mutateSession(ev.tabId, (s) => {
-      // A background tab with no session has nothing to route. Lazy creation on
-      // a navigation is a DISPLAYED-tab affordance — that tab is the one the
-      // user is applying on; minting a session for every background navigation
-      // would fill session storage with pages nobody asked about.
-      if (s === null) return null
-      if (ev.frameId !== 0 && ev.frameId !== s.election?.frameId) return null
-      lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() })
-      const same = ev.url === '' || s.site === '' || sameApplication(ev.url, s.startUrl)
-      if (!same) {
-        if (s.parked) return null
-        rt.gen = nextGen()
-        rt.navRescan = null
-        // Drops a re-scan this session had already queued: parked pages never
-        // spend a resolve.
-        rt.pendingRescan = false
-        return { ...s, parked: true }
-      }
-      rt.gen = nextGen()
-      rt.navRescan = { prevFields: s.fields.length }
-      acted.rescan = true
-      return clearScanResults({ ...s, parked: false })
-    })
-    // onScan queues this behind the global latch when a scan is already running.
-    if (acted.rescan) await onScan(ev.tabId)
+    display(null)
   }
 
   const onNavigated = (ev: { tabId: number; frameId: number; url: string }): void => {
-    if (tabIdRef.current !== ev.tabId) { void onNavigatedBackground(ev).catch(swallow); return }
+    // Another tab's navigation is that tab's panel's business, never this one's.
+    if (tabIdRef.current !== ev.tabId) return
     const last = lastNavRef.current.get(ev.tabId)
     if (last !== undefined && last.url === ev.url && Date.now() - last.at < NAV_FALLBACK_DEDUPE_MS) return
     const record = (): void => { lastNavRef.current.set(ev.tabId, { url: ev.url, at: Date.now() }) }
@@ -772,27 +730,24 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }
 
   const onNavEvent = (e: NavEvent): void => {
-    if (e.type === 'activated') {
-      if (overrideModeRef.current) return
-      void swapTo(e.tabId)
+    if (e.type === 'removed') {
+      // Another tab's panel closed with its tab. Its Session goes too, as the
+      // boot's prune would sweep it on the next open.
+      if (e.tabId !== tabIdRef.current) { void store.remove(e.tabId).catch(swallow); return }
+      void onTabRemoved(e.tabId)
       return
     }
-    if (e.type === 'removed') { void onTabRemoved(e.tabId); return }
     onNavigated(e)
   }
 
   useEffect(() => {
     let cancelled = false
     let stop: (() => void) | null = null
-    // ?tabId= lets the e2e smoke drive the panel as an ordinary page; the real
-    // side panel binds to the active tab of its own window.
+    // The service worker always puts the tab in the panel's address. A panel
+    // opened without one (the tests) binds once to the active tab as it starts.
     const override = new URLSearchParams(location.search).get('tabId')
-    overrideModeRef.current = override !== null
 
     const boot = async (): Promise<void> => {
-      let windowId = -1
-      try { windowId = (await chrome.windows.getCurrent()).id ?? -1 } catch { /* no window api */ }
-      if (cancelled) return
       let bound = override === null ? null : Number(override)
       if (bound === null) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
@@ -824,7 +779,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         setTabId(bound)
         display(restored)
       }
-      try { stop = createNavSignals(windowId, onNavEvent) } catch { /* no navigation apis */ }
+      try { stop = createNavSignals(onNavEvent) } catch { /* no navigation apis */ }
       setBooted(true)
     }
     void boot()
@@ -868,6 +823,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       port.request<Record<string, string>>('profile.get', {}),
       port.request<Record<string, string>>('answerBank.get', {}),
     ]).then(([p, b]) => {
+      ownEmailRef.current = p.ok ? p.result.email ?? null : null
       setFacts({ ...(p.ok ? p.result : {}), ...(b.ok ? b.result : {}) })
       setFactsLoaded(true)
       setFactsOk(p.ok && b.ok)
@@ -875,10 +831,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   }, [check])
 
   // Snapshot pushes arrive stamped by the SERVICE WORKER with the sender's
-  // tabId/frameId (the content script can know neither). S7: the stamp is
-  // ROUTING, not a filter — `m.tabId` is compared against the sessions, not
-  // against the active tab, so a background form's snapshot reaches ITS row
-  // instead of being thrown away. Stale epochs are still rejected: handles from
+  // tabId/frameId (the content script can know neither), and every open panel
+  // hears every push. Each takes only its own tab's: another tab's snapshot is
+  // that tab's panel's to merge. Stale epochs are still rejected: handles from
   // an old scan must never leak into a save. The service worker's own
   // storage.session fallback (`jff:snap:*`) is untouched by any of this.
   useEffect(() => {
@@ -886,6 +841,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       const m = raw as { kind?: string; tabId?: number; frameId?: number; snap?: { epoch: number; values: Record<number, string> } }
       if (m?.kind !== 'snapshotPush' || m.snap === undefined || typeof m.tabId !== 'number') return
       const tabId = m.tabId
+      if (tabId !== tabIdRef.current) return
       const epoch = m.snap.epoch
       const frameId = m.frameId ?? 0
       const values = m.snap.values
@@ -899,8 +855,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (epoch === s.epoch) writeSession(merge)
         return
       }
-      // Background: the epoch check runs against the row `fn` is handed
-      // (stored-or-pending), because only that row knows which scan it describes.
+      // Not on screen yet (a Scan still minting its session): the epoch check
+      // runs against the row `fn` is handed, which knows which scan it describes.
       void mutateSession(tabId, (row) => (row === null || row.epoch !== epoch ? null : merge(row))).catch(swallow)
     }
     chrome.runtime.onMessage.addListener(onMsg)
@@ -1059,6 +1015,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           site: s.startUrl === '' ? registrableDomain(url) : s.site,
           // The badge described a page; this scan re-decides it.
           appliedHit: null,
+          addressRevisit: null,
         }))
       }
       // A4: the applied badge outranks the scan itself — but never the user's
@@ -1149,6 +1106,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         url,
         title: tab.title ?? '',
         company: known === '' ? null : known,
+        ownEmail: ownEmailRef.current,
       })
       // The bound tab navigated or closed while this scan ran: these fields,
       // resolutions and counts describe a page that is gone, and every JFF_FILL
@@ -1164,6 +1122,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // DISTINCT frames: a frame that errored first-pass and replied on the retry
         // contributes two reports but is still one frame on the page.
         // The ATS rides along so the empty state can say where its form is.
+        // Spec #66: no Field and an address is a posting that takes email.
+        : out.fields.length === 0 && out.candidates.length > 0
+          ? { kind: 'email', frames: new Set(out.frameReports.map((r) => r.frameId)).size, candidates: out.candidates.length }
         : out.fields.length === 0 ? { kind: 'empty', frames: new Set(out.frameReports.map((r) => r.frameId)).size, ats: out.ats }
         : out.llmError !== null ? { kind: 'failed', reason: hostErrorText(out.llmError) }
         : doneOutcome(out.fill.filled.length, first.settled)
@@ -1185,7 +1146,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // enumeration handed the same questions, and `committedEdits` outranks it.
       // The background settle runs the SAME function inside store.mutate — a
       // second implementation would be a second copy of the never-guess rules.
-      await applyToSession(target, sc.gen, (s) => ({
+      // Spec #66: a page with no Field and a candidate picks its Apply address
+      // without a click, from the Session as this Scan leaves it. A Session
+      // that holds an Apply address keeps it: that is the user's choice.
+      const autoPick: { params: ApplyAddressPickParams | null } = { params: null }
+      await applyToSession(target, sc.gen, (s) => {
+        const next: Session = {
         // The Options the first step's Fill read: a dropdown it opened now offers them.
         ...projectAnswers(s, withReadOptions(out.fields, out.fill), first.settled, first.committedEdits),
         waiting: owesMapping ? out.pending.map(refOf) : [],
@@ -1196,6 +1162,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         unreachable: out.unreachableWidgets,
         activeCaptcha: out.activeCaptcha,
         frameReports: out.frameReports,
+        applyCandidates: out.candidates,
         // What the user typed while the Scan ran is theirs.
         ...(s.jobTextSource === 'paste' && s.jobText.trim() !== ''
           ? {}
@@ -1206,7 +1173,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           ? { company: out.company, companyGuessed: true }
           : {}),
         lastOutcome: onScreen,
-      }))
+        }
+        autoPick.params = outcome.kind === 'email' && next.applyAddress === null && next.applyCandidates.length > 0
+          ? addressPickParams(next, tab.title ?? '')
+          : null
+        return next
+      })
+      if (autoPick.params !== null) void pickAfterRevisit(sc, autoPick.params)
       if (out.llmError !== null) setHostError(hostErrorText(out.llmError))
       const pickStillCurrent = (): boolean => mountedRef.current && alive(sc) && rt.epoch === out.epoch
       runPicks(target, sc.gen, picksOwed(out.resolutions, out.fields, out.fill), pickStillCurrent)
@@ -1609,7 +1582,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // never land in edits (spec D3).
     setGeneratingRefs((s) => new Set(s).add(ref))
     try {
-      const r = await port.request<{ draft: string; unsupportedClaims?: string[] }>('generate', {
+      const r = await port.request<{ draft: string; unsupportedClaims?: string[]; model?: string }>('generate', {
         handle: row.resolution.handle,
         questionRaw: row.field.label ?? '',
         description: row.field.description,
@@ -1624,6 +1597,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       if (r.ok) {
         const draft = r.result.draft
         const unsupported = r.result.unsupportedClaims ?? []
+        // The Session records which model wrote each Draft (spec #66).
+        const model = typeof r.result.model === 'string' ? r.result.model : null
         // S4: a settled draft is carried with provenance 'generated', which is
         // what re-enters generatedRefs on the next step. Its Draft check
         // warning replaces whatever the row's previous Draft carried.
@@ -1634,7 +1609,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             edits: { ...s.edits, [ref]: draft },
             generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
             draftWarnings: unsupported.length === 0 ? draftWarnings : { ...draftWarnings, [ref]: unsupported },
-          }, ref, draft, 'generated')
+          }, ref, draft, 'generated', model)
         })
         return 'ok'
       }
@@ -1706,7 +1681,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   const onPickJobText = async (): Promise<void> => {
     const owner = sessionRef.current
-    if (owner === null || fields.length === 0 || picking) return
+    if (owner === null || (fields.length === 0 && !emailStarted(owner)) || picking) return
     const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
     // The picked text — and the selector learned from it — describe the page the
     // pick started on; everything below this await is dropped once that page is gone.
@@ -1727,6 +1702,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       }
       await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick' }))
       if (inScope(sc)) clearActionFailure()
+      // An Application email that waited for the job text starts now.
+      void startEmailDraft(sc)
       const tab = await getTab(sc.target)
       if (!inScope(sc)) return
       const hostname = hostnameOf(tab?.url)
@@ -1740,6 +1717,245 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     } finally {
       if (tabIdRef.current === sc.target) setPicking(false)
     }
+  }
+
+  /** The pick's state on its session's runtime, and on screen when that
+   *  session is shown. A runtime pruned with its tab is not rebuilt. */
+  const setAddressPickFor = (tabId: number, v: AddressPickUi | null): void => {
+    const rt = runtimesRef.current.get(tabId)
+    if (rt === undefined) return
+    rt.addressPick = v
+    if (mountedRef.current && sessionRef.current?.tabId === tabId) setAddressPick(v)
+  }
+
+  /**
+   * The Apply address pick (spec #66, ADR 0008). A pick becomes the Session's
+   * Apply address, recorded as `pick`, unless the user chose one while it was
+   * out: their choice wins. None, a position outside the list and a failure
+   * leave the candidate list and the box, with a line that says which.
+   */
+  const pickApplyAddress = async (sc: { target: number; gen: number }, params: ApplyAddressPickParams): Promise<void> => {
+    const rt = runtimeOf(sc.target)
+    if (rt.addressPick?.kind === 'picking') return
+    const seq = ++rt.addressPickSeq
+    setAddressPickFor(sc.target, { kind: 'picking' })
+    const outcome = await requestAddressPick(portRef.current, params)
+    if (rt.addressPickSeq !== seq) return
+    // The page the pick was asked for is gone: its answer describes nothing.
+    if (!alive(sc)) { setAddressPickFor(sc.target, null); return }
+    if (outcome.kind === 'failed') { setAddressPickFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
+    if (outcome.kind === 'none') { setAddressPickFor(sc.target, { kind: 'none' }); return }
+    const landed: { ended: AddressPickUi | null; chosen: boolean } = { ended: null, chosen: false }
+    await applyToSession(sc.target, sc.gen, (s) => {
+      if (s.applyAddress !== null) return s
+      // A newer Scan whose candidates no longer hold the address: the pick is none.
+      if (!s.applyCandidates.some((c) => c.address.toLowerCase() === outcome.address.toLowerCase())) {
+        landed.ended = { kind: 'none' }
+        return s
+      }
+      landed.chosen = true
+      return { ...s, applyAddress: outcome.address, applyAddressChosenBy: 'pick' }
+    })
+    if (rt.addressPickSeq === seq) setAddressPickFor(sc.target, landed.ended)
+    // A pick is a choice of the Apply address: the Draft starts without a click.
+    if (landed.chosen) await startEmailDraft(sc)
+  }
+
+  /**
+   * The Revisit check by Apply address (spec #66, ticket #76): asks the
+   * Native host whether one of these addresses was already mailed. A hit
+   * keeps the badge in the Session with what waits for "Draft anyway", and
+   * answers true: the caller stops there. A Session that already passed a
+   * Revisit badge, or a failed check, goes on. A check whose page is gone
+   * answers true too, since what waited describes nothing.
+   */
+  const revisitStops = async (sc: { target: number; gen: number }, addresses: string[], waiting: RevisitWaiting): Promise<boolean> => {
+    const rt = runtimeOf(sc.target)
+    const guarded = waiting.kind === 'pick'
+    if (guarded && rt.revisitBusy) return true
+    const seen: { passed: boolean; startUrl: string } = { passed: false, startUrl: '' }
+    await applyToSession(sc.target, sc.gen, (s) => { seen.passed = s.revisitPassed; seen.startUrl = s.startUrl; return s })
+    if (seen.passed) return false
+    if (guarded) rt.revisitBusy = true
+    try {
+      const tab = await getTab(sc.target)
+      if (!alive(sc)) return true
+      const url = tab?.url !== undefined && tab.url !== '' ? tab.url : seen.startUrl
+      if (url === '') return false
+      const hit = await requestAddressRevisit(portRef.current, url, addresses)
+      if (!alive(sc)) return true
+      if (hit === null) return false
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, addressRevisit: { ...hit, waiting } }))
+      return true
+    } finally {
+      if (guarded) rt.revisitBusy = false
+    }
+  }
+
+  /** The Apply address pick after the Revisit check over every candidate: a
+   *  duplicate is caught before any AI call. */
+  const pickAfterRevisit = async (sc: { target: number; gen: number }, params: ApplyAddressPickParams): Promise<void> => {
+    if (await revisitStops(sc, params.candidates.map((c) => c.address), { kind: 'pick' })) return
+    await pickApplyAddress(sc, params)
+  }
+
+  /** "Draft anyway" on the Revisit badge by Apply address: the Session
+   *  records the pass, and what waited runs. */
+  const onDraftAnyway = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || owner.addressRevisit === null) return
+    const waiting = owner.addressRevisit.waiting
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    await applyToSession(sc.target, sc.gen, (s) => ({ ...s, addressRevisit: null, revisitPassed: true }))
+    if (waiting.kind === 'choose') { await onChooseApplyAddress(waiting.address, waiting.how); return }
+    const tab = await getTab(sc.target)
+    const now = sessionRef.current
+    if (!alive(sc) || now === null || now.tabId !== sc.target || now.applyAddress !== null || now.applyCandidates.length === 0) return
+    await pickApplyAddress(sc, addressPickParams(now, tab?.title ?? ''))
+  }
+
+  /** The Draft's state on its session's runtime, and on screen when that
+   *  session is shown. A runtime pruned with its tab is not rebuilt. */
+  const setEmailDraftFor = (tabId: number, v: EmailDraftUi | null): void => {
+    const rt = runtimesRef.current.get(tabId)
+    if (rt === undefined) return
+    rt.emailDraft = v
+    if (mountedRef.current && sessionRef.current?.tabId === tabId) setEmailDraftUi(v)
+  }
+
+  /**
+   * The Application email's Draft (spec #66). It starts when the Session
+   * holds an Apply address and Job posting text and no Draft yet, so every
+   * route that completes those, a choice of the address, a paste or a pick
+   * of the text, calls this, and a Session that already holds a Draft never
+   * pays for a second one. Its answer lands in the Session that asked.
+   */
+  const startEmailDraft = async (sc: { target: number; gen: number }): Promise<void> => {
+    const rt = runtimesRef.current.get(sc.target)
+    if (rt === undefined || rt.emailDraftBusy || !alive(sc)) return
+    // A Session on screen that owes no Draft asks nothing, not even its tab.
+    const shown = sessionRef.current
+    if (shown !== null && shown.tabId === sc.target && !emailDraftOwed(shown)) return
+    rt.emailDraftBusy = true
+    try {
+      const [tab, cv] = await Promise.all([getTab(sc.target), loadResumeText().catch(() => null)])
+      if (!alive(sc)) return
+      const plan: { params: EmailDraftParams | null } = { params: null }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        plan.params = emailDraftOwed(s) ? emailDraftParams(s, tab?.title ?? '', cv) : null
+        return s
+      })
+      const params = plan.params
+      if (params === null) return
+      setEmailDraftFor(sc.target, { kind: 'drafting' })
+      const outcome = await requestEmailDraft(portRef.current, params)
+      if (!alive(sc)) { setEmailDraftFor(sc.target, null); return }
+      if (outcome.kind === 'failed') { setEmailDraftFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
+      await applyToSession(sc.target, sc.gen, (s) => (s.emailDraft !== null
+        ? s
+        : { ...s, emailDraft: { ...outcome.draft, edited: false, subjectEdited: false, pageSubject: params.pageSubject } }))
+      setEmailDraftFor(sc.target, null)
+    } finally {
+      rt.emailDraftBusy = false
+    }
+  }
+
+  /** The Draft by hand: after a failure, or on a Session nothing drafted yet. */
+  const onDraftEmail = (): void => {
+    const sc = scopeNow()
+    if (sc !== null) void startEmailDraft(sc)
+  }
+
+  /** A hand edit to the Draft. An edit to the body marks the text as edited;
+   *  an edited subject stays through a new Draft. */
+  const onEditEmail = (patch: { subject: string } | { body: string }): void => {
+    writeSession((s) => (s.emailDraft === null
+      ? s
+      : { ...s, emailDraft: { ...s.emailDraft, ...patch, ...('body' in patch ? { edited: true } : { subjectEdited: true }) } }))
+  }
+
+  /** "Open in my mail app" (ticket #75): the link opens the address; the
+   *  Session keeps what it carried, for Mark applied. Nothing is marked. */
+  const onOpenMailApp = (email: SessionMailHandover): void => {
+    writeSession((s) => ({ ...s, mailHandover: email }))
+  }
+
+  /**
+   * Regenerate, or the language switch (ticket #73): a new Draft in place of
+   * the one the Session holds, asked with the language and the user's
+   * instruction. Review has already asked the user before losing their
+   * edits. A failure leaves the Draft as it was and says why.
+   */
+  const onRedraftEmail = async (ask: RedraftAsk): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || owner.emailDraft === null) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const rt = runtimesRef.current.get(sc.target)
+    if (rt === undefined || rt.emailDraftBusy || !alive(sc)) return
+    rt.emailDraftBusy = true
+    try {
+      const [tab, cv] = await Promise.all([getTab(sc.target), loadResumeText().catch(() => null)])
+      if (!alive(sc)) return
+      const plan: { params: EmailDraftParams | null } = { params: null }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        plan.params = s.emailDraft === null || s.jobText.trim() === '' ? null : emailRedraftParams(s, s.emailDraft, tab?.title ?? '', cv, ask)
+        return s
+      })
+      const params = plan.params
+      if (params === null) {
+        setEmailDraftFor(sc.target, { kind: 'failed', reason: 'It needs the job description. Paste it in the box above, or click Pick job description.' })
+        return
+      }
+      setEmailDraftFor(sc.target, { kind: 'drafting' })
+      const outcome = await requestEmailDraft(portRef.current, params)
+      if (!alive(sc)) { setEmailDraftFor(sc.target, null); return }
+      if (outcome.kind === 'failed') { setEmailDraftFor(sc.target, { kind: 'failed', reason: hostErrorText(outcome.error) }); return }
+      await applyToSession(sc.target, sc.gen, (s) => (s.emailDraft === null ? s : { ...s, emailDraft: replaceEmailDraft(s.emailDraft, outcome.draft) }))
+      setEmailDraftFor(sc.target, null)
+    } finally {
+      rt.emailDraftBusy = false
+    }
+  }
+
+  /** "Apply by email instead" beside a form (spec #66): the pick runs on this click and no sooner. */
+  const onApplyByEmail = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || owner.applyAddress !== null || owner.applyCandidates.length === 0) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const tab = await getTab(sc.target)
+    const now = sessionRef.current
+    if (!alive(sc) || now === null || now.tabId !== sc.target || now.applyAddress !== null || now.applyCandidates.length === 0) return
+    await pickAfterRevisit(sc, addressPickParams(now, tab?.title ?? ''))
+  }
+
+  /**
+   * The Apply address the user picked from the list or typed (spec #66). A
+   * Session that holds no Job posting text reads the page's now: a Scan with
+   * no candidate left it unread so as to cost the Native host nothing.
+   */
+  const onChooseApplyAddress = async (address: string, how: 'list' | 'typed'): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    // An address whose Draft is still to come is checked first, as the pick's
+    // candidates are (ticket #76). A change of address under a Draft starts none.
+    if (owner.emailDraft === null && await revisitStops(sc, [address], { kind: 'choose', address, how })) return
+    await applyToSession(sc.target, sc.gen, (s) => ({ ...s, applyAddress: address, applyAddressChosenBy: how }))
+    const port = portRef.current
+    if (port !== null && owner.jobText.trim() === '') {
+      try {
+        const tab = await getTab(sc.target)
+        if (!alive(sc)) return
+        const read = await readPageJobText({ port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url) }, owner.epoch)
+        if (!alive(sc)) return
+        // What the user pasted or picked meanwhile is theirs.
+        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource } : s))
+      } catch {
+        // A page the panel cannot reach leaves the paste box and the pick to the user.
+      }
+    }
+    // The Draft starts now, or once the user pastes or picks the job text.
+    await startEmailDraft(sc)
   }
 
   /** "Not the job description" (spec #41): the Session's text goes, the source
@@ -1866,12 +2082,6 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  `store.remove` writes through and TOMBSTONES the tab, so a settle still in
    *  flight can never resurrect it. */
   const endSession = async (id: number): Promise<void> => {
-    // Same rule as `onTabRemoved` (Task 14, Finding 2): invalidate only the work
-    // that would put THIS session's tab on screen. An unconditional bump here
-    // cancelled a swap already heading to a different, live tab — Discard or
-    // Mark applied clicked during a tab switch stranded the panel on the tab it
-    // had just ended.
-    if (swapRef.current.target === id) bumpSwap()
     endRuntime(id)
     lastNavRef.current.delete(id)
     await store.remove(id)
@@ -1906,10 +2116,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       // silent-wrong-data write. Marking stays available for the new page.
       if (genOf(target) !== gen) return
       const title = (tab?.title ?? '').trim()
+      // A form mark keeps the Prose Fields' texts as the Session held them at
+      // the click (spec #66). After "Open in my mail app" the mark goes by
+      // email and keeps the Application email as it was handed over (#75).
       const r = await port.request<{ markedAt: string }>('applied.mark', {
         url: startUrl,
         company: markCompany,
         jobTitle: title === '' ? null : title,
+        ...(s.mailHandover === null
+          ? { channel: 'form', proseAnswers: keptProseAnswers(s) }
+          : { channel: 'email', email: s.mailHandover }),
       })
       if (!r.ok) { setHostError(hostErrorText(r.error)); return }
       await endSession(target)
@@ -1919,6 +2135,141 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setMarkedMsg({ markedAt: r.result.markedAt })
     } finally {
       setMarking(false)
+    }
+  }
+
+  /**
+   * Send (spec #66, ticket #82): the only path to `mail.send`, and the only
+   * event that mails anything (ADR 0012). One click, no dialog. The request
+   * carries the email as the Review shows it, the Resume file and the body's
+   * marks; the Native host checks the Sender address, sends, and marks the
+   * Job posting applied by email. A Send that went out ends the Session as
+   * Mark applied does; one that failed leaves the Draft for another click.
+   *
+   * One whose outcome is unknown (ticket #83) leaves the Draft too, and asks:
+   * the Native host answered so, or the request died on the way. The panel
+   * says the user chose to send again only after "Send again", which also
+   * names the attempt to abandon, or when the Session's `revisitPassed` is set.
+   */
+  const onSendEmail = async (senderAddress: string, abandonAttempt: string | null = null): Promise<void> => {
+    const port = portRef.current
+    const s = sessionRef.current
+    if (port === null || s === null || s.startUrl === '' || s.parked || sendingRef.current || marking) return
+    const email = mailHandoverOf({ applyAddress: s.applyAddress, emailDraft: s.emailDraft })
+    if (email === null) return
+    const target = s.tabId
+    const gen = runtimeOf(target).gen
+    sendingRef.current = true
+    setSending(true)
+    setSendError(null)
+    setArrivedError(null)
+    try {
+      const resume = await loadResume()
+      if (resume === null) { setSendError(`${NOT_SENT} No Resume is stored to attach. Add one above, then click Send.`); return }
+      const tab = await getTab(target)
+      // The page this Session described is gone: its title names another posting.
+      if (genOf(target) !== gen) return
+      const title = (tab?.title ?? '').trim()
+      const params: MailSendParams = {
+        url: s.startUrl,
+        company: s.company.trim() === '' ? null : s.company.trim(),
+        jobTitle: title === '' ? null : title,
+        applyAddress: email.applyAddress,
+        senderAddress,
+        subject: email.subject,
+        body: email.body,
+        language: email.language,
+        resume: { name: resume.name, mimeType: resume.mimeType, dataBase64: resume.dataBase64 },
+        aiDrafted: email.aiDrafted,
+        edited: email.edited,
+        model: email.model,
+        // A passed Revisit badge is consent to send past the Applied job the
+        // user saw, not past a Send this Session issued since: that one may
+        // have gone out while the panel was gone.
+        resend: abandonAttempt !== null || (s.revisitPassed && !s.sendIssued),
+        abandonAttempt,
+      }
+      const requestId = crypto.randomUUID()
+      setSendUnknown(null)
+      // Stored before the request leaves, so a panel that dies mid-Send
+      // comes back knowing it issued one.
+      await applyToSession(target, gen, (x) => ({ ...x, sendIssued: true }))
+      const r = await port.request('mail.send', params, requestId)
+      if (!r.ok) {
+        // The request died on the way, or its deadline passed: the Native host
+        // may have sent it. Unknown is not failed.
+        if (r.error.kind === 'unreachable' || r.error.kind === 'timeout') {
+          setSendUnknown({ tabId: target, attemptRequestId: requestId, senderAddress })
+          return
+        }
+        // A failure the host states sent nothing, so the pass holds again. A
+        // `bad_request` keeps the Send spent: it is also the host's "already
+        // sent" refusal, the one answer that says an earlier Send went out.
+        if (r.error.kind !== 'bad_request') await applyToSession(target, gen, (x) => ({ ...x, sendIssued: false }))
+        const why = r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message
+        // `db` is also "sent, but recording it failed": no claim that it was not sent.
+        setSendError(r.error.kind === 'db' ? why : `${NOT_SENT} ${why}`)
+        return
+      }
+      const sent = MailSendResultSchema.safeParse(r.result)
+      if (sent.success && sent.data.outcome === 'unknown') {
+        setSendUnknown({ tabId: target, attemptRequestId: sent.data.attemptRequestId, senderAddress })
+        return
+      }
+      await endSession(target)
+      setMarkedMsg({ markedAt: sent.success && sent.data.outcome === 'sent' ? sent.data.markedAt : new Date().toISOString() })
+    } finally {
+      sendingRef.current = false
+      setSending(false)
+    }
+  }
+
+  /**
+   * "It arrived" (ticket #83): the user found the email in their Sent folder.
+   * The Native host marks the Job posting applied by email and keeps the
+   * Application email as the Review shows it, with no Gmail ids, and the
+   * Session ends as it does after a Send that went out.
+   */
+  const onEmailArrived = async (): Promise<void> => {
+    const port = portRef.current
+    const s = sessionRef.current
+    const u = sendUnknown
+    if (port === null || s === null || u === null || u.tabId !== s.tabId || s.startUrl === '' || sendingRef.current) return
+    const email = mailHandoverOf({ applyAddress: s.applyAddress, emailDraft: s.emailDraft })
+    if (email === null) return
+    const target = s.tabId
+    const gen = runtimeOf(target).gen
+    sendingRef.current = true
+    setArriving(true)
+    setArrivedError(null)
+    try {
+      const [tab, resume] = await Promise.all([getTab(target), loadResume()])
+      if (genOf(target) !== gen) return
+      const title = (tab?.title ?? '').trim()
+      const params: MailSendArrivedParams = {
+        attemptRequestId: u.attemptRequestId,
+        url: s.startUrl,
+        company: s.company.trim() === '' ? null : s.company.trim(),
+        jobTitle: title === '' ? null : title,
+        applyAddress: email.applyAddress,
+        senderAddress: u.senderAddress,
+        subject: email.subject,
+        body: email.body,
+        language: email.language,
+        attachmentNames: resume === null ? [] : [resume.name],
+        aiDrafted: email.aiDrafted,
+        edited: email.edited,
+        model: email.model,
+      }
+      const r = await port.request('mail.send.arrived', params)
+      if (!r.ok) { setArrivedError(r.error.message.trim() === '' ? ERROR_COPY[r.error.kind] : r.error.message); return }
+      const marked = MailSendArrivedResultSchema.safeParse(r.result)
+      setSendUnknown(null)
+      await endSession(target)
+      setMarkedMsg({ markedAt: marked.success ? marked.data.markedAt : new Date().toISOString() })
+    } finally {
+      sendingRef.current = false
+      setArriving(false)
     }
   }
 
@@ -2030,6 +2381,41 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     return r.result.jobs ?? []
   }
 
+  /** The Mail account (spec #66), for the email Review: null when the Native
+   *  host could not say. A failure here shows no banner: the Review still
+   *  offers the mail app, and nothing about the Draft waits for this. */
+  const readMailStatus = async (): Promise<MailStatus | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request('mail.status', {})
+    if (!r.ok) return null
+    const parsed = MailStatusSchema.safeParse(r.result)
+    return parsed.success ? parsed.data : null
+  }
+
+  /** The Sender addresses (ticket #81), for the email Review: the list,
+   *  `needs_reconnect` when Google refused the sign-in, or null when the
+   *  Native host could not say. A failure shows no banner, as above. */
+  const readMailSenders = async (): Promise<MailSendersResult | 'needs_reconnect' | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request('mail.senders', {})
+    if (!r.ok) return r.error.kind === 'not_authed' ? 'needs_reconnect' : null
+    const parsed = MailSendersResultSchema.safeParse(r.result)
+    return parsed.success ? parsed.data : null
+  }
+
+  /** One Applied job's stored texts (spec #66), or null on a host failure or
+   *  a malformed reply. */
+  const loadAppliedTexts = async (id: number): Promise<AppliedTexts | null> => {
+    const port = portRef.current
+    if (port === null) return null
+    const r = await port.request('applied.get', { id })
+    if (!r.ok) return null
+    const parsed = AppliedTextsSchema.safeParse(r.result)
+    return parsed.success ? parsed.data : null
+  }
+
   /* ---------------------------------------------------------------- markup */
 
   const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull })
@@ -2049,8 +2435,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     >
       <header className="flex items-center justify-between border-b border-neutral-200 pb-2 dark:border-neutral-700">
         <h1 className="m-0 text-[13px] font-semibold tracking-wide" data-jff-title="1">job-form-filler</h1>
-        <span className="text-neutral-500 tabular-nums dark:text-neutral-400" data-jff-tab={String(tabId ?? '')}>
-          {tabId === null ? 'no tab' : `tab ${tabId}`}
+        <span className="flex items-center gap-3">
+          <span className="text-neutral-500 tabular-nums dark:text-neutral-400" data-jff-tab={String(tabId ?? '')}>
+            {tabId === null ? 'no tab' : `tab ${tabId}`}
+          </span>
+          <a
+            href={settingsUrl()} target="_blank" rel="noreferrer" data-jff-settings-link="1"
+            className="text-neutral-500 underline-offset-2 hover:text-blue-700 hover:underline dark:text-neutral-400 dark:hover:text-blue-300"
+            onClick={(e) => { e.preventDefault(); void openSettingsPage() }}
+          >
+            Settings
+          </a>
         </span>
       </header>
 
@@ -2116,7 +2511,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                 type="button" className={`${BTN} ml-2`}
                 onClick={() => {
                   runtimeOf(session.tabId).appliedOverride = true
-                  writeSession((s) => ({ ...s, appliedHit: null }))
+                  writeSession((s) => ({ ...s, appliedHit: null, revisitPassed: true }))
                   setScanNonce((n) => n + 1)
                 }}
               >
@@ -2124,6 +2519,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
               </button>
             </div>
           )}
+      {/* The Revisit badge by Apply address (ticket #76): the same badge in
+          other words. The badge by Canonical URL wins: a Scan that shows it
+          stops before any candidate is asked about. */}
+      {markedMsg === null && session?.appliedHit == null && session?.addressRevisit != null && (
+        <div className={BANNER_BASE} role="status" data-jff-revisit-address="1">
+          {revisitWords(session.addressRevisit)}
+          <button type="button" className={`${BTN} ml-2`} onClick={() => { void onDraftAnyway() }}>
+            Draft anyway
+          </button>
+        </div>
+      )}
       {submitPrompt && (
         <div className={BANNER_BASE} role="status" data-jff-submit-prompt="1">
           Looks like this application was submitted. Mark as applied?
@@ -2180,8 +2586,18 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         Job description (paste here if the scan could not find it)
         <textarea
           className={`${INPUT} mt-1 resize-y`} rows={4} value={jobText} disabled={session === null}
-          // Typing or pasting makes the text the user's from then on.
-          onChange={(e) => { const v = e.target.value; writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' })) }}
+          // Typing or pasting makes the text the user's from then on. A paste,
+          // and not each typed key, starts an Application email that waited
+          // for the text (spec #66).
+          onPaste={() => { pastedRef.current = true }}
+          onChange={(e) => {
+            const v = e.target.value
+            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' }))
+            if (!pastedRef.current) return
+            pastedRef.current = false
+            const sc = scopeNow()
+            if (sc !== null) void startEmailDraft(sc)
+          }}
         />
         {session !== null && (
           // Where the text came from (spec #41), right under the box.
@@ -2192,7 +2608,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             )}
           </span>
         )}
-        <button type="button" className={`${BTN} mt-1`} disabled={fields.length === 0 || picking} onClick={onPickJobText}>
+        <button type="button" className={`${BTN} mt-1`} disabled={(fields.length === 0 && (session === null || !emailStarted(session))) || picking} onClick={onPickJobText}>
           {busyLabel(picking, 'Pick job description', 'Picking… (click the description on the page)')}
         </button>
       </label>
@@ -2204,7 +2620,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
           )
         : view === 'applications'
-          ? <ApplicationsView load={loadApplications} />
+          ? <ApplicationsView load={loadApplications} loadTexts={loadAppliedTexts} />
           : (
             <>
               {session === null
@@ -2224,6 +2640,47 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                     )
                   : (
                     <>
+              {showsEmailFlow(session) && (
+                // Keyed by tab: what is open in one tab's flow stays there.
+                <EmailChooser
+                  key={session.tabId}
+                  candidates={session.applyCandidates} applyAddress={session.applyAddress} chosenBy={session.applyAddressChosenBy}
+                  hasFields={session.fields.length > 0}
+                  pick={addressPick}
+                  onOffer={() => { void onApplyByEmail() }}
+                  onChoose={(address, how) => { void onChooseApplyAddress(address, how) }}
+                  review={(toPending) => (
+                    <EmailReview
+                      draft={session.emailDraft} ui={emailDraftUi}
+                      needsJobText={session.emailDraft === null && session.jobText.trim() === ''}
+                      resumeName={resumeName}
+                      to={session.applyAddress}
+                      handedOver={session.mailHandover !== null}
+                      onOpenMailApp={onOpenMailApp}
+                      onSubject={(subject) => onEditEmail({ subject })}
+                      onBody={(body) => onEditEmail({ body })}
+                      onDraft={onDraftEmail}
+                      onRedraft={(ask) => { void onRedraftEmail(ask) }}
+                      readMailStatus={readMailStatus}
+                      onConnect={() => { void openSettingsPage() }}
+                      readSenders={readMailSenders}
+                      senderAddress={session.senderAddress}
+                      onSender={(address) => { writeSession((s) => ({ ...s, senderAddress: address })) }}
+                      onReconnect={() => { void openSettingsPage() }}
+                      toPending={toPending}
+                      onSend={(sender) => { void onSendEmail(sender) }}
+                      sending={sending}
+                      sendError={sendError}
+                      sendUnknown={sendUnknown === null || sendUnknown.tabId !== session.tabId ? null : {
+                        onArrived: () => { void onEmailArrived() },
+                        onSendAgain: (sender) => { void onSendEmail(sender ?? sendUnknown.senderAddress, sendUnknown.attemptRequestId) },
+                        busy: sending || arriving,
+                        error: arrivedError,
+                      }}
+                    />
+                  )}
+                />
+              )}
               {listed.length > 0 && (
                 <section className="mt-4" data-jff-rows="1">
                   {(generateEligible.length > 0 || generateAll !== null) && (

@@ -146,13 +146,13 @@ export interface FieldRowProps {
  * about the user which nothing they stored supports, quoted so they can find
  * and fix it in the editor below. The Draft itself stays editable (ADR 0004).
  */
-function DraftWarning({ claims }: { claims: string[] }) {
+export function DraftWarning({ claims, before = 'fill' }: { claims: string[]; before?: 'fill' | 'send' }) {
   return (
     <div
       role="note" data-jff-draft-warning="1"
       className="mt-1.5 rounded-md border border-amber-300 px-2 py-1.5 text-[12px] text-amber-800 dark:border-amber-600 dark:text-amber-300"
     >
-      <p>Nothing you stored supports {claims.length === 1 ? 'this sentence' : 'these sentences'}. Check {claims.length === 1 ? 'it' : 'them'} before you fill:</p>
+      <p>Nothing you stored supports {claims.length === 1 ? 'this sentence' : 'these sentences'}. Check {claims.length === 1 ? 'it' : 'them'} before you {before}:</p>
       <ul className="mt-1 space-y-0.5">
         {claims.map((c) => <li key={c}><q>{c}</q></li>)}
       </ul>

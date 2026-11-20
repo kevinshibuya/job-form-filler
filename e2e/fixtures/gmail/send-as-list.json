@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs",
+    "headers": {
+      "authorization": "Bearer ACCESS_TOKEN_PLACEHOLDER"
+    },
+    "body": ""
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=UTF-8"
+    },
+    "body": "{\n  \"sendAs\": [\n    {\n      \"sendAsEmail\": \"ada@example.com\",\n      \"displayName\": \"\",\n      \"replyToAddress\": \"\",\n      \"signature\": \"\",\n      \"isPrimary\": true,\n      \"isDefault\": true\n    },\n    {\n      \"sendAsEmail\": \"ada@work.example.com\",\n      \"displayName\": \"Ada Lovelace\",\n      \"replyToAddress\": \"\",\n      \"signature\": \"\",\n      \"isPrimary\": false,\n      \"isDefault\": false,\n      \"treatAsAlias\": true,\n      \"verificationStatus\": \"accepted\"\n    },\n    {\n      \"sendAsEmail\": \"ada.unverified@example.org\",\n      \"displayName\": \"Ada Lovelace\",\n      \"replyToAddress\": \"\",\n      \"signature\": \"\",\n      \"isPrimary\": false,\n      \"isDefault\": false,\n      \"treatAsAlias\": true,\n      \"verificationStatus\": \"pending\"\n    }\n  ]\n}\n"
+  }
+}

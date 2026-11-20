@@ -4,7 +4,7 @@ import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 
 const JOB: AppliedJobRow = {
   id: 1, url: 'https://x.com/j/1', canonicalUrl: 'https://x.com/j/1',
-  company: 'Acme', jobTitle: 'Engineer', markedAt: '2026-07-01T12:00:00.000Z',
+  company: 'Acme', jobTitle: 'Engineer', markedAt: '2026-07-01T12:00:00.000Z', channel: 'form',
 }
 
 describe('ApplicationsView (A5)', () => {
@@ -16,6 +16,17 @@ describe('ApplicationsView (A5)', () => {
     const a = screen.getByRole('link', { name: 'Open posting' }) as HTMLAnchorElement
     expect(a.href).toBe('https://x.com/j/1')
     expect(a.target).toBe('_blank')
+  })
+
+  it('shows the channel on each row', async () => {
+    render(<ApplicationsView load={async () => [
+      { ...JOB, id: 1, jobTitle: 'Engineer' },
+      { ...JOB, id: 2, jobTitle: 'Analyst', channel: 'email' },
+    ]} />)
+    await screen.findByText('Engineer')
+    const rows = [...document.querySelectorAll('[data-jff-apps] li')]
+    expect(rows.map((li) => li.querySelector('[data-jff-app-channel]')?.textContent)).toEqual(['Form', 'Email'])
+    expect(rows.map((li) => li.querySelector('[data-jff-app-channel]')?.getAttribute('data-jff-app-channel'))).toEqual(['form', 'email'])
   })
 
   it('renders the empty state', async () => {

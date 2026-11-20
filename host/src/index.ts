@@ -1,62 +1,38 @@
-/* eslint-disable no-restricted-properties -- this is the ONE file allowed to write stdout */
-import type { HostResponse } from '@jff/shared'
+/* eslint-disable no-restricted-properties -- this is the ONE file allowed to touch stdout: it hands it to startHost */
+// The shipped entry: builds the real dependencies and starts the Native host.
+// Everything else lives in startHost.ts, which tests drive with their own.
 import { loadConfig } from './config.js'
 import { openDb } from './db/repos.js'
-import { encodeMessage, FrameReader, MessageTooLarge } from './framing.js'
 import { createClaudeRunner } from './llm/claudeCli.js'
 import { createCodexRunner } from './llm/codexCli.js'
-import { handleRaw, type HandlerDeps } from './handlers.js'
-import { log } from './log.js'
-import { realAuthCache, realFileExists, realProbeAuth, realProbeCodexAuth, selfCheck } from './selfcheck.js'
 import { resolveModels } from './llm/models.js'
+import { log } from './log.js'
+import { createGmailDriver } from './mail/gmail.js'
+import { realHttp } from './mail/net.js'
+import { createKeychainStore } from './mail/secretStore.js'
+import { realAuthCache, realFileExists, realProbeAuth, realProbeCodexAuth } from './selfcheck.js'
+import { startHost } from './startHost.js'
+
+process.on('uncaughtException', (e) => { log('error', 'uncaught', { message: String(e) }) })
 
 const config = loadConfig()
-const db = openDb(config.dbPath)
-const runner = createClaudeRunner({ claudePath: config.claudePath })
-const codex = createCodexRunner({ codexPath: config.codexPath })
-const authCache = realAuthCache(config.authCachePath)
 const models = resolveModels(config.models)
 
-const deps: HandlerDeps = {
-  db, runner, codex, config, models,
-  selfCheckFn: () => selfCheck({
-    claudePath: config.claudePath,
-    codexPath: config.codexPath,
-    dbPath: config.dbPath,
+startHost({
+  config,
+  models,
+  openDb: (path) => openDb(path),
+  runner: createClaudeRunner({ claudePath: config.claudePath }),
+  codex: createCodexRunner({ codexPath: config.codexPath }),
+  mail: { driver: createGmailDriver({ http: realHttp }), secrets: createKeychainStore() },
+  selfCheckIo: {
     fileExists: realFileExists,
-    dbOk: () => { try { db.prepare('SELECT 1').get(); return true } catch { return false } },
     probeAuth: realProbeAuth(config.claudePath, models.claudeAuthProbe),
     probeCodexAuth: realProbeCodexAuth(config.codexPath, models.codexAuthProbe),
     now: () => new Date(),
-    ...authCache,
-  }),
-}
-
-function write(res: HostResponse): void {
-  try {
-    process.stdout.write(encodeMessage(res))
-  } catch (e) {
-    if (e instanceof MessageTooLarge) {
-      process.stdout.write(encodeMessage({
-        requestId: res.requestId, ok: false,
-        error: { kind: 'process', message: 'response exceeded the 1MB cap; this method must paginate' },
-      } satisfies HostResponse))
-      return
-    }
-    log('error', 'failed to write response', { message: String(e) })
-  }
-}
-
-const reader = new FrameReader()
-// Serialize handling so SQLite never sees concurrent writers from one port.
-let queue: Promise<void> = Promise.resolve()
-
-process.stdin.on('data', (chunk: Buffer) => {
-  for (const raw of reader.push(chunk)) {
-    queue = queue.then(async () => { write(await handleRaw(deps, raw)) })
-  }
+    ...realAuthCache(config.authCachePath),
+  },
+  input: process.stdin,
+  output: process.stdout,
+  exit: (code) => process.exit(code),
 })
-
-process.stdin.on('end', () => { log('info', 'stdin closed, exiting'); process.exit(0) })
-process.on('uncaughtException', (e) => { log('error', 'uncaught', { message: String(e) }) })
-log('info', 'host started', { dbPath: config.dbPath, claudePath: config.claudePath })

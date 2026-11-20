@@ -1,0 +1,18 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+    "headers": {
+      "authorization": "Bearer ACCESS_TOKEN_PLACEHOLDER",
+      "content-type": "application/json"
+    },
+    "body": "{\"raw\":\"RnJvbTogQWRhIExvdmVsYWNlIDxhZGFAZXhhbXBsZS5jb20-DQpUbzogYWRhQGV4YW1wbGUuY29tDQpTdWJqZWN0OiBQcm9iZTogQXBwbHkgYnkgZW1haWwgcmVzZWFyY2gNCk1JTUUtVmVyc2lvbjogMS4wDQpDb250ZW50LVR5cGU6IG11bHRpcGFydC9taXhlZDsgYm91bmRhcnk9ImJfMjk0NTMyNDJhMGVlMTQ5MCINCg0KLS1iXzI5NDUzMjQyYTBlZTE0OTANCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD0iVVRGLTgiDQpDb250ZW50LVRyYW5zZmVyLUVuY29kaW5nOiBiYXNlNjQNCg0KUVNCd2NtOWlaU0J0WlhOellXZGxJR1p5YjIwZ2RHaGxJR3B2WWkxbWIzSnRMV1pwYkd4bGNpQnlaWE5sWVhKamFDQjBhV05yWlhRdURRcFRaVzUwSUhkcGRHZ2dZU0J6YldGc2JDQlFSRVlnWVhSMFlXTm9aV1F1RFFvPQ0KLS1iXzI5NDUzMjQyYTBlZTE0OTANCkNvbnRlbnQtVHlwZTogYXBwbGljYXRpb24vcGRmOyBuYW1lPSJyZXN1bWUucGRmIg0KQ29udGVudC1EaXNwb3NpdGlvbjogYXR0YWNobWVudDsgZmlsZW5hbWU9InJlc3VtZS5wZGYiDQpDb250ZW50LVRyYW5zZmVyLUVuY29kaW5nOiBiYXNlNjQNCg0KSlZCRVJpMHhMalFLTVNBd0lHOWlhanc4UGo1bGJtUnZZbW9LZEhKaGFXeGxjanc4UGo0S0pTVkZUMFlLDQotLWJfMjk0NTMyNDJhMGVlMTQ5MC0tDQo\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=UTF-8"
+    },
+    "body": "{\n  \"id\": \"MESSAGE_ID_PLACEHOLDER\",\n  \"threadId\": \"THREAD_ID_PLACEHOLDER\",\n  \"labelIds\": [\n    \"UNREAD\",\n    \"SENT\",\n    \"INBOX\"\n  ]\n}\n"
+  }
+}

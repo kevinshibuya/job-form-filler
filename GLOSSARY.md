@@ -247,4 +247,6 @@ _Avoid_: host, backend, server, helper
 
 **Side panel**:
 The extension's own panel beside the page, where Scan, Review and Fill happen.
+It belongs to the tab where the toolbar button opened it and shows only there;
+each such tab has its own, and every other tab has none.
 _Avoid_: popup, sidebar, panel

@@ -31,7 +31,7 @@ async function launchDark(): Promise<LaunchedExtension> {
     colorScheme: 'dark',
     deviceScaleFactor: 2,
     viewport: { width: 1280 - PANEL_W, height: H },
-    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`],
+    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`, '--mute-audio'],
   })
   let [sw] = context.serviceWorkers()
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 15_000 })

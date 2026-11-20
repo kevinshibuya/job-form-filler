@@ -1,5 +1,8 @@
-import { isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type Resolution } from '@jff/shared'
+import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
+import { SessionEmailDraftSchema, type SessionEmailDraft } from './emailDraft'
+import { SessionMailHandoverSchema, type SessionMailHandover } from './mailApp'
+import { AddressRevisitSchema, type AddressRevisit } from './addressRevisit'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
 import type { ScanUiState } from './ScanStatus'
@@ -10,7 +13,19 @@ export const MAX_PERSISTED_OPTIONS = 100
 export const SESSION_SAVE_DEBOUNCE_MS = 500
 
 export type AnswerProvenance = 'user' | 'generated'
-export interface SessionAnswer { value: string; provenance: AnswerProvenance; fieldKey: FieldKey | null }
+export interface SessionAnswer {
+  value: string
+  provenance: AnswerProvenance
+  fieldKey: FieldKey | null
+  /** Set on the answer to a Prose Field: its question as the page wrote it,
+   *  which Mark applied keeps beside the Applied job (spec #66). Absent on
+   *  every other Field, and on a row stored before it was kept. */
+  prose?: { question: string }
+  /** The Draft this answer started from and the model that wrote it. It
+   *  outlives the user's edits, which are told apart by comparing the value
+   *  with it, and a new Draft replaces it. */
+  draft?: { text: string; model: string | null }
+}
 
 export interface Session {
   version: 1
@@ -59,6 +74,37 @@ export interface Session {
   frameReports: FrameReport[]
   lastOutcome: ScanUiState | null
   appliedHit: { markedAt: string } | null
+  /** Spec #66: the last settled Scan's Apply address candidates. A row
+   *  stored before they were kept has none. */
+  applyCandidates: ApplyAddressCandidate[]
+  /** The address the Application email goes to, once one is chosen. It
+   *  outlives a re-Scan: it is the user's choice, not the page's. */
+  applyAddress: string | null
+  /** How `applyAddress` was chosen; null while there is none. */
+  applyAddressChosenBy: ApplyAddressChoice | null
+  /** The Application email's Draft, with its flags, its model, the edited
+   *  mark and the page's subject, once one is written. It rides with the
+   *  Apply address through a re-Scan. */
+  emailDraft: SessionEmailDraft | null
+  /** What "Open in my mail app" last handed over (ticket #75), as it left:
+   *  Mark applied records this and not the rows as they read by then. Null
+   *  while the mail app was never opened. */
+  mailHandover: SessionMailHandover | null
+  /** The Revisit badge by Apply address (ticket #76): the Applied job a
+   *  candidate or a chosen address was already mailed for, and the pick or
+   *  Draft that waits for "Draft anyway". Null while there is no badge. */
+  addressRevisit: AddressRevisit | null
+  /** Set when the user passed a Revisit badge: "Draft anyway" on the badge by
+   *  Apply address, or "Scan anyway" on the badge by Canonical URL. It
+   *  outlives a reopened panel. */
+  revisitPassed: boolean
+  /** Set when this Session issued a Send, before its request leaves; cleared
+   *  by a failure the Native host states. While set, `revisitPassed` no
+   *  longer makes a Send skip the host's "already sent" refusal. */
+  sendIssued: boolean
+  /** The Sender address the user chose in the email Review (ticket #81), or
+   *  null while they chose none and the default stands. */
+  senderAddress: string | null
 }
 
 /** S4: answers are keyed by the NORMALIZED label, so a carry survives a field
@@ -118,6 +164,15 @@ export function newSession(tabId: number, startUrl = ''): Session {
     frameReports: [],
     lastOutcome: null,
     appliedHit: null,
+    applyCandidates: [],
+    applyAddress: null,
+    applyAddressChosenBy: null,
+    emailDraft: null,
+    mailHandover: null,
+    addressRevisit: null,
+    revisitPassed: false,
+    sendIssued: false,
+    senderAddress: null,
   }
 }
 
@@ -158,6 +213,9 @@ export function rememberAnswer(
   ref: string,
   value: string,
   provenance: AnswerProvenance,
+  /** The model that wrote a Draft, from the `generate` reply; null when an
+   *  older Native host named none. Read only with provenance 'generated'. */
+  model: string | null = null,
 ): Session {
   const key = answerKeysByRef(s.fields).get(ref)
   if (key === undefined) return s
@@ -167,8 +225,42 @@ export function rememberAnswer(
     delete answers[key]
     return { ...s, answers }
   }
-  const fieldKey = s.resolutions.find((r) => refOf(r.handle) === ref)?.key ?? null
-  return { ...s, answers: { ...s.answers, [key]: { value, provenance, fieldKey } } }
+  const resolution = s.resolutions.find((r) => refOf(r.handle) === ref)
+  const fieldKey = resolution?.key ?? null
+  const answer: SessionAnswer = { value, provenance, fieldKey }
+  if (resolution?.fieldClass === 'prose' && fieldKey === null) {
+    answer.prose = { question: (s.fields.find((f) => refOf(f) === ref)?.label ?? '').trim() }
+  }
+  // A new Draft replaces the old one; the user's own write keeps the Draft it
+  // started from, so the edit can be told apart at Mark applied.
+  const draft = provenance === 'generated' ? { text: value, model } : s.answers[key]?.draft
+  if (draft !== undefined) answer.draft = draft
+  return { ...s, answers: { ...s.answers, [key]: answer } }
+}
+
+/**
+ * The prose answers a form Mark applied keeps (spec #66): one for each Prose
+ * Field the Session holds a non-empty text for, on this page or an earlier
+ * step of the same application. The text is what the Session holds now; a
+ * change made on the page after Fill is not read back. A text is AI-drafted
+ * when a Draft came back for it, and edited when it no longer equals that Draft.
+ */
+export function keptProseAnswers(s: Session): KeptProseAnswer[] {
+  const out: KeptProseAnswer[] = []
+  for (const a of Object.values(s.answers)) {
+    // A stored row is untrusted: anything not in the shape this module writes is skipped.
+    if (typeof a?.value !== 'string' || typeof a.prose?.question !== 'string') continue
+    if (a.value.trim() === '' || a.prose.question === '') continue
+    const draft = typeof a.draft?.text === 'string' ? a.draft : undefined
+    out.push({
+      question: a.prose.question,
+      text: a.value,
+      aiDrafted: draft !== undefined,
+      edited: draft !== undefined && draft.text !== a.value,
+      model: draft === undefined || typeof draft.model !== 'string' ? null : draft.model,
+    })
+  }
+  return out
 }
 
 /**
@@ -375,12 +467,39 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.ats !== undefined && typeof raw.ats !== 'string') return null
     // A row stored before the job text source was kept has none (spec #41).
     if (raw.jobTextSource != null && !JobTextSourceSchema.safeParse(raw.jobTextSource).success) return null
+    // A row stored before the email flow has no candidates and no Apply address (spec #66).
+    if (raw.applyCandidates !== undefined && !ApplyAddressCandidateSchema.array().safeParse(raw.applyCandidates).success) return null
+    if (raw.applyAddress != null && typeof raw.applyAddress !== 'string') return null
+    if (raw.applyAddressChosenBy != null && !ApplyAddressChoiceSchema.safeParse(raw.applyAddressChosenBy).success) return null
+    // A row stored before the Application email has no Draft.
+    if (raw.emailDraft != null && !SessionEmailDraftSchema.safeParse(raw.emailDraft).success) return null
+    // A row stored before "Open in my mail app" handed nothing over.
+    if (raw.mailHandover != null && !SessionMailHandoverSchema.safeParse(raw.mailHandover).success) return null
+    // A row stored before the Revisit badge by Apply address has none, and passed none.
+    if (raw.addressRevisit != null && !AddressRevisitSchema.safeParse(raw.addressRevisit).success) return null
+    if (raw.revisitPassed !== undefined && typeof raw.revisitPassed !== 'boolean') return null
+    // A row stored before the Send mark issued none.
+    if (raw.sendIssued !== undefined && typeof raw.sendIssued !== 'boolean') return null
+    // A row stored before the Sender address row has no choice in it.
+    if (raw.senderAddress != null && typeof raw.senderAddress !== 'string') return null
+    const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
     return {
       ...(raw as unknown as Session),
       waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
       resumeUploaded: raw.resumeUploaded ?? false,
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
       jobTextSource: (raw.jobTextSource as JobTextSource | null | undefined) ?? null,
+      applyCandidates: (raw.applyCandidates as ApplyAddressCandidate[] | undefined) ?? [],
+      applyAddress,
+      applyAddressChosenBy: applyAddress === null ? null : (raw.applyAddressChosenBy as ApplyAddressChoice | null | undefined) ?? null,
+      // Parsed, so a Draft stored before the language switch reads as English
+      // with an unedited subject.
+      emailDraft: applyAddress === null || raw.emailDraft == null ? null : SessionEmailDraftSchema.parse(raw.emailDraft),
+      mailHandover: (raw.mailHandover as SessionMailHandover | null | undefined) ?? null,
+      addressRevisit: (raw.addressRevisit as AddressRevisit | null | undefined) ?? null,
+      revisitPassed: raw.revisitPassed ?? false,
+      sendIssued: raw.sendIssued ?? false,
+      senderAddress: (raw.senderAddress as string | null | undefined) ?? null,
     }
   } catch {
     return null
@@ -441,7 +560,10 @@ export interface SessionStore {
 
 export interface SessionStoreOpts {
   onWarn?: () => void
-  getDisplayedTabId?: () => number | null
+  /** The tabs whose Side panel is open now, or null when that cannot be known.
+   *  Several panels share the area, and making room for a write never removes
+   *  a Session one of them shows. Null evicts nothing. Unset, nothing is spared. */
+  openPanelTabIds?: () => Promise<ReadonlySet<number> | null>
 }
 
 export function createSessionStore(
@@ -520,17 +642,22 @@ export function createSessionStore(
     }, debounceMs)
   }
 
-  /** Oldest PARKED stored session, excluding the row being written and the
-   *  displayed one. Runs INSIDE the caller's lock link (one link, per contract). */
+  /** Oldest PARKED stored session, excluding the row being written and every
+   *  tab whose Side panel is open. Runs INSIDE the caller's lock link (one
+   *  link, per contract). */
   const evictOne = async (writingTabId: number): Promise<boolean> => {
-    const displayed = opts.getDisplayedTabId?.() ?? null
+    let open: ReadonlySet<number> | null = new Set()
+    if (opts.openPanelTabIds !== undefined) {
+      try { open = await opts.openPanelTabIds() } catch { open = null }
+    }
+    if (open === null) return false
     const all = await area.get(null)
     let victim: Session | null = null
     for (const [key, raw] of Object.entries(all)) {
       if (!SESSION_KEY_RE.test(key)) continue
       const s = parseStoredSession(raw)
       if (s === null || !s.parked) continue
-      if (s.tabId === writingTabId || s.tabId === displayed) continue
+      if (s.tabId === writingTabId || open.has(s.tabId)) continue
       if (victim === null || s.createdAt < victim.createdAt) victim = s
     }
     if (victim === null) return false

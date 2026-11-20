@@ -7,7 +7,7 @@ import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  checkApplied, getAnswerBank, getCachedResponse, getProfile, getSelector, clearSelector,
+  checkApplied, checkAppliedByAddress, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
   insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
   markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
   setProfile, upsertAnswer,
@@ -20,11 +20,16 @@ import { reviewDraft } from './llm/reviewDraft.js'
 import { claimsInDraft } from './llm/draftCheck.js'
 import { runFactsExtract } from './llm/factsExtract.js'
 import { runOptionPick } from './llm/optionPick.js'
+import { runApplyAddressPick } from './llm/applyAddressPick.js'
+import { draftApplicationEmail } from './llm/applicationEmail.js'
+import { postingLanguage } from './postingLanguage.js'
 import { learnWording } from './resolve/learnedWordings.js'
 import { detectLanguage, normalizeQuestion } from './resolve/normalize.js'
 import { resolveFirst, resolveMapping, type WaterfallDeps } from './resolve/waterfall.js'
 import { log } from './log.js'
 import type { ResolvedModels } from './llm/models.js'
+import { asMailError } from './mail/account.js'
+import type { MailRequests } from './mail/requests.js'
 
 
 // A fact is one line. Normalise every incoming value, then refuse anything still
@@ -54,7 +59,17 @@ export interface HandlerDeps {
   /** Resolved per-task model ids; every LLM call names one. */
   models: ResolvedModels
   selfCheckFn: () => Promise<SelfCheck>
+  /** Set when the database was refused (a newer version of the tool wrote it):
+   *  every request but the Self-check answers this reason and touches nothing,
+   *  and `db` is a read-only handle. */
+  dbRefusal?: string
+  /** The Mail account requests. A host built without them refuses `mail.` requests. */
+  mail?: MailRequests
 }
+
+/** No request whose method starts with this is ever replayed from the request
+ *  log (spec #66): each one acts on the Mail account or reads its state now. */
+const NEVER_REPLAYED = 'mail.'
 
 const waterfallDeps = (deps: HandlerDeps): WaterfallDeps =>
   ({ db: deps.db, codex: deps.codex, mappingOpts: { model: deps.models.mapping, timeoutMs: 240_000 } })
@@ -64,6 +79,11 @@ const fail = (requestId: string, kind: HostErrorKind, message: string): HostResp
   ({ requestId, ok: false, error: { kind, message } })
 
 export async function handleRequest(deps: HandlerDeps, req: HostRequest): Promise<HostResponse> {
+  // Before the replay lookup: a refused database is not read either.
+  if (deps.dbRefusal !== undefined && req.method !== 'selfCheck') return fail(req.requestId, 'db', deps.dbRefusal)
+
+  if (req.method.startsWith(NEVER_REPLAYED)) return compute(deps, req)
+
   // Idempotency: a repeated requestId replays the stored SUCCESS verbatim so a
   // dropped connection re-fetches rather than re-running a paid claude call.
   const cached = safe(() => getCachedResponse(deps.db, req.requestId))
@@ -95,6 +115,8 @@ export async function handleRaw(deps: HandlerDeps, raw: unknown): Promise<HostRe
 function logResolution(method: 'resolve.first' | 'resolve.mapping', params: ResolveParams): void {
   log('info', method, { ats: params.ats ?? 'generic', epoch: params.epoch, fields: params.fields.length })
 }
+
+const noMail = (requestId: string): HostResponse => fail(requestId, 'process', 'this Native host has no Mail account driver')
 
 function safe<T>(fn: () => T): { ok: true; value: T } | { ok: false; error: unknown } {
   try { return { ok: true, value: fn() } } catch (error) { return { ok: false, error } }
@@ -153,17 +175,20 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           projectNotes: readProjectNotes(deps.config.projectsPaths),
           references,
         }
-        const draft = await runGeneration(deps.runner, input, { model: deps.models.generate })
+        // The reply names the model that wrote the Draft, so the Side panel
+        // can keep it beside the text (spec #66).
+        const model = deps.models.generate
+        const draft = await runGeneration(deps.runner, input, { model })
         // B2d: claude draft → Draft check (codex) → final. ANY Draft check
         // failure degrades to the unchecked draft — codex never blocks
         // generation. A flagged sentence reaches the reply only when the final
         // Draft contains it (ADR 0004: the Draft is still shown, with the warning).
-        let reply: { draft: string; unsupportedClaims?: string[] } = { draft }
+        let reply: { draft: string; model: string; unsupportedClaims?: string[] } = { draft, model }
         try {
           const checked = await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft, retryTransient: false })
           const final = sanitizeDraft(checked.draft)
           const unsupportedClaims = claimsInDraft(final, checked.unsupported)
-          reply = unsupportedClaims.length === 0 ? { draft: final } : { draft: final, unsupportedClaims }
+          reply = unsupportedClaims.length === 0 ? { draft: final, model } : { draft: final, model, unsupportedClaims }
         } catch (e) {
           const kind = e instanceof CodexError ? e.kind : 'process'
           log('warn', 'codex review failed; returning unreviewed draft', {
@@ -208,6 +233,38 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         return ok(req.requestId, { position })
       }
 
+      // The Apply address pick (spec #66, ADR 0008). Only what the request
+      // carries reaches the prompt, all of it page content. The reply is a
+      // position inside the list or none: never an address.
+      case 'applyAddress.pick': {
+        const position = await runApplyAddressPick(deps.codex, req.params, { model: deps.models.applyAddressPick, timeoutMs: 120_000 })
+        return ok(req.requestId, { position })
+      }
+
+      // The Application email (spec #66). The writer drafts the prose; the
+      // links and the signature come from the Profile (ADR 0006), and a
+      // failed Draft check still answers the Draft, marked unchecked (ADR 0004).
+      case 'email.draft': {
+        const profile = getProfile(db)
+        const out = await draftApplicationEmail(
+          { writer: deps.runner, checker: deps.runner, models: { writer: deps.models.applicationEmail, checker: deps.models.applicationEmailCheck } },
+          {
+            jobText: req.params.jobText,
+            company: req.params.company,
+            title: req.params.title,
+            profileSummary: buildProfileSummary(profile, getAnswerBank(db)),
+            cvText: req.params.cvText ?? null,
+            projectNotes: readProjectNotes(deps.config.projectsPaths),
+            pageSubject: req.params.pageSubject,
+            // The language the user switched to, or the Job posting's own.
+            language: req.params.language ?? postingLanguage(req.params.jobText),
+            instruction: req.params.instruction?.trim() || null,
+          },
+          profile,
+        )
+        return ok(req.requestId, out)
+      }
+
       // A Learned wording (ticket #35): the Option the user accepted for a
       // keyed Field, stored with the key and the Value it stood for.
       case 'wording.learn': {
@@ -236,16 +293,40 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         // proof of the {page, done} chunking protocol. See Task 11 preamble.
         return ok(req.requestId, paginate(listAllAnswers(db), req.params.page))
 
-      case 'applied.mark':
+      case 'applied.mark': {
+        // A mark after "Open in my mail app" keeps the email as it was handed
+        // over: it left through the mail app, with no Sender address, no
+        // attachments and no Gmail ids (spec #66).
+        const handed = req.params.email
         return ok(req.requestId, markApplied(db, {
           url: req.params.url, company: req.params.company, jobTitle: req.params.jobTitle,
+          channel: req.params.channel ?? (handed === undefined ? 'form' : 'email'),
+          proseAnswers: req.params.proseAnswers ?? [],
+          ...(handed === undefined ? {} : {
+            email: {
+              ...handed, senderAddress: null, attachmentNames: [], gmailMessageId: null, gmailThreadId: null, route: 'mail_app' as const,
+            },
+          }),
         }))
+      }
 
       case 'applied.check':
-        return ok(req.requestId, { applied: checkApplied(db, req.params.url) })
+        return ok(req.requestId, {
+          applied: checkApplied(db, req.params.url),
+          appliedByAddress: checkAppliedByAddress(db, req.params.applyAddresses ?? []),
+        })
 
       case 'applied.list':
         return ok(req.requestId, { jobs: listApplied(db) })
+
+      // One Applied job's stored texts, read when the user opens it, so the
+      // list stays small.
+      case 'applied.get': {
+        const texts = getAppliedTexts(db, req.params.id)
+        return texts === null
+          ? fail(req.requestId, 'bad_request', `no Applied job has the id ${req.params.id}`)
+          : ok(req.requestId, texts)
+      }
 
       // A Capture is written here and goes nowhere else. The log names its ATS
       // and size, never its content.
@@ -258,6 +339,39 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
 
       case 'facts.extract':
         return ok(req.requestId, await runFactsExtract(deps.codex, req.params.cvText, { model: deps.models.factsExtract, timeoutMs: 240_000 }))
+
+      // The Mail account (spec #66). Its secrets never reach a response.
+      case 'mail.status':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, deps.mail.status(db))
+
+      case 'mail.connect.start':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.connectStart(db, req.params.clientFile))
+
+      case 'mail.connect.finish':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.connectFinish(db))
+
+      case 'mail.disconnect':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.disconnect(db))
+
+      case 'mail.senders':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.senders(db))
+
+      // The only path to the driver's send (spec #66, ADR 0012): this
+      // request, which only the user's click on Send makes.
+      case 'mail.send':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, await deps.mail.send(db, req.requestId, req.params))
+
+      // "It arrived" (ticket #83): the user's answer to an outcome the tool
+      // could not know. It calls nothing.
+      case 'mail.send.arrived':
+        if (deps.mail === undefined) return noMail(req.requestId)
+        return ok(req.requestId, deps.mail.arrived(db, req.params))
     }
     // Exhaustiveness proof: HostRequestSchema already rejected anything else.
     const never: never = req
@@ -266,6 +380,11 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
     if (e instanceof ClaudeError) return fail(req.requestId, e.kind, e.message)
     // Every CodexError kind exists in HOST_ERROR_KINDS, so the mapping is 1:1.
     if (e instanceof CodexError) return fail(req.requestId, e.kind, e.message)
+    const mail = asMailError(e)
+    if (mail !== null) {
+      log('warn', 'mail request failed', { method: req.method, kind: mail.kind, message: mail.message })
+      return fail(req.requestId, mail.kind, mail.message)
+    }
     const message = e instanceof Error ? e.message : String(e)
     log('error', 'handler failed', { method: req.method, message })
     return fail(req.requestId, 'db', message)

@@ -29,6 +29,13 @@ if (/You draft one answer/.test(prompt)) {
   emit({ draft: 'I have shipped production TypeScript services for six years, mostly Node and Postgres. I would bring that to this team.' })
 }
 
+// The Application email (spec #66): a short body, a subject only when the
+// prompt asks for one, and no link.
+if (/You draft the body of a short email that applies for a job/.test(prompt)) {
+  const body = 'Hello,\n\nI would like to apply for this role. I have shipped production TypeScript services for six years, mostly Node and Postgres.'
+  emit(/Return \{"subject"/.test(prompt) ? { subject: 'Application', body, links: [] } : { body, links: [] })
+}
+
 // The mapping call: one entry per ref, in the order the prompt lists them.
 const refs = [...prompt.matchAll(/ref=(\d+:\d+)/g)].map((m) => m[1])
 emit(refs.map((ref) => {

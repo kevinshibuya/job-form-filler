@@ -1,5 +1,5 @@
 import { chromium, type BrowserContext } from '@playwright/test'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
@@ -9,16 +9,27 @@ import { dirname } from 'node:path'
 const here = dirname(fileURLToPath(import.meta.url))
 export const EXT_DIST = resolve(here, '../extension/dist')
 
-/**
- * crxjs rewrites HTML entry paths, so specs must never hard-code the panel path.
- * Read the emitted manifest and build the URL from whatever crxjs actually wrote.
- */
+/** Where the Side panel's page lives in the bundle. The manifest declares no
+ *  panel (the service worker enables one per tab), so vite.config.ts makes the
+ *  page a build input, which keeps this path; extension/src/tabPanel.ts names
+ *  the same one. A build that moved it fails here, before any spec drives a
+ *  page that is not there. */
+export const PANEL_PATH = 'src/panel/index.html'
+
 export function panelUrl(extensionId: string, query = ''): string {
-  const manifest = JSON.parse(readFileSync(resolve(EXT_DIST, 'manifest.json'), 'utf8')) as {
-    side_panel?: { default_path?: string }
-  }
-  const path = manifest.side_panel?.default_path ?? 'src/panel/index.html'
-  return `chrome-extension://${extensionId}/${path}${query}`
+  if (!existsSync(resolve(EXT_DIST, PANEL_PATH))) throw new Error(`the build has no Side panel page at ${PANEL_PATH}`)
+  return `chrome-extension://${extensionId}/${PANEL_PATH}${query}`
+}
+
+/** The manifest the build emitted. */
+export function builtManifest(): Record<string, unknown> {
+  return JSON.parse(readFileSync(resolve(EXT_DIST, 'manifest.json'), 'utf8')) as Record<string, unknown>
+}
+
+/** The settings page's address. vite.config.ts makes it a build input, which
+ *  keeps its source path in the bundle. */
+export function settingsUrl(extensionId: string, hash = ''): string {
+  return `chrome-extension://${extensionId}/src/settings/index.html${hash}`
 }
 
 export interface LaunchedExtension {
@@ -37,7 +48,9 @@ export async function launchWithExtension(): Promise<LaunchedExtension> {
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: 'chromium',
     headless: true,
-    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`],
+    // --mute-audio: a test browser never plays sound through the machine's
+    // speakers, whatever its pages autoplay.
+    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`, '--mute-audio'],
   })
 
   const consoleErrors: string[] = []

@@ -142,7 +142,7 @@ async function launchBrowser(headed) {
   const context = await chromium.launchPersistentContext(profile, {
     channel: 'chromium',
     headless: !headed,
-    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`],
+    args: [`--disable-extensions-except=${EXT_DIST}`, `--load-extension=${EXT_DIST}`, '--mute-audio'],
   })
   let [sw] = context.serviceWorkers()
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 15_000 })
@@ -158,8 +158,8 @@ async function launchBrowser(headed) {
 }
 
 function panelUrl(extensionId, query) {
-  const manifest = JSON.parse(readFileSync(join(EXT_DIST, 'manifest.json'), 'utf8'))
-  return `chrome-extension://${extensionId}/${manifest.side_panel?.default_path ?? 'src/panel/index.html'}${query}`
+  // The manifest declares no panel: the page keeps its source path (vite.config.ts).
+  return `chrome-extension://${extensionId}/src/panel/index.html${query}`
 }
 
 const MIME = { '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }

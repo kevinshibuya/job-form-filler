@@ -7,7 +7,23 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const HOST_ENTRY = resolve(here, '../host/dist/index.js')
+/** The test-only entry: the built host with the fake Mail account driver and
+ *  the fake secret store. It sits outside host/dist. */
+const FAKE_MAIL_ENTRY = resolve(here, '../host/testing/jffFakeMail/host.mjs')
+/** Written by the test-only entry into the host's home; the names match it. */
+const FAKE_MAIL_SENT = 'jff-fake-mail-sent.jsonl'
+const FAKE_MAIL_NET = 'jff-fake-mail-net.log'
 const FAKE_BIN = resolve(here, 'bin')
+
+/** One email the fake Mail account driver sent, as the test-only entry wrote it down. */
+export interface FakeSentEmail {
+  account: string
+  from: { address: string; displayName: string }
+  to: string
+  subject: string
+  body: string
+  attachment: { name: string; mimeType: string; dataBase64: string }
+}
 
 export interface HostChild {
   request(req: { requestId: string; method: string; params: unknown }): Promise<unknown>
@@ -18,7 +34,16 @@ export interface HostChild {
   releaseMapping(): void
   /** How many Option pick prompts the stand-in model has received. */
   picks(): number
+  /** With `fakeMail`: every email the fake Mail account driver sent. */
+  sentMail(): FakeSentEmail[]
+  /** With `fakeMail`: every network call the host process tried, all refused. */
+  networkCalls(): string[]
   stop(): Promise<void>
+}
+
+/** A file's non-empty lines, none when it does not exist. */
+function lines(path: string): string[] {
+  return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter((l) => l !== '') : []
 }
 
 /** Same 4-byte little-endian framing Chrome uses. */
@@ -30,7 +55,13 @@ function encode(value: unknown): Buffer {
 }
 
 export async function startHost(
-  opts: { mode?: string; codexMode?: string; holdMapping?: boolean; pick?: string } = {},
+  opts: {
+    mode?: string; codexMode?: string; holdMapping?: boolean; pick?: string
+    /** The Apply address pick answers the first address containing this. */
+    address?: string
+    /** Start the host from the test-only entry with the fake Mail account. */
+    fakeMail?: boolean
+  } = {},
 ): Promise<HostChild> {
   const home = await mkdtemp(join(tmpdir(), 'jff-home-'))
   // The fake codex appends a line here for every Option pick it receives, and
@@ -46,7 +77,7 @@ export async function startHost(
     dbPath: join(home, 'db.sqlite'),
   }))
 
-  const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [HOST_ENTRY], {
+  const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [opts.fakeMail === true ? FAKE_MAIL_ENTRY : HOST_ENTRY], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -57,6 +88,7 @@ export async function startHost(
       JFF_FAKE_CODEX_HOLD: opts.holdMapping === true ? releaseFile : '',
       JFF_FAKE_CODEX_PICK: opts.pick ?? '',
       JFF_FAKE_CODEX_PICK_LOG: pickLog,
+      JFF_FAKE_CODEX_ADDRESS: opts.address ?? '',
     },
   })
 
@@ -97,6 +129,8 @@ export async function startHost(
     stderr,
     releaseMapping() { writeFileSync(releaseFile, '') },
     picks() { return existsSync(pickLog) ? readFileSync(pickLog, 'utf8').split('\n').filter((l) => l !== '').length : 0 },
+    sentMail() { return lines(join(home, FAKE_MAIL_SENT)).map((l) => JSON.parse(l) as FakeSentEmail) },
+    networkCalls() { return lines(join(home, FAKE_MAIL_NET)) },
     request(req) {
       return new Promise((resolveReq) => {
         pending.set(req.requestId, resolveReq)
