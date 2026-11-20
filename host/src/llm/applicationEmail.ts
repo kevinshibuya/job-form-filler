@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { EMAIL_LINK_KEYS, type EmailDraftResult, type EmailLanguage, type EmailLinkKey } from '@jff/shared'
-import type { CallOpts, ClaudeRunner } from './claudeCli.js'
+import { ClaudeError, type CallOpts, type ClaudeRunner } from './claudeCli.js'
 import type { CodexRunner } from './codexCli.js'
 import { CodexError } from './codexCli.js'
 import { claimsInDraft } from './draftCheck.js'
@@ -184,7 +184,8 @@ export function linkAndAddressSentences(prose: string): string[] {
 
 export interface ApplicationEmailDeps {
   writer: ClaudeRunner
-  checker: CodexRunner
+  /** The Claude runner for now (models.ts, applicationEmailCheck); either runner fits. */
+  checker: ClaudeRunner | CodexRunner
   models: { writer: string; checker: string }
 }
 
@@ -215,7 +216,7 @@ export async function draftApplicationEmail(
   } catch (e) {
     unchecked = true
     log('warn', 'Draft check failed; returning the unchecked Application email', {
-      kind: e instanceof CodexError ? e.kind : 'process', message: e instanceof Error ? e.message : String(e),
+      kind: e instanceof CodexError || e instanceof ClaudeError ? e.kind : 'process', message: e instanceof Error ? e.message : String(e),
     })
   }
 

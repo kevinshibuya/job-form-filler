@@ -9,6 +9,7 @@ describe('DEFAULT_MODELS', () => {
       optionPick: 'gpt-6.1-sol',
       applyAddressPick: 'gpt-6.1-sol',
       applicationEmail: 'claude-opus-5-5',
+      applicationEmailCheck: 'claude-opus-5-5',
       generate: 'claude-opus-5-5',
       reviewDraft: 'gpt-6.1-sol',
       claudeAuthProbe: 'claude-opus-5-5',

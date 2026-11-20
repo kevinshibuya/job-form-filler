@@ -247,7 +247,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'email.draft': {
         const profile = getProfile(db)
         const out = await draftApplicationEmail(
-          { writer: deps.runner, checker: deps.codex, models: { writer: deps.models.applicationEmail, checker: deps.models.reviewDraft } },
+          { writer: deps.runner, checker: deps.runner, models: { writer: deps.models.applicationEmail, checker: deps.models.applicationEmailCheck } },
           {
             jobText: req.params.jobText,
             company: req.params.company,

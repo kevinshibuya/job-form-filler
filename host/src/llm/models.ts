@@ -6,6 +6,7 @@ export type LlmTask =
   | 'optionPick'
   | 'applyAddressPick'
   | 'applicationEmail'
+  | 'applicationEmailCheck'
   | 'generate'
   | 'reviewDraft'
   | 'claudeAuthProbe'
@@ -22,6 +23,10 @@ export const DEFAULT_MODELS: Readonly<Record<LlmTask, string>> = Object.freeze({
   applyAddressPick: 'gpt-6.1-sol',
   // Spec #66: a writer Task like Generation, on the same runner interface.
   applicationEmail: 'claude-opus-5-5',
+  // The Application email's Draft check runs on the Claude runner, off the
+  // codex window, until spec B decides how it is checked. A form answer's
+  // Draft check stays reviewDraft. Only a Claude model id works here.
+  applicationEmailCheck: 'claude-opus-5-5',
   generate: 'claude-opus-5-5',
   reviewDraft: 'gpt-6.1-sol',
   claudeAuthProbe: 'claude-opus-5-5',

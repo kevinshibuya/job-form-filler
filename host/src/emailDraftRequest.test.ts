@@ -4,7 +4,6 @@ import { EmailDraftResultSchema, type EmailDraftParams, type HostRequest, type H
 import { openDb, setProfile } from './db/repos.js'
 import { handleRaw, handleRequest, type HandlerDeps } from './handlers.js'
 import { ClaudeError } from './llm/claudeCli.js'
-import { CodexError } from './llm/codexCli.js'
 import { resolveModels } from './llm/models.js'
 
 // Ticket #72 at the Native host's request seam: `email.draft` goes through the
@@ -13,8 +12,14 @@ import { resolveModels } from './llm/models.js'
 
 const PROSE = 'Hello,\n\nI would like to apply for the analyst role at Acme. I spent five years as an analyst at Example Ltd.'
 
+// One Claude runner serves the writer and the Draft check: a prompt that opens
+// as the Draft check's goes to `checkComplete`, every other to `claudeComplete`.
 const claudeComplete = vi.fn(async (_prompt: string, _schema?: unknown, _opts?: unknown): Promise<unknown> => ({ subject: 'Application', body: PROSE, links: [] }))
-const codexComplete = vi.fn(async (_prompt: string, _schema?: unknown, _opts?: unknown): Promise<unknown> => ({ draft: PROSE, unsupported: [] }))
+const checkComplete = vi.fn(async (_prompt: string, _schema?: unknown, _opts?: unknown): Promise<unknown> => ({ draft: PROSE, unsupported: [] }))
+const isCheckPrompt = (prompt: string): boolean => prompt.startsWith('You review ONE drafted answer')
+const claudeRunner = async (prompt: string, schema?: unknown, opts?: unknown): Promise<unknown> =>
+  isCheckPrompt(prompt) ? checkComplete(prompt, schema, opts) : claudeComplete(prompt, schema, opts)
+const codexComplete = vi.fn(async (_prompt: string, _schema?: unknown, _opts?: unknown): Promise<unknown> => { throw new Error('the Application email asks no Codex model') })
 
 let db: Database.Database
 let deps: HandlerDeps
@@ -28,15 +33,16 @@ beforeEach(() => {
   db = openDb(':memory:')
   claudeComplete.mockReset()
   claudeComplete.mockImplementation(async () => ({ subject: 'Application', body: PROSE, links: [] }))
-  codexComplete.mockReset()
-  codexComplete.mockImplementation(async () => ({ draft: PROSE, unsupported: [] }))
+  checkComplete.mockReset()
+  checkComplete.mockImplementation(async () => ({ draft: PROSE, unsupported: [] }))
+  codexComplete.mockClear()
   setProfile(db, {
     fullName: 'Ada Lovelace', email: 'ada@example.com', phone: '+15550100',
     linkedin: 'https://www.linkedin.com/in/ada-example', github: 'https://github.com/ada-example',
   })
   deps = {
     db,
-    runner: { complete: claudeComplete } as unknown as HandlerDeps['runner'],
+    runner: { complete: claudeRunner } as unknown as HandlerDeps['runner'],
     codex: { complete: codexComplete } as unknown as HandlerDeps['codex'],
     models: resolveModels({}),
     config: CONFIG,
@@ -103,12 +109,20 @@ describe('email.draft', () => {
     expect(prompt).toContain('fullName: Ada Lovelace')
   })
 
-  it('runs the writer on claude-opus-5-5 and the Draft check on its own model', async () => {
+  it('runs the writer and the Draft check on claude-opus-5-5, and asks no Codex model', async () => {
     await drafted(POSTING)
     expect(claudeComplete).toHaveBeenCalledTimes(1)
     expect(claudeComplete.mock.calls[0]![2]).toMatchObject({ model: 'claude-opus-5-5' })
-    expect(codexComplete).toHaveBeenCalledTimes(1)
-    expect(codexComplete.mock.calls[0]![2]).toMatchObject({ model: 'gpt-6.1-sol' })
+    expect(checkComplete).toHaveBeenCalledTimes(1)
+    expect(checkComplete.mock.calls[0]![2]).toMatchObject({ model: 'claude-opus-5-5' })
+    expect(codexComplete).not.toHaveBeenCalled()
+  })
+
+  it('runs the Draft check on the model the config names for applicationEmailCheck', async () => {
+    deps = { ...deps, models: resolveModels({ applicationEmailCheck: 'claude-sonnet-5-5' }) }
+    await drafted(POSTING)
+    expect(checkComplete.mock.calls[0]![2]).toMatchObject({ model: 'claude-sonnet-5-5' })
+    expect(claudeComplete.mock.calls[0]![2]).toMatchObject({ model: 'claude-opus-5-5' })
   })
 
   it('runs the writer on the model the config names for applicationEmail', async () => {
@@ -121,13 +135,13 @@ describe('email.draft', () => {
   it('flags the Draft check\'s unsupported claims and a sentence with a link or an address', async () => {
     const prose = 'I led the payments team at Acme. Reach me at ada@example.com any time. Thank you for reading.'
     claudeComplete.mockImplementation(async () => ({ subject: 'Application', body: prose, links: [] }))
-    codexComplete.mockImplementation(async () => ({ draft: prose, unsupported: ['I led the payments team at Acme.'] }))
+    checkComplete.mockImplementation(async () => ({ draft: prose, unsupported: ['I led the payments team at Acme.'] }))
     const out = await drafted(POSTING)
     expect(out.unsupportedClaims).toEqual(['I led the payments team at Acme.', 'Reach me at ada@example.com any time.'])
   })
 
   it('still answers the Draft, marked unchecked, when the Draft check fails', async () => {
-    codexComplete.mockImplementation(async () => { throw new CodexError('rate_limit', 'slow down') })
+    checkComplete.mockImplementation(async () => { throw new ClaudeError('rate_limit', 'slow down') })
     const out = await drafted(POSTING)
     expect(out.unchecked).toBe(true)
     expect(out.body.startsWith(PROSE)).toBe(true)
