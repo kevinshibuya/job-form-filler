@@ -11,6 +11,7 @@
 // no file system and type-checks with the extension's own types.
 const PAGES = import.meta.glob<string>('../../../../e2e/fixtures/real/*.html', { query: '?raw', import: 'default', eager: true })
 const POSTINGS = import.meta.glob<string>('../../../../e2e/fixtures/postings/*.html', { query: '?raw', import: 'default', eager: true })
+const EMAILS = import.meta.glob<string>('../../../../e2e/fixtures/email/*.html', { query: '?raw', import: 'default', eager: true })
 
 function nameOf(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1).replace(/\.html$/, '')
@@ -22,6 +23,7 @@ function byName(pages: Record<string, string>): Map<string, string> {
 
 const BY_NAME = byName(PAGES)
 const POSTINGS_BY_NAME = byName(POSTINGS)
+const EMAILS_BY_NAME = byName(EMAILS)
 
 /** The names `loadRealFixture` accepts, without the `.html`. */
 export const REAL_FIXTURES: readonly string[] = [...BY_NAME.keys()].sort()
@@ -51,4 +53,15 @@ export function postingFixtureHtml(name: string): string {
 /** Replaces the test document with the named posting fixture; `name` may carry `.html`. */
 export function loadPostingFixture(name: string): void {
   load(postingFixtureHtml(name))
+}
+
+/** The names `loadEmailFixture` accepts: the Job postings that take
+ *  applications by email (spec #66), kept in `e2e/fixtures/email/`. */
+export const EMAIL_FIXTURES: readonly string[] = [...EMAILS_BY_NAME.keys()].sort()
+
+/** Replaces the test document with the named email fixture; `name` may carry `.html`. */
+export function loadEmailFixture(name: string): void {
+  const html = EMAILS_BY_NAME.get(name.replace(/\.html$/, ''))
+  if (html === undefined) throw new Error(`no email fixture named ${name}; there are: ${EMAIL_FIXTURES.join(', ') || 'none'}`)
+  load(html)
 }

@@ -1,6 +1,6 @@
 # job-form-filler
 
-A Chrome extension and a local Node helper that read a job application form, fill it from answers you stored, and draft the free-text answers for you to edit. It never submits the form.
+A Chrome extension and a local Node helper that read a job application form, fill it from answers you stored, and draft the free-text answers for you to edit. It never submits a form. On a job posting that takes applications by email, it drafts an Application email for you to review and sends it from your Gmail only when you click Send.
 
 **Status: work in progress.** Today it scans, fills and saves on Greenhouse forms and Ashby-style embedded application frames, with an onboarding gate, per-tab sessions and a list of jobs you applied to. Per-ATS modules, an Ignore button with saved Captures, and the guard that keeps a Draft out of your profile facts are designed in [docs/specs](docs/specs/2026-09-03-per-ats-architecture-design.md) and not built yet.
 
@@ -14,6 +14,8 @@ It is a personal tool, sideloaded into Chrome on macOS. The side panel scans the
 
 For the questions nothing stored can answer, it spawns the `claude` CLI to write a Draft from the job description and your resume, then has the `codex` CLI review that Draft in the same request. You edit, click Fill, submit the form yourself and mark the job applied.
 
+Some postings have no form and ask for an email instead. There the Scan collects the addresses on the page, a model picks the one that takes applications (it can only point at an address the page holds), and the `claude` CLI drafts a short Application email signed with your Profile name, with your Resume attached. You review and edit it in the side panel. Nothing sends it but your click on the button that names both addresses, "Send from ada@example.com to jobs@example.org". It leaves through your own Gmail account, connected once in the settings page, and the job becomes an applied job with its email kept. Without a connected account you can hand the email to your mail app instead.
+
 ## What works today
 
 - Block scanning until a resume, name, email, phone and country are stored. Evidence: `extension/src/panel/completeness.test.ts`, the onboarding test in `e2e/sessions.spec.ts`.
@@ -26,6 +28,7 @@ For the questions nothing stored can answer, it spawns the `claude` CLI to write
 - Keep one session per tab across tab switches, wizard steps and panel reloads. Evidence: `extension/src/panel/sessions.test.ts`, `e2e/sessions.spec.ts`.
 - Mark a job applied and show "Already applied on <date>" when you open it again. Evidence: the Mark applied and Revisit badge tests in `extension/src/panel/App.test.tsx`.
 - Read a PDF resume as text without gluing words or splitting emails. Evidence: `extension/src/panel/cvText.test.ts`.
+- Apply by email on a posting with no form: pick the Apply address, draft the Application email, and send it with the Resume on one click, once. Evidence: `host/src/mailSendRequest.test.ts`, `extension/src/panel/emailSend.test.tsx`, and `e2e/email-apply.spec.ts` walks it from Scan to Send in a real Chrome with a fake Gmail account.
 
 The suite is 866 unit tests in 53 files (`npm test`) and 17 browser tests in 5 files (`npm run smoke`).
 

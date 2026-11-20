@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema } from './messages.js'
+import { EnumFieldSchema, HostRequestSchema, HostResponseSchema, ContentMessageSchema, FillReportSchema, ResolveFirstResultSchema, ResolveMappingResultSchema, SaveItemSchema, OptionPickResultSchema, ResolutionSchema, ScanResultSchema, ApplyAddressPickResultSchema } from './messages.js'
+import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, FoundAddressSchema, isAddressShape } from './messages.js'
+import { EMAIL_INSTRUCTION_MAX, EmailDraftResultSchema } from './messages.js'
 import { captureField, captureRefusal, captureResolution, CaptureSaveParamsSchema, withoutQuery } from './capture.js'
 import { JobTextReplySchema, JobTextSourceSchema } from './jobText.js'
 
@@ -447,5 +449,117 @@ describe('the Job posting text source (spec #41)', () => {
     const ok = CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'heuristic' })
     expect(ok.success && ok.data.jobTextSource).toBe('heuristic')
     expect(CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'guess' }).success).toBe(false)
+  })
+})
+
+describe('the addresses a Scan collects (spec #66)', () => {
+  const reply = { epoch: 1, fields: [], unreachableWidgets: 0, activeCaptcha: false }
+  const mailto = { address: 'jobs@example.org', context: { kind: 'mailto', linkText: 'Mail us', subject: 'Application' } }
+  const text = { address: 'jobs@example.org', context: { kind: 'text', sentence: 'Write to jobs@example.org.' } }
+
+  it('a Scan reply carries each address with its mailto or text context', () => {
+    const scan = ScanResultSchema.parse({ ...reply, addresses: [mailto, text] })
+    expect(scan.addresses).toEqual([mailto, text])
+  })
+
+  it('a mailto context with no subject says so with null', () => {
+    const none = { address: 'a@example.org', context: { kind: 'mailto', linkText: 'a@example.org', subject: null } }
+    expect(FoundAddressSchema.parse(none)).toEqual(none)
+  })
+
+  it('accepts a reply from a stale page script that omits the addresses', () => {
+    expect(ScanResultSchema.parse(reply).addresses).toBeUndefined()
+  })
+
+  it('refuses a context of another kind, or a mailto context that carries a body', () => {
+    expect(ScanResultSchema.safeParse({ ...reply, addresses: [{ address: 'a@example.org', context: { kind: 'image', alt: 'x' } }] }).success).toBe(false)
+    const withBody = FoundAddressSchema.parse({ address: 'a@example.org', context: { kind: 'mailto', linkText: 'x', subject: null, body: 'secret' } })
+    expect(JSON.stringify(withBody)).not.toContain('secret')
+  })
+
+  it('a candidate is one address with its contexts', () => {
+    const c = { address: 'jobs@example.org', contexts: [mailto.context, text.context] }
+    expect(ApplyAddressCandidateSchema.parse(c)).toEqual(c)
+  })
+
+  it('an Apply address is chosen one of three ways', () => {
+    expect(ApplyAddressChoiceSchema.options).toEqual(['pick', 'list', 'typed'])
+  })
+})
+
+describe('the shape check of an address (spec #66)', () => {
+  it('takes an address with one @ and a dotted domain', () => {
+    for (const a of ['ada@example.com', 'ada.lovelace+jobs@mail.example.org', 'Ada_L-1@sub.example.org']) expect(isAddressShape(a)).toBe(true)
+  })
+
+  it('refuses what is not shaped like one', () => {
+    for (const a of ['', 'ada', 'ada@', '@example.com', 'ada@example', 'ada example.com', 'ada@exa mple.com', 'a@b@example.com', 'ada@example.', 'ada@.example.com', ' ada@example.com', 'ada at example dot com'])
+      expect(isAddressShape(a), a).toBe(false)
+  })
+})
+
+describe('applyAddress.pick (#71)', () => {
+  const params = {
+    candidates: [{ address: 'jobs@example.org', contexts: [{ kind: 'text', sentence: 'Apply at jobs@example.org.' }] }],
+    title: 'Analyst at Acme', company: null, jobText: 'Acme is hiring.',
+  }
+
+  it('takes the candidates with their contexts, the title, the Company and the job text', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'applyAddress.pick', params }).success).toBe(true)
+  })
+
+  it('refuses a request with no candidate', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'applyAddress.pick', params: { ...params, candidates: [] } }).success).toBe(false)
+  })
+
+  it('the reply is a position or none, and carries no address', () => {
+    expect(ApplyAddressPickResultSchema.parse({ position: 0 })).toEqual({ position: 0 })
+    expect(ApplyAddressPickResultSchema.parse({ position: null })).toEqual({ position: null })
+    expect(ApplyAddressPickResultSchema.parse({ position: 0, address: 'careers@example.org' })).toEqual({ position: 0 })
+    expect(ApplyAddressPickResultSchema.safeParse({ position: 'jobs@example.org' }).success).toBe(false)
+    expect(ApplyAddressPickResultSchema.safeParse({ position: -1 }).success).toBe(false)
+  })
+})
+
+describe('email.draft (#72)', () => {
+  const params = { jobText: 'Acme is hiring an analyst.', company: 'Acme', title: 'Analyst at Acme', pageSubject: null }
+
+  it('takes the job text, the Company, the title, the page subject and the Resume text', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params }).success).toBe(true)
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params: { ...params, pageSubject: 'Application', cvText: 'cv' } }).success).toBe(true)
+  })
+
+  it('refuses a request with no job text', () => {
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params: { ...params, jobText: '  ' } }).success).toBe(false)
+  })
+
+  it('the reply names its links from the three link Known keys only', () => {
+    const reply = { subject: 'S', body: 'B', model: 'claude-opus-5-5', language: 'en', missingLinks: ['github'], unsupportedClaims: [], unchecked: false }
+    expect(EmailDraftResultSchema.safeParse(reply).success).toBe(true)
+    expect(EmailDraftResultSchema.safeParse({ ...reply, missingLinks: ['email'] }).success).toBe(false)
+  })
+})
+
+describe('email.draft, language and instruction (#73)', () => {
+  const params = { jobText: 'Acme is hiring an analyst.', company: 'Acme', title: 'Analyst at Acme', pageSubject: null }
+  const parses = (p: object): boolean => HostRequestSchema.safeParse({ requestId: 'r1', method: 'email.draft', params: p }).success
+
+  it('takes English or Portuguese, and an instruction up to the cap', () => {
+    expect(parses({ ...params, language: 'pt', instruction: 'shorter' })).toBe(true)
+    expect(parses({ ...params, language: 'es' })).toBe(false)
+    expect(parses({ ...params, instruction: 'x'.repeat(EMAIL_INSTRUCTION_MAX) })).toBe(true)
+    expect(parses({ ...params, instruction: 'x'.repeat(EMAIL_INSTRUCTION_MAX + 1) })).toBe(false)
+  })
+
+  it('the reply names its language', () => {
+    const reply = { subject: 'S', body: 'B', model: 'm', missingLinks: [], unsupportedClaims: [], unchecked: false }
+    expect(EmailDraftResultSchema.safeParse({ ...reply, language: 'pt' }).success).toBe(true)
+    expect(EmailDraftResultSchema.safeParse(reply).success).toBe(false)
+  })
+
+  it('a Prose Field\'s Generation takes no instruction', () => {
+    const gen = { handle: { frameId: 0, fid: 1, epoch: 1 }, questionRaw: 'Why Acme?', jobText: 'Acme', company: null }
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'generate', params: gen }).success).toBe(true)
+    expect(HostRequestSchema.safeParse({ requestId: 'r1', method: 'generate', params: { ...gen, instruction: 'shorter' } }).success).toBe(false)
   })
 })

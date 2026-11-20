@@ -166,9 +166,10 @@ export function createFakeHostPort(): HostPort {
         // A1: the canned persona has applied to NOTHING — the revisit badge
         // (Task 7) reads `applied` off this shape, so the miss must be an
         // explicit null, never a missing key answering {}.
-        'applied.check': { applied: null },
+        'applied.check': { applied: null, appliedByAddress: null },
         'applied.list': { jobs: [] },
-        'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString() },
+        'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString(), channel: 'form' },
+        'applied.get': { id: 0, proseAnswers: [], emails: [] },
         'answerBank.get': {},
         'selector.get': { selector: null },
         'selector.clear': { cleared: false },
@@ -178,11 +179,17 @@ export function createFakeHostPort(): HostPort {
         'resolve.mapping': { epoch: 0, resolutions: [], llmError: null },
         // The model pick: the canned model finds no Option, so a miss stays a picker.
         'option.pick': { position: null },
+        // The Apply address pick: the canned model picks none, so the panel lists the candidates.
+        'applyAddress.pick': { position: null },
         // A Learned wording: the canned host keeps nothing.
         'wording.learn': { learned: false },
         generate: { draft: '' },
+        // The Application email: a canned Draft, checked, that asks for no link.
+        'email.draft': { subject: 'Application', body: 'Hello,\n\nFake Draft.\n\nBest regards,\nFake User', model: 'fake', language: 'en', missingLinks: [], unsupportedClaims: [], unchecked: false },
         save: { saved: 0 },
         'qa.list': { page: 0, done: true, items: [], omitted: 0 },
+        // The Mail account: the canned host has none, so the settings page shows the wizard.
+        'mail.status': { state: 'none' },
         // A Capture: the canned host writes nothing and says so.
         'capture.save': { path: '(fake host: nothing saved)' },
       }

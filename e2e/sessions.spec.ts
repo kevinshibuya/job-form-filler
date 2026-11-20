@@ -16,11 +16,11 @@ import { startHost } from './hostBridge'
  *  3. a same-site wizard step re-scans and the answer follows its LABEL onto a
  *     page that renumbered every ref.
  *
- * Flows 2 and 3 use `?tabId=` OVERRIDE mode, which ignores `activated` entirely
- * (S2 constraint 3). That is deliberate: it makes two panels drivable side by
- * side from one Playwright context, so isolation + rehydrate are provable here.
- * The in-window SWAP on tab activation is not expressible this way and is
- * covered by the App acceptance suite instead.
+ * Flows 2 and 3 open each panel with its tab in its address, as the service
+ * worker does: a panel is bound to that tab for its whole life. That makes two
+ * panels drivable side by side from one Playwright context, so isolation +
+ * rehydrate are provable here. Chrome showing a per-tab panel only on its own
+ * tab is not automated (docs/research/apply-by-email-facts.md, question 6).
  */
 
 /** Same budget rationale as full-loop.spec.ts: extension launch + SW relay cost

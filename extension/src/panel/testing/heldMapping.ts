@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type Resolution,
+  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendArrivedParams, type MailSendArrivedResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -105,7 +105,60 @@ export interface HeldMappingHost {
   pick: (p: OptionPickParams) => { position: number | null } | { error: { kind: HostErrorKind; message: string } } | Promise<{ position: number | null }>
   /** Every `wording.learn` request, in order, as its params (ticket #35). */
   learned: LearnWordingParams[]
+  /** The addresses the page's one frame reports with its Scan reply (spec #66). */
+  addresses: FoundAddress[]
+  /** Every `applyAddress.pick` request, in order, as its params (spec #66). */
+  addressPicks: ApplyAddressPickParams[]
+  /** What `applyAddress.pick` answers: a position, or an error. Defaults to none. */
+  addressPick: (p: ApplyAddressPickParams) => { position: number | null } | { error: { kind: HostErrorKind; message: string } } | Promise<{ position: number | null } | { error: { kind: HostErrorKind; message: string } }>
+  /** Every `email.draft` request, in order, as its params (spec #66). */
+  emailDrafts: EmailDraftParams[]
+  /** What `email.draft` answers: a Draft, or an error. Defaults to `draftReply`. */
+  emailDraft: (p: EmailDraftParams) => EmailDraftResult | { error: { kind: HostErrorKind; message: string } } | Promise<EmailDraftResult | { error: { kind: HostErrorKind; message: string } }>
+  /** Frames beside the first that hold no Field, each with its addresses. */
+  otherFrames: { frameId: number; url: string; addresses: FoundAddress[] }[]
+  /** Every request the panel sent the Native host, as its method, in order. */
+  methods: string[]
+  /** What the page answers a JFF_JOBTEXT with. Defaults to nothing found. */
+  jobText: JobTextReply
+  /** The text a JFF_PICK picks, or null to cancel the pick. */
+  pickText: string | null
+  /** When true no Scan reaches the page: the inject never answers. */
+  holdScan: boolean
+  /** Every `applied.check` request, in order, as its params (ticket #76). */
+  appliedChecks: AppliedCheckParams[]
+  /** What `applied.check` answers. Defaults to no Applied job either way. */
+  appliedCheck: (p: AppliedCheckParams) => AppliedCheckReply | { error: { kind: HostErrorKind; message: string } } | Promise<AppliedCheckReply>
+  /** What `mail.status` answers (spec #66). Defaults to no Mail account. */
+  mailStatus: () => MailStatusAnswer | Promise<MailStatusAnswer>
+  /** What `mail.senders` answers (ticket #81). Defaults to the own address alone. */
+  mailSenders: () => MailSendersAnswer | Promise<MailSendersAnswer>
+  /** Every `mail.send` request, in order, as its params (ticket #82). */
+  mailSends: MailSendParams[]
+  /** What `mail.send` answers. Defaults to a Send that went out. */
+  mailSend: (p: MailSendParams) => MailSendAnswer | Promise<MailSendAnswer>
+  /** The request id of every `mail.send`, in order (ticket #83). */
+  mailSendIds: string[]
+  /** Every `mail.send.arrived` request, in order, as its params (ticket #83). */
+  mailArrivals: MailSendArrivedParams[]
+  /** What `mail.send.arrived` answers. Defaults to the Applied job it marked. */
+  mailArrived: (p: MailSendArrivedParams) => MailSendArrivedAnswer | Promise<MailSendArrivedAnswer>
 }
+
+export type MailStatusAnswer = MailStatus | { error: { kind: HostErrorKind; message: string } }
+export type MailSendersAnswer = MailSendersResult | { error: { kind: HostErrorKind; message: string } }
+export type MailSendAnswer = MailSendResult | { error: { kind: HostErrorKind; message: string } }
+export type MailSendArrivedAnswer = MailSendArrivedResult | { error: { kind: HostErrorKind; message: string } }
+
+/** What the fake host answers a Send that went out with. */
+export const SENT: MailSendResult = {
+  outcome: 'sent', appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z', gmailMessageId: 'MESSAGE_ID_PLACEHOLDER', gmailThreadId: 'THREAD_ID_PLACEHOLDER',
+}
+
+export interface AppliedCheckParams { url: string; applyAddresses?: string[] }
+/** An Applied job as `applied.check` answers it. */
+export interface AppliedCheckJob { id: number; url: string; canonicalUrl: string; company: string | null; jobTitle: string | null; markedAt: string; channel: 'form' | 'email' }
+export interface AppliedCheckReply { applied: AppliedCheckJob | null; appliedByAddress: AppliedCheckJob | null }
 
 export function installHeldMappingHost(): HeldMappingHost {
   const host = {} as HeldMappingHost
@@ -117,11 +170,18 @@ export function installHeldMappingHost(): HeldMappingHost {
       mappingFor: (fs: EnumField[]) => fs.map((f) => resolution(f, {})),
       held: [], firstRequests: [], firstCompanies: [], frameUrl: 'https://jobs.example.com/apply', mappingCount: 0, page: {}, fills: [], sent: [], reads: [], refuse: {}, offers: {}, scans: 0, storage: {},
       picks: [], pick: () => ({ position: null }), learned: [],
+      addresses: [], addressPicks: [], addressPick: () => ({ position: null }), emailDrafts: [], emailDraft: draftReply, otherFrames: [], methods: [], jobText: { text: '', selector: null, source: 'none' }, pickText: null, holdScan: false,
+      appliedChecks: [], appliedCheck: () => ({ applied: null, appliedByAddress: null }),
+      mailStatus: () => ({ state: 'none' }),
+      mailSenders: () => ({ address: 'ada@example.com', senders: [{ address: 'ada@example.com', displayName: 'Ada Lovelace' }], lastUsed: null }),
+      mailSends: [], mailSend: () => SENT, mailSendIds: [],
+      mailArrivals: [], mailArrived: () => ({ appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z' }),
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
     window.__jffHostBridge = async ({ requestId, method, params }): Promise<HostResponse> => {
       const p = params as { epoch: number; fields: EnumField[]; company?: string | null }
+      host.methods.push(method)
       if (method === 'profile.get') return { requestId, ok: true, result: ONBOARDED }
       if (method === 'selfCheck') return { requestId, ok: true, result: SELF_CHECK }
       if (method === 'selector.get') return { requestId, ok: true, result: { selector: null } }
@@ -153,6 +213,45 @@ export function installHeldMappingHost(): HeldMappingHost {
         const answer = await host.pick(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
+      if (method === 'applyAddress.pick') {
+        const pp = params as ApplyAddressPickParams
+        host.addressPicks.push(pp)
+        const answer = await host.addressPick(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'email.draft') {
+        const pp = params as EmailDraftParams
+        host.emailDrafts.push(pp)
+        const answer = await host.emailDraft(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'applied.check') {
+        const pp = params as AppliedCheckParams
+        host.appliedChecks.push(pp)
+        const answer = await host.appliedCheck(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'mail.status') {
+        const answer = await host.mailStatus()
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'mail.senders') {
+        const answer = await host.mailSenders()
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'mail.send') {
+        const pp = params as MailSendParams
+        host.mailSends.push(pp)
+        host.mailSendIds.push(requestId)
+        const answer = await host.mailSend(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'mail.send.arrived') {
+        const pp = params as MailSendArrivedParams
+        host.mailArrivals.push(pp)
+        const answer = await host.mailArrived(pp)
+        return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
       if (method === 'wording.learn') {
         host.learned.push(params as LearnWordingParams)
         return { requestId, ok: true, result: { learned: true } }
@@ -170,6 +269,21 @@ export function installHeldMappingHost(): HeldMappingHost {
 
   return host
 }
+
+/** The prose of the fake host's Application email. */
+export const DRAFT_PROSE = 'Hello,\n\nI would like to apply for the analyst role. I build analytical engines.'
+
+/** The fake host's Application email: the page's subject when it set one,
+ *  the prose signed with the onboarded name, checked, flagging nothing. */
+export const draftReply = (p: EmailDraftParams): EmailDraftResult => ({
+  subject: p.pageSubject ?? 'Application for the analyst role',
+  body: `${DRAFT_PROSE}\n\nBest regards,\nAda Lovelace`,
+  model: 'claude-opus-5-5',
+  language: p.language ?? 'en',
+  missingLinks: [],
+  unsupportedClaims: [],
+  unchecked: false,
+})
 
 /** A Mapping reply to a held request: Mapping's decisions, or a model error. */
 export const mapped = (
@@ -220,11 +334,30 @@ function fakeChrome(host: HeldMappingHost): unknown {
     },
     runtime: {
       sendMessage: vi.fn(async (msg: { kind?: string; message?: { type?: string; epoch?: number; fills?: { handle: FieldHandle; value?: string; candidates?: string[] }[] } }) => {
-        if (msg?.kind === 'inject') return { ok: true, frames: [0] }
+        if (msg?.kind === 'inject') {
+          if (host.holdScan) return await new Promise(() => {})
+          return { ok: true, frames: [0, ...host.otherFrames.map((f) => f.frameId)] }
+        }
         const m = msg?.message
         if (msg?.kind === 'toContent' && m?.type === 'JFF_SCAN') {
           host.scans++
-          return { ok: true, replies: [{ frameId: 0, url: host.frameUrl, payload: { ok: true, scan: { epoch: m.epoch, fields: host.fields, unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
+          const scan = (fields: EnumField[], addresses: FoundAddress[]): unknown =>
+            ({ ok: true, scan: { epoch: m.epoch, fields, unreachableWidgets: 0, activeCaptcha: false, addresses } })
+          return {
+            ok: true,
+            replies: [
+              { frameId: 0, url: host.frameUrl, payload: scan(host.fields, host.addresses) },
+              ...host.otherFrames.map((f) => ({ frameId: f.frameId, url: f.url, payload: scan([], f.addresses) })),
+            ],
+            failures: [],
+          }
+        }
+        if (msg?.kind === 'toContent' && m?.type === 'JFF_PICK') {
+          const pick = host.pickText === null ? { ok: false, error: 'pick_cancelled' } : { ok: true, pick: { selector: '#job', text: host.pickText } }
+          return { ok: true, replies: [{ frameId: 0, payload: pick }], failures: [] }
+        }
+        if (msg?.kind === 'toContent' && m?.type === 'JFF_JOBTEXT') {
+          return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText: host.jobText } }], failures: [] }
         }
         if (msg?.kind === 'toContent' && m?.type === 'JFF_FILL') {
           // The page takes every value it is sent, and reports it filled,
@@ -258,6 +391,7 @@ function fakeChrome(host: HeldMappingHost): unknown {
         return { ok: true }
       }),
       onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+      getURL: (p: string) => `chrome-extension://jffextensionid/${p.replace(/^\//, '')}`,
     },
     storage: {
       session: {

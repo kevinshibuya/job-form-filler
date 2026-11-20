@@ -22,7 +22,7 @@ describe('createNavSignals (S3)', () => {
   it('forwards onCommitted with frameId + the EVENT url (never chrome.tabs.Tab)', () => {
     const events = installChrome()
     const seen: NavEvent[] = []
-    createNavSignals(1, (e) => seen.push(e))
+    createNavSignals((e) => seen.push(e))
     ;(listenerOf(events.committed) as (d: { tabId: number; frameId: number; url: string }) => void)({ tabId: 7, frameId: 3, url: 'https://a.com/step2' })
     expect(seen).toEqual([{ type: 'navigated', tabId: 7, frameId: 3, url: 'https://a.com/step2' }])
   })
@@ -30,7 +30,7 @@ describe('createNavSignals (S3)', () => {
   it('forwards onHistoryStateUpdated (SPA wizard steps count)', () => {
     const events = installChrome()
     const seen: NavEvent[] = []
-    createNavSignals(1, (e) => seen.push(e))
+    createNavSignals((e) => seen.push(e))
     ;(listenerOf(events.history) as (d: { tabId: number; frameId: number; url: string }) => void)({ tabId: 7, frameId: 0, url: 'https://a.com/#/step2' })
     expect(seen).toEqual([{ type: 'navigated', tabId: 7, frameId: 0, url: 'https://a.com/#/step2' }])
   })
@@ -38,7 +38,7 @@ describe('createNavSignals (S3)', () => {
   it('tabs.onUpdated loading is a FALLBACK: deduped after a recent webNavigation event, forwarded otherwise', () => {
     const events = installChrome()
     const seen: NavEvent[] = []
-    createNavSignals(1, (e) => seen.push(e))
+    createNavSignals((e) => seen.push(e))
     ;(listenerOf(events.committed) as (d: { tabId: number; frameId: number; url: string }) => void)({ tabId: 7, frameId: 0, url: 'https://a.com' })
     ;(listenerOf(events.updated) as (id: number, c: { status?: string; url?: string }) => void)(7, { status: 'loading', url: 'https://a.com/x' })
     expect(seen.length).toBe(1) // deduped
@@ -52,22 +52,19 @@ describe('createNavSignals (S3)', () => {
   it('a loading tick WITHOUT a url emits NOTHING — Chrome omits url unless it changed, and an empty url would misread as a cross-site move', () => {
     const events = installChrome()
     const seen: NavEvent[] = []
-    createNavSignals(1, (e) => seen.push(e))
+    createNavSignals((e) => seen.push(e))
     vi.advanceTimersByTime(NAV_FALLBACK_DEDUPE_MS + 1) // no recent webNav — dedupe is NOT what drops it
     ;(listenerOf(events.updated) as (id: number, c: { status?: string }) => void)(7, { status: 'loading' })
     expect(seen.length).toBe(0)
   })
 
-  it('activation is filtered to the panel window; removal always forwards', () => {
+  it('never listens to tab activation: a panel follows no other tab; removal forwards', () => {
     const events = installChrome()
     const seen: NavEvent[] = []
-    createNavSignals(1, (e) => seen.push(e))
-    ;(listenerOf(events.activated) as (info: { tabId: number; windowId: number }) => void)({ tabId: 9, windowId: 2 })
-    expect(seen.length).toBe(0)
-    ;(listenerOf(events.activated) as (info: { tabId: number; windowId: number }) => void)({ tabId: 9, windowId: 1 })
-    expect(seen).toEqual([{ type: 'activated', tabId: 9 }])
+    createNavSignals((e) => seen.push(e))
+    expect(events.activated.addListener).not.toHaveBeenCalled()
     ;(listenerOf(events.removed) as (id: number) => void)(9)
-    expect(seen[1]).toEqual({ type: 'removed', tabId: 9 })
+    expect(seen).toEqual([{ type: 'removed', tabId: 9 }])
   })
 
   it('a removal drops the tab from the dedupe map (F11: it grew one entry per tab, forever)', () => {
@@ -78,7 +75,7 @@ describe('createNavSignals (S3)', () => {
     // entry survives for the whole life of the panel.
     const events = installChrome()
     const seen: NavEvent[] = []
-    createNavSignals(1, (e) => seen.push(e))
+    createNavSignals((e) => seen.push(e))
     ;(listenerOf(events.committed) as (d: { tabId: number; frameId: number; url: string }) => void)({ tabId: 7, frameId: 0, url: 'https://a.com' })
     ;(listenerOf(events.removed) as (id: number) => void)(7)
     ;(listenerOf(events.updated) as (id: number, c: { status?: string; url?: string }) => void)(7, { status: 'loading', url: 'https://a.com/x' })
@@ -87,8 +84,10 @@ describe('createNavSignals (S3)', () => {
 
   it('the disposer removes every listener', () => {
     const events = installChrome()
-    const stop = createNavSignals(1, () => {})
+    const stop = createNavSignals(() => {})
     stop()
-    for (const e of Object.values(events)) expect(e.removeListener).toHaveBeenCalledTimes(1)
+    for (const [name, e] of Object.entries(events)) {
+      expect(e.removeListener).toHaveBeenCalledTimes(name === 'activated' ? 0 : 1)
+    }
   })
 })

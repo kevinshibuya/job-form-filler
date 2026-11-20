@@ -1,4 +1,5 @@
 import { atsModule, CapturedPageSchema, ContentMessageSchema, FillReportSchema, findAts, ScanResultSchema, STALE_EPOCH } from '@jff/shared'
+import { collectAddresses } from './addresses'
 import { capturePage } from './capture'
 import { hasActiveCaptcha, isDemographic } from './classify'
 import { enumerateFields, getEpoch } from './enumerate'
@@ -54,6 +55,8 @@ async function handle(raw: unknown): Promise<unknown> {
     const scan = ScanResultSchema.safeParse({
       epoch: msg.epoch, fields, unreachableWidgets, activeCaptcha: hasActiveCaptcha(document), attachedUploads,
       resumeUploaded,
+      // Spec #66: the page's addresses, read in the same pass, from the DOM alone.
+      addresses: collectAddresses(document),
     })
     if (!scan.success) return { ok: false, error: 'bad_scan' }
     installSnapshotListeners(document, (snap) => {

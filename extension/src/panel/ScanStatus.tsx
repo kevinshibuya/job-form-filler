@@ -18,6 +18,8 @@ export type ScanUiState =
   // `ats`: the Scan's ATS, whose module may say where its form is. Absent on
   // an outcome stored before the ATS travelled with the Scan.
   | { kind: 'empty'; frames: number; ats?: AtsOrGeneric }
+  // Spec #66: no Field, and addresses the Apply address may be chosen from.
+  | { kind: 'email'; frames: number; candidates: number }
   | { kind: 'captcha' }
   // `counts` is set when Mapping failed after the first step filled: those
   // fills stay on the page, so the line keeps counting them.
@@ -44,6 +46,7 @@ function copyFor(s: ScanUiState): string {
       const hint = atsModule(s.ats).emptyStateHint
       return hint === undefined ? sentence : `${sentence} ${hint}`
     }
+    case 'email': return `Scanned ${s.frames} frames: no form fields, and ${s.candidates} email ${s.candidates === 1 ? 'address' : 'addresses'}. Choose the address to apply to below.`
     case 'captcha': return '⚠ CAPTCHA active — nothing was filled.'
     case 'failed': return s.counts === undefined
       ? `✕ Scan failed: ${s.reason}`
@@ -55,7 +58,7 @@ function copyFor(s: ScanUiState): string {
 
 const TONE: Record<ScanUiState['kind'], string> = {
   connecting: MUTED, injecting: MUTED, enumerating: MUTED, retrying: MUTED, resolving: MUTED,
-  superseded: MUTED, matching: MUTED,
+  superseded: MUTED, matching: MUTED, email: MUTED,
   done: 'text-green-700 dark:text-green-400',
   empty: 'text-amber-600 dark:text-amber-400',
   captcha: 'text-amber-600 dark:text-amber-400',
@@ -68,7 +71,7 @@ const TONE: Record<ScanUiState['kind'], string> = {
 export function ScanStatus({ status, reports }: { status: ScanUiState | null; reports: FrameReport[] }) {
   if (status === null) return null
   const settledWithEvidence =
-    status.kind === 'empty' || status.kind === 'failed' ||
+    status.kind === 'empty' || status.kind === 'email' || status.kind === 'failed' ||
     (status.kind === 'done' && reports.some((r) => r.error !== null))
   return (
     <div className="my-2 text-[12px]" data-jff-status={status.kind} role="status">
