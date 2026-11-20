@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0011
+---
+
 # Claude writes prose, Codex runs the structured tasks
 
 Claude runs only where taste decides the outcome, which is the Draft; extraction,
