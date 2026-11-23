@@ -239,6 +239,8 @@ describe('the median', () => {
 
 describe('the table', () => {
   const page = (ats, fields, filled, firstFillMs, settledMs) => ({ ats, fields, filled, firstFillMs, settledMs })
+  // These records carry no job description measure (scripts/probe-jobtext.test.mjs).
+  const unmeasured = { jobText: { ats: 0, pick: 0, heuristic: 0, none: 0 }, linkBox: { read: 0, tried: 0 } }
 
   it('has one row per ATS and a total row for all pages', () => {
     const rows = summarize([
@@ -248,14 +250,14 @@ describe('the table', () => {
       page('greenhouse', 30, 9, 1500, 8000),
     ])
     expect(rows.map((r) => r.ats)).toEqual(['greenhouse', 'lever', 'all'])
-    expect(rows[0]).toEqual({ ats: 'greenhouse', pages: 3, fields: 50, filled: 19, firstFillMs: 1000, settledMs: 8000 })
-    expect(rows[1]).toEqual({ ats: 'lever', pages: 1, fields: 10, filled: 4, firstFillMs: 1000, settledMs: 9000 })
-    expect(rows[2]).toEqual({ ats: 'all', pages: 4, fields: 60, filled: 23, firstFillMs: 1000, settledMs: 8500 })
+    expect(rows[0]).toEqual({ ats: 'greenhouse', pages: 3, fields: 50, filled: 19, firstFillMs: 1000, settledMs: 8000, ...unmeasured })
+    expect(rows[1]).toEqual({ ats: 'lever', pages: 1, fields: 10, filled: 4, firstFillMs: 1000, settledMs: 9000, ...unmeasured })
+    expect(rows[2]).toEqual({ ats: 'all', pages: 4, fields: 60, filled: 23, firstFillMs: 1000, settledMs: 8500, ...unmeasured })
   })
 
   it('counts a page with no form as a page with zero Fields', () => {
     const [row, total] = summarize([page('other', 0, 0, null, null)])
-    expect(row).toEqual({ ats: 'other', pages: 1, fields: 0, filled: 0, firstFillMs: null, settledMs: null })
+    expect(row).toEqual({ ats: 'other', pages: 1, fields: 0, filled: 0, firstFillMs: null, settledMs: null, ...unmeasured })
     expect(total.pages).toBe(1)
   })
 
