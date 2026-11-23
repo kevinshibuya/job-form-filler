@@ -2,7 +2,7 @@ import { atsModule, CapturedPageSchema, ContentMessageSchema, FillReportSchema, 
 import { collectAddresses } from './addresses'
 import { capturePage } from './capture'
 import { hasActiveCaptcha, isDemographic } from './classify'
-import { enumerateFields, getEpoch } from './enumerate'
+import { enumeratedControls, enumerateFields, getEpoch } from './enumerate'
 import { fillFields, fillResume } from './fill'
 import { PICK_TIMEOUT_MS, postingReaderFor, readJobText, startPicker } from './jobpost'
 import { installSnapshotListeners, snapshotValues } from './snapshot'
@@ -85,7 +85,7 @@ async function handle(raw: unknown): Promise<unknown> {
     // The Side panel asks the top frame. On a form page whose module names a
     // Job posting page, the text comes from there (spec #41): fetched on this
     // frame's origin only, without cookies, given up after 5 seconds.
-    const jobText = await readJobText(document, msg.selector, postingReaderFor(location.href, (url, init) => fetch(url, init)))
+    const jobText = await readJobText(document, msg.selector, postingReaderFor(location.href, (url, init) => fetch(url, init)), enumeratedControls())
     return { ok: true, jobText }
   }
 

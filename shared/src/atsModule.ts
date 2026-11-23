@@ -38,8 +38,6 @@ export interface PostingPage {
 }
 
 export interface JobTextRule {
-  /** Where the text sits on the form's own page. */
-  readonly onFormPage?: JobTextSpot
   /** Given the form page's address, the Job posting page and where the text
    *  sits there, or null when this form page has none. */
   readonly postingPage?: (formPageUrl: string) => PostingPage | null

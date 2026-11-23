@@ -1100,7 +1100,7 @@ describe('the Job posting text from the posting\'s page (spec #41)', () => {
     return vi.fn(async (_frameId: number | undefined, message: ContentMessage) => {
       if (message.type === 'JFF_SCAN') return { replies: [{ frameId: 0, url, payload: { ok: true, scan: { epoch: message.epoch, fields: [field(0, 0), field(0, 1)], unreachableWidgets: 0, activeCaptcha: false } } }], failures: [] }
       if (message.type === 'JFF_JOBTEXT') {
-        const jobText = await readJobText(document, message.selector, postingReaderFor(url, fetch))
+        const jobText = await readJobText(document, message.selector, postingReaderFor(url, fetch), [])
         return { replies: [{ frameId: 0, payload: { ok: true, jobText } }], failures: [] }
       }
       if (message.type === 'JFF_FILL') return { replies: [{ frameId: 0, payload: { ok: true, fill: { epoch: message.epoch, filled: [], failed: [] } } }], failures: [] }

@@ -59,7 +59,7 @@ describe('the Lever module\'s Job posting text rule', () => {
   })
 
   it('names no text on the form\'s own page, for any module', () => {
-    for (const id of ['lever', 'ashby', 'greenhouse', 'generic']) expect(atsModule(id).jobText?.onFormPage).toBeUndefined()
+    for (const id of ['lever', 'ashby', 'greenhouse', 'generic']) expect(Object.keys(atsModule(id).jobText ?? {})).not.toContain('onFormPage')
   })
 
   it('is Lever\'s alone: Ashby, Greenhouse and the generic module give no posting page', () => {
