@@ -56,6 +56,9 @@ export interface Session {
   /** The spot the page script named for `jobText` when it came from a pick or
    *  a heuristic (ticket #102); null for any other source. */
   jobTextSpot: string | null
+  /** The address the user typed into the link box, when `jobText` came from
+   *  it (ticket #104); null for any other source. */
+  jobTextLink: string | null
   /** The spots the user said were not the job description in this Session.
    *  Every request for the page's text carries them, and they go with the
    *  Session: nothing is kept per site. */
@@ -159,6 +162,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     jobText: '',
     jobTextSource: null,
     jobTextSpot: null,
+    jobTextLink: null,
     rejectedJobTextSpots: [],
     snapshot: {},
     reuseOverrides: {},
@@ -504,6 +508,8 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.jobTextSource != null && !JobTextSourceSchema.safeParse(raw.jobTextSource).success) return null
     // A row stored before spots were kept has no spot and rejected none (ticket #102).
     if (raw.jobTextSpot != null && typeof raw.jobTextSpot !== 'string') return null
+    // A row stored before the link box has no link (ticket #104).
+    if (raw.jobTextLink != null && typeof raw.jobTextLink !== 'string') return null
     if (raw.rejectedJobTextSpots !== undefined && (!Array.isArray(raw.rejectedJobTextSpots) || !allStrings(raw.rejectedJobTextSpots))) return null
     // A row stored before the email flow has no candidates and no Apply address (spec #66).
     if (raw.applyCandidates !== undefined && !ApplyAddressCandidateSchema.array().safeParse(raw.applyCandidates).success) return null
@@ -528,6 +534,7 @@ export function parseStoredSession(raw: unknown): Session | null {
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
       jobTextSource: (raw.jobTextSource as JobTextSource | null | undefined) ?? null,
       jobTextSpot: (raw.jobTextSpot as string | null | undefined) ?? null,
+      jobTextLink: (raw.jobTextLink as string | null | undefined) ?? null,
       rejectedJobTextSpots: raw.rejectedJobTextSpots ?? [],
       applyCandidates: (raw.applyCandidates as ApplyAddressCandidate[] | undefined) ?? [],
       applyAddress,

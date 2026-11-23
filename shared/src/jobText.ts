@@ -12,12 +12,13 @@ export const JOB_TEXT_MIN = 400
 export const JOB_TEXT_MAX = 50_000
 
 /**
- * Where the Session's Job posting text came from, in the order a Scan tries
- * them: the user's paste, the ATS module, a spot the user picked, a
- * heuristic. `none` is a Scan that found nothing, or a text the user threw
- * away.
+ * Where the Session's Job posting text came from, in the order a Scan honours
+ * them: the user's paste, the user's link (spec #98), the ATS module, a spot
+ * the user picked, a heuristic. The paste and the link are held texts, and the
+ * one the user supplied last is the one held. `none` is a Scan that found
+ * nothing, or a text the user threw away.
  */
-export const JOB_TEXT_SOURCES = ['paste', 'ats', 'pick', 'heuristic', 'none'] as const
+export const JOB_TEXT_SOURCES = ['paste', 'link', 'ats', 'pick', 'heuristic', 'none'] as const
 export const JobTextSourceSchema = z.enum(JOB_TEXT_SOURCES)
 export type JobTextSource = z.infer<typeof JobTextSourceSchema>
 

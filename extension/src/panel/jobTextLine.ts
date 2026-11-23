@@ -13,6 +13,7 @@ export function jobTextLine(text: string, source: JobTextSource | null, ats: Ats
 function sourceWords(source: JobTextSource, ats: AtsOrGeneric): string {
   switch (source) {
     case 'paste': return 'your paste'
+    case 'link': return 'your link'
     case 'ats': {
       const name = ATS_LIST.find((a) => a.id === ats)?.name
       return name === undefined ? 'the posting page' : `the ${name} posting page`
@@ -24,6 +25,9 @@ function sourceWords(source: JobTextSource, ats: AtsOrGeneric): string {
 }
 
 /** "Not the job description" is offered for a text the user did not write:
- *  a spot they picked, or a heuristic's guess. */
+ *  a spot they picked, a heuristic's guess, or what their link gave. */
 export const offersNotTheJob = (source: JobTextSource | null): boolean =>
-  source === 'pick' || source === 'heuristic'
+  source === 'pick' || source === 'heuristic' || source === 'link'
+
+/** Beside "nothing found", the three ways to supply the posting (spec #98). */
+export const NOTHING_FOUND_WAYS = 'Give the posting\'s link below, paste its text, or pick it on the page.'
