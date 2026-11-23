@@ -136,6 +136,8 @@ describe('ATS modules', () => {
   it('gives the generic module, with no layers, to an ATS with no module and to no ATS at all', () => {
     expect(atsModule('workable')).toBe(GENERIC_MODULE)
     expect(atsModule('recruitee')).toBe(GENERIC_MODULE)
+    // #108: a Gupy step page gives no route to the posting's page, so Gupy has no module.
+    expect(atsModule('gupy')).toBe(GENERIC_MODULE)
     expect(atsModule(null)).toBe(GENERIC_MODULE)
     expect(atsModule(undefined)).toBe(GENERIC_MODULE)
     expect(atsModule('not-an-ats')).toBe(GENERIC_MODULE)

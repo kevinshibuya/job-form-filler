@@ -262,6 +262,83 @@ describe('sanitizeCapture still strips what it stripped before', () => {
   })
 })
 
+/** A signed-in step page with no form and no posting: Gupy's curriculum step
+ *  before its form opens (#108). */
+const stepPage = `<!doctype html><html lang="pt-BR"><head>
+  <title>Gupy</title>
+  <script>window.app = { tenant: 'initech' }</script>
+  <link rel="stylesheet" href="${web}cdn.example.org/app.css">
+</head><body>
+  <header><nav>
+    <a href="${web}initech.example.org/candidates/profile">Editar perfil</a>
+    <a href="/candidates/applications/90001/steps/90002/curriculum#">Minhas candidaturas</a>
+  </nav></header>
+  <main>
+    <h1>Olá, vamos continuar sua candidatura?</h1>
+    <p>Você está se candidatando para a vaga Desenvolvedor II na empresa Initech.</p>
+    <button type="button">Continuar</button>
+    <img src="/logo.png" alt="Initech">
+  </main>
+  <!-- tenant initech -->
+</body></html>`
+
+describe('sanitizeCapture with --page', () => {
+  let clean
+  let doc
+  beforeEach(() => {
+    clean = sanitizeCapture(stepPage, [], { page: true, companies: ['Initech'] })
+    doc = parse(clean)
+  })
+
+  it('makes a fixture of a page with no form and no posting, which the other cuts refuse', () => {
+    expect(() => sanitizeCapture(stepPage)).toThrow(/no form and no Control/)
+    expect(() => sanitizeCapture(stepPage, [], { posting: true })).toThrow(/no Job posting/)
+    expect(doc.querySelector('h1')?.textContent).toBe('Olá, vamos continuar sua candidatura?')
+  })
+
+  it('keeps the whole page body: its header, its text and its buttons', () => {
+    expect(doc.querySelector('header nav')).not.toBeNull()
+    expect(doc.querySelectorAll('nav a')).toHaveLength(2)
+    expect(doc.querySelector('main button')?.textContent).toBe('Continuar')
+    expect(doc.body.textContent).toContain('a vaga Desenvolvedor II')
+  })
+
+  it('names the Company "Acme" in the text and the title', () => {
+    expect(doc.title).toBe('Page at Acme')
+    expect(clean).not.toMatch(/initech/i)
+    expect(doc.body.textContent).toContain('na empresa Acme.')
+  })
+
+  it('empties every address and drops scripts, styles, images and comments', () => {
+    expect(clean).not.toMatch(/https?:\/\//)
+    expect(clean).not.toContain('90001')
+    for (const a of Array.from(doc.querySelectorAll('a'))) expect(a.getAttribute('href') ?? '').toBe('')
+    expect(doc.querySelector('script, link, style, img')).toBeNull()
+    expect(clean).not.toContain('<!--')
+  })
+
+  it('drops the comment a browser writes before the root, with the address the page was saved from', () => {
+    const saved = `<!DOCTYPE html><!-- saved from url=(0060)${web}initech.example.org/candidates/applications/90001 -->${stepPage.replace('<!doctype html>', '')}`
+    const out = sanitizeCapture(saved, [], { page: true, companies: ['Initech'] })
+    expect(out).not.toContain('<!--')
+    expect(out).not.toContain('90001')
+    expect(out).not.toMatch(/https?:\/\//)
+  })
+
+  it('names the signed-in applicant after the persona, the whole name and the first name alone', () => {
+    const signedIn = stepPage.replace('<nav>', '<nav><span class="user">Jane Doe</span>').replace('Olá,', 'Olá Jane,')
+    const out = parse(sanitizeCapture(signedIn, [], { page: true, companies: ['Initech'], applicant: 'Jane Doe' }))
+    expect(out.querySelector('.user')?.textContent).toBe('Ada Lovelace')
+    expect(out.querySelector('h1')?.textContent).toBe('Olá Ada, vamos continuar sua candidatura?')
+    expect(out.documentElement.outerHTML).not.toMatch(/jane|doe/i)
+  })
+
+  it('takes one cut only', () => {
+    expect(() => sanitizeCapture(stepPage, [], { page: true, posting: true })).toThrow(/one cut/)
+    expect(() => sanitizeCapture(stepPage, [], { page: true, email: true })).toThrow(/one cut/)
+  })
+})
+
 describe('the sanitize-capture CLI', () => {
   let dir
   beforeEach(() => {
@@ -281,6 +358,27 @@ describe('the sanitize-capture CLI', () => {
     const result = run('--company', 'Initech', join(dir, 'in.html'), join(dir, 'out.html'))
     expect(result.status).toBe(0)
     expect(readFileSync(join(dir, 'out.html'), 'utf8')).toContain('Why Acme?')
+  })
+
+  it('writes a whole-page fixture with --page', () => {
+    writeFileSync(join(dir, 'in.html'), stepPage)
+    const result = run('--page', '--company', 'Initech', join(dir, 'in.html'), join(dir, 'out.html'))
+    expect(result.status).toBe(0)
+    expect(readFileSync(join(dir, 'out.html'), 'utf8')).toContain('na empresa Acme.')
+  })
+
+  it('names the applicant from --applicant after the persona', () => {
+    writeFileSync(join(dir, 'in.html'), stepPage.replace('Olá,', 'Olá Jane Doe,'))
+    const result = run('--page', '--applicant', 'Jane Doe', join(dir, 'in.html'), join(dir, 'out.html'))
+    expect(result.status).toBe(0)
+    expect(readFileSync(join(dir, 'out.html'), 'utf8')).toContain('Olá Ada Lovelace,')
+  })
+
+  it('refuses two cuts at once', () => {
+    writeFileSync(join(dir, 'in.html'), stepPage)
+    const result = run('--page', '--posting', join(dir, 'in.html'), join(dir, 'out.html'))
+    expect(result.status).toBe(2)
+    expect(existsSync(join(dir, 'out.html'))).toBe(false)
   })
 
   it('refuses to write what the personal-data guard would refuse', () => {

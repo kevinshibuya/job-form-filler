@@ -16,6 +16,9 @@
  *  - cutToEmail: the same for a page that applies by email. The posting, its
  *    mailto: links and its addresses with their ancestors, each address
  *    replaced whole by a numbered placeholder.
+ *  - cutToPage: the same for a page that holds no form and no posting, such as
+ *    an ATS's step page before its form opens. The whole body, the Company
+ *    named "Acme".
  *
  * Private strings, real e-mail addresses and credentials are replaced on the
  * serialised page by privateStrings.mjs, which every caller shares.
@@ -107,7 +110,9 @@ function nodesOf(doc: Document, root: Node, kind: number): Node[] {
  *  cut, which replaces its addresses; the page script never passes it. */
 export function cleanForPrivacy(doc: Document, { keepMailto = false }: { keepMailto?: boolean } = {}): void {
   for (const el of Array.from(doc.querySelectorAll(DROPPED))) el.remove()
-  for (const comment of nodesOf(doc, doc.documentElement, SHOW_COMMENT)) comment.parentNode?.removeChild(comment)
+  // From the document itself: a saved page carries the address it was saved
+  // from in a comment before its root element.
+  for (const comment of nodesOf(doc, doc, SHOW_COMMENT)) comment.parentNode?.removeChild(comment)
 
   for (const input of Array.from(doc.querySelectorAll('input'))) {
     const type = (input.getAttribute('type') ?? 'text').toLowerCase()
@@ -369,6 +374,19 @@ export function cutToPosting(doc: Document, companies: readonly string[]): boole
   replaceProse(doc, root)
   scrubPage(doc, companies, true)
   return true
+}
+
+/**
+ * The fixture's cuts for a page that holds no form and no Job posting, on a
+ * page cleanForPrivacy has cleaned: keeps the whole body, gives it a fresh
+ * head, and names each of `companies` "Acme", every address in text by its
+ * host and every Job posting id "posting-id". A fixture of what such a page
+ * shows, so a test can state what the tool reads there, which is nothing the
+ * other cuts would keep (#108).
+ */
+export function cutToPage(doc: Document, companies: readonly string[]): void {
+  freshHead(doc, `Page at ${FIXTURE_COMPANY}`)
+  scrubPage(doc, companies, true)
 }
 
 /** A function that gives each address one placeholder, numbered in the order
