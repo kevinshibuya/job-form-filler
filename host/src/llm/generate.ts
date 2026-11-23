@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { asksAboutAccommodation, displayValue, isFieldKey, type FieldClass } from '@jff/shared'
+import { ABOUT_ME_MAX, asksAboutAccommodation, displayValue, isFieldKey, type FieldClass } from '@jff/shared'
 import type { CallOpts, ClaudeRunner } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
@@ -15,6 +15,9 @@ export interface GenerationInput {
   cvText: string | null
   /** B2c: local project notes — trusted, candidate-authored. null = none. */
   projectNotes: string | null
+  /** About me (spec #98): what the user wrote about themselves, trusted.
+   *  null or blank = none, and no block is shown. */
+  aboutMe: string | null
   /** Prior company_specific drafts for the same question — reference material only. */
   references: string[]
   /** The Reusable Saved answers, in the order first saved, latest first
@@ -35,6 +38,20 @@ export const SAVED_ANSWERS_MAX = 12_000
 
 /** The block's name, as its header and the rules that point at it read it. */
 const SAVED_ANSWERS = 'SAVED ANSWERS'
+
+/** About me's block name, as its header and the rules that point at it read it. */
+export const ABOUT_ME = 'ABOUT ME'
+
+/** The About me block: the user's own text, outside every untrusted fence.
+ *  Nothing when the user wrote none. */
+export function aboutMeBlock(aboutMe: string | null): string[] {
+  const text = (aboutMe ?? '').trim()
+  return text === '' ? [] : [
+    `${ABOUT_ME} (trusted, written by the candidate about themselves):`,
+    text.slice(0, ABOUT_ME_MAX),
+    '',
+  ]
+}
 
 /**
  * The Saved answers block's pairs, one per line pair: the question fenced as
@@ -110,6 +127,7 @@ export function buildTrustedContext(input: GenerationInput): string[] {
       input.projectNotes.slice(0, CAPS.jobText),
       '',
     ]),
+    ...aboutMeBlock(input.aboutMe),
     ...savedAnswersBlock(input.savedAnswers),
     `Company: ${input.company === null ? '(unknown)' : fence('field_label', input.company, CAPS.label)}`,
     fence('job_post', input.jobText, CAPS.jobText),
@@ -132,7 +150,7 @@ function savedAnswersBlock(pairs: readonly SavedAnswerPair[]): string[] {
 }
 
 /** The trusted blocks a factual claim may rest on, as the rules name them. */
-export const TRUSTED_BLOCKS = `CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES or ${SAVED_ANSWERS} blocks`
+export const TRUSTED_BLOCKS = `CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ${ABOUT_ME} or ${SAVED_ANSWERS} blocks`
 
 /** A Prose Field: opinion, motivation or narrative, answered in a short paragraph. */
 const PROSE_RULES = [

@@ -12,6 +12,7 @@ const input = {
   description: null,
   cvText: null,
   projectNotes: null,
+  aboutMe: null,
   fieldClass: 'prose' as const,
 }
 
@@ -37,7 +38,7 @@ describe('buildGenerationPrompt', () => {
   })
 
   it('states the factual-grounding and subjective-composition rules (D2)', () => {
-    expect(prompt).toMatch(/Factual claims .* may come ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES or SAVED ANSWERS blocks/i)
+    expect(prompt).toMatch(/Factual claims .* may come ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME or SAVED ANSWERS blocks/i)
     expect(prompt).toMatch(/never invent/i)
     expect(prompt).toMatch(/say what is missing plainly in one sentence/i)
     expect(prompt).toMatch(/refusing a subjective question is forbidden/i)
@@ -96,7 +97,7 @@ describe('buildGenerationPrompt for a Personal-fact Field', () => {
   })
 
   it('takes every fact from the trusted blocks only, and says what is missing when they do not cover the question', () => {
-    expect(prompt).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES or SAVED ANSWERS blocks/)
+    expect(prompt).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME or SAVED ANSWERS blocks/)
     expect(prompt).toMatch(/say what is missing.*in one sentence/i)
     expect(prompt).not.toMatch(/refusing a subjective question is forbidden/i)
   })

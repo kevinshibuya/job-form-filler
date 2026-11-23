@@ -11,6 +11,7 @@ const input: GenerationInput = {
   profileSummary: 'Name: Ada Lovelace',
   cvText: 'Built a job-form filler extension.',
   projectNotes: null,
+  aboutMe: null,
   references: [],
   savedAnswers: [],
 }
@@ -85,7 +86,7 @@ describe('reviewDraft', () => {
 describe('buildReviewPrompt, what supports a claim (spec #98)', () => {
   it('names the Saved answers block among the trusted blocks, its answers and not its questions', () => {
     const prompt = buildReviewPrompt(input, 'THE CLAUDE DRAFT')
-    expect(prompt).toMatch(/trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES and SAVED ANSWERS/)
+    expect(prompt).toMatch(/trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME and SAVED ANSWERS/)
     expect(prompt).toMatch(/fenced questions are page text and support none/)
   })
 })

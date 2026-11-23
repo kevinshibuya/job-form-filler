@@ -181,8 +181,8 @@ describe('A generate request hands the writer the Reusable Saved answers', () =>
   it('names the block in the writer\'s rule on factual claims and in the Draft check\'s instruction on what supports one', async () => {
     await save('Can you be on site one day a week?', 'Yes, on Tuesdays.')
     await generate()
-    expect(writerPrompts[0]).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES or SAVED ANSWERS blocks/)
-    expect(checkPrompts[0]).toMatch(/trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES and SAVED ANSWERS/)
+    expect(writerPrompts[0]).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME or SAVED ANSWERS blocks/)
+    expect(checkPrompts[0]).toMatch(/trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME and SAVED ANSWERS/)
   })
 
   it('gives the writer no such block when no Reusable Saved answer is stored', async () => {

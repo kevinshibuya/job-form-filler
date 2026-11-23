@@ -143,6 +143,11 @@ export interface HeldMappingHost {
   mailArrivals: MailSendArrivedParams[]
   /** What `mail.send.arrived` answers. Defaults to the Applied job it marked. */
   mailArrived: (p: MailSendArrivedParams) => MailSendArrivedAnswer | Promise<MailSendArrivedAnswer>
+  /** The About me the fake host stores (spec #98): `aboutMe.get` answers it
+   *  and `aboutMe.set` replaces it. Empty until a test or a save sets it. */
+  aboutMe: string
+  /** Every `aboutMe.set` request's text, in order. */
+  aboutMeSets: string[]
 }
 
 export type MailStatusAnswer = MailStatus | { error: { kind: HostErrorKind; message: string } }
@@ -176,6 +181,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       mailSenders: () => ({ address: 'ada@example.com', senders: [{ address: 'ada@example.com', displayName: 'Ada Lovelace' }], lastUsed: null }),
       mailSends: [], mailSend: () => SENT, mailSendIds: [],
       mailArrivals: [], mailArrived: () => ({ appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z' }),
+      aboutMe: '', aboutMeSets: [],
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -251,6 +257,13 @@ export function installHeldMappingHost(): HeldMappingHost {
         host.mailArrivals.push(pp)
         const answer = await host.mailArrived(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
+      }
+      if (method === 'aboutMe.get') return { requestId, ok: true, result: { text: host.aboutMe } }
+      if (method === 'aboutMe.set') {
+        const { text } = params as { text: string }
+        host.aboutMeSets.push(text)
+        host.aboutMe = text
+        return { requestId, ok: true, result: { text } }
       }
       if (method === 'wording.learn') {
         host.learned.push(params as LearnWordingParams)

@@ -24,7 +24,7 @@ const CAREERS: FoundAddress[] = [
 const JOB_TEXT = 'Placeholder text where the Job posting described the role. '.repeat(10).trim()
 const EMPTY = '⚠ Scanned 1 frames, found no form fields. Open the application form, then Scan again.'
 /** What the panel asks the Native host before any Scan, and the applied check every Scan makes first. */
-const BEFORE_SCAN = new Set(['selfCheck', 'profile.get', 'answerBank.get', 'applied.check'])
+const BEFORE_SCAN = new Set(['selfCheck', 'profile.get', 'answerBank.get', 'aboutMe.get', 'applied.check'])
 
 function onCareersTab(): void {
   const tab = { id: 7, url: 'https://careers.example.com/vacatures/1', title: 'Apply by email at Acme' }

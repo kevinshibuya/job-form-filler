@@ -1,15 +1,15 @@
 import type Database from 'better-sqlite3'
 import {
-  FACT_MAX_CHARS, HostRequestSchema, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
+  ABOUT_ME_MAX, FACT_MAX_CHARS, HostRequestSchema, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
   type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type ResolveParams, type SelfCheck,
 } from '@jff/shared'
 import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  checkApplied, checkAppliedByAddress, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
+  checkApplied, checkAppliedByAddress, getAboutMe, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
   insertApplication, listAllAnswers, listApplied, listReferenceAnswers, listReusableAnswersNewestFirst,
-  markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
+  markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAboutMe, setAnswerBank,
   setProfile, upsertAnswer,
 } from './db/repos.js'
 import { ClaudeError, type ClaudeRunner } from './llm/claudeCli.js'
@@ -153,6 +153,21 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         return ok(req.requestId, getAnswerBank(db))
       }
 
+      // About me (spec #98): no Known key, so it is stored apart and never
+      // reaches Resolution.
+      case 'aboutMe.get':
+        return ok(req.requestId, { text: getAboutMe(db) })
+
+      case 'aboutMe.set': {
+        const { text } = req.params
+        if (text.length > ABOUT_ME_MAX) {
+          return fail(req.requestId, 'bad_request',
+            `About me holds at most ${ABOUT_ME_MAX.toLocaleString('en-US')} characters; this text has ${text.length.toLocaleString('en-US')}.`)
+        }
+        setAboutMe(db, text)
+        return ok(req.requestId, { text: getAboutMe(db) })
+      }
+
       // No model: the host never hands this step a runner.
       case 'resolve.first':
         logResolution(req.method, req.params)
@@ -173,6 +188,8 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           profileSummary: buildProfileSummary(getProfile(db), getAnswerBank(db)),
           cvText: req.params.cvText ?? null,
           projectNotes: readProjectNotes(deps.config.projectsPaths),
+          // About me, as a trusted block for the writer and the Draft check (spec #98).
+          aboutMe: getAboutMe(db),
           references,
           // Every Reusable Saved answer, as facts; generate.ts leaves out an
           // accommodation question and holds the block to its cap (spec #98).
@@ -262,6 +279,8 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
             profileSummary: buildProfileSummary(profile, getAnswerBank(db)),
             cvText: req.params.cvText ?? null,
             projectNotes: readProjectNotes(deps.config.projectsPaths),
+            // The Application email and its check read About me (spec #98).
+            aboutMe: getAboutMe(db),
             pageSubject: req.params.pageSubject,
             // The language the user switched to, or the Job posting's own.
             language: req.params.language ?? postingLanguage(req.params.jobText),

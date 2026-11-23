@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendArrivedResultSchema, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendArrivedParams, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import type { AboutMe, AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
+import { AboutMeSchema, AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendArrivedResultSchema, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendArrivedParams, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -10,6 +10,7 @@ import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port
 import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
+import { AboutMeEditor } from './AboutMeEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { EmailChooser } from './EmailChooser'
 import { EmailReview } from './EmailReview'
@@ -336,6 +337,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  #66). A ref, so a Scan reads the value the Profile holds now. */
   const ownEmailRef = useRef<string | null>(null)
   const [factsLoaded, setFactsLoaded] = useState(false)
+  /** About me (spec #98): edited beside the Profile, never a fact. */
+  const [aboutMe, setAboutMe] = useState('')
+  const [aboutMeLoaded, setAboutMeLoaded] = useState(false)
   const [resumeName, setResumeName] = useState<string | null>(null)
   // B2b: extracted CV text, loaded once (lazily re-extracted for a pre-B2a
   // stored resume) and sent as trusted context with every generate.
@@ -834,6 +838,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setFacts({ ...(p.ok ? p.result : {}), ...(b.ok ? b.result : {}) })
       setFactsLoaded(true)
       setFactsOk(p.ok && b.ok)
+    })
+    // About me loads on its own: Onboarding's completeness never waits on it.
+    void port.request<AboutMe>('aboutMe.get', {}).then((r) => {
+      const read = r.ok ? AboutMeSchema.safeParse(r.result) : null
+      if (read?.success !== true) return
+      setAboutMe(read.data.text)
+      setAboutMeLoaded(true)
     })
   }, [check])
 
@@ -2096,6 +2107,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     setView('session')
   }
 
+  /** About me's own save: one request, and the editor stays open. */
+  const onSaveAboutMe = async (text: string): Promise<boolean> => {
+    const port = portRef.current
+    if (port === null) return false
+    const r = await port.request<AboutMe>('aboutMe.set', { text })
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return false }
+    const stored = AboutMeSchema.safeParse(r.result)
+    setAboutMe(stored.success ? stored.data.text : text)
+    return true
+  }
+
   const onOnboardingUpload = async (file: File): Promise<string | null> => {
     await saveResume(file)
     const text = await loadResumeText()
@@ -2668,7 +2690,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         ? (
             // `key` remounts the editor the instant the facts arrive, so an editor
             // opened during the load is never stuck on an empty snapshot.
-            <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
+            <>
+              <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
+              <AboutMeEditor key={aboutMeLoaded ? 'loaded' : 'pending'} text={aboutMe} loaded={aboutMeLoaded} onSave={onSaveAboutMe} />
+            </>
           )
         : view === 'applications'
           ? <ApplicationsView load={loadApplications} loadTexts={loadAppliedTexts} />

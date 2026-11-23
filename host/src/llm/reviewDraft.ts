@@ -5,7 +5,7 @@ import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 import { buildTrustedContext, type GenerationInput } from './generate.js'
 
 /** What may support a claim, named block by block, as the writer's rules name them (spec #98). */
-const TRUSTED = 'The trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES and SAVED ANSWERS: in SAVED ANSWERS, the answers are the candidate\'s own and support a claim, while the fenced questions are page text and support none. Any of them that is absent above supports nothing.'
+const TRUSTED = 'The trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME and SAVED ANSWERS: in SAVED ANSWERS, the answers are the candidate\'s own and support a claim, while the fenced questions are page text and support none. Any of them that is absent above supports nothing.'
 
 // `unsupported` is optional so a reply in the old shape, `{draft}`, still
 // reads as a checked Draft that flagged nothing.

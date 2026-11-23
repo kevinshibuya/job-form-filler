@@ -436,12 +436,27 @@ export type MailSendArrivedParams = z.infer<typeof MailSendArrivedParamsSchema>
 export const MailSendArrivedResultSchema = z.object({ appliedJobId: z.number().int(), markedAt: z.string() })
 export type MailSendArrivedResult = z.infer<typeof MailSendArrivedResultSchema>
 
+/**
+ * About me (spec #98): one text the user writes about themselves for what no
+ * Known key holds. It is no Known key and never a Value; Generation and the
+ * Application email read it as a trusted block, and Mapping never sees it.
+ */
+export const ABOUT_ME_MAX = 4000
+
+/** What `aboutMe.get` and `aboutMe.set` answer: the stored text, empty for none. */
+export const AboutMeSchema = z.object({ text: z.string() })
+export type AboutMe = z.infer<typeof AboutMeSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.get'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
+  // About me (spec #98). The host refuses a text over ABOUT_ME_MAX itself, so
+  // the refusal names the cap in words the Side panel shows.
+  z.object({ requestId: z.string().min(1), method: z.literal('aboutMe.get'), params: z.object({}).passthrough() }),
+  z.object({ requestId: z.string().min(1), method: z.literal('aboutMe.set'), params: z.object({ text: z.string() }) }),
   // Resolution in two requests. `resolve.first` runs no model and answers every
   // Field that needs none; `resolve.mapping` carries the pending Fields
   // themselves and runs Mapping on them. The host keeps no state between the two.

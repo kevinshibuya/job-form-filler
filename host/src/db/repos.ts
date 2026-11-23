@@ -113,6 +113,19 @@ export const setProfile = (db: Database.Database, values: Record<string, string>
 export const getAnswerBank = (db: Database.Database): Record<string, string> => readKv(db, 'answer_bank')
 export const setAnswerBank = (db: Database.Database, values: Record<string, string>): void => writeKv(db, 'answer_bank', values)
 
+/** About me (spec #98): the stored text, empty when the user wrote none. */
+export function getAboutMe(db: Database.Database): string {
+  const row = db.prepare('SELECT text FROM about_me WHERE id = 1').get() as { text: string } | undefined
+  return row?.text ?? ''
+}
+
+/** Stores About me as written; a blank text is no About me. The caller holds
+ *  it to ABOUT_ME_MAX. */
+export function setAboutMe(db: Database.Database, text: string): void {
+  if (text.trim() === '') db.prepare('DELETE FROM about_me WHERE id = 1').run()
+  else db.prepare('INSERT INTO about_me (id, text) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET text = excluded.text').run(text)
+}
+
 /** Routes a FieldKey to the table that owns it. Returns null when unset. */
 export function getStoredValue(db: Database.Database, key: FieldKey): string | null {
   const table = isProfileKey(key) ? 'profile' : 'answer_bank'

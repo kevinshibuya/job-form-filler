@@ -199,3 +199,17 @@ describe('A Personal-fact answer is answered once', () => {
     expect(next.resolutions[0]).toMatchObject({ tier: 'auto', source: 'saved_answer', value: 'A quiet room, please.' })
   })
 })
+
+describe('Mapping stays unaware of About me (spec #98)', () => {
+  it('is handed no About me, so free text the user wrote is never matched to a Field as its Value', async () => {
+    const aboutMe = 'I can be on site in London two days a week.'
+    await request('aboutMe.set', { text: aboutMe })
+    const out = await mapped([WHY, WORKED_HERE, field(9, 'About me')])
+    expect(prompts.length).toBeGreaterThan(0)
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain(aboutMe)
+      expect(prompt).not.toContain('ABOUT ME')
+    }
+    expect(JSON.stringify(out)).not.toContain(aboutMe)
+  })
+})

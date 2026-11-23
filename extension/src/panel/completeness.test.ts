@@ -81,3 +81,11 @@ describe('profileCompleteness (O1)', () => {
     })
   })
 })
+
+describe('About me and Onboarding (spec #98)', () => {
+  it('Onboarding is complete with an empty About me: no required group asks for it', () => {
+    expect(REQUIRED_FACTS.flat(2).some((k) => /about/i.test(k))).toBe(false)
+    expect(profileCompleteness(FULL, true, true)).toBe('complete')
+    expect(missingFacts(FULL, true)).toEqual([])
+  })
+})
