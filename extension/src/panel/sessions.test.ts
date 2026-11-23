@@ -758,6 +758,16 @@ describe('waiting rows: Fields the first step left for Mapping', () => {
     expect(settled.resolutions.find((x) => x.handle.fid === 0)).toEqual(filled)
   })
 
+  it('settles a waiting question about accommodation needs with its own reason, so it offers no Generation', () => {
+    const s: Session = {
+      ...waitingSession(),
+      fields: [labelled(0, 'First name'), labelled(1, 'Do you need any accommodation?'), labelled(2, 'Salary expectation')],
+    }
+    const settled = settleWaiting(s, 'mapping-lost')
+    expect(settled.resolutions.find((x) => x.handle.fid === 1)).toMatchObject({ tier: 'needs_input', reason: 'accommodation' })
+    expect(settled.resolutions.find((x) => x.handle.fid === 2)).toMatchObject({ tier: 'needs_input', reason: 'mapping-lost' })
+  })
+
   it('moves the waiting count into the Needs input count of the stored status line', () => {
     expect(settleWaiting(waitingSession(), 'mapping-lost').lastOutcome)
       .toEqual({ kind: 'done', filled: 1, alreadyOnPage: 0, proposed: 0, needsInput: 2 })

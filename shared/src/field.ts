@@ -102,9 +102,9 @@ export type ResolutionSource = z.infer<typeof ResolutionSourceSchema>
 
 /**
  * What Mapping says a Field it matched to nothing asks for. A Prose Field asks
- * for opinion, motivation or narrative, and is the only kind Generation drafts.
- * A Personal-fact Field asks something true or false about the user, who
- * answers it.
+ * for opinion, motivation or narrative. A Personal-fact Field asks something
+ * true or false about the user. Generation is offered on both when the Control
+ * takes free text; the label never decides the offer (ADR 0014).
  */
 export const FieldClassSchema = z.enum(['prose', 'personal_fact'])
 export type FieldClass = z.infer<typeof FieldClassSchema>
@@ -150,7 +150,9 @@ export const ResolutionSchema = z.object({
   /**
    * Set only on a Field Mapping matched to neither a Known key nor a Saved
    * answer. Absent everywhere else, and an absent label is read as
-   * `personal_fact`: a Field nobody labelled prose is the user's to answer.
+   * `personal_fact`. A question about accommodation needs carries the reason
+   * `accommodation` (accommodation.ts) whatever its label, and the panel
+   * offers it no Generation.
    */
   fieldClass: FieldClassSchema.optional(),
   /**

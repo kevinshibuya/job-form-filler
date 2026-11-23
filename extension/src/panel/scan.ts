@@ -1,5 +1,5 @@
 import {
-  atsIdOf, atsModule, JOB_TEXT_MAX, JOB_TEXT_MIN, JobTextReplySchema,
+  ACCOMMODATION_REASON, asksAboutAccommodation, atsIdOf, atsModule, JOB_TEXT_MAX, JOB_TEXT_MIN, JobTextReplySchema,
   type ApplyAddressCandidate, type AtsModule, type FoundAddress, type JobTextReply, type JobTextSource, type AtsOrGeneric, type CityParts, type ContentMessage, type EnumField, type FieldHandle, type FillReport,
   type HostErrorKind, type PhoneParts, type Resolution, type ResolveFirstResult, type ResolveMappingResult,
 } from '@jff/shared'
@@ -669,11 +669,13 @@ export interface MappingOutcome {
 export async function runMapping(
   deps: MappingDeps, scan: Pick<ScanOutcome, 'epoch' | 'ats' | 'jobText' | 'pending'>, isCurrent: () => boolean,
 ): Promise<MappingOutcome | null> {
+  // A question about accommodation needs keeps its own reason on a row the
+  // host never decided, so Generation stays off it (ADR 0014).
   const failed = (llmError: { kind: HostErrorKind; message: string }): MappingOutcome => ({
     resolutions: scan.pending.map((f) => ({
       handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
       tier: 'needs_input', value: null, source: null, key: null, answerId: null,
-      reason: `llm-error:${llmError.kind}`,
+      reason: asksAboutAccommodation(f.label) ? ACCOMMODATION_REASON : `llm-error:${llmError.kind}`,
     })),
     fill: emptyFill(), llmError, frameReports: [],
   })
@@ -704,7 +706,8 @@ export async function runMapping(
     if (answered.has(refOf(f))) continue
     resolutions.push({
       handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
-      tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason: MAPPING_LOST,
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null,
+      reason: asksAboutAccommodation(f.label) ? ACCOMMODATION_REASON : MAPPING_LOST,
     })
   }
   const batch = await fillAuto(deps.sendToTab, scan.epoch, resolutions)

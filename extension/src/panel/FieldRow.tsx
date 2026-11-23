@@ -1,5 +1,5 @@
 import type { EnumField, FieldKey, ResolutionTier, ValueType } from '@jff/shared'
-import { VALUE_TYPE_OF, norm, storedValue, yesNoOf } from '@jff/shared'
+import { ACCOMMODATION_REASON, VALUE_TYPE_OF, norm, storedValue, yesNoOf } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
@@ -11,6 +11,9 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from
 export const TIER_BADGE: Record<ResolutionTier, string> = {
   auto: 'filled', proposed: 'proposed', needs_input: 'needs input', skipped: 'skipped',
 }
+
+/** Under a question about accommodation needs: why it offers no Generation (ADR 0014). */
+export const ACCOMMODATION_HINT = 'This asks about your own needs, so it is yours to answer.'
 
 /**
  * First-class refusal reasons rendered as a human hint under the row. The
@@ -37,6 +40,7 @@ export const REASON_HINT: Record<string, string> = {
   // Ticket #29: questions answered for the country they name.
   'names-region': 'The question names a region, not countries. Answer it yourself.',
   'no-country-named': 'The question names no country. This is the answer for your own country.',
+  [ACCOMMODATION_REASON]: ACCOMMODATION_HINT,
   // Ticket #31: the model picked one of the page's Options after a Fill missed (ADR 0008).
   [OPTION_PICK]: 'The model picked this option for your stored answer. Accept it or pick another.',
   [OPTION_PICK_FAILED]: 'None of the page\'s options matches this value, and the model pick failed. Pick one.',
@@ -67,9 +71,6 @@ function answersPerCountry(key: FieldKey, value: string): boolean {
 
 /** A Fill that found no matching Option on a row whose Options are known: the picker is right below. */
 export const NO_MATCH_PICK_HINT = 'None of the page\'s options matches this value. Pick one.'
-
-/** Under a Personal-fact row: why it offers no Generation. */
-export const PERSONAL_FACT_HINT = 'A question about you. Answer it yourself.'
 
 const SEGMENTED_MAX_OPTIONS = 5
 
@@ -210,16 +211,13 @@ export function FieldRow(p: FieldRowProps) {
   // stay the Resolution's.
   const shownTier: ResolutionTier = filled && resolution.tier === 'needs_input' ? 'auto' : resolution.tier
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[shownTier]}`
-  // A Needs input row that is not a Prose Field asks about the user, unless it
-  // already says why it is theirs (a failed Mapping, a failed Fill).
-  const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
   // A hint that asks for an action shows only while the row is still to be
   // decided; a standing note about the answer stays on a decided row.
   const decided = shownTier === 'auto'
   const hint = decided && !STANDING_NOTES.has(resolution.reason) ? undefined
     : resolution.reason === 'no-matching-option' && field.options.length > 0
     ? NO_MATCH_PICK_HINT
-    : REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
+    : REASON_HINT[resolution.reason]
 
   if (resolution.tier === 'skipped') {
     return (

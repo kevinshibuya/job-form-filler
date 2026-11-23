@@ -89,9 +89,12 @@ const body = () => {
         return { ref, decision: 'known_key', knownKey: 'salary', answerId: null }
       }
     }
-    // Every Field it matches to nothing is labelled a Prose Field, so the
-    // full loop still drafts its free-text question.
-    return { ref, decision: 'custom', knownKey: null, answerId: null, fieldClass: 'prose' }
+    // A question about the applicant's own experience is labelled a
+    // Personal-fact Field; every other Field it matches to nothing a Prose
+    // Field. The full loop drafts one of each.
+    const line = prompt.split('\n').find((l) => l.includes(`ref=${ref} `)) ?? ''
+    const fieldClass = /which versions/i.test(line) ? 'personal_fact' : 'prose'
+    return { ref, decision: 'custom', knownKey: null, answerId: null, fieldClass }
   })
 }
 

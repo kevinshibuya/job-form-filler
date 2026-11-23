@@ -121,6 +121,14 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     await bugRow.getByRole('button', { name: 'Fill' }).click()
     await expect(target.locator('#hard_bug')).toHaveValue(/production TypeScript/)
 
+    // A question about the user, which the fake Mapping labels a Personal-fact
+    // Field, on a text box: Generation drafts it too (ADR 0014), and it fills.
+    const versionsRow = panel.locator('li[data-jff-tier="needs_input"]', { hasText: 'Which versions of TypeScript have you worked with?' })
+    await versionsRow.getByRole('button', { name: 'Generate with AI' }).click()
+    await expect(versionsRow.locator('textarea')).toHaveValue(/production TypeScript/, { timeout: 60_000 })
+    await versionsRow.getByRole('button', { name: 'Fill' }).click()
+    await expect(target.locator('#ts_versions')).toHaveValue(/production TypeScript/)
+
     // The user overrides that draft by typing on the PAGE (snapshot must beat the
     // panel edit), answers a factual select and a fact the profile lacks, types
     // into the unlabelled mystery field (which must NOT be saved), then submits.
@@ -158,9 +166,13 @@ test('scan, resolve, fill, snapshot and save round-trips through the real host i
     // and in the panel, and neither of those is a decision to keep it.
     expect(bank.map((b) => b.key)).not.toContain('workAuth')
     expect(answers.map((a) => a.answer)).not.toContain('I am authorized to work for any employer in the US.')
-    // One application row, with the edited company and exactly one generated draft.
+    // The Draft for the question about the user went on the page as it came
+    // back, and is kept as a Saved answer like any other.
+    expect(answers.find((a) => a.question_raw === 'Which versions of TypeScript have you worked with?')?.answer)
+      .toMatch(/production TypeScript/)
+    // One application row, with the edited company and the two generated drafts.
     expect(apps).toHaveLength(1)
-    expect(apps[0]!).toMatchObject({ company: 'Acme', generated_count: 1 })
+    expect(apps[0]!).toMatchObject({ company: 'Acme', generated_count: 2 })
     expect(apps[0]!.url).toContain('fixture-form.html')
 
     // ...and "Save to profile" is what does write a fact. The LinkedIn row

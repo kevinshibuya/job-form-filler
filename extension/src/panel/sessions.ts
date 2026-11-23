@@ -1,4 +1,4 @@
-import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
+import { ACCOMMODATION_REASON, ApplyAddressCandidateSchema, asksAboutAccommodation, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { SessionEmailDraftSchema, type SessionEmailDraft } from './emailDraft'
 import { SessionMailHandoverSchema, type SessionMailHandover } from './mailApp'
@@ -390,7 +390,9 @@ export function settleWaiting(session: Session, reason: string): Session {
     .filter((f) => waiting.has(refOf(f)) && !decided.has(refOf(f)))
     .map((f) => ({
       handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
-      tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason,
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null,
+      // A question about accommodation needs keeps its own reason, so Generation stays off it (ADR 0014).
+      reason: asksAboutAccommodation(f.label) ? ACCOMMODATION_REASON : reason,
     }))
   const last = session.lastOutcome
   const lastOutcome: ScanUiState | null = last?.kind === 'matching'
