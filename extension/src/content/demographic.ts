@@ -1,3 +1,4 @@
+import { asksAboutAccommodation } from '@jff/shared'
 import { DEMOGRAPHIC_RE } from './dom'
 
 /** Lower case with the accents stripped, so Portuguese wording matches with or
@@ -42,9 +43,6 @@ const PROTECTED_RE = asWords(PROTECTED_WORDINGS)
 /** A Field asking for pronouns is answered from the stored pronouns Value. */
 const PRONOUNS_RE = asWords(['pronouns?', 'pronomes?'])
 
-/** A question about accommodation needs is a Personal-fact Field: the user's to answer. */
-const ACCOMMODATION_RE = /accommodat|acomodac|adaptac/
-
 /**
  * Whether a Field is a Demographic Field, from its own label and from the
  * section test (`isDemographic` in classify.ts), which the caller runs.
@@ -56,6 +54,7 @@ const ACCOMMODATION_RE = /accommodat|acomodac|adaptac/
 export function isDemographicField(label: string | null, inDemographicSection: boolean): boolean {
   const text = label ?? ''
   const folded = fold(text)
-  if (PRONOUNS_RE.test(folded) || ACCOMMODATION_RE.test(folded)) return false
+  // A question about accommodation needs is the user's to answer (shared/src/accommodation.ts).
+  if (PRONOUNS_RE.test(folded) || asksAboutAccommodation(text)) return false
   return inDemographicSection || DEMOGRAPHIC_RE.test(text) || PROTECTED_RE.test(folded)
 }

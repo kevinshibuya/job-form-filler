@@ -579,7 +579,8 @@ export const PageEnvelopeSchema = z.object({
 
 // There is deliberately NO customQuestions list here: each Resolution Mapping
 // matched to nothing carries its own `fieldClass`, and the panel offers
-// [Generate] only on a Needs input Prose Field on a text Control.
+// [Generate] on a Needs input Field with no Known key on a text Control,
+// unless its reason is `accommodation`.
 export const ResolveResultSchema = z.object({
   epoch: z.number().int(),
   resolutions: z.array(ResolutionSchema),

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendArrivedParams, type MailSendArrivedResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
+  ACCOMMODATION_REASON, OPTIONS_READ, asksAboutAccommodation, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendArrivedParams, type MailSendArrivedResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -285,14 +285,20 @@ export const draftReply = (p: EmailDraftParams): EmailDraftResult => ({
   unchecked: false,
 })
 
-/** A Mapping reply to a held request: Mapping's decisions, or a model error. */
+/**
+ * A Mapping reply to a held request: Mapping's decisions, or a model error.
+ * On an error, as the real host does, a question about accommodation needs
+ * keeps its own reason.
+ */
 export const mapped = (
   host: HeldMappingHost, h: Held, llmError: { kind: 'rate_limit'; message: string } | null = null,
 ): HostResponse => ({
   requestId: h.requestId, ok: true,
   result: {
     epoch: 0, llmError,
-    resolutions: llmError === null ? host.mappingFor(h.fields) : h.fields.map((f) => resolution(f, { reason: `llm-error:${llmError.kind}` })),
+    resolutions: llmError === null ? host.mappingFor(h.fields) : h.fields.map((f) => resolution(f, {
+      reason: asksAboutAccommodation(f.label) ? ACCOMMODATION_REASON : `llm-error:${llmError.kind}`,
+    })),
   },
 })
 

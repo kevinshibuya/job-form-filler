@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
-  RULE_TABLE, VALUE_TYPE_OF, candidatesForKey, cityParts, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey,
+  ACCOMMODATION_REASON, RULE_TABLE, VALUE_TYPE_OF, asksAboutAccommodation, candidatesForKey, cityParts, displayValue, isCheckboxGroup, isConsentCheckbox, isOldText, isProfileKey,
   languageValues, norm, phoneParts, salaryOf, salaryWords, yesNoCandidates,
   type EnumField, type FieldClass, type FieldKey, type Resolution, type ResolveFirstResult, type ResolveResult,
 } from '@jff/shared'
@@ -113,7 +113,7 @@ const withFillParts = (db: Database.Database, f: EnumField, r: Resolution): Reso
 /**
  * A Field Mapping left unmatched, or never got to answer for: Needs input,
  * labelled. Without a label Mapping gave, it is a Personal-fact Field, so a
- * degraded Mapping errs toward asking the user rather than drafting.
+ * degraded Mapping errs toward the stricter kind of Field.
  */
 function unmatched(f: EnumField, reason: string, fieldClass: FieldClass | null = null): Resolution {
   return res(f, { tier: 'needs_input', reason, fieldClass: fieldClass ?? 'personal_fact' })
@@ -481,6 +481,18 @@ async function mappingStep(
       const r = byRef.get(ref)
       if (r !== undefined && r.tier === 'needs_input' && r.value === null && r.identifiedValue === undefined) {
         byRef.set(ref, { ...r, key: r.key ?? key, identifiedValue: value })
+      }
+    }
+
+    // A Needs input question about accommodation needs is the user's to
+    // answer, whatever Mapping labelled it and when Mapping failed: the rule is
+    // on its wording, never the model's (ADR 0014). The panel withholds
+    // Generation on this reason.
+    for (const f of unresolved) {
+      const ref = refOf(f)
+      const r = byRef.get(ref)
+      if (r !== undefined && r.tier === 'needs_input' && asksAboutAccommodation(f.label)) {
+        byRef.set(ref, { ...r, reason: ACCOMMODATION_REASON })
       }
     }
   }
