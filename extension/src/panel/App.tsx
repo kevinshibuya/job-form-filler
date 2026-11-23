@@ -2765,11 +2765,12 @@ export function App({ hostWaitMs = HOST_WAIT_MS, fetchLink = fetchFromPanel }: A
 
       {view === 'editor'
         ? (
-            // `key` remounts the editor the instant the facts arrive, so an editor
-            // opened during the load is never stuck on an empty snapshot.
+            // `key` remounts each editor the instant its text arrives, so an editor
+            // opened during the load is never stuck on an empty snapshot. The two
+            // keys differ: siblings that share a key leave one behind on leaving.
             <>
-              <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
-              <AboutMeEditor key={aboutMeLoaded ? 'loaded' : 'pending'} text={aboutMe} loaded={aboutMeLoaded} onSave={onSaveAboutMe} />
+              <ProfileEditor key={factsLoaded ? 'facts-loaded' : 'facts-pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
+              <AboutMeEditor key={aboutMeLoaded ? 'about-me-loaded' : 'about-me-pending'} text={aboutMe} loaded={aboutMeLoaded} onSave={onSaveAboutMe} />
             </>
           )
         : view === 'applications'
