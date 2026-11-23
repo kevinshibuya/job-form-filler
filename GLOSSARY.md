@@ -80,7 +80,7 @@ _Avoid_: waterfall, confidence tier, matching
 
 **Needs input**:
 A Resolution outcome: the Field could not be answered from stored data and is
-left to the user. Generation is offered only when it is a Prose Field.
+left to the user. Generation is offered when its Control takes free text.
 _Avoid_: needs-input, unresolved, unknown
 
 **Skipped**:
@@ -145,7 +145,8 @@ company-specific.
 _Avoid_: answer, stored answer, Q&A, answer memory
 
 **Reusable**:
-A Saved answer that may be filled on any form. The alternative tag,
+A Saved answer that may be filled on any form, and that Generation reads as
+fact about the user when it drafts an answer to another question. The alternative tag,
 company-specific, marks a Saved answer that only serves as reference for a new
 Draft.
 _Avoid_: generic, global
@@ -158,24 +159,35 @@ _Avoid_: lookup, reuse, memory
 The user's own local writing about past projects, used as reference for Drafts.
 _Avoid_: notes, portfolio
 
+**About me**:
+Text the user writes about themselves for what no Known key holds, such as
+their availability or the tools they prefer. Generation reads it as fact about
+the user.
+_Avoid_: bio, profile notes, notes
+
 **Generation**:
-Writing new text with AI: a free-text answer for a Prose Field nothing stored
-can cover, or the body of an Application email.
+Writing new text with AI: a free-text answer for a Field nothing stored
+answers outright, or the body of an Application email.
 _Avoid_: AI answer, completion
 
 **Prose Field**:
-A Field that asks for opinion, motivation or narrative in free text. It is the
-only kind Generation drafts.
+A Field that asks for opinion, motivation or narrative in free text. Its Draft
+is a short narrative.
 _Avoid_: essay question, open question
 
 **Personal-fact Field**:
-A Field that asks something true or false about the user that nothing stored
-answers, such as accommodation needs or past work at the Company. The user
-answers it; Generation never does.
+A Field that asks something true or false about the user that no Known key or
+Saved answer answers outright, such as the technologies they have used or past
+work at the Company. Its Draft is a short direct answer drawn from what is
+stored about the user, and it says what is missing when that does not cover the
+question. A question about accommodation needs is the exception: the user
+answers it, and Generation never does.
 _Avoid_: factual question
 
 **Draft**:
-The text Generation produces, until the user approves it.
+The text Generation produces, until the user approves it. Where what is stored
+does not cover the question, the Draft says so and its row names what is
+missing.
 _Avoid_: answer, generated answer, response
 
 **Draft check**:
@@ -197,8 +209,11 @@ Writing approved Values into the page's Controls. Fill never submits the form.
 _Avoid_: submit, autofill (the browser feature), apply
 
 **Anti-fabrication rule**:
-For factual Fields the AI only picks which stored Value applies, or which of the
-page's Options expresses it. It never invents one.
+AI states a fact about the user only when something stored supports it: the
+Profile, the Resume, the Answer bank, a Reusable Saved answer, About me or
+Project notes. For a Field a stored Value answers, it only picks which Value
+applies or which of the page's Options expresses it. In a Draft, it says what is
+missing where nothing stored covers the question. It never invents a fact.
 _Avoid_: hallucination guard
 
 ### Applications
