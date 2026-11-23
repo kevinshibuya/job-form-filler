@@ -116,7 +116,7 @@ describe('ATS modules', () => {
   // text on the form's own page.
   it('gives Lever a Job posting page rule and no text on the form page, and Greenhouse and Ashby no Job posting text', () => {
     expect(atsModule('lever').jobText?.postingPage).toBeTypeOf('function')
-    expect(atsModule('lever').jobText?.onFormPage).toBeUndefined()
+    expect(Object.keys(atsModule('lever').jobText ?? {})).toEqual(['postingPage'])
     expect(atsModule('greenhouse').jobText).toBeUndefined()
     expect(atsModule('ashby').jobText).toBeUndefined()
   })

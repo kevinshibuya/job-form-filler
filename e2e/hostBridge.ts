@@ -14,6 +14,8 @@ const FAKE_MAIL_ENTRY = resolve(here, '../host/testing/jffFakeMail/host.mjs')
 const FAKE_MAIL_SENT = 'jff-fake-mail-sent.jsonl'
 const FAKE_MAIL_NET = 'jff-fake-mail-net.log'
 const FAKE_BIN = resolve(here, 'bin')
+/** A codex model id: the fake codex answers whatever model it is given. */
+const STRUCTURED_ON_CODEX = 'gpt-6.1-sol'
 
 /** One email the fake Mail account driver sent, as the test-only entry wrote it down. */
 export interface FakeSentEmail {
@@ -75,10 +77,18 @@ export async function startHost(
     claudePath: join(FAKE_BIN, 'claude'),
     codexPath: join(FAKE_BIN, 'codex'),
     dbPath: join(home, 'db.sqlite'),
-    // Mapping and the Option pick run on Claude by default (host/src/llm/models.ts),
-    // but their stand-in behaviours (the held reply, the rate limit, the canned
-    // pick) live in the fake codex. A gpt id routes those two tasks back to it.
-    models: { mapping: 'gpt-6-luna', optionPick: 'gpt-6-luna' },
+    // The structured tasks go to the CLI their model id belongs to
+    // (routedRunner.ts), and every default is a Claude id now. The fake codex
+    // is the one that scripts these five (the Mapping hold, the rate limit, the
+    // Option pick and its log, the Apply address pick, the Draft check), so
+    // the suite routes them back to it through the user's own override.
+    models: {
+      factsExtract: STRUCTURED_ON_CODEX,
+      mapping: STRUCTURED_ON_CODEX,
+      optionPick: STRUCTURED_ON_CODEX,
+      applyAddressPick: STRUCTURED_ON_CODEX,
+      reviewDraft: STRUCTURED_ON_CODEX,
+    },
   }))
 
   const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [opts.fakeMail === true ? FAKE_MAIL_ENTRY : HOST_ENTRY], {

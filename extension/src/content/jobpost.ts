@@ -1,4 +1,5 @@
 import { atsModule, findAts, JOB_TEXT_MAX, JOB_TEXT_MIN, type AtsModule, type JobTextReply } from '@jff/shared'
+import { coversDocument, formRegions } from './formRegion'
 import { fetchPostingText, type FetchLike } from './postingFetch'
 import { textOf } from './textOf'
 
@@ -40,18 +41,25 @@ export function postingReaderFor(href: string, fetch: FetchLike): PostingReader 
  * heuristic. A posting page that gives nothing, or cannot be read in time,
  * hands over to the next source and never fails the Scan.
  */
-export async function readJobText(root: Document, learnedSelector: string | null, posting: PostingReader): Promise<JobTextReply> {
+export async function readJobText(
+  root: Document, learnedSelector: string | null, posting: PostingReader, controls: readonly Element[],
+): Promise<JobTextReply> {
   const fromAts = await fetchPostingText(posting.module, posting.formPageUrl, posting.fetch)
   if (fromAts !== null) return { text: fromAts, selector: null, source: 'ats' }
-  return captureJobText(root, learnedSelector)
+  return captureJobText(root, learnedSelector, controls)
 }
 
 /**
  * The Job posting text on this page itself: the spot the user picked, then a
  * heuristic. Every source here must reach the minimum, and the text is cut to
  * the cap.
+ *
+ * `controls` are the Controls this frame's Enumeration found and the user can
+ * see. The heuristic leaves their form regions out of every candidate before
+ * it measures it (ticket #100), and gives nothing when a region is the whole
+ * document. A picked spot is read whole.
  */
-export function captureJobText(root: Document, learnedSelector: string | null): JobTextReply {
+export function captureJobText(root: Document, learnedSelector: string | null, controls: readonly Element[]): JobTextReply {
   if (learnedSelector !== null && learnedSelector !== '') {
     try {
       const el = root.querySelector(learnedSelector)
@@ -64,18 +72,23 @@ export function captureJobText(root: Document, learnedSelector: string | null): 
     }
   }
 
+  const regions = formRegions(controls)
+  if (regions.some(coversDocument)) return NOTHING
   for (const tier of HEURISTIC_TIERS) {
     let best: { el: Element; text: string } | null = null
     for (const el of Array.from(root.querySelectorAll(tier))) {
-      const t = textOf(el)
+      if (regions.some((r) => r.contains(el))) continue
+      const t = textOf(el, regions)
       if (t.length < MIN_JOB_TEXT) continue
       if (best === null || t.length > best.text.length) best = { el, text: t }
     }
     if (best !== null) return { text: best.text.slice(0, MAX_JOB_TEXT), selector: cssPathOf(best.el), source: 'heuristic' }
   }
 
-  return { text: '', selector: null, source: 'none' }
+  return NOTHING
 }
+
+const NOTHING: JobTextReply = Object.freeze({ text: '', selector: null, source: 'none' })
 
 /**
  * `CSS.escape` when the runtime provides it (every real browser this content script

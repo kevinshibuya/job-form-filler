@@ -172,7 +172,7 @@ describe('the job text source line', () => {
       chrome.tabs.get = async () => tab
       host.frameUrl = APPLY
       fetch = vi.fn<FetchLike>(async () => new Response(postingFixtureHtml('lever-posting'), { status: 200 }))
-      readPage = (selector) => readJobText(document, selector, postingReaderFor(APPLY, fetch))
+      readPage = (selector) => readJobText(document, selector, postingReaderFor(APPLY, fetch), [])
     })
 
     it('the text comes from the posting\'s page and the line reads "the Lever posting page"', async () => {

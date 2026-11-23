@@ -26,7 +26,7 @@ describe('the Lever posting fixture', () => {
   })
 
   it('gives the page script\'s heuristic a Job posting text it takes', () => {
-    const found = captureJobText(document, null)
+    const found = captureJobText(document, null, [])
     expect(found.source).toBe('heuristic')
     expect(found.text.length).toBeGreaterThanOrEqual(MIN_JOB_TEXT)
   })
