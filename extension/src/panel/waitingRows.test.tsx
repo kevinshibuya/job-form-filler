@@ -73,9 +73,9 @@ describe('rows still being matched say so', () => {
       expect(buttons.map((b) => b.textContent)).toEqual(['Accept', 'Generate with AI', 'Fill'])
       for (const b of buttons) expect(b.disabled).toBe(true)
     }
-    // Nothing counts yet: the first step's Needs input row is no Prose Field,
-    // and a waiting row has no Resolution to be one.
-    expect(generateAllText()).toBeUndefined()
+    // Only the first step's Needs input text row counts: a waiting row has no
+    // Resolution yet, so it offers no Generation.
+    expect(generateAllText()).toBe('Generate all remaining (1)')
   })
 
   it('counts the waiting rows beside a filled count that matches the page', async () => {
@@ -97,8 +97,8 @@ describe('rows still being matched say so', () => {
     await waitFor(() => { expect(status()).toBe('done') })
     expect(statusText()).toBe('✓ 2 filled, 0 already on page, 1 proposed, 4 need input')
     expect(statusText()).not.toMatch(/still being matched/)
-    // The landed Prose row now counts; the tick-box rows never do.
-    expect(generateAllText()).toBe('Generate all remaining (1)')
+    // The landed text row now counts beside the first step's; the tick-box rows never do.
+    expect(generateAllText()).toBe('Generate all remaining (2)')
     expect(buttonsOf('Salary expectation').find((b) => b.textContent === 'Accept')!.disabled).toBe(false)
   })
 

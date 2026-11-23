@@ -4,7 +4,7 @@
 // from a real site holds the employer's text, its board's addresses and that
 // site's contact addresses and browser keys.
 //
-//   node scripts/sanitize-capture.mjs [--posting | --email] [--company <name>]... <captured.html|capture.json> <fixture.html>
+//   node scripts/sanitize-capture.mjs [--posting | --email | --page] [--company <name>]... [--applicant <name>] <captured.html|capture.json> <fixture.html>
 //
 // It takes either a raw page file or a Capture, the JSON file "Save a capture"
 // writes: from a Capture it takes the cleaned page and the tab's address, and
@@ -25,7 +25,11 @@
 // page order and one per address whatever its case; a mailto: link keeps its
 // recipients and its subject, which is decoded, cleaned like the page's text
 // and encoded again. The posting's prose is replaced around its addresses and
-// the page keeps its declared language. Last, the shared private-strings rules replace
+// the page keeps its declared language. With `--page` the page holds no form
+// and no posting, as an ATS's step page before its form opens: the fixture step
+// keeps the whole body. `--applicant` names the signed-in applicant the page
+// shows after the persona: the whole name becomes "Ada Lovelace" and its first
+// word alone "Ada". Last, the shared private-strings rules replace
 // denylist strings, addresses on real domains and credential-shaped strings, and
 // it refuses to write a fixture the guard would still reject. The Company is
 // read from the page's title and its board address, as the list of ATSes says
@@ -35,11 +39,14 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { JSDOM } from 'jsdom'
-import { cleanForPrivacy, companyNames, cutToEmail, cutToFixture, cutToPosting } from '@jff/shared'
+import { cleanForPrivacy, companyNames, cutToEmail, cutToFixture, cutToPage, cutToPosting } from '@jff/shared'
 import { redactPrivate, scanLine } from '../shared/src/privateStrings.mjs'
 import { loadDenylist } from './check-private.mjs'
 
 export { FIXTURE_COMPANY as COMPANY, PLACEHOLDER_PROSE, companyNames } from '@jff/shared'
+
+/** The persona every fixture's applicant is. */
+export const APPLICANT = 'Ada Lovelace'
 
 /**
  * The page's application form, with no typed answer, no employer's prose or
@@ -47,10 +54,12 @@ export { FIXTURE_COMPANY as COMPANY, PLACEHOLDER_PROSE, companyNames } from '@jf
  * the page does not give away in its title or board address. With `posting`,
  * the page's Job posting instead of its form, with none of its prose left.
  * With `email`, the page's Job posting, mailto: links and addresses, each
- * address a numbered placeholder.
+ * address a numbered placeholder. With `page`, the whole page, for one that
+ * holds no form and no posting. `applicant`, the name of the signed-in
+ * applicant, is named after the persona.
  */
-export function sanitizeCapture(html, denylist = [], { companies: extra = [], addresses = [], posting = false, email = false } = {}) {
-  if (posting && email) throw new Error('sanitize-capture: a page takes one cut, --posting or --email')
+export function sanitizeCapture(html, denylist = [], { companies: extra = [], addresses = [], posting = false, email = false, page = false, applicant = '' } = {}) {
+  if ([posting, email, page].filter(Boolean).length > 1) throw new Error('sanitize-capture: a page takes one cut, --posting, --email or --page')
   const dom = new JSDOM(html)
   const doc = dom.window.document
   // Read before cleaning: the privacy step drops the head's meta and links.
@@ -63,12 +72,27 @@ export function sanitizeCapture(html, denylist = [], { companies: extra = [], ad
       throw new Error('sanitize-capture: the page holds no mailto: link and no address')
     }
     if (lang && !doc.documentElement.getAttribute('lang')) doc.documentElement.setAttribute('lang', lang)
+  } else if (page) {
+    cutToPage(doc, companies)
   } else if (posting) {
     if (!cutToPosting(doc, companies)) throw new Error('sanitize-capture: the page holds no Job posting')
   } else if (!cutToFixture(doc, companies)) {
     throw new Error('sanitize-capture: the page holds no form and no Control')
   }
-  return redactPrivate(dom.serialize(), denylist)
+  return redactPrivate(asPersona(dom.serialize(), applicant), denylist)
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** `html` with `applicant`'s whole name as the persona's, and then its first
+ *  word alone as the persona's first name, matched as whole words in any case. */
+function asPersona(html, applicant) {
+  const name = applicant.replace(/\s+/g, ' ').trim()
+  if (name === '') return html
+  const word = (text) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(text).replace(/ /g, '\\s+')}(?![\\p{L}\\p{N}])`, 'giu')
+  return html.replace(word(name), APPLICANT).replace(word(name.split(' ')[0]), APPLICANT.split(' ')[0])
 }
 
 /** The page's language, as its root or a content-language meta declares it. */
@@ -102,9 +126,9 @@ export function readSource(text) {
 }
 
 /** The fixture made from a raw page file's text or a Capture file's text. */
-export function fixtureFrom(text, denylist = [], { companies = [], posting = false, email = false } = {}) {
+export function fixtureFrom(text, denylist = [], { companies = [], posting = false, email = false, page = false, applicant = '' } = {}) {
   const { html, addresses } = readSource(text)
-  return sanitizeCapture(html, denylist, { companies, addresses, posting, email })
+  return sanitizeCapture(html, denylist, { companies, addresses, posting, email, page, applicant })
 }
 
 function parseArgs(argv) {
@@ -112,19 +136,23 @@ function parseArgs(argv) {
   const files = []
   let posting = false
   let email = false
+  let page = false
+  let applicant = null
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--company') companies.push(argv[++i] ?? '')
     else if (argv[i] === '--posting') posting = true
     else if (argv[i] === '--email') email = true
+    else if (argv[i] === '--page') page = true
+    else if (argv[i] === '--applicant') applicant = argv[++i] ?? ''
     else files.push(argv[i])
   }
-  return { companies, files, posting, email }
+  return { companies, files, posting, email, page, applicant }
 }
 
 function main(argv) {
-  const { companies, posting, email, files: [source, target] } = parseArgs(argv)
-  if (!source || !target || companies.includes('') || (posting && email)) {
-    console.error('usage: sanitize-capture.mjs [--posting | --email] [--company <name>]... <captured.html|capture.json> <fixture.html>')
+  const { companies, posting, email, page, applicant, files: [source, target] } = parseArgs(argv)
+  if (!source || !target || companies.includes('') || applicant?.trim() === '' || [posting, email, page].filter(Boolean).length > 1) {
+    console.error('usage: sanitize-capture.mjs [--posting | --email | --page] [--company <name>]... [--applicant <name>] <captured.html|capture.json> <fixture.html>')
     return 2
   }
   const denylist = loadDenylist()
@@ -136,7 +164,7 @@ function main(argv) {
   try {
     const text = readFileSync(source, 'utf8')
     if (readSource(text).cut) console.error('sanitize-capture: this Capture\'s page was cut at its size limit; the form may be missing its end.')
-    clean = fixtureFrom(text, denylist, { companies, posting, email })
+    clean = fixtureFrom(text, denylist, { companies, posting, email, page, applicant: applicant ?? '' })
   } catch (error) {
     console.error(`${error instanceof Error ? error.message : String(error)}. Nothing written.`)
     return 1

@@ -28,6 +28,7 @@ const input = (patch: Partial<ApplicationEmailInput> = {}): ApplicationEmailInpu
   profileSummary: 'fullName: Ada Lovelace',
   cvText: 'Analyst at Example Ltd, 2019 to 2024.',
   projectNotes: 'Built an analytical engine.',
+  aboutMe: null,
   pageSubject: null,
   language: 'en',
   instruction: null,

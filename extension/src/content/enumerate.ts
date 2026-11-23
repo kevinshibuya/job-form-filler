@@ -95,6 +95,15 @@ let currentEpoch = -1
 export const getEpoch = (): number => currentEpoch
 export const setEpoch = (e: number): void => { currentEpoch = e }
 
+/**
+ * The Controls the last Enumeration of this frame found and the user can see
+ * (ticket #100): every radio and box of a group, not only the one that carries
+ * the Field. The form region is drawn around them; a hidden Control is not here,
+ * so it never widens a region.
+ */
+let visibleControls: readonly Element[] = []
+export const enumeratedControls = (): readonly Element[] => visibleControls
+
 // kindOf / isCombobox / SKIPPED_INPUT_TYPES moved to ./dom (unchanged logic):
 // the label-recovery heuristics need "is this an enumerable control?" and dom.ts
 // must not import enumerate.ts.
@@ -201,6 +210,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
   // and a leftover fid would let elementByFid resolve the wrong element.
   for (const el of walkElements(opts.root)) { el.removeAttribute(FID_ATTR); el.removeAttribute(GROUP_ATTR) }
 
+  const seen: Element[] = []
   const fields: EnumField[] = []
   const radioGroups = new Map<string, EnumField>()
   let fid = 0
@@ -233,6 +243,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
     // `clipped` counts: the visually-hidden recipe (1px box / clip:rect(0 0 0 0))
     // is how ATS pages hide real controls, so a clipped control is NOT visible.
     const visible = isVisible(m)
+    if (visible) seen.push(el)
 
     if (kind === 'radiogroup') {
       const name = el.getAttribute('name')
@@ -361,6 +372,7 @@ export function enumerateFields(opts: EnumerateOptions): { fields: EnumField[]; 
     fid++
   }
 
+  visibleControls = seen
   return { fields, unreachableWidgets: countUnreachableWidgets(opts.root), attachedUploads: attachedUploads(opts.root) }
 }
 

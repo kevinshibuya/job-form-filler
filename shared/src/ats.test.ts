@@ -116,7 +116,7 @@ describe('ATS modules', () => {
   // text on the form's own page.
   it('gives Lever a Job posting page rule and no text on the form page, and Greenhouse and Ashby no Job posting text', () => {
     expect(atsModule('lever').jobText?.postingPage).toBeTypeOf('function')
-    expect(atsModule('lever').jobText?.onFormPage).toBeUndefined()
+    expect(Object.keys(atsModule('lever').jobText ?? {})).toEqual(['postingPage'])
     expect(atsModule('greenhouse').jobText).toBeUndefined()
     expect(atsModule('ashby').jobText).toBeUndefined()
   })
@@ -136,6 +136,8 @@ describe('ATS modules', () => {
   it('gives the generic module, with no layers, to an ATS with no module and to no ATS at all', () => {
     expect(atsModule('workable')).toBe(GENERIC_MODULE)
     expect(atsModule('recruitee')).toBe(GENERIC_MODULE)
+    // #108: a Gupy step page gives no route to the posting's page, so Gupy has no module.
+    expect(atsModule('gupy')).toBe(GENERIC_MODULE)
     expect(atsModule(null)).toBe(GENERIC_MODULE)
     expect(atsModule(undefined)).toBe(GENERIC_MODULE)
     expect(atsModule('not-an-ats')).toBe(GENERIC_MODULE)

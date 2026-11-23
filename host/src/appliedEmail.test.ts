@@ -43,7 +43,7 @@ const HANDED: HandedOverEmail = {
 
 const WHY: KeptProseAnswer = {
   question: 'Why do you want to work here?', text: 'I read the analytical engine notes.',
-  aiDrafted: true, edited: false, model: 'claude-opus-5-5',
+  aiDrafted: true, edited: false, model: 'claude-opus-5-5', kind: 'prose',
 }
 
 let seq = 0

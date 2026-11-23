@@ -2,7 +2,7 @@ import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import {
   isProfileKey, norm,
-  type AppliedChannel, type AppliedTexts, type ApplicationEmail, type EmailLanguage, type EmailRoute, type FieldKey, type KeptProseAnswer, type MailKind,
+  type AppliedChannel, type AppliedTexts, type ApplicationEmail, type EmailLanguage, type EmailRoute, type FieldClass, type FieldKey, type KeptProseAnswer, type MailKind,
 } from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
 import { MIGRATIONS, migrate, type Migration } from './migrations.js'
@@ -113,6 +113,19 @@ export const setProfile = (db: Database.Database, values: Record<string, string>
 export const getAnswerBank = (db: Database.Database): Record<string, string> => readKv(db, 'answer_bank')
 export const setAnswerBank = (db: Database.Database, values: Record<string, string>): void => writeKv(db, 'answer_bank', values)
 
+/** About me (spec #98): the stored text, empty when the user wrote none. */
+export function getAboutMe(db: Database.Database): string {
+  const row = db.prepare('SELECT text FROM about_me WHERE id = 1').get() as { text: string } | undefined
+  return row?.text ?? ''
+}
+
+/** Stores About me as written; a blank text is no About me. The caller holds
+ *  it to ABOUT_ME_MAX. */
+export function setAboutMe(db: Database.Database, text: string): void {
+  if (text.trim() === '') db.prepare('DELETE FROM about_me WHERE id = 1').run()
+  else db.prepare('INSERT INTO about_me (id, text) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET text = excluded.text').run(text)
+}
+
 /** Routes a FieldKey to the table that owns it. Returns null when unset. */
 export function getStoredValue(db: Database.Database, key: FieldKey): string | null {
   const table = isProfileKey(key) ? 'profile' : 'answer_bank'
@@ -134,6 +147,16 @@ export function listReusableAnswers(db: Database.Database, language: Lang): QaRo
   const rows = db.prepare(
     `SELECT * FROM qa_memory WHERE language = ? AND reusability = 'reusable' ORDER BY times_used DESC, id ASC`,
   ).all(language) as RawQa[]
+  return rows.map(toQa)
+}
+
+/** Every Reusable Saved answer, both languages, in the order first saved,
+ *  latest first: an upsert keeps a row's id, so a correction keeps its place.
+ *  Generation reads them as facts (spec #98). */
+export function listReusableAnswersNewestFirst(db: Database.Database): QaRow[] {
+  const rows = db.prepare(
+    `SELECT * FROM qa_memory WHERE reusability = 'reusable' ORDER BY id DESC`,
+  ).all() as RawQa[]
   return rows.map(toQa)
 }
 
@@ -323,11 +346,11 @@ export function markApplied(
     if ((row.channel ?? 'form') === 'form' || kept.length > 0) {
       db.prepare(`DELETE FROM applied_prose_answers WHERE applied_job_id = ?`).run(got.id)
       const insert = db.prepare(
-        `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       kept.forEach((a, i) => {
-        insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model)
+        insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model, a.kind)
       })
     }
     if (row.email !== undefined) insertApplicationEmail(db, got.id, row.email)
@@ -408,14 +431,15 @@ export function listApplied(db: Database.Database): AppliedJob[] {
   return (db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
 }
 
-/** The prose answers kept beside one Applied job, in the order the mark sent them. */
+/** The answers kept beside one Applied job, prose and personal fact, each
+ *  with its kind, in the order the mark sent them. */
 export function listKeptProseAnswers(db: Database.Database, appliedJobId: number): KeptProseAnswer[] {
   const rows = db.prepare(
-    `SELECT question, text, ai_drafted, edited, model FROM applied_prose_answers
+    `SELECT question, text, ai_drafted, edited, model, kind FROM applied_prose_answers
      WHERE applied_job_id = ? ORDER BY position`,
-  ).all(appliedJobId) as { question: string; text: string; ai_drafted: number; edited: number; model: string | null }[]
+  ).all(appliedJobId) as { question: string; text: string; ai_drafted: number; edited: number; model: string | null; kind: FieldClass }[]
   return rows.map((r) => ({
-    question: r.question, text: r.text, aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model,
+    question: r.question, text: r.text, aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model, kind: r.kind,
   }))
 }
 

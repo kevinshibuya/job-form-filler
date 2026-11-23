@@ -1,5 +1,5 @@
 import type { EnumField, FieldKey, ResolutionTier, ValueType } from '@jff/shared'
-import { VALUE_TYPE_OF, norm, storedValue, yesNoOf } from '@jff/shared'
+import { ACCOMMODATION_REASON, VALUE_TYPE_OF, asksAboutAccommodation, norm, storedValue, yesNoOf } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
@@ -11,6 +11,9 @@ import { BTN, BTN_PRIMARY, INPUT, MUTED, ROW_BASE, TIER_ACCENT, busyLabel } from
 export const TIER_BADGE: Record<ResolutionTier, string> = {
   auto: 'filled', proposed: 'proposed', needs_input: 'needs input', skipped: 'skipped',
 }
+
+/** Under a question about accommodation needs: why it offers no Generation (ADR 0014). */
+export const ACCOMMODATION_HINT = 'This asks about your own needs, so it is yours to answer.'
 
 /**
  * First-class refusal reasons rendered as a human hint under the row. The
@@ -37,6 +40,7 @@ export const REASON_HINT: Record<string, string> = {
   // Ticket #29: questions answered for the country they name.
   'names-region': 'The question names a region, not countries. Answer it yourself.',
   'no-country-named': 'The question names no country. This is the answer for your own country.',
+  [ACCOMMODATION_REASON]: ACCOMMODATION_HINT,
   // Ticket #31: the model picked one of the page's Options after a Fill missed (ADR 0008).
   [OPTION_PICK]: 'The model picked this option for your stored answer. Accept it or pick another.',
   [OPTION_PICK_FAILED]: 'None of the page\'s options matches this value, and the model pick failed. Pick one.',
@@ -67,9 +71,6 @@ function answersPerCountry(key: FieldKey, value: string): boolean {
 
 /** A Fill that found no matching Option on a row whose Options are known: the picker is right below. */
 export const NO_MATCH_PICK_HINT = 'None of the page\'s options matches this value. Pick one.'
-
-/** Under a Personal-fact row: why it offers no Generation. */
-export const PERSONAL_FACT_HINT = 'A question about you. Answer it yourself.'
 
 const SEGMENTED_MAX_OPTIONS = 5
 
@@ -139,6 +140,9 @@ export interface FieldRowProps {
   /** The sentences of this row's Draft the Draft check found unsupported by the
    *  user's own material. Shown above the editor; none means no warning. */
   unsupportedClaims?: string[]
+  /** Ticket #103: what stored fact the writer said is missing, while the
+   *  row's text is still the Draft that came with it. Shown above the editor. */
+  missing?: string
 }
 
 /**
@@ -157,6 +161,22 @@ export function DraftWarning({ claims, before = 'fill' }: { claims: string[]; be
         {claims.map((c) => <li key={c}><q>{c}</q></li>)}
       </ul>
     </div>
+  )
+}
+
+/**
+ * Above a Draft whose writer said what is missing (ADR 0014): the gap in one
+ * line, in the Draft check warning's style, so the user sees it without
+ * reading the Draft closely. Fill stays theirs to press.
+ */
+export function DraftMissing({ missing }: { missing: string }) {
+  return (
+    <p
+      role="note" data-jff-draft-missing="1"
+      className="mt-1.5 rounded-md border border-amber-300 px-2 py-1.5 text-[12px] text-amber-800 dark:border-amber-600 dark:text-amber-300"
+    >
+      Missing from what you stored: {missing}
+    </p>
   )
 }
 
@@ -210,16 +230,18 @@ export function FieldRow(p: FieldRowProps) {
   // stay the Resolution's.
   const shownTier: ResolutionTier = filled && resolution.tier === 'needs_input' ? 'auto' : resolution.tier
   const rowClass = `${ROW_BASE} ${TIER_ACCENT[shownTier]}`
-  // A Needs input row that is not a Prose Field asks about the user, unless it
-  // already says why it is theirs (a failed Mapping, a failed Fill).
-  const personalFact = resolution.tier === 'needs_input' && resolution.fieldClass === 'personal_fact'
   // A hint that asks for an action shows only while the row is still to be
   // decided; a standing note about the answer stays on a decided row.
   const decided = shownTier === 'auto'
   const hint = decided && !STANDING_NOTES.has(resolution.reason) ? undefined
     : resolution.reason === 'no-matching-option' && field.options.length > 0
     ? NO_MATCH_PICK_HINT
-    : REASON_HINT[resolution.reason] ?? (personalFact ? PERSONAL_FACT_HINT : undefined)
+    : REASON_HINT[resolution.reason]
+  // A question about accommodation needs says so by its label too, beside the
+  // hint for whatever reason replaced `accommodation` (a missed Fill), or on a
+  // row that never carried it (a matched Reusable Saved answer whose Fill missed).
+  const accommodationNote = !decided && resolution.tier === 'needs_input'
+    && resolution.reason !== ACCOMMODATION_REASON && asksAboutAccommodation(field.label)
 
   if (resolution.tier === 'skipped') {
     return (
@@ -262,6 +284,7 @@ export function FieldRow(p: FieldRowProps) {
         <p data-jff-description="1" className={`mt-0.5 text-[12px] ${MUTED}`}>{field.description}</p>
       )}
 
+      {p.missing !== undefined && <DraftMissing missing={p.missing} />}
       {claims.length > 0 && <DraftWarning claims={claims} />}
 
       {resolution.standsFor !== undefined && resolution.tier !== 'needs_input' && (
@@ -373,6 +396,7 @@ export function FieldRow(p: FieldRowProps) {
       )}
 
       {hint !== undefined && <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-hint="1">{hint}</p>}
+      {accommodationNote && <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-hint="1">{ACCOMMODATION_HINT}</p>}
 
       {editor !== 'file' && (
         <div className="mt-1.5 flex items-center gap-2">
@@ -398,7 +422,7 @@ export function FieldRow(p: FieldRowProps) {
             <>
               {/* A9: a foreign row has no resolution the host ever saw, so there
                   is nothing to generate against — manual Fill is all it gets.
-                  Otherwise only a Prose Field on a text Control is drafted. */}
+                  Otherwise offersGeneration decides (ADR 0014). */}
               {p.foreign !== true && offersGeneration(row) && (
                 <button type="button" className={BTN} disabled={generating || locked || acting !== null} onClick={() => onGenerate(ref)}>
                   {generating ? 'Drafting…' : 'Generate with AI'}

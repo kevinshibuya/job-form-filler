@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CityPartsSchema, EnumFieldSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
+import { CityPartsSchema, EnumFieldSchema, FieldClassSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
 import { FIELD_KEYS } from './keys.js'
 import { CaptureSaveParamsSchema } from './capture.js'
 
@@ -93,10 +93,13 @@ export const AppliedChannelSchema = z.enum(APPLIED_CHANNELS)
 export type AppliedChannel = z.infer<typeof AppliedChannelSchema>
 
 /**
- * One Prose Field's final text, kept beside a form Applied job (spec #66):
- * the question as the page wrote it, the text the Session held at Mark
- * applied, whether AI drafted it, whether the user changed the Draft, and the
- * model that wrote the Draft, null when AI drafted nothing.
+ * One final text kept beside a form Applied job (spec #66), from a row that
+ * offered Generation: the question as the page wrote it, the text the Session
+ * held at Mark applied, whether AI drafted it, whether the user changed the
+ * Draft, the model that wrote the Draft, null when AI drafted nothing, and the
+ * row's kind (ticket #107). The name keeps its spec #66 wording, from when only
+ * Prose Fields were kept. A `kind` that is absent, from a Side panel or a
+ * Native host older than the kind, reads as prose.
  */
 export const KeptProseAnswerSchema = z.object({
   question: z.string(),
@@ -104,6 +107,7 @@ export const KeptProseAnswerSchema = z.object({
   aiDrafted: z.boolean(),
   edited: z.boolean(),
   model: z.string().nullable(),
+  kind: FieldClassSchema.default('prose'),
 })
 export type KeptProseAnswer = z.infer<typeof KeptProseAnswerSchema>
 
@@ -436,12 +440,27 @@ export type MailSendArrivedParams = z.infer<typeof MailSendArrivedParamsSchema>
 export const MailSendArrivedResultSchema = z.object({ appliedJobId: z.number().int(), markedAt: z.string() })
 export type MailSendArrivedResult = z.infer<typeof MailSendArrivedResultSchema>
 
+/**
+ * About me (spec #98): one text the user writes about themselves for what no
+ * Known key holds. It is no Known key and never a Value; Generation and the
+ * Application email read it as a trusted block, and Mapping never sees it.
+ */
+export const ABOUT_ME_MAX = 4000
+
+/** What `aboutMe.get` and `aboutMe.set` answer: the stored text, empty for none. */
+export const AboutMeSchema = z.object({ text: z.string() })
+export type AboutMe = z.infer<typeof AboutMeSchema>
+
 export const HostRequestSchema = z.discriminatedUnion('method', [
   z.object({ requestId: z.string().min(1), method: z.literal('selfCheck'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.get'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('profile.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.get'), params: z.object({}).passthrough() }),
   z.object({ requestId: z.string().min(1), method: z.literal('answerBank.set'), params: z.object({ values: z.record(z.string(), z.string()) }) }),
+  // About me (spec #98). The host refuses a text over ABOUT_ME_MAX itself, so
+  // the refusal names the cap in words the Side panel shows.
+  z.object({ requestId: z.string().min(1), method: z.literal('aboutMe.get'), params: z.object({}).passthrough() }),
+  z.object({ requestId: z.string().min(1), method: z.literal('aboutMe.set'), params: z.object({ text: z.string() }) }),
   // Resolution in two requests. `resolve.first` runs no model and answers every
   // Field that needs none; `resolve.mapping` carries the pending Fields
   // themselves and runs Mapping on them. The host keeps no state between the two.
@@ -458,6 +477,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
       // B2b: extracted resume TEXT, trusted candidate-authored context. The raw
       // file still never crosses native messaging (user decision 2026-07-29).
       cvText: z.string().optional(),
+      // The row's label from its Resolution: which rules the writer follows.
+      // A request without one is drafted as a personal fact (spec #98).
+      fieldClass: FieldClassSchema.optional(),
       // Strict: Generation for a Prose Field takes no instruction (spec #66),
       // so a request that carries one is refused, not quietly trimmed.
     }).strict(),
@@ -579,7 +601,8 @@ export const PageEnvelopeSchema = z.object({
 
 // There is deliberately NO customQuestions list here: each Resolution Mapping
 // matched to nothing carries its own `fieldClass`, and the panel offers
-// [Generate] only on a Needs input Prose Field on a text Control.
+// [Generate] on a Needs input Field with no Known key on a text Control,
+// unless its reason is `accommodation`.
 export const ResolveResultSchema = z.object({
   epoch: z.number().int(),
   resolutions: z.array(ResolutionSchema),
@@ -628,7 +651,13 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_PICK'), epoch: z.number().int().nonnegative() }),
-  z.object({ type: z.literal('JFF_JOBTEXT'), epoch: z.number().int().nonnegative(), selector: z.string().nullable() }),
+  // `rejected` (ticket #102): the spots the user said were not the job
+  // description in this Session. The page script reads past them. A request
+  // without the list rejects nothing.
+  z.object({
+    type: z.literal('JFF_JOBTEXT'), epoch: z.number().int().nonnegative(), selector: z.string().nullable(),
+    rejected: z.array(z.string()).default([]),
+  }),
   // A3: the panel's submission-detection needs the page's VISIBLE text after a
   // wizard-step re-scan; jobText heuristics answer a different question.
   z.object({ type: z.literal('JFF_PAGETEXT'), epoch: z.number().int().nonnegative() }),

@@ -6,7 +6,10 @@
 // For each page of the page list it opens the page in a fresh Chromium with the
 // unpacked extension, opens the panel bound to that tab (the panel Scans on
 // open and Fills what it can on its own), and watches the panel until no row is
-// waiting. It clicks nothing on the page, so no form is submitted, and its host
+// waiting. Once the panel settles, it reads where the Scan's Job posting text
+// came from, then types the page's own address into the panel's link box and
+// reads what the link gave (scripts/probe-jobtext.mjs). It clicks nothing on
+// the page, so no form is submitted, and its host
 // bridge refuses Mark applied and Save answers outright. The Native host runs
 // on a copy of the user's database; the live file is opened read-only, once,
 // to copy it, and its hash is checked before and after the run.
@@ -20,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import {
   atsOf, DENIED_METHODS, filledFromStatus, formatTable, HELP_TEXT, parsePageList, parseProbeArgs, ProbeRefusal, refusals, summarize,
 } from './probe-lib.mjs'
+import { jobTextOf, LINK_BOX_WAIT_MS, linkBoxOf, readJobTextLine, readLinkBox } from './probe-jobtext.mjs'
 
 const REPO = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const EXT_DIST = join(REPO, 'extension', 'dist')
@@ -227,12 +231,29 @@ function readPanel() {
   }
 }
 
+/** The link box's answer to the page's own address: typed and read in the
+ *  panel, never on the page. Null when it gave neither a text nor its failure
+ *  message in time. */
+async function measureLinkBox(panel, url) {
+  await panel.fill('[data-jff-link] input', url)
+  await panel.click('[data-jff-link] button')
+  const t0 = Date.now()
+  while (Date.now() - t0 < LINK_BOX_WAIT_MS) {
+    await sleep(POLL_MS)
+    const answer = linkBoxOf(await panel.evaluate(readLinkBox))
+    if (answer !== null) return answer
+  }
+  return null
+}
+
 /** One page: open it, open the panel on it, and time the Scan until nothing
- *  is waiting. Any failure is recorded on the page and the run goes on. */
+ *  is waiting. A page whose panel settled then gets the job description
+ *  measures. Any failure is recorded on the page and the run goes on. */
 async function probePage(browser, host, url, timeoutMs) {
   const rec = {
     url, ats: atsOf(url), outcome: 'error', fields: 0, filled: 0,
     firstFillMs: null, settledMs: null, status: '', rows: [], denied: [], error: null,
+    jobText: null, linkBox: null, linkBoxError: null,
   }
   let target = null
   let panel = null
@@ -271,6 +292,15 @@ async function probePage(browser, host, url, timeoutMs) {
     rec.rows = seen?.rows ?? []
     rec.fields = rec.rows.length
     rec.filled = filled
+    if (rec.settledMs !== null) {
+      // The source first: the link box replaces the Session's text when it reads one.
+      rec.jobText = jobTextOf(await panel.evaluate(readJobTextLine))
+      try {
+        rec.linkBox = await measureLinkBox(panel, url)
+      } catch (e) {
+        rec.linkBoxError = e instanceof Error ? e.message.split('\n')[0] : String(e)
+      }
+    }
   } catch (e) {
     rec.error = e instanceof Error ? e.message.split('\n')[0] : String(e)
   } finally {
@@ -348,6 +378,10 @@ async function main() {
       pages.push(rec)
       appendFileSync(pagesPath, `${JSON.stringify(rec)}\n`)
       say(`  ${rec.outcome}: ${rec.fields} Fields, ${rec.filled} filled${rec.error !== null ? ` (${rec.error})` : ''}`)
+      if (rec.settledMs !== null) {
+        const link = rec.linkBox === null ? 'no answer' : rec.linkBox.readable ? `${String(rec.linkBox.length)} characters` : 'nothing read'
+        say(`  job text: ${rec.jobText?.source ?? 'no line'}, ${String(rec.jobText?.length ?? 0)} characters; link box: ${link}`)
+      }
       if (rec.outcome === 'onboarding') {
         say('The Onboarding gate is up, so no page can be scanned: the Profile in the copied database is incomplete, or the Resume did not seed.')
         code = 1

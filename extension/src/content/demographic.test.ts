@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { EnumField } from '@jff/shared'
+import { asksAboutAccommodation, type EnumField } from '@jff/shared'
 import { isDemographic } from './classify'
 import { enumerateFields, type MeasureFn } from './enumerate'
 import { loadRealFixture } from './fixtures/real'
@@ -133,6 +133,16 @@ describe('what is not a Demographic Field', () => {
 
   it('leaves an accommodation question that names disability to the user', () => {
     expect(fieldLabelled('Do you need any accommodation because of a disability?').demographic).toBe(false)
+  })
+
+  it('leaves a Portuguese accommodation question that names disability to the user, with and without accents', () => {
+    for (const label of [
+      'Precisa de alguma adaptação por deficiência?', 'Precisa de alguma adaptacao por deficiencia?',
+      'Você precisa de acomodação por ser PcD?', 'Voce precisa de acomodacao por ser PcD?',
+    ]) {
+      expect(asksAboutAccommodation(label), label).toBe(true)
+      expect(fieldLabelled(label).demographic, label).toBe(false)
+    }
   })
 
   it('keeps a pronouns Field answerable outside a self-identification section', () => {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import type { AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
-import { AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendArrivedResultSchema, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendArrivedParams, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
+import type { AboutMe, AppliedTexts, ApplyAddressPickParams, ContentMessage, EmailDraftParams, EnumField, FillReport, HostErrorKind, Resolution, SelfCheck } from '@jff/shared'
+import { AboutMeSchema, AppliedTextsSchema, CapturedPageSchema, isProfileKey, MailSendArrivedResultSchema, MailSendersResultSchema, MailSendResultSchema, MailStatusSchema, type MailSendArrivedParams, type MailSendParams, type MailSendersResult, type MailStatus, JOB_TEXT_MIN, STALE_EPOCH, toStoredText } from '@jff/shared'
 import { BANNER_BASE, BANNER_BAD, SelfCheckBanner } from './Banner'
 import { FieldRow, WaitingRow } from './FieldRow'
 import { offersGeneration } from './generationOffer'
@@ -10,6 +10,7 @@ import { createHostPort, ERROR_COPY, hostErrorText, type HostPort } from './port
 import { profileCompleteness, type Completeness } from './completeness'
 import { OnboardingView } from './OnboardingView'
 import { ProfileEditor } from './ProfileEditor'
+import { AboutMeEditor } from './AboutMeEditor'
 import { ApplicationsView, type AppliedJobRow } from './ApplicationsView'
 import { EmailChooser } from './EmailChooser'
 import { EmailReview } from './EmailReview'
@@ -19,7 +20,9 @@ import { addressPickParams, requestAddressPick, type AddressPickUi } from './app
 import { requestAddressRevisit, revisitWords, type RevisitWaiting } from './addressRevisit'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
-import { jobTextLine, offersNotTheJob } from './jobTextLine'
+import { jobTextLine, NOTHING_FOUND_WAYS, offersNotTheJob } from './jobTextLine'
+import { LINK_FAILED, LINK_REFUSED, postingLinkAddress, readPostingLink } from './postingLink'
+import type { FetchLike } from '../content/postingFetch'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget, resumeOnPage } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, readPageJobText, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
@@ -27,7 +30,7 @@ import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
 import { openPanelTabIds } from './openPanels'
-import { createSessionStore, keptProseAnswers, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
+import { createSessionStore, draftGaps, keptProseAnswers, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
 import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
@@ -269,7 +272,7 @@ const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ k
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], resumeUploaded: false, ats: 'generic', edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
+  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], resumeUploaded: false, ats: 'generic', edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {}, keylessGaps: {},
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -277,9 +280,13 @@ const clearScanResults = (s: Session): Session => ({
 export interface AppProps {
   /** Injected only by tests, so the gate's timeout is provable without fake timers. */
   hostWaitMs?: number
+  /** The fetch the posting's link is read with (ticket #104); a test hands in a stub. */
+  fetchLink?: FetchLike
 }
 
-export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
+const fetchFromPanel: FetchLike = (url, init) => fetch(url, init)
+
+export function App({ hostWaitMs = HOST_WAIT_MS, fetchLink = fetchFromPanel }: AppProps = {}) {
   const portRef = useRef<HostPort | null>(null)
 
   /* ------------------------------------------------- the displayed session */
@@ -336,6 +343,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  #66). A ref, so a Scan reads the value the Profile holds now. */
   const ownEmailRef = useRef<string | null>(null)
   const [factsLoaded, setFactsLoaded] = useState(false)
+  /** About me (spec #98): edited beside the Profile, never a fact. */
+  const [aboutMe, setAboutMe] = useState('')
+  const [aboutMeLoaded, setAboutMeLoaded] = useState(false)
   const [resumeName, setResumeName] = useState<string | null>(null)
   // B2b: extracted CV text, loaded once (lazily re-extracted for a pre-B2a
   // stored resume) and sent as trusted context with every generate.
@@ -368,6 +378,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [capturing, setCapturing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
+  /** The tab whose page "Not the job description" is asking again (ticket
+   *  #102). Kept by tab, not cleared by a swap: the ask belongs to that
+   *  Session, and its button stays disabled until the answer lands. */
+  const [rereadingTab, setRereadingTab] = useState<number | null>(null)
+  /** What the user typed into the link box and has not read yet, by tab
+   *  (ticket #104). With none, the box shows the link the Session holds. */
+  const [linkDraft, setLinkDraft] = useState<{ tabId: number; value: string } | null>(null)
+  /** The tab whose link is being read; its button stays disabled meanwhile. */
+  const [linkReadingTab, setLinkReadingTab] = useState<number | null>(null)
+  /** The link box's message for a tab: the address was refused, or gave no posting. */
+  const [linkNote, setLinkNote] = useState<{ tabId: number; kind: 'refused' | 'failed' } | null>(null)
   const [marking, setMarking] = useState(false)
   /** A Send is in flight (ticket #82); the ref closes the gap before the
    *  disabled button renders, so two quick clicks make one request. */
@@ -594,6 +615,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const edits = session?.edits ?? {}
   const generatedRefs = session?.generatedRefs ?? []
   const draftWarnings = session?.draftWarnings ?? {}
+  // Ticket #103: ref → the Draft that came with a gap, and the gap.
+  const gaps = session == null ? {} : draftGaps(session)
+  const gapDrafts = Object.fromEntries(Object.entries(gaps).map(([ref, g]) => [ref, g.text]))
   const filledRefs = session?.filledRefs ?? []
   const election = session?.election ?? null
   const attachedUploads = session?.attachedUploads ?? []
@@ -827,6 +851,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setFacts({ ...(p.ok ? p.result : {}), ...(b.ok ? b.result : {}) })
       setFactsLoaded(true)
       setFactsOk(p.ok && b.ok)
+    })
+    // About me loads on its own: Onboarding's completeness never waits on it.
+    void port.request<AboutMe>('aboutMe.get', {}).then((r) => {
+      const read = r.ok ? AboutMeSchema.safeParse(r.result) : null
+      if (read?.success !== true) return
+      setAboutMe(read.data.text)
+      setAboutMeLoaded(true)
     })
   }, [check])
 
@@ -1102,6 +1133,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // Scan uses it as it is and records the same source (spec #41).
         heldJobText: ownedSession()?.jobText ?? '',
         heldJobTextSource: ownedSession()?.jobTextSource ?? null,
+        heldJobTextSpot: ownedSession()?.jobTextSpot ?? null,
+        // The spots the user rejected in this Session are read past (ticket #102).
+        rejectedJobTextSpots: ownedSession()?.rejectedJobTextSpots ?? [],
         hostname,
         url,
         title: tab.title ?? '',
@@ -1164,9 +1198,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         frameReports: out.frameReports,
         applyCandidates: out.candidates,
         // What the user typed while the Scan ran is theirs.
-        ...(s.jobTextSource === 'paste' && s.jobText.trim() !== ''
+        // What the user typed or read from a link while the Scan ran is theirs.
+        ...((s.jobTextSource === 'paste' || s.jobTextSource === 'link') && s.jobText.trim() !== ''
           ? {}
-          : { jobText: out.jobText, jobTextSource: out.jobTextSource }),
+          : {
+              jobText: out.jobText, jobTextSource: out.jobTextSource, jobTextSpot: out.jobTextSpot,
+              jobTextLink: out.jobTextSource === 'link' ? s.jobTextLink : null,
+            }),
         // The Scan's guess fills an empty field only: what the user typed
         // while the Scan ran is theirs.
         ...(out.companyGuessed && out.company !== null && s.company.trim() === ''
@@ -1582,13 +1620,16 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // never land in edits (spec D3).
     setGeneratingRefs((s) => new Set(s).add(ref))
     try {
-      const r = await port.request<{ draft: string; unsupportedClaims?: string[]; model?: string }>('generate', {
+      const r = await port.request<{ draft: string; unsupportedClaims?: string[]; model?: string; missing?: string }>('generate', {
         handle: row.resolution.handle,
         questionRaw: row.field.label ?? '',
         description: row.field.description,
         jobText,
         company: companyOrNull,
         ...(cvText === null ? {} : { cvText }),
+        // The row's label picks the writer's rules; a row Mapping left
+        // without one is drafted as a personal fact (spec #98).
+        fieldClass: row.resolution.fieldClass ?? 'personal_fact',
       })
       // Only the OWNING session's death aborts a draft — a tab switch just means
       // it settles into storage. Two rows on two sessions can be generating at
@@ -1599,6 +1640,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         const unsupported = r.result.unsupportedClaims ?? []
         // The Session records which model wrote each Draft (spec #66).
         const model = typeof r.result.model === 'string' ? r.result.model : null
+        // The gap the writer named rides with the Draft on the question's
+        // record, and a new Draft replaces it (ticket #103).
+        const missing = typeof r.result.missing === 'string' && r.result.missing.trim() !== '' ? r.result.missing : undefined
         // S4: a settled draft is carried with provenance 'generated', which is
         // what re-enters generatedRefs on the next step. Its Draft check
         // warning replaces whatever the row's previous Draft carried.
@@ -1609,7 +1653,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             edits: { ...s.edits, [ref]: draft },
             generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
             draftWarnings: unsupported.length === 0 ? draftWarnings : { ...draftWarnings, [ref]: unsupported },
-          }, ref, draft, 'generated', model)
+          }, ref, draft, 'generated', model, missing)
         })
         return 'ok'
       }
@@ -1625,8 +1669,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   /** B4 eligibility: needs-input, labelled, nothing drafted/edited yet, not
    *  currently generating. Foreign rows are structurally absent from `main`. */
   const generateEligible = main.filter((r) =>
-    // The same rows the per-row Generate button shows on: a Needs input Prose
-    // Field on a text Control. One click never drafts a fact about the user.
+    // The same rows the per-row Generate button shows on (offersGeneration):
+    // never an accommodation question, a keyed Field or a choice Control.
     offersGeneration(r)
     && (r.field.label ?? '').trim() !== ''
     && (edits[r.ref] ?? '').trim() === ''
@@ -1700,7 +1744,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Pick refused: that spot holds ${picked.text.trim().length} characters, and a job description needs at least ${JOB_TEXT_MIN} characters.` })
         return
       }
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick' }))
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick', jobTextSpot: picked.selector, jobTextLink: null }))
       if (inScope(sc)) clearActionFailure()
       // An Application email that waited for the job text starts now.
       void startEmailDraft(sc)
@@ -1946,10 +1990,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       try {
         const tab = await getTab(sc.target)
         if (!alive(sc)) return
-        const read = await readPageJobText({ port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url) }, owner.epoch)
+        const read = await readPageJobText({
+          port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url),
+          rejected: owner.rejectedJobTextSpots,
+        }, owner.epoch)
         if (!alive(sc)) return
         // What the user pasted or picked meanwhile is theirs.
-        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource } : s))
+        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot, jobTextLink: null } : s))
       } catch {
         // A page the panel cannot reach leaves the paste box and the pick to the user.
       }
@@ -1958,26 +2005,98 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     await startEmailDraft(sc)
   }
 
-  /** "Not the job description" (spec #41): the Session's text goes, the source
-   *  becomes nothing found, and the Native host forgets the spot saved for
-   *  the site. */
+  /**
+   * "Not the job description" (spec #41, ticket #102): the Session's text
+   * goes, its spot joins the Session's rejected spots, and the Native host
+   * forgets the spot saved for the site. Then the page is asked again at once,
+   * in its own order, reading past every rejected spot: the box shows the next
+   * text with its source, or nothing found. A text from the user's link is
+   * forgotten with its link (ticket #104).
+   */
   const onNotTheJob = async (): Promise<void> => {
     const owner = sessionRef.current
-    if (owner === null) return
+    if (owner === null || rereadingTab === owner.tabId) return
     const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const rejected: { spots: string[] } = { spots: owner.rejectedJobTextSpots }
+    setRereadingTab(sc.target)
     try {
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: '', jobTextSource: 'none' }))
+      await applyToSession(sc.target, sc.gen, (s) => {
+        const spot = s.jobTextSpot
+        rejected.spots = spot === null || s.rejectedJobTextSpots.includes(spot) ? s.rejectedJobTextSpots : [...s.rejectedJobTextSpots, spot]
+        // A text from a link has no spot: the link itself is forgotten.
+        return { ...s, jobText: '', jobTextSource: 'none', jobTextSpot: null, jobTextLink: null, rejectedJobTextSpots: rejected.spots }
+      })
+      setLinkDraft((d) => (d?.tabId === sc.target ? null : d))
       const tab = await getTab(sc.target)
       if (!alive(sc)) return
       const hostname = hostnameOf(tab?.url)
-      if (hostname === '') return
-      const r = await portRef.current?.request('selector.clear', { hostname, purpose: 'job_description' })
-      if (r !== undefined && !r.ok && inScope(sc)) {
-        setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${hostErrorText(r.error)}` })
+      const port = portRef.current
+      if (hostname === '' || port === null) return
+      try {
+        const r = await port.request('selector.clear', { hostname, purpose: 'job_description' })
+        if (!r.ok && inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${hostErrorText(r.error)}` })
+      } catch (e) {
+        if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${e instanceof Error ? e.message : String(e)}` })
       }
+      if (!alive(sc)) return
+      // A spot the host failed to forget is rejected all the same, so the
+      // page reads past it.
+      const read = await readPageJobText({
+        port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname, rejected: rejected.spots,
+      }, owner.epoch)
+      if (!alive(sc)) return
+      // What the user pasted or picked while the page was asked is theirs.
+      const landed: { text: boolean } = { text: false }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        if (s.jobText.trim() !== '' || s.jobTextSource === 'paste') return s
+        landed.text = read.jobText !== ''
+        return { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot, jobTextLink: null }
+      })
+      // An Application email that waited for the job text starts now.
+      if (landed.text) void startEmailDraft(sc)
     } catch (e) {
       if (!inScope(sc)) return
-      setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${e instanceof Error ? e.message : String(e)}` })
+      setScanStatus({ kind: 'action_failed', reason: `Reading the page again failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setRereadingTab((t) => (t === sc.target ? null : t))
+    }
+  }
+
+  /**
+   * The posting's link (spec #98, ticket #104): the address the user typed is
+   * read, and its text becomes the Session's, held as a paste is. Only an
+   * `http` or `https` address is fetched. A link that gives no posting shows
+   * one message and changes nothing the Session holds.
+   */
+  const onReadLink = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || linkReadingTab === owner.tabId) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const typed = linkDraft?.tabId === owner.tabId ? linkDraft.value : (owner.jobTextLink ?? '')
+    const address = postingLinkAddress(typed)
+    if (address === null) { setLinkNote({ tabId: sc.target, kind: 'refused' }); return }
+    setLinkNote((n) => (n?.tabId === sc.target ? null : n))
+    setLinkReadingTab(sc.target)
+    // What the Session held when the read began: a text the user pasted, or a
+    // re-read that landed, while the link was read is theirs, and the one the
+    // user supplied last is the one held.
+    const before = { text: owner.jobText, source: owner.jobTextSource }
+    try {
+      const text = await readPostingLink(address, fetchLink)
+      if (!alive(sc)) return
+      if (text === null) { setLinkNote({ tabId: sc.target, kind: 'failed' }); return }
+      const landed: { text: boolean } = { text: false }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        if (s.jobText !== before.text || s.jobTextSource !== before.source) return s
+        landed.text = true
+        return { ...s, jobText: text, jobTextSource: 'link', jobTextSpot: null, jobTextLink: address }
+      })
+      if (!landed.text) return
+      setLinkDraft((d) => (d?.tabId === sc.target ? null : d))
+      // An Application email that waited for the job text starts now.
+      void startEmailDraft(sc)
+    } finally {
+      setLinkReadingTab((t) => (t === sc.target ? null : t))
     }
   }
 
@@ -2044,6 +2163,17 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // Merge, never replace: the editor omits keys it never loaded.
     setFacts((f) => ({ ...f, ...profile, ...bank }))
     setView('session')
+  }
+
+  /** About me's own save: one request, and the editor stays open. */
+  const onSaveAboutMe = async (text: string): Promise<boolean> => {
+    const port = portRef.current
+    if (port === null) return false
+    const r = await port.request<AboutMe>('aboutMe.set', { text })
+    if (!r.ok) { setHostError(hostErrorText(r.error)); return false }
+    const stored = AboutMeSchema.safeParse(r.result)
+    setAboutMe(stored.success ? stored.data.text : text)
+    return true
   }
 
   const onOnboardingUpload = async (file: File): Promise<string | null> => {
@@ -2350,7 +2480,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (p?.ok !== true || p.snapshot === undefined) continue
         for (const [fid, v] of Object.entries(p.snapshot.values)) live[`${r.frameId}:${fid}`] = v
       }
-      const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull })
+      const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull, gapDrafts })
         .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
       const tab = await getTab(target)
       // The page these answers came from is gone: `tab.url` now names a DIFFERENT
@@ -2418,7 +2548,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   /* ---------------------------------------------------------------- markup */
 
-  const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull })
+  const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull, gapDrafts })
   const discardButton = (
     <button type="button" className={BTN} data-jff-discard="1" onClick={() => { void onDiscard() }}>
       Discard session
@@ -2592,7 +2722,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           onPaste={() => { pastedRef.current = true }}
           onChange={(e) => {
             const v = e.target.value
-            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' }))
+            // A paste replaces a text read from a link, and its link.
+            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste', jobTextSpot: null, jobTextLink: null }))
             if (!pastedRef.current) return
             pastedRef.current = false
             const sc = scopeNow()
@@ -2603,21 +2734,54 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           // Where the text came from (spec #41), right under the box.
           <span className="mt-0.5 flex items-center gap-2 text-xs">
             <span data-jff-jobtext-source={jobTextSource ?? ''}>{jobTextLine(jobText, jobTextSource, session.ats)}</span>
-            {offersNotTheJob(jobTextSource) && (
-              <button type="button" className={BTN} onClick={() => { void onNotTheJob() }}>Not the job description</button>
+            {(offersNotTheJob(jobTextSource) || rereadingTab === session.tabId) && (
+              // Kept on screen, disabled, while the page is asked again.
+              <button type="button" className={BTN} disabled={rereadingTab === session.tabId} onClick={() => { void onNotTheJob() }}>Not the job description</button>
             )}
           </span>
+        )}
+        {session !== null && jobTextSource === 'none' && jobText === '' && (
+          <span className="mt-0.5 block text-xs" data-jff-jobtext-ways="1">{NOTHING_FOUND_WAYS}</span>
         )}
         <button type="button" className={`${BTN} mt-1`} disabled={(fields.length === 0 && (session === null || !emailStarted(session))) || picking} onClick={onPickJobText}>
           {busyLabel(picking, 'Pick job description', 'Picking… (click the description on the page)')}
         </button>
       </label>
 
+      <div className={`my-2.5 block ${MUTED}`} data-jff-link="1">
+        <label className="block">
+          Job posting link (if the posting is on another page)
+          <input
+            type="url" className={`${INPUT} mt-1`} disabled={session === null} placeholder="https://"
+            value={session === null ? '' : linkDraft?.tabId === session.tabId ? linkDraft.value : (session.jobTextLink ?? '')}
+            onChange={(e) => {
+              if (session === null) return
+              const tab = session.tabId
+              setLinkDraft({ tabId: tab, value: e.target.value })
+              setLinkNote((n) => (n?.tabId === tab ? null : n))
+            }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void onReadLink() } }}
+          />
+        </label>
+        {session !== null && linkNote?.tabId === session.tabId && (
+          linkNote.kind === 'refused'
+            ? <span className="mt-0.5 block text-xs text-amber-600 dark:text-amber-400" data-jff-link-refused="1">{LINK_REFUSED}</span>
+            : <span className="mt-0.5 block text-xs text-amber-600 dark:text-amber-400" data-jff-link-failed="1">{LINK_FAILED}</span>
+        )}
+        <button type="button" className={`${BTN} mt-1`} disabled={session === null || linkReadingTab === session.tabId} onClick={() => { void onReadLink() }}>
+          {busyLabel(session !== null && linkReadingTab === session.tabId, 'Read the posting', 'Reading the posting…')}
+        </button>
+      </div>
+
       {view === 'editor'
         ? (
-            // `key` remounts the editor the instant the facts arrive, so an editor
-            // opened during the load is never stuck on an empty snapshot.
-            <ProfileEditor key={factsLoaded ? 'loaded' : 'pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
+            // `key` remounts each editor the instant its text arrives, so an editor
+            // opened during the load is never stuck on an empty snapshot. The two
+            // keys differ: siblings that share a key leave one behind on leaving.
+            <>
+              <ProfileEditor key={factsLoaded ? 'facts-loaded' : 'facts-pending'} values={facts} loaded={factsLoaded} onSave={onSaveFacts} onExtract={onExtractFacts} />
+              <AboutMeEditor key={aboutMeLoaded ? 'about-me-loaded' : 'about-me-pending'} text={aboutMe} loaded={aboutMeLoaded} onSave={onSaveAboutMe} />
+            </>
           )
         : view === 'applications'
           ? <ApplicationsView load={loadApplications} loadTexts={loadAppliedTexts} />
@@ -2713,6 +2877,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                           onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
                           pageValue={snapshot[row.ref] ?? null}
                           unsupportedClaims={draftWarnings[row.ref] ?? []}
+                          // The gap shows while the row's text is still the Draft it came with.
+                          missing={gaps[row.ref] !== undefined && edits[row.ref] === gaps[row.ref]!.text ? gaps[row.ref]!.missing : undefined}
                           generating={generatingRefs.has(row.ref)}
                           filled={filledRefs.includes(row.ref)}
                           acting={acting !== null && acting.ref === row.ref ? acting.action : null}

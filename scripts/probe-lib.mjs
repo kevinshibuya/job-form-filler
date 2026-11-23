@@ -6,6 +6,7 @@
 import { existsSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { findAts } from '@jff/shared'
+import { COUNTED_SOURCES, jobTextCounts, linkBoxCounts } from './probe-jobtext.mjs'
 
 export class ProbeRefusal extends Error {}
 
@@ -22,6 +23,16 @@ Measures the fill rate on live application pages. For each URL in the page
 list it opens the page in a fresh browser with the built extension, lets the
 tool Scan and Fill, and records what happened. It never submits a form and
 never marks a Job posting applied.
+
+For each page whose panel settles it also measures the job description scan:
+  Job text           where the Scan's Job posting text came from: the ATS
+                     module, your pick, a heuristic, or nothing found.
+  Link box reads     whether the panel's link box can read the page's own
+                     address. The probe types that address into the link box,
+                     which fetches it once more, without cookies and without
+                     running its scripts. It says how many sites serve their
+                     posting text without scripts.
+The table holds totals per ATS only: no page address, no employer name.
 
   --pages <file>     Page list: one URL per line, blank lines and # comments
                      skipped. Must be outside the repo.
@@ -189,12 +200,15 @@ function rowOf(ats, pages) {
     filled: pages.reduce((n, p) => n + p.filled, 0),
     firstFillMs: median(pages.map((p) => p.firstFillMs)),
     settledMs: median(pages.map((p) => p.settledMs)),
+    jobText: jobTextCounts(pages),
+    linkBox: linkBoxCounts(pages),
   }
 }
 
 /** One row per ATS, by name, then one for all pages. A page that showed no form
  *  counts with zero Fields; a page that never filled or never settled is left
- *  out of that median. */
+ *  out of that median. The job description measures count only the pages the
+ *  probe measured, so a page whose panel never settled counts in neither. */
 export function summarize(pages) {
   const byAts = new Map()
   for (const p of pages) byAts.set(p.ats, [...(byAts.get(p.ats) ?? []), p])
@@ -204,10 +218,17 @@ export function summarize(pages) {
 
 const secs = (ms) => (ms === null ? '-' : `${(ms / 1000).toFixed(1)} s`)
 const rate = (r) => (r.fields === 0 ? '-' : `${Math.round((100 * r.filled) / r.fields)}%`)
+const sources = (r) => {
+  const counts = COUNTED_SOURCES.map((s) => r.jobText?.[s] ?? 0)
+  return counts.every((n) => n === 0) ? '-' : counts.join('/')
+}
+const reads = (r) => (r.linkBox === undefined || r.linkBox.tried === 0 ? '-' : `${r.linkBox.read} of ${r.linkBox.tried}`)
 
 export function formatTable(rows) {
-  const header = ['ATS', 'Pages', 'Fields', 'Filled', 'Rate', 'First Fill', 'Nothing waiting']
-  const body = rows.map((r) => [r.ats, String(r.pages), String(r.fields), String(r.filled), rate(r), secs(r.firstFillMs), secs(r.settledMs)])
+  const header = ['ATS', 'Pages', 'Fields', 'Filled', 'Rate', 'First Fill', 'Nothing waiting', 'Job text ats/pick/heur/none', 'Link box reads']
+  const body = rows.map((r) => [
+    r.ats, String(r.pages), String(r.fields), String(r.filled), rate(r), secs(r.firstFillMs), secs(r.settledMs), sources(r), reads(r),
+  ])
   const widths = header.map((h, i) => Math.max(h.length, ...body.map((b) => b[i].length)))
   const line = (cells) => cells.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd()
   return [line(header), ...body.map(line)].join('\n')

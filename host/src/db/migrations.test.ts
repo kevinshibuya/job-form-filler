@@ -102,10 +102,16 @@ describe('openDb migrations', () => {
     // The shape the Native host left before ticket #75: the migrations up to
     // channels and kept prose answers, with rows in it.
     const before = openDb(path, MIGRATIONS.slice(0, 2))
-    const form = markApplied(before, {
-      url: 'https://jobs.example.com/1', company: 'Acme', jobTitle: 'Engineer', channel: 'form',
-      proseAnswers: [{ question: 'Why us?', text: 'Because of the engines.', aiDrafted: true, edited: false, model: 'claude-opus-5-5' }],
-    })
+    // The form mark goes in as the tables stood then: today's markApplied
+    // writes a kind, a column this shape does not have yet (ticket #107).
+    const form = { id: Number(before.prepare(
+      `INSERT INTO applied_jobs (url, canonical_url, company, job_title, marked_at, channel)
+       VALUES ('https://jobs.example.com/1', 'jobs.example.com/1', 'Acme', 'Engineer', '2026-11-01T00:00:00.000Z', 'form')`,
+    ).run().lastInsertRowid) }
+    before.prepare(
+      `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model)
+       VALUES (?, 0, 'Why us?', 'Because of the engines.', 1, 0, 'claude-opus-5-5')`,
+    ).run(form.id)
     const email = markApplied(before, { url: 'https://jobs.example.com/2', company: null, jobTitle: 'Analyst', channel: 'email' })
     const appliedRows = before.prepare('SELECT * FROM applied_jobs ORDER BY id').all()
     const proseRows = before.prepare('SELECT * FROM applied_prose_answers ORDER BY applied_job_id, position').all()
@@ -114,7 +120,9 @@ describe('openDb migrations', () => {
     const db = openDb(path)
     expect(version(db)).toBe(MIGRATIONS.length)
     expect(db.prepare('SELECT * FROM applied_jobs ORDER BY id').all()).toEqual(appliedRows)
-    expect(db.prepare('SELECT * FROM applied_prose_answers ORDER BY applied_job_id, position').all()).toEqual(proseRows)
+    // Each kept answer gains its kind, and one kept before it was a prose answer.
+    expect(db.prepare('SELECT * FROM applied_prose_answers ORDER BY applied_job_id, position').all())
+      .toEqual(proseRows.map((r) => ({ ...(r as object), kind: 'prose' })))
     expect(listKeptProseAnswers(db, form.id)).toHaveLength(1)
     expect(listApplicationEmails(db, form.id)).toEqual([])
     expect(listApplicationEmails(db, email.id)).toEqual([])

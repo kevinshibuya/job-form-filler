@@ -11,8 +11,8 @@ import { normalizeQuestion } from './normalize.js'
 // Seam 2 of spec #5: the Resolution requests go through the host's request
 // handler with a real in-memory database and a fake Mapping runner. What is
 // asserted is what the panel receives: whether a Field Mapping matched to
-// nothing is a Prose Field, which Generation may draft, or a Personal-fact
-// Field, which the user answers.
+// nothing is a Prose Field or a Personal-fact Field. The label picks the rules
+// a Draft is written under (spec #98); it never decides whether one is offered.
 
 type Entry = Record<string, unknown> & { ref: string }
 
@@ -83,13 +83,22 @@ describe('Mapping labels every Field it matches to nothing', () => {
     expect(r.get(3)).toMatchObject({ tier: 'needs_input', value: null, fieldClass: 'personal_fact' })
   })
 
-  it('tells Mapping what each label means, with accommodation needs and past work at the Company as personal facts', async () => {
+  it('tells Mapping what each label means, with the common personal facts as its examples', async () => {
     await mapped([WHY])
     const prompt = prompts[0]!
     expect(prompt).toMatch(/fieldClass="prose"/)
     expect(prompt).toMatch(/fieldClass="personal_fact"/)
-    expect(prompt).toMatch(/accommodation/i)
+    expect(prompt).toMatch(/technologies or versions the applicant has used/i)
+    expect(prompt).toMatch(/years of experience/i)
+    expect(prompt).toMatch(/availability/i)
     expect(prompt).toMatch(/worked at the company/i)
+    expect(prompt).toMatch(/yes\/no about their situation/i)
+    expect(prompt).toMatch(/When in doubt, use "personal_fact"/)
+  })
+
+  it('no longer names accommodation needs among its examples: the wording rule decides that', async () => {
+    await mapped([WHY])
+    expect(prompts[0]!).not.toMatch(/accommodation/i)
   })
 
   it('leaves no label on a Field matched to a Known key or a Saved answer, whatever Mapping sent', async () => {
@@ -188,5 +197,19 @@ describe('A Personal-fact answer is answered once', () => {
     const next = await first([{ ...ACCOMMODATION, epoch: 5 }])
     expect(next.pending).toEqual([])
     expect(next.resolutions[0]).toMatchObject({ tier: 'auto', source: 'saved_answer', value: 'A quiet room, please.' })
+  })
+})
+
+describe('Mapping stays unaware of About me (spec #98)', () => {
+  it('is handed no About me, so free text the user wrote is never matched to a Field as its Value', async () => {
+    const aboutMe = 'I can be on site in London two days a week.'
+    await request('aboutMe.set', { text: aboutMe })
+    const out = await mapped([WHY, WORKED_HERE, field(9, 'About me')])
+    expect(prompts.length).toBeGreaterThan(0)
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain(aboutMe)
+      expect(prompt).not.toContain('ABOUT ME')
+    }
+    expect(JSON.stringify(out)).not.toContain(aboutMe)
   })
 })

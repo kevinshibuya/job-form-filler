@@ -171,6 +171,10 @@ export function createFakeHostPort(): HostPort {
         'applied.mark': { id: 0, url: '', canonicalUrl: '', company: null, jobTitle: null, markedAt: new Date(0).toISOString(), channel: 'form' },
         'applied.get': { id: 0, proseAnswers: [], emails: [] },
         'answerBank.get': {},
+        // About me (spec #98): the canned persona wrote none, and a save
+        // answers the text it was sent, as the real host does.
+        'aboutMe.get': { text: '' },
+        'aboutMe.set': { text: (params as { text?: unknown } | null)?.text ?? '' },
         'selector.get': { selector: null },
         'selector.clear': { cleared: false },
         // Resolution in two requests: the canned page has nothing to resolve,

@@ -35,11 +35,11 @@ beforeEach(() => {
 
 const WHY: KeptProseAnswer = {
   question: 'Why do you want to work here?', text: 'I read the analytical engine notes and changed two lines.',
-  aiDrafted: true, edited: true, model: 'claude-opus-5-5',
+  aiDrafted: true, edited: true, model: 'claude-opus-5-5', kind: 'prose',
 }
 const PROJECT: KeptProseAnswer = {
   question: 'Tell us about a project you led', text: 'I wrote the first published algorithm.',
-  aiDrafted: false, edited: false, model: null,
+  aiDrafted: false, edited: false, model: null, kind: 'prose',
 }
 
 let seq = 0

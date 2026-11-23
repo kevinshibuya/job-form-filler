@@ -114,6 +114,29 @@ export const MIGRATIONS: readonly Migration[] = [
     // (ticket #83). The answer is kept beside its attempt, as JSON.
     up: (db) => db.exec('ALTER TABLE send_attempts ADD COLUMN answer TEXT'),
   },
+  {
+    version: 7,
+    name: 'About me',
+    // One text the user writes about themselves (spec #98): its id is always
+    // 1, and no row is no About me. It is no Known key, so it is kept apart
+    // from the Profile and the Answer bank.
+    up: (db) => db.exec(`
+      CREATE TABLE about_me (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        text TEXT NOT NULL
+      );
+    `),
+  },
+  {
+    version: 8,
+    name: 'a kept answer has a kind',
+    // A form Applied job keeps the answers to questions about the user beside
+    // its prose answers (ticket #107). Every answer kept before this was a
+    // prose answer: the default fills it.
+    up: (db) => db.exec(`
+      ALTER TABLE applied_prose_answers ADD COLUMN kind TEXT NOT NULL DEFAULT 'prose' CHECK (kind IN ('prose', 'personal_fact'));
+    `),
+  },
 ]
 
 /** The file carries a schema version this Native host does not know: a newer
