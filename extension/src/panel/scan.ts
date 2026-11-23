@@ -70,6 +70,11 @@ export interface ScanDeps {
   /** Where `heldJobText` came from. Absent or null for a Session kept
    *  before the source was. */
   heldJobTextSource?: JobTextSource | null
+  /** The spot the page script named for `heldJobText`, kept with it. */
+  heldJobTextSpot?: string | null
+  /** The spots the user rejected in this Session (ticket #102): every request
+   *  for the page's text carries them. */
+  rejectedJobTextSpots?: readonly string[]
   hostname?: string
   url?: string
   /** The tab's title, which the Company guess reads. */
@@ -193,6 +198,9 @@ export interface ScanOutcome {
   /** Where `jobText` came from. Null when the Session's text was kept before
    *  the source was, or when the Scan never looked. */
   jobTextSource: JobTextSource | null
+  /** The spot the page script named for `jobText`: a pick's or a heuristic's,
+   *  and null for every other source (ticket #102). */
+  jobTextSpot: string | null
   /** Spec #66: the page's Apply address candidates, merged from every frame. */
   candidates: ApplyAddressCandidate[]
   llmError: { kind: HostErrorKind; message: string } | null
@@ -204,12 +212,15 @@ const SOURCE_OF_REPLY: Record<JobTextReply['source'], JobTextSource> = {
   ats: 'ats', learned: 'pick', heuristic: 'heuristic', none: 'none',
 }
 
-export interface JobTextOutcome { jobText: string; jobTextSource: JobTextSource | null }
+export interface JobTextOutcome { jobText: string; jobTextSource: JobTextSource | null; jobTextSpot: string | null }
 
-/** The Session's text, cut to the cap, with the source it was recorded with.
- *  A text with no source is one kept before the source was. */
+/** The Session's text, cut to the cap, with the source and spot it was
+ *  recorded with. A text with no source is one kept before the source was. */
 function heldJobText(deps: ScanDeps): JobTextOutcome {
-  return { jobText: deps.heldJobText.trim().slice(0, JOB_TEXT_MAX), jobTextSource: deps.heldJobTextSource ?? null }
+  return {
+    jobText: deps.heldJobText.trim().slice(0, JOB_TEXT_MAX), jobTextSource: deps.heldJobTextSource ?? null,
+    jobTextSpot: deps.heldJobTextSpot ?? null,
+  }
 }
 
 /**
@@ -222,29 +233,38 @@ function heldJobText(deps: ScanDeps): JobTextOutcome {
 async function scanJobText(deps: ScanDeps, epoch: number): Promise<JobTextOutcome> {
   const held = heldJobText(deps)
   if (held.jobText !== '') return held
-  return readPageJobText({ port: deps.port, sendToTab: deps.sendToTab, hostname: deps.hostname ?? '' }, epoch)
+  return readPageJobText({
+    port: deps.port, sendToTab: deps.sendToTab, hostname: deps.hostname ?? '', rejected: deps.rejectedJobTextSpots ?? [],
+  }, epoch)
 }
 
 /**
  * The page's own Job posting text: the spot the user picked for the site, the
  * ATS module, or a heuristic, held to the minimum. A Scan reads it when the
  * Session holds none, and so does the email flow when the user types an Apply
- * address on a page whose Scan did not (spec #66).
+ * address on a page whose Scan did not (spec #66), and so does "Not the job
+ * description" (ticket #102). The page reads past every `rejected` spot.
  */
 export async function readPageJobText(
-  deps: Pick<ScanDeps, 'port' | 'sendToTab'> & { hostname: string }, epoch: number,
+  deps: Pick<ScanDeps, 'port' | 'sendToTab'> & { hostname: string; rejected: readonly string[] }, epoch: number,
 ): Promise<JobTextOutcome> {
   const hostname = deps.hostname
   const learned = await deps.port.request<{ selector: string | null }>('selector.get', { hostname, purpose: 'job_description' })
   const selector = learned.ok ? learned.result.selector : null
-  const { replies } = await deps.sendToTab(0, { type: 'JFF_JOBTEXT', epoch, selector })
+  const { replies } = await deps.sendToTab(0, { type: 'JFF_JOBTEXT', epoch, selector, rejected: [...deps.rejected] })
   const payload = replies[0]?.payload as { ok?: boolean; jobText?: unknown } | undefined
   const reply = payload?.ok === true ? JobTextReplySchema.safeParse(payload.jobText) : null
   if (reply?.success === true && reply.data.source !== 'none') {
     const text = reply.data.text.trim()
-    if (text.length >= JOB_TEXT_MIN) return { jobText: text.slice(0, JOB_TEXT_MAX), jobTextSource: SOURCE_OF_REPLY[reply.data.source] }
+    if (text.length >= JOB_TEXT_MIN) {
+      const source = SOURCE_OF_REPLY[reply.data.source]
+      // Only a pick's and a heuristic's spot can be rejected: the ATS
+      // module's text has no spot on this page.
+      const spot = source === 'pick' || source === 'heuristic' ? reply.data.selector : null
+      return { jobText: text.slice(0, JOB_TEXT_MAX), jobTextSource: source, jobTextSpot: spot }
+    }
   }
-  return { jobText: '', jobTextSource: 'none' }
+  return { jobText: '', jobTextSource: 'none', jobTextSpot: null }
 }
 
 interface ScanPayload {
@@ -452,11 +472,11 @@ async function scanFields(deps: ScanDeps, track: AddressTrack): Promise<Omit<Sca
   // relay death must reach the panel WITH the per-frame evidence already collected,
   // not as a bare message that erases it.
   try {
-    const { jobText, jobTextSource } = await scanJobText(deps, epoch)
+    const { jobText, jobTextSource, jobTextSpot } = await scanJobText(deps, epoch)
 
     if (activeCaptcha) {
       // An active challenge means the extension does nothing at all on this page.
-      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, jobTextSpot, llmError: null, frameReports: reports }
     }
 
     // PHASE 1 — resume first, then RE-ENUMERATE so the ATS auto-parse cannot clobber us.
@@ -507,18 +527,18 @@ async function scanFields(deps: ScanDeps, track: AddressTrack): Promise<Omit<Sca
         // Uploading a resume is a common trigger for an ATS challenge. Re-reading
         // activeCaptcha and then filling anyway would be worse than never re-reading
         // it: same blast radius, plus a paid resolve call.
-        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, jobTextSpot, llmError: null, frameReports: reports }
       }
       if (fields.length === 0) {
         // The form went away under us (the upload navigated the frame). Same rule
         // as PHASE 0: resolve is NEVER called with zero fields.
-        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
+        return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, jobTextSpot, llmError: null, frameReports: reports }
       }
     }
 
     if (kept.length === 0) {
       // Only junk on the page: resolve is NEVER called with zero real fields.
-      return { epoch, ats, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false, unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: [], resolutions: [], pending: [], fill: emptyFill(), election: null, attachedUploads: [], resumeUploaded: false, unreachableWidgets, activeCaptcha, jobText, jobTextSource, jobTextSpot, llmError: null, frameReports: reports }
     }
 
     // PHASE 2 — the host is asked about the ELECTED frame only. Foreign fields
@@ -530,7 +550,7 @@ async function scanFields(deps: ScanDeps, track: AddressTrack): Promise<Omit<Sca
     if (resolveFields.length === 0) {
       // A module's junk rule took every elected Field: resolve is NEVER called
       // with zero real fields.
-      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, llmError: null, frameReports: reports }
+      return { epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, jobTextSpot, llmError: null, frameReports: reports }
     }
     deps.onProgress({ phase: 'resolving', fields: resolveFields.length })
     const resolved = await deps.port.request<ResolveFirstResult>('resolve.first', {
@@ -544,7 +564,7 @@ async function scanFields(deps: ScanDeps, track: AddressTrack): Promise<Omit<Sca
     })
     if (!resolved.ok) {
       return {
-        epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource,
+        epoch, ats, fields: kept, resolutions: [], pending: [], fill: emptyFill(), election: electionOut(), attachedUploads: electedAttached(), resumeUploaded: electedUploaded(), unreachableWidgets, activeCaptcha, jobText, jobTextSource, jobTextSpot,
         llmError: resolved.error, frameReports: reports,
       }
     }
@@ -560,7 +580,7 @@ async function scanFields(deps: ScanDeps, track: AddressTrack): Promise<Omit<Sca
       fill: batch.fill,
       election: electionOut(),
       attachedUploads: electedAttached(), resumeUploaded: electedUploaded(),
-      unreachableWidgets, activeCaptcha, jobText, jobTextSource,
+      unreachableWidgets, activeCaptcha, jobText, jobTextSource, jobTextSpot,
       llmError: null,
       frameReports: reports,
     }

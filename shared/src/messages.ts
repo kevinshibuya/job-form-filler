@@ -632,7 +632,13 @@ export const ContentMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('JFF_SNAPSHOT'), epoch: z.number().int().nonnegative() }),
   z.object({ type: z.literal('JFF_PICK'), epoch: z.number().int().nonnegative() }),
-  z.object({ type: z.literal('JFF_JOBTEXT'), epoch: z.number().int().nonnegative(), selector: z.string().nullable() }),
+  // `rejected` (ticket #102): the spots the user said were not the job
+  // description in this Session. The page script reads past them. A request
+  // without the list rejects nothing.
+  z.object({
+    type: z.literal('JFF_JOBTEXT'), epoch: z.number().int().nonnegative(), selector: z.string().nullable(),
+    rejected: z.array(z.string()).default([]),
+  }),
   // A3: the panel's submission-detection needs the page's VISIBLE text after a
   // wizard-step re-scan; jobText heuristics answer a different question.
   z.object({ type: z.literal('JFF_PAGETEXT'), epoch: z.number().int().nonnegative() }),

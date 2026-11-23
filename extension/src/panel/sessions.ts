@@ -53,6 +53,13 @@ export interface Session {
   /** Where `jobText` came from (spec #41). Null before the first Scan, and on
    *  a row stored before the source was kept. */
   jobTextSource: JobTextSource | null
+  /** The spot the page script named for `jobText` when it came from a pick or
+   *  a heuristic (ticket #102); null for any other source. */
+  jobTextSpot: string | null
+  /** The spots the user said were not the job description in this Session.
+   *  Every request for the page's text carries them, and they go with the
+   *  Session: nothing is kept per site. */
+  rejectedJobTextSpots: string[]
   snapshot: Record<string, string>
   reuseOverrides: Record<string, 'reusable' | 'company_specific'>
   filledRefs: string[]
@@ -151,6 +158,8 @@ export function newSession(tabId: number, startUrl = ''): Session {
     companyGuessed: false,
     jobText: '',
     jobTextSource: null,
+    jobTextSpot: null,
+    rejectedJobTextSpots: [],
     snapshot: {},
     reuseOverrides: {},
     filledRefs: [],
@@ -493,6 +502,9 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.ats !== undefined && typeof raw.ats !== 'string') return null
     // A row stored before the job text source was kept has none (spec #41).
     if (raw.jobTextSource != null && !JobTextSourceSchema.safeParse(raw.jobTextSource).success) return null
+    // A row stored before spots were kept has no spot and rejected none (ticket #102).
+    if (raw.jobTextSpot != null && typeof raw.jobTextSpot !== 'string') return null
+    if (raw.rejectedJobTextSpots !== undefined && (!Array.isArray(raw.rejectedJobTextSpots) || !allStrings(raw.rejectedJobTextSpots))) return null
     // A row stored before the email flow has no candidates and no Apply address (spec #66).
     if (raw.applyCandidates !== undefined && !ApplyAddressCandidateSchema.array().safeParse(raw.applyCandidates).success) return null
     if (raw.applyAddress != null && typeof raw.applyAddress !== 'string') return null
@@ -515,6 +527,8 @@ export function parseStoredSession(raw: unknown): Session | null {
       resumeUploaded: raw.resumeUploaded ?? false,
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
       jobTextSource: (raw.jobTextSource as JobTextSource | null | undefined) ?? null,
+      jobTextSpot: (raw.jobTextSpot as string | null | undefined) ?? null,
+      rejectedJobTextSpots: raw.rejectedJobTextSpots ?? [],
       applyCandidates: (raw.applyCandidates as ApplyAddressCandidate[] | undefined) ?? [],
       applyAddress,
       applyAddressChosenBy: applyAddress === null ? null : (raw.applyAddressChosenBy as ApplyAddressChoice | null | undefined) ?? null,

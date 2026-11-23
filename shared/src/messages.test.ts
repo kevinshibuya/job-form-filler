@@ -440,6 +440,22 @@ describe('the Job posting text source (spec #41)', () => {
     expect(JobTextReplySchema.safeParse({ text: '', selector: null, source: 'guess' }).success).toBe(false)
   })
 
+  // Ticket #102: the spots the user rejected travel with the request.
+  it('a job text request carries the rejected spots', () => {
+    const msg = ContentMessageSchema.parse({ type: 'JFF_JOBTEXT', epoch: 1, selector: null, rejected: ['#jd', 'body > main'] })
+    expect(msg).toMatchObject({ type: 'JFF_JOBTEXT', rejected: ['#jd', 'body > main'] })
+  })
+
+  it('a job text request without rejected spots is read as an empty list', () => {
+    const msg = ContentMessageSchema.parse({ type: 'JFF_JOBTEXT', epoch: 1, selector: '#jd' })
+    expect(msg).toMatchObject({ type: 'JFF_JOBTEXT', rejected: [] })
+  })
+
+  it('refuses rejected spots that are not a list of strings', () => {
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_JOBTEXT', epoch: 1, selector: null, rejected: '#jd' }).success).toBe(false)
+    expect(ContentMessageSchema.safeParse({ type: 'JFF_JOBTEXT', epoch: 1, selector: null, rejected: [1] }).success).toBe(false)
+  })
+
   it('the Session\'s source is one of five', () => {
     expect(JobTextSourceSchema.options).toEqual(['paste', 'ats', 'pick', 'heuristic', 'none'])
   })
