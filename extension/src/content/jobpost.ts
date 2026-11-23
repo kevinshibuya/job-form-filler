@@ -43,10 +43,11 @@ export function postingReaderFor(href: string, fetch: FetchLike): PostingReader 
  */
 export async function readJobText(
   root: Document, learnedSelector: string | null, posting: PostingReader, controls: readonly Element[],
+  rejected: readonly string[] = [],
 ): Promise<JobTextReply> {
   const fromAts = await fetchPostingText(posting.module, posting.formPageUrl, posting.fetch)
   if (fromAts !== null) return { text: fromAts, selector: null, source: 'ats' }
-  return captureJobText(root, learnedSelector, controls)
+  return captureJobText(root, learnedSelector, controls, rejected)
 }
 
 /**
@@ -58,12 +59,21 @@ export async function readJobText(
  * see. The heuristic leaves their form regions out of every candidate before
  * it measures it (ticket #100), and gives nothing when a region is the whole
  * document. A picked spot is read whole.
+ *
+ * `rejected` are the spots the user said were not the job description in this
+ * Session (ticket #102). A spot saved for the site that is among them is not
+ * read, and the heuristic skips a candidate at one and takes the next that
+ * qualifies. A spot is the element a selector names, so two spellings of the
+ * same element are one spot.
  */
-export function captureJobText(root: Document, learnedSelector: string | null, controls: readonly Element[]): JobTextReply {
+export function captureJobText(
+  root: Document, learnedSelector: string | null, controls: readonly Element[], rejected: readonly string[] = [],
+): JobTextReply {
+  const isRejected = rejectedSpots(root, rejected)
   if (learnedSelector !== null && learnedSelector !== '') {
     try {
       const el = root.querySelector(learnedSelector)
-      if (el !== null) {
+      if (el !== null && !rejected.includes(learnedSelector) && !isRejected(el)) {
         const t = textOf(el)
         if (t.length >= MIN_JOB_TEXT) return { text: t.slice(0, MAX_JOB_TEXT), selector: learnedSelector, source: 'learned' }
       }
@@ -78,6 +88,7 @@ export function captureJobText(root: Document, learnedSelector: string | null, c
     let best: { el: Element; text: string } | null = null
     for (const el of Array.from(root.querySelectorAll(tier))) {
       if (regions.some((r) => r.contains(el))) continue
+      if (isRejected(el)) continue
       const t = textOf(el, regions)
       if (t.length < MIN_JOB_TEXT) continue
       if (best === null || t.length > best.text.length) best = { el, text: t }
@@ -89,6 +100,23 @@ export function captureJobText(root: Document, learnedSelector: string | null, c
 }
 
 const NOTHING: JobTextReply = Object.freeze({ text: '', selector: null, source: 'none' })
+
+/** Whether an element sits at one of the `rejected` spots: the element a
+ *  rejected selector names, or the one whose own selector is rejected. A
+ *  rejected spot that names nothing, or is no selector, rejects nothing. */
+function rejectedSpots(root: Document, rejected: readonly string[]): (el: Element) => boolean {
+  if (rejected.length === 0) return () => false
+  const named = new Set<Element>()
+  for (const spot of rejected) {
+    try {
+      const el = root.querySelector(spot)
+      if (el !== null) named.add(el)
+    } catch {
+      // a spot that is no longer a valid selector rejects nothing
+    }
+  }
+  return (el) => named.has(el) || rejected.includes(cssPathOf(el))
+}
 
 /**
  * `CSS.escape` when the runtime provides it (every real browser this content script

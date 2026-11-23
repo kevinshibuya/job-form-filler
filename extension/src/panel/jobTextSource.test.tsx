@@ -27,8 +27,9 @@ type Chrome = { runtime: { sendMessage: (msg: unknown) => Promise<unknown> }; ta
 
 /** What the page's job text reply holds, per Scan. */
 let pageJobText: JobTextReply
-/** When set, the page answers the job text request with this instead. */
-let readPage: ((selector: string | null) => Promise<JobTextReply>) | null
+/** When set, the page answers the job text request with this instead, given
+ *  the saved spot and the spots the Session rejected. */
+let readPage: ((selector: string | null, rejected: string[]) => Promise<JobTextReply>) | null
 /** The spot `selector.get` answers with. */
 let savedSpot: string | null
 /** Every host request about the job text, in order, as method and params. */
@@ -59,7 +60,8 @@ beforeEach(() => {
     const m = msg as { kind?: string; frameId?: number; message?: { type?: string } }
     if (m.kind === 'toContent' && m.message?.type === 'JFF_JOBTEXT') {
       jobTextAsks++
-      const jobText = readPage === null ? pageJobText : await readPage((m.message as { selector: string | null }).selector)
+      const ask = m.message as { selector: string | null; rejected?: string[] }
+      const jobText = readPage === null ? pageJobText : await readPage(ask.selector, ask.rejected ?? [])
       return { ok: true, replies: [{ frameId: 0, payload: { ok: true, jobText } }], failures: [] }
     }
     if (m.kind === 'toContent' && m.message?.type === 'JFF_PICK') {
@@ -172,7 +174,7 @@ describe('the job text source line', () => {
       chrome.tabs.get = async () => tab
       host.frameUrl = APPLY
       fetch = vi.fn<FetchLike>(async () => new Response(postingFixtureHtml('lever-posting'), { status: 200 }))
-      readPage = (selector) => readJobText(document, selector, postingReaderFor(APPLY, fetch), [])
+      readPage = (selector, rejected) => readJobText(document, selector, postingReaderFor(APPLY, fetch), [], rejected)
     })
 
     it('the text comes from the posting\'s page and the line reads "the Lever posting page"', async () => {
@@ -182,6 +184,17 @@ describe('the job text source line', () => {
       expect(fetch).toHaveBeenCalledTimes(1)
       expect(fetch.mock.calls[0]![1]).toMatchObject({ credentials: 'omit' })
       expect(rejectButton()).toBeNull()
+    })
+
+    // #59 item 3: today's behaviour stays. A read that failed is tried again.
+    it('a posting-page read that failed on one Scan is attempted again on the next', async () => {
+      fetch.mockImplementationOnce(async () => { throw new TypeError('Failed to fetch') })
+      await mountAndScan()
+      await waitFor(() => { expect(line()).toBe('0 characters · nothing found') })
+      expect(fetch).toHaveBeenCalledTimes(1)
+      await scanAgain()
+      await waitFor(() => { expect(line()).toMatch(/^\d+ characters · the Lever posting page$/) })
+      expect(fetch).toHaveBeenCalledTimes(2)
     })
 
     it('a second Scan in the Session makes no second fetch', async () => {
@@ -258,14 +271,17 @@ describe('"Not the job description"', () => {
 
   it('empties the Session\'s text, sets nothing found, and the host forgets the spot', async () => {
     savedSpot = '#jd'
-    pageJobText = { text: JD, selector: '#jd', source: 'learned' }
+    // The page holds no other text: once '#jd' is rejected it answers with none.
+    readPage = async (selector, rejected) => (selector === '#jd' && !rejected.includes('#jd')
+      ? { text: JD, selector: '#jd', source: 'learned' }
+      : { text: '', selector: null, source: 'none' })
     await mountAndScan()
     await waitFor(() => { expect(rejectButton()).not.toBeNull() })
     fireEvent.click(rejectButton()!)
     await waitFor(() => { expect(line()).toBe('0 characters · nothing found') })
     expect(box().value).toBe('')
     expect(rejectButton()).toBeNull()
-    await waitFor(() => { expect(sessionRow()).toMatchObject({ jobText: '', jobTextSource: 'none' }) })
+    await waitFor(() => { expect(sessionRow()).toMatchObject({ jobText: '', jobTextSource: 'none', rejectedJobTextSpots: ['#jd'] }) })
     await waitFor(() => { expect(spotRequests.find((r) => r.method === 'selector.clear')?.params).toEqual({ hostname: HOSTNAME, purpose: 'job_description' }) })
     expect(savedSpot).toBeNull()
   })

@@ -368,6 +368,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const [capturing, setCapturing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [picking, setPicking] = useState(false)
+  /** The tab whose page "Not the job description" is asking again (ticket
+   *  #102). Kept by tab, not cleared by a swap: the ask belongs to that
+   *  Session, and its button stays disabled until the answer lands. */
+  const [rereadingTab, setRereadingTab] = useState<number | null>(null)
   const [marking, setMarking] = useState(false)
   /** A Send is in flight (ticket #82); the ref closes the gap before the
    *  disabled button renders, so two quick clicks make one request. */
@@ -1102,6 +1106,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // Scan uses it as it is and records the same source (spec #41).
         heldJobText: ownedSession()?.jobText ?? '',
         heldJobTextSource: ownedSession()?.jobTextSource ?? null,
+        heldJobTextSpot: ownedSession()?.jobTextSpot ?? null,
+        // The spots the user rejected in this Session are read past (ticket #102).
+        rejectedJobTextSpots: ownedSession()?.rejectedJobTextSpots ?? [],
         hostname,
         url,
         title: tab.title ?? '',
@@ -1166,7 +1173,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         // What the user typed while the Scan ran is theirs.
         ...(s.jobTextSource === 'paste' && s.jobText.trim() !== ''
           ? {}
-          : { jobText: out.jobText, jobTextSource: out.jobTextSource }),
+          : { jobText: out.jobText, jobTextSource: out.jobTextSource, jobTextSpot: out.jobTextSpot }),
         // The Scan's guess fills an empty field only: what the user typed
         // while the Scan ran is theirs.
         ...(out.companyGuessed && out.company !== null && s.company.trim() === ''
@@ -1703,7 +1710,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Pick refused: that spot holds ${picked.text.trim().length} characters, and a job description needs at least ${JOB_TEXT_MIN} characters.` })
         return
       }
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick' }))
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick', jobTextSpot: picked.selector }))
       if (inScope(sc)) clearActionFailure()
       // An Application email that waited for the job text starts now.
       void startEmailDraft(sc)
@@ -1949,10 +1956,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       try {
         const tab = await getTab(sc.target)
         if (!alive(sc)) return
-        const read = await readPageJobText({ port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url) }, owner.epoch)
+        const read = await readPageJobText({
+          port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname: hostnameOf(tab?.url),
+          rejected: owner.rejectedJobTextSpots,
+        }, owner.epoch)
         if (!alive(sc)) return
         // What the user pasted or picked meanwhile is theirs.
-        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource } : s))
+        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot } : s))
       } catch {
         // A page the panel cannot reach leaves the paste box and the pick to the user.
       }
@@ -1961,26 +1971,57 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     await startEmailDraft(sc)
   }
 
-  /** "Not the job description" (spec #41): the Session's text goes, the source
-   *  becomes nothing found, and the Native host forgets the spot saved for
-   *  the site. */
+  /**
+   * "Not the job description" (spec #41, ticket #102): the Session's text
+   * goes, its spot joins the Session's rejected spots, and the Native host
+   * forgets the spot saved for the site. Then the page is asked again at once,
+   * in its own order, reading past every rejected spot: the box shows the next
+   * text with its source, or nothing found.
+   */
   const onNotTheJob = async (): Promise<void> => {
     const owner = sessionRef.current
-    if (owner === null) return
+    if (owner === null || rereadingTab === owner.tabId) return
     const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const rejected: { spots: string[] } = { spots: owner.rejectedJobTextSpots }
+    setRereadingTab(sc.target)
     try {
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: '', jobTextSource: 'none' }))
+      await applyToSession(sc.target, sc.gen, (s) => {
+        const spot = s.jobTextSpot
+        rejected.spots = spot === null || s.rejectedJobTextSpots.includes(spot) ? s.rejectedJobTextSpots : [...s.rejectedJobTextSpots, spot]
+        return { ...s, jobText: '', jobTextSource: 'none', jobTextSpot: null, rejectedJobTextSpots: rejected.spots }
+      })
       const tab = await getTab(sc.target)
       if (!alive(sc)) return
       const hostname = hostnameOf(tab?.url)
-      if (hostname === '') return
-      const r = await portRef.current?.request('selector.clear', { hostname, purpose: 'job_description' })
-      if (r !== undefined && !r.ok && inScope(sc)) {
-        setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${hostErrorText(r.error)}` })
+      const port = portRef.current
+      if (hostname === '' || port === null) return
+      try {
+        const r = await port.request('selector.clear', { hostname, purpose: 'job_description' })
+        if (!r.ok && inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${hostErrorText(r.error)}` })
+      } catch (e) {
+        if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${e instanceof Error ? e.message : String(e)}` })
       }
+      if (!alive(sc)) return
+      // A spot the host failed to forget is rejected all the same, so the
+      // page reads past it.
+      const read = await readPageJobText({
+        port, sendToTab: (frameId, message) => sendToTab(sc.target, frameId, message), hostname, rejected: rejected.spots,
+      }, owner.epoch)
+      if (!alive(sc)) return
+      // What the user pasted or picked while the page was asked is theirs.
+      const landed: { text: boolean } = { text: false }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        if (s.jobText.trim() !== '' || s.jobTextSource === 'paste') return s
+        landed.text = read.jobText !== ''
+        return { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot }
+      })
+      // An Application email that waited for the job text starts now.
+      if (landed.text) void startEmailDraft(sc)
     } catch (e) {
       if (!inScope(sc)) return
-      setScanStatus({ kind: 'action_failed', reason: `Forgetting the saved spot failed: ${e instanceof Error ? e.message : String(e)}` })
+      setScanStatus({ kind: 'action_failed', reason: `Reading the page again failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setRereadingTab((t) => (t === sc.target ? null : t))
     }
   }
 
@@ -2595,7 +2636,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           onPaste={() => { pastedRef.current = true }}
           onChange={(e) => {
             const v = e.target.value
-            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste' }))
+            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste', jobTextSpot: null }))
             if (!pastedRef.current) return
             pastedRef.current = false
             const sc = scopeNow()
@@ -2606,8 +2647,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           // Where the text came from (spec #41), right under the box.
           <span className="mt-0.5 flex items-center gap-2 text-xs">
             <span data-jff-jobtext-source={jobTextSource ?? ''}>{jobTextLine(jobText, jobTextSource, session.ats)}</span>
-            {offersNotTheJob(jobTextSource) && (
-              <button type="button" className={BTN} onClick={() => { void onNotTheJob() }}>Not the job description</button>
+            {(offersNotTheJob(jobTextSource) || rereadingTab === session.tabId) && (
+              // Kept on screen, disabled, while the page is asked again.
+              <button type="button" className={BTN} disabled={rereadingTab === session.tabId} onClick={() => { void onNotTheJob() }}>Not the job description</button>
             )}
           </span>
         )}
