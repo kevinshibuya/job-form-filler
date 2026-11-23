@@ -62,14 +62,16 @@ export async function readJobText(
  *
  * `rejected` are the spots the user said were not the job description in this
  * Session (ticket #102). A spot saved for the site that is among them is not
- * read, and the heuristic skips a candidate at one and takes the next that
- * qualifies. A spot is the element a selector names, so two spellings of the
- * same element are one spot.
+ * read, and the heuristic skips a candidate at one, or inside one, and takes
+ * the next that qualifies. A candidate that holds a rejected spot is measured
+ * without it, as it is without the form regions, so one click rejects that
+ * text and not only that element. A spot is the element a selector names, so
+ * two spellings of the same element are one spot.
  */
 export function captureJobText(
   root: Document, learnedSelector: string | null, controls: readonly Element[], rejected: readonly string[] = [],
 ): JobTextReply {
-  const isRejected = rejectedSpots(root, rejected)
+  const { isRejected, elements: rejectedEls } = rejectedSpots(root, rejected)
   if (learnedSelector !== null && learnedSelector !== '') {
     try {
       const el = root.querySelector(learnedSelector)
@@ -84,12 +86,13 @@ export function captureJobText(
 
   const regions = formRegions(controls)
   if (regions.some(coversDocument)) return NOTHING
+  const leaveOut = [...regions, ...rejectedEls]
   for (const tier of HEURISTIC_TIERS) {
     let best: { el: Element; text: string } | null = null
     for (const el of Array.from(root.querySelectorAll(tier))) {
       if (regions.some((r) => r.contains(el))) continue
-      if (isRejected(el)) continue
-      const t = textOf(el, regions)
+      if (isRejected(el) || rejectedEls.some((r) => r.contains(el))) continue
+      const t = textOf(el, leaveOut)
       if (t.length < MIN_JOB_TEXT) continue
       if (best === null || t.length > best.text.length) best = { el, text: t }
     }
@@ -101,11 +104,12 @@ export function captureJobText(
 
 const NOTHING: JobTextReply = Object.freeze({ text: '', selector: null, source: 'none' })
 
-/** Whether an element sits at one of the `rejected` spots: the element a
- *  rejected selector names, or the one whose own selector is rejected. A
- *  rejected spot that names nothing, or is no selector, rejects nothing. */
-function rejectedSpots(root: Document, rejected: readonly string[]): (el: Element) => boolean {
-  if (rejected.length === 0) return () => false
+/** The elements the `rejected` spots name, and whether an element sits at one:
+ *  the element a rejected selector names, or the one whose own selector is
+ *  rejected. A rejected spot that names nothing, or is no selector, rejects
+ *  nothing. */
+function rejectedSpots(root: Document, rejected: readonly string[]): { isRejected: (el: Element) => boolean; elements: Element[] } {
+  if (rejected.length === 0) return { isRejected: () => false, elements: [] }
   const named = new Set<Element>()
   for (const spot of rejected) {
     try {
@@ -115,7 +119,7 @@ function rejectedSpots(root: Document, rejected: readonly string[]): (el: Elemen
       // a spot that is no longer a valid selector rejects nothing
     }
   }
-  return (el) => named.has(el) || rejected.includes(cssPathOf(el))
+  return { isRejected: (el) => named.has(el) || rejected.includes(cssPathOf(el)), elements: [...named] }
 }
 
 /**

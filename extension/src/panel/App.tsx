@@ -272,7 +272,7 @@ const doneOutcome = (filled: number, settled: Resolution[]): ScanUiState => ({ k
  *  startUrl, site — is deliberately kept (S4/S5). */
 const clearScanResults = (s: Session): Session => ({
   ...s,
-  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], resumeUploaded: false, ats: 'generic', edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {},
+  fields: [], resolutions: [], waiting: [], election: null, attachedUploads: [], resumeUploaded: false, ats: 'generic', edits: {}, filledRefs: [], generatedRefs: [], draftWarnings: {}, keylessGaps: {},
   snapshot: {}, reuseOverrides: {}, unreachable: 0, activeCaptcha: false, frameReports: [],
   lastOutcome: null, appliedHit: null,
 })
@@ -1669,8 +1669,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS, fetchLink = fetchFromPanel }: A
   /** B4 eligibility: needs-input, labelled, nothing drafted/edited yet, not
    *  currently generating. Foreign rows are structurally absent from `main`. */
   const generateEligible = main.filter((r) =>
-    // The same rows the per-row Generate button shows on: a Needs input Prose
-    // Field on a text Control. One click never drafts a fact about the user.
+    // The same rows the per-row Generate button shows on (offersGeneration):
+    // never an accommodation question, a keyed Field or a choice Control.
     offersGeneration(r)
     && (r.field.label ?? '').trim() !== ''
     && (edits[r.ref] ?? '').trim() === ''
@@ -2077,11 +2077,21 @@ export function App({ hostWaitMs = HOST_WAIT_MS, fetchLink = fetchFromPanel }: A
     if (address === null) { setLinkNote({ tabId: sc.target, kind: 'refused' }); return }
     setLinkNote((n) => (n?.tabId === sc.target ? null : n))
     setLinkReadingTab(sc.target)
+    // What the Session held when the read began: a text the user pasted, or a
+    // re-read that landed, while the link was read is theirs, and the one the
+    // user supplied last is the one held.
+    const before = { text: owner.jobText, source: owner.jobTextSource }
     try {
       const text = await readPostingLink(address, fetchLink)
       if (!alive(sc)) return
       if (text === null) { setLinkNote({ tabId: sc.target, kind: 'failed' }); return }
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: text, jobTextSource: 'link', jobTextSpot: null, jobTextLink: address }))
+      const landed: { text: boolean } = { text: false }
+      await applyToSession(sc.target, sc.gen, (s) => {
+        if (s.jobText !== before.text || s.jobTextSource !== before.source) return s
+        landed.text = true
+        return { ...s, jobText: text, jobTextSource: 'link', jobTextSpot: null, jobTextLink: address }
+      })
+      if (!landed.text) return
       setLinkDraft((d) => (d?.tabId === sc.target ? null : d))
       // An Application email that waited for the job text starts now.
       void startEmailDraft(sc)

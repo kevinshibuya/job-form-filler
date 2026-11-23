@@ -341,6 +341,21 @@ describe('the held text', () => {
     expect(linkInput().value).toBe('')
   })
 
+  it('a paste while the link is still read is kept when the link answers late (review of PR #112, finding 5)', async () => {
+    let serve: (r: Response) => void = () => {}
+    fetchLink.mockImplementationOnce(() => new Promise<Response>((resolve) => { serve = resolve }))
+    await mountAndScan()
+    typeLink(LINK)
+    await waitFor(() => { expect(fetchLink).toHaveBeenCalledTimes(1) })
+    fireEvent.change(box(), { target: { value: 'Pasted posting' } })
+    await waitFor(() => { expect(line()).toBe('14 characters · your paste') })
+    await act(async () => { serve(answer(servedPage())) })
+    await waitFor(() => { expect(readButton().disabled).toBe(false) })
+    expect(box().value).toBe('Pasted posting')
+    expect(line()).toBe('14 characters · your paste')
+    await waitFor(() => { expect(sessionRow()).toMatchObject({ jobText: 'Pasted posting', jobTextSource: 'paste', jobTextLink: null }) })
+  })
+
   it('a link after a paste replaces the paste', async () => {
     await mountAndScan()
     fireEvent.change(box(), { target: { value: 'Pasted posting' } })

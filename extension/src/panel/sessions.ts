@@ -73,6 +73,11 @@ export interface Session {
   /** ref → the sentences of that row's Draft the Draft check found unsupported
    *  by the user's own material. A ref is absent when its Draft has none. */
   draftWarnings: Record<string, string[]>
+  /** ref → the Draft that carried a gap and the gap, for a row that owns no
+   *  answer key (its label is empty, or another Field of the page shares it),
+   *  so its gap has no question record to ride on. Ref-keyed, so it goes with
+   *  the page as `draftWarnings` does. Absent on a row stored before it. */
+  keylessGaps?: Record<string, { text: string; missing: string }>
   unreachable: number
   activeCaptcha: boolean
   election: ElectionOutcome | null
@@ -172,6 +177,7 @@ export function newSession(tabId: number, startUrl = ''): Session {
     filledRefs: [],
     generatedRefs: [],
     draftWarnings: {},
+    keylessGaps: {},
     unreachable: 0,
     activeCaptcha: false,
     election: null,
@@ -219,8 +225,10 @@ export function answerKeysByRef(fields: EnumField[]): Map<string, string> {
 
 /**
  * S4 write path: record what ONE ref now answers under its LABEL key, so the
- * answer outlives the ref. Pure, and a no-op for a field that may not own a key
- * (unlabelled, or a label this page duplicates).
+ * answer outlives the ref. Pure. A field that may not own a key (unlabelled, or
+ * a label this page duplicates) carries nothing, but a Draft written for it
+ * keeps its gap by ref in `keylessGaps`, so the missing line shows and "Save
+ * answers" skips the row all the same.
  *
  * An EMPTY value DELETES the entry: a box the user cleared is not an answer, and
  * a stale entry left behind would re-seed the value on the next step.
@@ -238,7 +246,15 @@ export function rememberAnswer(
   missing?: string,
 ): Session {
   const key = answerKeysByRef(s.fields).get(ref)
-  if (key === undefined) return s
+  if (key === undefined) {
+    if (provenance !== 'generated') return s
+    // A new Draft replaces the old one's gap, or clears it.
+    const { [ref]: _previous, ...keylessGaps } = s.keylessGaps ?? {}
+    return {
+      ...s,
+      keylessGaps: missing === undefined || missing === '' ? keylessGaps : { ...keylessGaps, [ref]: { text: value, missing } },
+    }
+  }
   if (value === '') {
     if (!(key in s.answers)) return s
     const answers = { ...s.answers }
@@ -271,6 +287,12 @@ export function rememberAnswer(
  */
 export function draftGaps(s: Session): Record<string, { text: string; missing: string }> {
   const out: Record<string, { text: string; missing: string }> = {}
+  // A row with no answer key keeps its gap by ref (`keylessGaps`).
+  const keyed = answerKeysByRef(s.fields)
+  for (const [ref, gap] of Object.entries(s.keylessGaps ?? {})) {
+    if (keyed.has(ref) || typeof gap?.text !== 'string' || typeof gap.missing !== 'string' || gap.missing === '') continue
+    out[ref] = { text: gap.text, missing: gap.missing }
+  }
   for (const [ref, key] of answerKeysByRef(s.fields)) {
     // A stored row is untrusted: a gap that is not text is no gap.
     const draft = s.answers[key]?.draft
@@ -375,6 +397,7 @@ export function projectAnswers(
     edits,
     generatedRefs,
     draftWarnings: {},
+    keylessGaps: {},
     filledRefs: [],
     snapshot: {},
     reuseOverrides: {},
@@ -482,6 +505,9 @@ const allStrings = (a: unknown[]): boolean => a.every((x) => typeof x === 'strin
 const isDraftWarnings = (v: unknown): v is Record<string, string[]> =>
   isRecord(v) && Object.values(v).every((w) => Array.isArray(w) && allStrings(w))
 
+const isKeylessGaps = (v: unknown): v is Record<string, { text: string; missing: string }> =>
+  isRecord(v) && Object.values(v).every((g) => isRecord(g) && typeof g.text === 'string' && typeof g.missing === 'string')
+
 /** Structural gate on untrusted storage rows: a version mismatch or any shape
  *  surprise yields null rather than a half-typed Session. Never throws. */
 export function parseStoredSession(raw: unknown): Session | null {
@@ -505,6 +531,7 @@ export function parseStoredSession(raw: unknown): Session | null {
     // A row stored before waiting rows, or Draft warnings, existed has none.
     if (raw.waiting !== undefined && (!Array.isArray(raw.waiting) || !allStrings(raw.waiting))) return null
     if (raw.draftWarnings !== undefined && !isDraftWarnings(raw.draftWarnings)) return null
+    if (raw.keylessGaps !== undefined && !isKeylessGaps(raw.keylessGaps)) return null
     // A row stored before attached uploads were read has none (#37).
     if (raw.attachedUploads !== undefined && (!Array.isArray(raw.attachedUploads) || !allStrings(raw.attachedUploads))) return null
     // A row stored before the Resume upload was remembered has none (#49).
@@ -536,7 +563,7 @@ export function parseStoredSession(raw: unknown): Session | null {
     const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
     return {
       ...(raw as unknown as Session),
-      waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
+      waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, keylessGaps: raw.keylessGaps ?? {}, attachedUploads: raw.attachedUploads ?? [],
       resumeUploaded: raw.resumeUploaded ?? false,
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
       jobTextSource: (raw.jobTextSource as JobTextSource | null | undefined) ?? null,

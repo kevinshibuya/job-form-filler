@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EnumField, FieldKey, Resolution } from '@jff/shared'
 import { sessionKey } from '../sessionKey'
+import { buildSaveItems } from './save'
 import {
   answerKey, answerKeysByRef, capForStorage, createSessionStore, draftGaps, keptProseAnswers, MAX_PERSISTED_OPTIONS,
   mergeMapping, newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION, settleWaiting,
@@ -857,6 +858,37 @@ describe('A Draft\'s gap rides its answer record (ticket #103)', () => {
     expect(next.edits['0:1']).toBe(DRAFT)
     expect(draftGaps(next)).toEqual({ '0:1': { text: DRAFT, missing: GAP } })
     expect(draftGaps(parseStoredSession(JSON.parse(JSON.stringify(next)))!)).toEqual({ '0:1': { text: DRAFT, missing: GAP } })
+  })
+
+  describe('on a row that owns no answer key (review of PR #112, finding 2)', () => {
+    // Two Fields of the page share the label, so neither owns its record.
+    const twins = (): Session => ({
+      ...newSession(7), fields: [labelled(0, ON_SITE), labelled(1, ON_SITE)], resolutions: [resolutionFor(0), resolutionFor(1)],
+    })
+
+    it('keeps the gap by the row, so the line shows and Save answers skips the row', () => {
+      const s = rememberAnswer({ ...twins(), edits: { '0:0': DRAFT } }, '0:0', DRAFT, 'generated', 'opus', GAP)
+      expect(s.answers).toEqual({})
+      expect(draftGaps(s)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+      const items = buildSaveItems({
+        fields: s.fields, resolutions: s.resolutions, panelEdits: s.edits, snapshot: {}, company: 'Acme',
+        gapDrafts: Object.fromEntries(Object.entries(draftGaps(s)).map(([ref, g]) => [ref, g.text])),
+      })
+      expect(items).toEqual([])
+    })
+
+    it('a new Draft with no gap clears it, and the user\'s own write leaves it to the text comparison', () => {
+      const gapped = rememberAnswer(twins(), '0:0', DRAFT, 'generated', 'opus', GAP)
+      expect(draftGaps(rememberAnswer(gapped, '0:0', 'Yes, I can.', 'user'))).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+      expect(draftGaps(rememberAnswer(gapped, '0:0', 'Yes, I can.', 'generated', 'opus'))).toEqual({})
+    })
+
+    it('goes with the page on a re-scan, and survives a reload', () => {
+      const gapped = rememberAnswer(twins(), '0:0', DRAFT, 'generated', 'opus', GAP)
+      expect(draftGaps(parseStoredSession(JSON.parse(JSON.stringify(gapped)))!)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+      expect(projectAnswers(gapped, [], [], {}).keylessGaps).toEqual({})
+      expect(parseStoredSession({ ...gapped, keylessGaps: { '0:0': { text: DRAFT } } })).toBeNull()
+    })
   })
 
   it('a stored gap that is not text names none', () => {

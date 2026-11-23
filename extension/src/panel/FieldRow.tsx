@@ -1,5 +1,5 @@
 import type { EnumField, FieldKey, ResolutionTier, ValueType } from '@jff/shared'
-import { ACCOMMODATION_REASON, VALUE_TYPE_OF, norm, storedValue, yesNoOf } from '@jff/shared'
+import { ACCOMMODATION_REASON, VALUE_TYPE_OF, asksAboutAccommodation, norm, storedValue, yesNoOf } from '@jff/shared'
 import { CheckboxGroupEditor, ConsentTick } from './CheckboxGroupRow'
 import { offersGeneration } from './generationOffer'
 import { SOURCE_BADGE, type Row } from './group'
@@ -237,6 +237,11 @@ export function FieldRow(p: FieldRowProps) {
     : resolution.reason === 'no-matching-option' && field.options.length > 0
     ? NO_MATCH_PICK_HINT
     : REASON_HINT[resolution.reason]
+  // A question about accommodation needs says so by its label too, beside the
+  // hint for whatever reason replaced `accommodation` (a missed Fill), or on a
+  // row that never carried it (a matched Reusable Saved answer whose Fill missed).
+  const accommodationNote = !decided && resolution.tier === 'needs_input'
+    && resolution.reason !== ACCOMMODATION_REASON && asksAboutAccommodation(field.label)
 
   if (resolution.tier === 'skipped') {
     return (
@@ -391,6 +396,7 @@ export function FieldRow(p: FieldRowProps) {
       )}
 
       {hint !== undefined && <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-hint="1">{hint}</p>}
+      {accommodationNote && <p className={`mt-1 text-[12px] ${MUTED}`} data-jff-hint="1">{ACCOMMODATION_HINT}</p>}
 
       {editor !== 'file' && (
         <div className="mt-1.5 flex items-center gap-2">
@@ -416,7 +422,7 @@ export function FieldRow(p: FieldRowProps) {
             <>
               {/* A9: a foreign row has no resolution the host ever saw, so there
                   is nothing to generate against — manual Fill is all it gets.
-                  Otherwise only a Prose Field on a text Control is drafted. */}
+                  Otherwise offersGeneration decides (ADR 0014). */}
               {p.foreign !== true && offersGeneration(row) && (
                 <button type="button" className={BTN} disabled={generating || locked || acting !== null} onClick={() => onGenerate(ref)}>
                   {generating ? 'Drafting…' : 'Generate with AI'}

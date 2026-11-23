@@ -51,6 +51,28 @@ describe('the heuristic and a rejected spot', () => {
     expect(r.text).toContain('SECOND')
   })
 
+  it('skips a candidate inside a rejected spot, so the same text is not read again', () => {
+    // Reject a `main`, and an `article` inside it holds part of the same text.
+    document.body.innerHTML = `<main id="m"><article>${long('INNER', 500)}</article></main><section role="main">${long('OTHER')}</section>`
+    const r = captureJobText(document, null, [], ['#m'])
+    expect(r.text).toContain('OTHER')
+    expect(r.text).not.toContain('INNER')
+  })
+
+  it('measures a candidate that holds a rejected spot without it', () => {
+    // Reject the description inside a `main`, and the `main` around it holds
+    // the same text: what is left of it is too short to count.
+    document.body.innerHTML = `<main><div class="job-description" id="jd">${long('REJECTED')}</div><p>Apply below.</p></main>`
+    expect(captureJobText(document, null, [], ['#jd'])).toEqual({ text: '', selector: null, source: 'none' })
+  })
+
+  it('reads what is left of a candidate around a rejected spot when it still qualifies', () => {
+    document.body.innerHTML = `<main><div class="job-description" id="jd">${long('REJECTED')}</div><section>${long('KEPT')}</section></main>`
+    const r = captureJobText(document, null, [], ['#jd'])
+    expect(r.text).toContain('KEPT')
+    expect(r.text).not.toContain('REJECTED')
+  })
+
   it('a rejected spot that names no element, or is not a selector, rejects nothing', () => {
     expect(captureJobText(document, null, [], ['#gone', '[[[not a selector'])).toMatchObject({ selector: '#first' })
   })

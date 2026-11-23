@@ -77,6 +77,15 @@ describe('A generate request drafts by the kind of Field it is for', () => {
     expectPersonalFactRules(writerPrompts[0]!)
   })
 
+  it('hands the Draft check the same length rule as the writer', async () => {
+    await generate({ fieldClass: 'personal_fact' })
+    expect(checkPrompts).toHaveLength(1)
+    expect(checkPrompts[0]).not.toMatch(/60 to 150 words/)
+    expect(checkPrompts[0]).toMatch(/one to three direct sentences/)
+    await generate({ fieldClass: 'prose' })
+    expect(checkPrompts[1]).toMatch(/60 to 150 words/)
+  })
+
   it('hands the writer the prose rules, unchanged, for a Prose Field', async () => {
     const r = await generate({ fieldClass: 'prose', questionRaw: 'Why do you want to work at Acme?' })
     expect(r).toMatchObject({ ok: true })

@@ -19,6 +19,20 @@ const input: GenerationInput = {
 describe('buildReviewPrompt', () => {
   const prompt = buildReviewPrompt(input, 'THE CLAUDE DRAFT')
 
+  it('keeps a prose Draft, and a check with no label, to 60 to 150 words', () => {
+    expect(prompt).toContain('60 to 150 words')
+    expect(buildReviewPrompt({ ...input, fieldClass: 'prose' }, 'D')).toContain('60 to 150 words')
+  })
+
+  it('holds a personal-fact Draft to one to three sentences, never lengthened, and a gap to one (spec #98)', () => {
+    const fact = buildReviewPrompt({ ...input, question: 'Can you be on site one day a week?', fieldClass: 'personal_fact' }, 'Yes.')
+    expect(fact).not.toContain('60 to 150 words')
+    expect(fact).toMatch(/one to three direct sentences/)
+    expect(fact).toMatch(/never lengthen/)
+    expect(fact).toMatch(/yes\/no answer keeps its opening yes or no/)
+    expect(fact).toMatch(/only says what is missing stays that one sentence/)
+  })
+
   it('carries the same trusted/untrusted context as generation, plus the draft', () => {
     expect(prompt).toContain('CANDIDATE FACTS')
     expect(prompt).toContain("CANDIDATE CV (trusted, from the candidate's own resume):")

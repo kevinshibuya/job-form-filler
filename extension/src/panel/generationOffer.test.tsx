@@ -195,3 +195,49 @@ describe('Generation is offered on every unanswered text question', () => {
     expect(saves[0]).toContainEqual(expect.objectContaining({ questionRaw: ACCOMMODATION, answer: 'A quiet room, please.' }))
   })
 })
+
+/**
+ * A missed Fill replaces a row's reason with the page's, so the rule that
+ * withholds Generation from an accommodation question reads the label too
+ * (review of PR #112, finding 1).
+ */
+describe('an accommodation question whose Fill missed', () => {
+  const ROOM = 'A quiet room, please.'
+
+  beforeEach(() => {
+    host.nothingPending = true
+    host.fields = [field(0, ACCOMMODATION, { kind: 'textarea' }), field(1, WHY, { kind: 'textarea' })]
+  })
+
+  it('offers no Generation when a matched Saved answer misses on the first Fill', async () => {
+    // A Reusable Saved answer matched both questions outright, so neither row
+    // ever carried the accommodation reason; the page refuses both Fills.
+    host.firstValues = { 0: ROOM, 1: 'Because of the engines.' }
+    host.firstPatch = { 0: { source: 'answer', answerId: 1 }, 1: { source: 'answer', answerId: 2 } }
+    host.refuse = { 0: 'element-not-found', 1: 'element-not-found' }
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    await waitFor(() => { expect(rowOf(ACCOMMODATION)?.getAttribute('data-jff-tier')).toBe('needs_input') })
+    expect(rowOf(WHY)?.getAttribute('data-jff-tier')).toBe('needs_input')
+    // The other question proves the miss opens Generation on an ordinary row.
+    expect(generateIn(WHY)).not.toBeNull()
+    expect(generateIn(ACCOMMODATION)).toBeNull()
+    expect(rowOf(ACCOMMODATION)?.textContent).toContain(ACCOMMODATION_HINT)
+    expect(generateAll()?.textContent).toBe('Generate all remaining (1)')
+  })
+
+  it('offers no Generation when the user\'s own answer misses on Fill', async () => {
+    host.firstNeedsInput = [0, 1]
+    host.firstPatch = { 0: { reason: ACCOMMODATION_REASON } }
+    host.refuse = { 0: 'element-not-found' }
+    render(<App />)
+    await waitFor(() => { expect(status()).toBe('done') })
+    expect(generateIn(ACCOMMODATION)).toBeNull()
+    fireEvent.change(screen.getByLabelText(ACCOMMODATION), { target: { value: ROOM } })
+    fireEvent.click(within(rowOf(ACCOMMODATION) as HTMLElement).getByRole('button', { name: 'Fill' }))
+    await waitFor(() => { expect(rowOf(ACCOMMODATION)?.textContent).toContain('element-not-found') })
+    expect(generateIn(ACCOMMODATION)).toBeNull()
+    expect(rowOf(ACCOMMODATION)?.textContent).toContain(ACCOMMODATION_HINT)
+    expect(generateAll()?.textContent).toBe('Generate all remaining (1)')
+  })
+})
