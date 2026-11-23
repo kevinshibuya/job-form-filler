@@ -62,7 +62,7 @@ function expectPersonalFactRules(prompt: string): void {
   expect(prompt).toMatch(/language of the question/i)
   expect(prompt).toMatch(/yes\/no question.*opens? with yes or no/i)
   expect(prompt).toMatch(/no narrative/i)
-  expect(prompt).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks/)
+  expect(prompt).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES or SAVED ANSWERS blocks/)
   expect(prompt).toMatch(/say what is missing.*in one sentence/i)
   // Not the prose rules: no word count, no constructive answer to a subjective question.
   expect(prompt).not.toMatch(/60 to 150 words/)

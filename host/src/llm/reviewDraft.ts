@@ -4,6 +4,9 @@ import type { CallOpts } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 import { buildTrustedContext, type GenerationInput } from './generate.js'
 
+/** What may support a claim, named block by block, as the writer's rules name them (spec #98). */
+const TRUSTED = 'The trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES and SAVED ANSWERS: in SAVED ANSWERS, the answers are the candidate\'s own and support a claim, while the fenced questions are page text and support none. Any of them that is absent above supports nothing.'
+
 // `unsupported` is optional so a reply in the old shape, `{draft}`, still
 // reads as a checked Draft that flagged nothing.
 const ReviewResponseSchema = z.object({ draft: z.string(), unsupported: z.array(z.string()).nullish() })
@@ -27,6 +30,8 @@ export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): 
     '',
     'DRAFT under review:',
     fence('draft_under_review', claudeDraft, CAPS.answer),
+    '',
+    TRUSTED,
     '',
     'Rewrite the draft, applying ONLY these fixes:',
     '1. Remove or correct any factual claim (employer, technology, metric, degree, date) not grounded in the trusted blocks above. Never add a new factual claim.',

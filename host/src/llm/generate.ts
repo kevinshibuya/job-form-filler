@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { displayValue, isFieldKey, type FieldClass } from '@jff/shared'
+import { asksAboutAccommodation, displayValue, isFieldKey, type FieldClass } from '@jff/shared'
 import type { CallOpts, ClaudeRunner } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
@@ -17,6 +17,45 @@ export interface GenerationInput {
   projectNotes: string | null
   /** Prior company_specific drafts for the same question — reference material only. */
   references: string[]
+  /** The Reusable Saved answers, in the order first saved, latest first
+   *  (spec #98). A form answer and its Draft check read them; the Application
+   *  email hands none. */
+  savedAnswers: SavedAnswerPair[]
+}
+
+/** One Saved answer: its question, copied from a page and so untrusted, and
+ *  the user's own answer, trusted. */
+export interface SavedAnswerPair {
+  question: string
+  answer: string
+}
+
+/** The most the Saved answers block's pairs may take, in characters. */
+export const SAVED_ANSWERS_MAX = 12_000
+
+/** The block's name, as its header and the rules that point at it read it. */
+const SAVED_ANSWERS = 'SAVED ANSWERS'
+
+/**
+ * The Saved answers block's pairs, one per line pair: the question fenced as
+ * untrusted page text, the answer as the user wrote it. A pair whose question
+ * asks about accommodation needs never goes in. Pairs go in newest first and
+ * whole: one that does not fit what is left of the cap is left out, never cut.
+ */
+export function savedAnswerLines(pairs: readonly SavedAnswerPair[]): string[] {
+  const out: string[] = []
+  let used = 0
+  for (const { question, answer } of pairs) {
+    if (asksAboutAccommodation(question) || answer.trim() === '') continue
+    // A blank line inside an answer would end the block early; it closes up.
+    const pair = `Q: ${fence('stored_question', question, CAPS.label)}\nA: ${answer.trim().replace(/\n\s*\n/g, '\n')}`
+    // The newline between this pair and the one before it counts too.
+    const cost = pair.length + (out.length === 0 ? 0 : 1)
+    if (used + cost > SAVED_ANSWERS_MAX) continue
+    out.push(pair)
+    used += cost
+  }
+  return out
 }
 
 /** What the writer of a form answer reads: the shared context, plus which
@@ -71,6 +110,7 @@ export function buildTrustedContext(input: GenerationInput): string[] {
       input.projectNotes.slice(0, CAPS.jobText),
       '',
     ]),
+    ...savedAnswersBlock(input.savedAnswers),
     `Company: ${input.company === null ? '(unknown)' : fence('field_label', input.company, CAPS.label)}`,
     fence('job_post', input.jobText, CAPS.jobText),
     '',
@@ -82,11 +122,23 @@ export function buildTrustedContext(input: GenerationInput): string[] {
   ]
 }
 
+function savedAnswersBlock(pairs: readonly SavedAnswerPair[]): string[] {
+  const lines = savedAnswerLines(pairs)
+  return lines.length === 0 ? [] : [
+    `${SAVED_ANSWERS} (trusted answers the candidate gave on earlier application forms, newest first. Each question was copied from a web page and is fenced; the answer after it is the candidate's own):`,
+    ...lines,
+    '',
+  ]
+}
+
+/** The trusted blocks a factual claim may rest on, as the rules name them. */
+export const TRUSTED_BLOCKS = `CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES or ${SAVED_ANSWERS} blocks`
+
 /** A Prose Field: opinion, motivation or narrative, answered in a short paragraph. */
 const PROSE_RULES = [
   'Rules for the draft:',
   '1. Write in the first person as the candidate.',
-  '2. Factual claims (employers, technologies, metrics, degrees, dates) may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks. Never invent an employer, a technology, a metric, a degree or a year.',
+  `2. Factual claims (employers, technologies, metrics, degrees, dates) may come ONLY from the ${TRUSTED_BLOCKS}. Never invent an employer, a technology, a metric, a degree or a year.`,
   '3. If a FACTUAL question has no basis in those blocks, say what is missing plainly in one sentence instead of inventing something.',
   '4. A SUBJECTIVE question (motivation, "why us", preferences, working style, how an achievement shaped the candidate) is answered constructively by connecting the CV and project notes to the job post. Alignment between demonstrated work and the role is a truthful basis. When CV or project context exists, refusing a subjective question is forbidden.',
   '5. Match the language of the question. A Portuguese question gets a Portuguese answer.',
@@ -101,7 +153,7 @@ const PROSE_RULES = [
 const PERSONAL_FACT_RULES = [
   'This question asks for a fact about the candidate. Rules for the draft:',
   '1. Write in the first person as the candidate.',
-  '2. Every fact about the candidate may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks. Make no claim beyond them: never invent or infer an employer, a technology, a version, a number of years, an availability, a need or any other circumstance.',
+  `2. Every fact about the candidate may come ONLY from the ${TRUSTED_BLOCKS}. Make no claim beyond them: never invent or infer an employer, a technology, a version, a number of years, an availability, a need or any other circumstance.`,
   '3. One to three sentences: a direct answer, no narrative, no motivation, no link to the job post.',
   '4. Write in the language of the question. A Portuguese question gets a Portuguese answer.',
   '5. A yes/no question opens with yes or no, in the language of the question ("Yes" or "No", "Sim" or "Não").',
