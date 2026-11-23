@@ -140,6 +140,9 @@ export interface FieldRowProps {
   /** The sentences of this row's Draft the Draft check found unsupported by the
    *  user's own material. Shown above the editor; none means no warning. */
   unsupportedClaims?: string[]
+  /** Ticket #103: what stored fact the writer said is missing, while the
+   *  row's text is still the Draft that came with it. Shown above the editor. */
+  missing?: string
 }
 
 /**
@@ -158,6 +161,22 @@ export function DraftWarning({ claims, before = 'fill' }: { claims: string[]; be
         {claims.map((c) => <li key={c}><q>{c}</q></li>)}
       </ul>
     </div>
+  )
+}
+
+/**
+ * Above a Draft whose writer said what is missing (ADR 0014): the gap in one
+ * line, in the Draft check warning's style, so the user sees it without
+ * reading the Draft closely. Fill stays theirs to press.
+ */
+export function DraftMissing({ missing }: { missing: string }) {
+  return (
+    <p
+      role="note" data-jff-draft-missing="1"
+      className="mt-1.5 rounded-md border border-amber-300 px-2 py-1.5 text-[12px] text-amber-800 dark:border-amber-600 dark:text-amber-300"
+    >
+      Missing from what you stored: {missing}
+    </p>
   )
 }
 
@@ -260,6 +279,7 @@ export function FieldRow(p: FieldRowProps) {
         <p data-jff-description="1" className={`mt-0.5 text-[12px] ${MUTED}`}>{field.description}</p>
       )}
 
+      {p.missing !== undefined && <DraftMissing missing={p.missing} />}
       {claims.length > 0 && <DraftWarning claims={claims} />}
 
       {resolution.standsFor !== undefined && resolution.tier !== 'needs_input' && (

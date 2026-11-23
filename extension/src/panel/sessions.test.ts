@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EnumField, FieldKey, Resolution } from '@jff/shared'
 import { sessionKey } from '../sessionKey'
 import {
-  answerKey, answerKeysByRef, capForStorage, createSessionStore, MAX_PERSISTED_OPTIONS,
+  answerKey, answerKeysByRef, capForStorage, createSessionStore, draftGaps, MAX_PERSISTED_OPTIONS,
   mergeMapping, newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION, settleWaiting,
   type Session,
 } from './sessions'
@@ -808,6 +808,62 @@ describe('Draft warnings ride the Session', () => {
   it('a re-scan drops them with the refs they were keyed by', () => {
     const s = { ...newSession(7), draftWarnings: { '0:1': ['I do not need any accommodations.'] } }
     expect(projectAnswers(s, [], [], {}).draftWarnings).toEqual({})
+  })
+})
+
+describe('A Draft\'s gap rides its answer record (ticket #103)', () => {
+  const labelled = (fid: number, label: string): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const resolutionFor = (fid: number): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
+    source: null, key: null, answerId: null, reason: 'custom', fieldClass: 'personal_fact',
+  })
+  const ON_SITE = 'Can you work on site one day a week?'
+  const DRAFT = 'Nothing I stored says whether I can work on site.'
+  const GAP = 'Whether you can work on site one day a week.'
+  const drafted = (): Session => {
+    const s = { ...newSession(7), fields: [labelled(0, ON_SITE)], resolutions: [resolutionFor(0)] }
+    return rememberAnswer({ ...s, edits: { '0:0': DRAFT } }, '0:0', DRAFT, 'generated', 'opus', GAP)
+  }
+
+  it('keeps the gap with the Draft on the question\'s record, and names it by the row', () => {
+    const s = drafted()
+    expect(s.answers[answerKey(ON_SITE)]?.draft).toEqual({ text: DRAFT, model: 'opus', missing: GAP })
+    expect(draftGaps(s)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+  })
+
+  it('a Draft with no gap names none', () => {
+    const s = { ...newSession(7), fields: [labelled(0, ON_SITE)], resolutions: [resolutionFor(0)] }
+    expect(draftGaps(rememberAnswer(s, '0:0', DRAFT, 'generated', 'opus'))).toEqual({})
+  })
+
+  it('the user\'s edit keeps the Draft and its gap, so the edit is told apart from it', () => {
+    const s = rememberAnswer(drafted(), '0:0', 'Yes, on Tuesdays.', 'user')
+    expect(s.answers[answerKey(ON_SITE)]?.value).toBe('Yes, on Tuesdays.')
+    expect(draftGaps(s)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+  })
+
+  it('a new Draft replaces the record, gap included', () => {
+    const clean = rememberAnswer(drafted(), '0:0', 'Yes, I can.', 'generated', 'opus')
+    expect(draftGaps(clean)).toEqual({})
+    const other = rememberAnswer(drafted(), '0:0', 'Another draft.', 'generated', 'opus', 'Which day suits you.')
+    expect(draftGaps(other)).toEqual({ '0:0': { text: 'Another draft.', missing: 'Which day suits you.' } })
+  })
+
+  it('survives a Scan that gives the question another ref, and a reload', () => {
+    const next = projectAnswers(drafted(), [labelled(0, 'Anything else?'), labelled(1, ON_SITE)], [resolutionFor(0), resolutionFor(1)], {})
+    expect(next.edits['0:1']).toBe(DRAFT)
+    expect(draftGaps(next)).toEqual({ '0:1': { text: DRAFT, missing: GAP } })
+    expect(draftGaps(parseStoredSession(JSON.parse(JSON.stringify(next)))!)).toEqual({ '0:1': { text: DRAFT, missing: GAP } })
+  })
+
+  it('a stored gap that is not text names none', () => {
+    const s = drafted()
+    const key = answerKey(ON_SITE)
+    const bad = { ...s, answers: { [key]: { ...s.answers[key]!, draft: { text: DRAFT, model: null, missing: 3 } } } }
+    expect(draftGaps(parseStoredSession(bad)!)).toEqual({})
   })
 })
 

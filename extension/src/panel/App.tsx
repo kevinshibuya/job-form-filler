@@ -27,7 +27,7 @@ import { ScanStatus, type ScanCounts, type ScanUiState } from './ScanStatus'
 import { buildSaveItems, mergeStoredSnapshots, type StoredSnapshot } from './save'
 import { createNavSignals, NAV_FALLBACK_DEDUPE_MS, type NavEvent } from './navSignals'
 import { openPanelTabIds } from './openPanels'
-import { createSessionStore, keptProseAnswers, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
+import { createSessionStore, draftGaps, keptProseAnswers, mergeMapping, newSession, projectAnswers, rememberAnswer, SESSION_SAVE_DEBOUNCE_MS, settleWaiting, type Session, type SessionStore } from './sessions'
 import { placeOf, registrableDomain, sameApplication } from './site'
 import { detectSubmission } from './submission'
 import { BTN, BTN_PRIMARY, busyLabel, INPUT, MUTED, ROW_BASE } from './ui'
@@ -594,6 +594,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
   const edits = session?.edits ?? {}
   const generatedRefs = session?.generatedRefs ?? []
   const draftWarnings = session?.draftWarnings ?? {}
+  // Ticket #103: ref → the Draft that came with a gap, and the gap.
+  const gaps = session == null ? {} : draftGaps(session)
+  const gapDrafts = Object.fromEntries(Object.entries(gaps).map(([ref, g]) => [ref, g.text]))
   const filledRefs = session?.filledRefs ?? []
   const election = session?.election ?? null
   const attachedUploads = session?.attachedUploads ?? []
@@ -1582,7 +1585,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
     // never land in edits (spec D3).
     setGeneratingRefs((s) => new Set(s).add(ref))
     try {
-      const r = await port.request<{ draft: string; unsupportedClaims?: string[]; model?: string }>('generate', {
+      const r = await port.request<{ draft: string; unsupportedClaims?: string[]; model?: string; missing?: string }>('generate', {
         handle: row.resolution.handle,
         questionRaw: row.field.label ?? '',
         description: row.field.description,
@@ -1602,6 +1605,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         const unsupported = r.result.unsupportedClaims ?? []
         // The Session records which model wrote each Draft (spec #66).
         const model = typeof r.result.model === 'string' ? r.result.model : null
+        // The gap the writer named rides with the Draft on the question's
+        // record, and a new Draft replaces it (ticket #103).
+        const missing = typeof r.result.missing === 'string' && r.result.missing.trim() !== '' ? r.result.missing : undefined
         // S4: a settled draft is carried with provenance 'generated', which is
         // what re-enters generatedRefs on the next step. Its Draft check
         // warning replaces whatever the row's previous Draft carried.
@@ -1612,7 +1618,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             edits: { ...s.edits, [ref]: draft },
             generatedRefs: s.generatedRefs.includes(ref) ? s.generatedRefs : [...s.generatedRefs, ref],
             draftWarnings: unsupported.length === 0 ? draftWarnings : { ...draftWarnings, [ref]: unsupported },
-          }, ref, draft, 'generated', model)
+          }, ref, draft, 'generated', model, missing)
         })
         return 'ok'
       }
@@ -2353,7 +2359,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (p?.ok !== true || p.snapshot === undefined) continue
         for (const [fid, v] of Object.entries(p.snapshot.values)) live[`${r.frameId}:${fid}`] = v
       }
-      const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull })
+      const items = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot: live, company: companyOrNull, gapDrafts })
         .map((it) => ({ ...it, reusability: reuseOverrides[refOf(it.handle)] ?? it.reusability }))
       const tab = await getTab(target)
       // The page these answers came from is gone: `tab.url` now names a DIFFERENT
@@ -2421,7 +2427,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
 
   /* ---------------------------------------------------------------- markup */
 
-  const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull })
+  const saveItems = buildSaveItems({ fields, resolutions, panelEdits: edits, snapshot, company: companyOrNull, gapDrafts })
   const discardButton = (
     <button type="button" className={BTN} data-jff-discard="1" onClick={() => { void onDiscard() }}>
       Discard session
@@ -2716,6 +2722,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
                           onSaveFact={onSaveFact} facts={facts} factsReady={factsLoaded && factsOk === true}
                           pageValue={snapshot[row.ref] ?? null}
                           unsupportedClaims={draftWarnings[row.ref] ?? []}
+                          // The gap shows while the row's text is still the Draft it came with.
+                          missing={gaps[row.ref] !== undefined && edits[row.ref] === gaps[row.ref]!.text ? gaps[row.ref]!.missing : undefined}
                           generating={generatingRefs.has(row.ref)}
                           filled={filledRefs.includes(row.ref)}
                           acting={acting !== null && acting.ref === row.ref ? acting.action : null}

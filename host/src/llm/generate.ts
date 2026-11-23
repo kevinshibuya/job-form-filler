@@ -27,7 +27,18 @@ export interface FormAnswerInput extends GenerationInput {
   fieldClass: FieldClass
 }
 
-export const GenerationResponseSchema = z.object({ draft: z.string() })
+/** `missing`: what stored fact would let the writer answer, one line in
+ *  English (spec #98). Absent, null or blank when the Draft is fully supported. */
+export const GenerationResponseSchema = z.object({ draft: z.string(), missing: z.string().nullish() })
+
+/** The longest gap line a reply carries, in characters. */
+export const MISSING_MAX = 300
+
+/** What the writer returns: the Draft, and the gap it named, null for none. */
+export interface GenerationOutput {
+  draft: string
+  missing: string | null
+}
 
 /**
  * The stored facts as the model reads them. A typed Value is formatted from
@@ -118,7 +129,9 @@ export function buildGenerationPrompt(input: FormAnswerInput): string {
     '',
     ...(input.fieldClass === 'prose' ? PROSE_RULES : PERSONAL_FACT_RULES),
     '',
-    'Return {"draft": "..."}.',
+    'Also name what is missing: when the blocks above do not fully support the draft, set "missing" to one line in English saying which stored fact about the candidate would let you answer the question. Leave "missing" out when the draft is fully supported.',
+    '',
+    'Return {"draft": "...", "missing": "..."}.',
   ].join('\n')
 }
 
@@ -134,7 +147,13 @@ export function sanitizeDraft(s: string): string {
     .slice(0, CAPS.answer)
 }
 
-export async function runGeneration(runner: ClaudeRunner, input: FormAnswerInput, opts: CallOpts): Promise<string> {
+/** One line, capped; a blank gap is no gap. */
+export function sanitizeMissing(s: string | null | undefined): string | null {
+  const line = (s ?? '').replace(/\s+/g, ' ').trim().slice(0, MISSING_MAX)
+  return line === '' ? null : line
+}
+
+export async function runGeneration(runner: ClaudeRunner, input: FormAnswerInput, opts: CallOpts): Promise<GenerationOutput> {
   const out = await runner.complete(buildGenerationPrompt(input), GenerationResponseSchema, opts)
-  return sanitizeDraft(out.draft)
+  return { draft: sanitizeDraft(out.draft), missing: sanitizeMissing(out.missing) }
 }

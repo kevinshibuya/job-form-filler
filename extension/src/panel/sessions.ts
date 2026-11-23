@@ -23,8 +23,9 @@ export interface SessionAnswer {
   prose?: { question: string }
   /** The Draft this answer started from and the model that wrote it. It
    *  outlives the user's edits, which are told apart by comparing the value
-   *  with it, and a new Draft replaces it. */
-  draft?: { text: string; model: string | null }
+   *  with it, and a new Draft replaces it. `missing`: what stored fact the
+   *  writer said would let it answer (ticket #103), absent when it named none. */
+  draft?: { text: string; model: string | null; missing?: string }
 }
 
 export interface Session {
@@ -216,6 +217,9 @@ export function rememberAnswer(
   /** The model that wrote a Draft, from the `generate` reply; null when an
    *  older Native host named none. Read only with provenance 'generated'. */
   model: string | null = null,
+  /** The gap the `generate` reply named beside the Draft, if any. Read only
+   *  with provenance 'generated'. */
+  missing?: string,
 ): Session {
   const key = answerKeysByRef(s.fields).get(ref)
   if (key === undefined) return s
@@ -233,9 +237,29 @@ export function rememberAnswer(
   }
   // A new Draft replaces the old one; the user's own write keeps the Draft it
   // started from, so the edit can be told apart at Mark applied.
-  const draft = provenance === 'generated' ? { text: value, model } : s.answers[key]?.draft
+  const draft = provenance === 'generated'
+    ? { text: value, model, ...(missing === undefined || missing === '' ? {} : { missing }) }
+    : s.answers[key]?.draft
   if (draft !== undefined) answer.draft = draft
   return { ...s, answers: { ...s.answers, [key]: answer } }
+}
+
+/**
+ * Ticket #103: ref → the Draft that carried a gap and the gap, for every row
+ * on this page whose question's record holds one. The record is keyed by the
+ * question, so the gap outlives a Scan, a wizard step and a reload. Whether
+ * the row still holds that Draft is the caller's comparison: the line shows,
+ * and "Save answers" skips the row, only while the text equals it.
+ */
+export function draftGaps(s: Session): Record<string, { text: string; missing: string }> {
+  const out: Record<string, { text: string; missing: string }> = {}
+  for (const [ref, key] of answerKeysByRef(s.fields)) {
+    // A stored row is untrusted: a gap that is not text is no gap.
+    const draft = s.answers[key]?.draft
+    if (typeof draft?.text !== 'string' || typeof draft.missing !== 'string' || draft.missing === '') continue
+    out[ref] = { text: draft.text, missing: draft.missing }
+  }
+  return out
 }
 
 /**

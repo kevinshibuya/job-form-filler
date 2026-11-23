@@ -128,9 +128,9 @@ describe('sanitizeDraft', () => {
 })
 
 describe('runGeneration', () => {
-  it('returns the sanitized draft', async () => {
+  it('returns the sanitized draft, with no gap when the writer named none', async () => {
     const runner = { complete: vi.fn(async () => ({ draft: 'I ship payments infra — reliably.' })) } as unknown as ClaudeRunner
-    await expect(runGeneration(runner, input, { model: 'claude-opus-5' })).resolves.toBe('I ship payments infra, reliably.')
+    await expect(runGeneration(runner, input, { model: 'claude-opus-5' })).resolves.toEqual({ draft: 'I ship payments infra, reliably.', missing: null })
   })
 
   it('propagates a claude failure to the caller rather than inventing a draft', async () => {
