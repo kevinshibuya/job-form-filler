@@ -14,7 +14,7 @@ import {
 } from './db/repos.js'
 import { ClaudeError, type ClaudeRunner } from './llm/claudeCli.js'
 import { CodexError, type CodexRunner } from './llm/codexCli.js'
-import { buildProfileSummary, runGeneration, sanitizeDraft, type GenerationInput } from './llm/generate.js'
+import { buildProfileSummary, runGeneration, sanitizeDraft, type FormAnswerInput } from './llm/generate.js'
 import { readProjectNotes } from './llm/projects.js'
 import { reviewDraft } from './llm/reviewDraft.js'
 import { claimsInDraft } from './llm/draftCheck.js'
@@ -165,7 +165,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'generate': {
         const lang = detectLanguage(req.params.questionRaw)
         const references = listReferenceAnswers(db, normalizeQuestion(req.params.questionRaw), lang).map((r) => r.answer)
-        const input: GenerationInput = {
+        const input: FormAnswerInput = {
           question: req.params.questionRaw,
           description: req.params.description ?? null,
           jobText: req.params.jobText,
@@ -174,6 +174,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           cvText: req.params.cvText ?? null,
           projectNotes: readProjectNotes(deps.config.projectsPaths),
           references,
+          fieldClass: req.params.fieldClass ?? 'personal_fact',
         }
         // The reply names the model that wrote the Draft, so the Side panel
         // can keep it beside the text (spec #66).

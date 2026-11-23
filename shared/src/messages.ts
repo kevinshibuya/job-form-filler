@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CityPartsSchema, EnumFieldSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
+import { CityPartsSchema, EnumFieldSchema, FieldClassSchema, FieldHandleSchema, PhonePartsSchema, ResolutionSchema } from './field.js'
 import { FIELD_KEYS } from './keys.js'
 import { CaptureSaveParamsSchema } from './capture.js'
 
@@ -458,6 +458,9 @@ export const HostRequestSchema = z.discriminatedUnion('method', [
       // B2b: extracted resume TEXT, trusted candidate-authored context. The raw
       // file still never crosses native messaging (user decision 2026-07-29).
       cvText: z.string().optional(),
+      // The row's label from its Resolution: which rules the writer follows.
+      // A request without one is drafted as a personal fact (spec #98).
+      fieldClass: FieldClassSchema.optional(),
       // Strict: Generation for a Prose Field takes no instruction (spec #66),
       // so a request that carries one is refused, not quietly trimmed.
     }).strict(),

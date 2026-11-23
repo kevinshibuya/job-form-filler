@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { displayValue, isFieldKey } from '@jff/shared'
+import { displayValue, isFieldKey, type FieldClass } from '@jff/shared'
 import type { CallOpts, ClaudeRunner } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 
@@ -17,6 +17,14 @@ export interface GenerationInput {
   projectNotes: string | null
   /** Prior company_specific drafts for the same question — reference material only. */
   references: string[]
+}
+
+/** What the writer of a form answer reads: the shared context, plus which
+ *  rules it follows, a Prose Field's short narrative or a Personal-fact
+ *  Field's direct answer from stored facts (spec #98). The Draft check reads
+ *  the context alone. */
+export interface FormAnswerInput extends GenerationInput {
+  fieldClass: FieldClass
 }
 
 export const GenerationResponseSchema = z.object({ draft: z.string() })
@@ -63,7 +71,36 @@ export function buildTrustedContext(input: GenerationInput): string[] {
   ]
 }
 
-export function buildGenerationPrompt(input: GenerationInput): string {
+/** A Prose Field: opinion, motivation or narrative, answered in a short paragraph. */
+const PROSE_RULES = [
+  'Rules for the draft:',
+  '1. Write in the first person as the candidate.',
+  '2. Factual claims (employers, technologies, metrics, degrees, dates) may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks. Never invent an employer, a technology, a metric, a degree or a year.',
+  '3. If a FACTUAL question has no basis in those blocks, say what is missing plainly in one sentence instead of inventing something.',
+  '4. A SUBJECTIVE question (motivation, "why us", preferences, working style, how an achievement shaped the candidate) is answered constructively by connecting the CV and project notes to the job post. Alignment between demonstrated work and the role is a truthful basis. When CV or project context exists, refusing a subjective question is forbidden.',
+  '5. Match the language of the question. A Portuguese question gets a Portuguese answer.',
+  '6. Plain prose. No bullet lists unless the question asks for a list.',
+  '7. 60 to 150 words unless the question asks for something longer.',
+  '8. Never use a spaced em-dash or en-dash as sentence punctuation. Use a comma, a semicolon or a full stop.',
+  '9. No filler openers such as "I am thrilled to" or "I am passionate about".',
+]
+
+/** A Personal-fact Field: a question about the candidate, answered directly
+ *  from what is stored about them and nothing else. */
+const PERSONAL_FACT_RULES = [
+  'This question asks for a fact about the candidate. Rules for the draft:',
+  '1. Write in the first person as the candidate.',
+  '2. Every fact about the candidate may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks. Make no claim beyond them: never invent or infer an employer, a technology, a version, a number of years, an availability, a need or any other circumstance.',
+  '3. One to three sentences: a direct answer, no narrative, no motivation, no link to the job post.',
+  '4. Write in the language of the question. A Portuguese question gets a Portuguese answer.',
+  '5. A yes/no question opens with yes or no, in the language of the question ("Yes" or "No", "Sim" or "Não").',
+  '6. If those blocks do not cover the question, say what is missing plainly in one sentence, in the language of the question, instead of inventing an answer. If they cover part of it, answer that part.',
+  '7. Plain prose. No bullet lists unless the question asks for a list.',
+  '8. Never use a spaced em-dash or en-dash as sentence punctuation. Use a comma, a semicolon or a full stop.',
+  '9. No filler openers such as "I am thrilled to" or "I am passionate about".',
+]
+
+export function buildGenerationPrompt(input: FormAnswerInput): string {
   const refs = input.references.length === 0
     ? '(none)'
     : input.references.map((r) => fence('stored_answer', r, CAPS.answer)).join('\n')
@@ -79,16 +116,7 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     'These are reference only: reuse the reasoning, never the company-specific wording.',
     refs,
     '',
-    'Rules for the draft:',
-    '1. Write in the first person as the candidate.',
-    '2. Factual claims (employers, technologies, metrics, degrees, dates) may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks. Never invent an employer, a technology, a metric, a degree or a year.',
-    '3. If a FACTUAL question has no basis in those blocks, say what is missing plainly in one sentence instead of inventing something.',
-    '4. A SUBJECTIVE question (motivation, "why us", preferences, working style, how an achievement shaped the candidate) is answered constructively by connecting the CV and project notes to the job post. Alignment between demonstrated work and the role is a truthful basis. When CV or project context exists, refusing a subjective question is forbidden.',
-    '5. Match the language of the question. A Portuguese question gets a Portuguese answer.',
-    '6. Plain prose. No bullet lists unless the question asks for a list.',
-    '7. 60 to 150 words unless the question asks for something longer.',
-    '8. Never use a spaced em-dash or en-dash as sentence punctuation. Use a comma, a semicolon or a full stop.',
-    '9. No filler openers such as "I am thrilled to" or "I am passionate about".',
+    ...(input.fieldClass === 'prose' ? PROSE_RULES : PERSONAL_FACT_RULES),
     '',
     'Return {"draft": "..."}.',
   ].join('\n')
@@ -106,7 +134,7 @@ export function sanitizeDraft(s: string): string {
     .slice(0, CAPS.answer)
 }
 
-export async function runGeneration(runner: ClaudeRunner, input: GenerationInput, opts: CallOpts): Promise<string> {
+export async function runGeneration(runner: ClaudeRunner, input: FormAnswerInput, opts: CallOpts): Promise<string> {
   const out = await runner.complete(buildGenerationPrompt(input), GenerationResponseSchema, opts)
   return sanitizeDraft(out.draft)
 }

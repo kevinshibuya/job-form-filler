@@ -11,6 +11,7 @@ const input = {
   description: null,
   cvText: null,
   projectNotes: null,
+  fieldClass: 'prose' as const,
 }
 
 describe('buildProfileSummary', () => {
@@ -75,6 +76,35 @@ describe('buildGenerationPrompt', () => {
     expect(withNotes).toContain('NOTES BODY')
     // Same as above: rule 2 always names "PROJECT NOTES"; only the block header is conditional.
     expect(buildGenerationPrompt(input)).not.toContain("PROJECT NOTES (trusted, the candidate's own project documentation):")
+  })
+})
+
+describe('buildGenerationPrompt for a Personal-fact Field', () => {
+  const fact = { ...input, fieldClass: 'personal_fact' as const, question: 'Você já trabalhou com TypeScript 5?' }
+  const prompt = buildGenerationPrompt(fact)
+
+  it('asks for one to three direct sentences and no narrative', () => {
+    expect(prompt).toMatch(/one to three sentences/i)
+    expect(prompt).toMatch(/no narrative/i)
+    expect(prompt).not.toMatch(/60 to 150 words/)
+  })
+
+  it('answers in the language of the question, and opens a yes/no question with yes or no in that language', () => {
+    expect(prompt).toMatch(/language of the question/i)
+    expect(prompt).toMatch(/yes\/no question.*opens? with yes or no.*in the language of the question/i)
+  })
+
+  it('takes every fact from the trusted blocks only, and says what is missing when they do not cover the question', () => {
+    expect(prompt).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks/)
+    expect(prompt).toMatch(/say what is missing.*in one sentence/i)
+    expect(prompt).not.toMatch(/refusing a subjective question is forbidden/i)
+  })
+
+  it('keeps the untrusted fences and the shared clean-up rules', () => {
+    expect(prompt).toMatch(/UNTRUSTED data/)
+    expect(prompt).toContain('<field_label>Você já trabalhou com TypeScript 5?</field_label>')
+    expect(prompt).toMatch(/spaced em-dash/i)
+    expect(prompt).toContain('Name: Ada Lovelace')
   })
 })
 

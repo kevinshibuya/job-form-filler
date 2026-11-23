@@ -1589,6 +1589,9 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         jobText,
         company: companyOrNull,
         ...(cvText === null ? {} : { cvText }),
+        // The row's label picks the writer's rules; a row Mapping left
+        // without one is drafted as a personal fact (spec #98).
+        fieldClass: row.resolution.fieldClass ?? 'personal_fact',
       })
       // Only the OWNING session's death aborts a draft — a tab switch just means
       // it settles into storage. Two rows on two sessions can be generating at
