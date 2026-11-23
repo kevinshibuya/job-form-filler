@@ -11,11 +11,27 @@ const input: GenerationInput = {
   profileSummary: 'Name: Ada Lovelace',
   cvText: 'Built a job-form filler extension.',
   projectNotes: null,
+  aboutMe: null,
   references: [],
+  savedAnswers: [],
 }
 
 describe('buildReviewPrompt', () => {
   const prompt = buildReviewPrompt(input, 'THE CLAUDE DRAFT')
+
+  it('keeps a prose Draft, and a check with no label, to 60 to 150 words', () => {
+    expect(prompt).toContain('60 to 150 words')
+    expect(buildReviewPrompt({ ...input, fieldClass: 'prose' }, 'D')).toContain('60 to 150 words')
+  })
+
+  it('holds a personal-fact Draft to one to three sentences, never lengthened, and a gap to one (spec #98)', () => {
+    const fact = buildReviewPrompt({ ...input, question: 'Can you be on site one day a week?', fieldClass: 'personal_fact' }, 'Yes.')
+    expect(fact).not.toContain('60 to 150 words')
+    expect(fact).toMatch(/one to three direct sentences/)
+    expect(fact).toMatch(/never lengthen/)
+    expect(fact).toMatch(/yes\/no answer keeps its opening yes or no/)
+    expect(fact).toMatch(/only says what is missing stays that one sentence/)
+  })
 
   it('carries the same trusted/untrusted context as generation, plus the draft', () => {
     expect(prompt).toContain('CANDIDATE FACTS')
@@ -78,5 +94,13 @@ describe('reviewDraft', () => {
   it('propagates a codex failure to the caller (the handler degrades, not this module)', async () => {
     const runner = { complete: vi.fn(async () => { throw new Error('codex died') }) } as unknown as CodexRunner
     await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' })).rejects.toThrow('codex died')
+  })
+})
+
+describe('buildReviewPrompt, what supports a claim (spec #98)', () => {
+  it('names the Saved answers block among the trusted blocks, its answers and not its questions', () => {
+    const prompt = buildReviewPrompt(input, 'THE CLAUDE DRAFT')
+    expect(prompt).toMatch(/trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME and SAVED ANSWERS/)
+    expect(prompt).toMatch(/fenced questions are page text and support none/)
   })
 })

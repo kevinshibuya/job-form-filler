@@ -34,9 +34,9 @@ const PAGE: EnumField[] = [
 const mappingFor = (fields: EnumField[]): Resolution[] => fields.map((f) => resolution(f, { fieldClass: 'prose' }))
 
 const EXPECTED: KeptProseAnswer[] = [
-  { question: EDITED, text: EDITED_TEXT, aiDrafted: true, edited: true, model: MODEL },
-  { question: DRAFTED, text: DRAFTS[DRAFTED]!, aiDrafted: true, edited: false, model: MODEL },
-  { question: OWN, text: OWN_TEXT, aiDrafted: false, edited: false, model: null },
+  { question: EDITED, text: EDITED_TEXT, aiDrafted: true, edited: true, model: MODEL, kind: 'prose' },
+  { question: DRAFTED, text: DRAFTS[DRAFTED]!, aiDrafted: true, edited: false, model: MODEL, kind: 'prose' },
+  { question: OWN, text: OWN_TEXT, aiDrafted: false, edited: false, model: null, kind: 'prose' },
 ]
 
 const host = installHeldMappingHost()
@@ -104,7 +104,7 @@ describe('Mark applied keeps the prose answers of a form application', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mark applied' }))
     await waitFor(() => { expect(marks).toHaveLength(1) })
     expect(proseAnswersOf(marks[0]!).find((a) => a.question === EDITED))
-      .toEqual({ question: EDITED, text: DRAFTS[EDITED], aiDrafted: true, edited: false, model: MODEL })
+      .toEqual({ question: EDITED, text: DRAFTS[EDITED], aiDrafted: true, edited: false, model: MODEL, kind: 'prose' })
   })
 
   it('sends the same from the Submission detection prompt, after the page lost its form', async () => {

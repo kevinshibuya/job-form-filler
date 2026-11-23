@@ -37,6 +37,10 @@ export interface SaveInput {
   /** Captured from the live page at submit/unload, keyed by "frameId:fid". */
   snapshot: Record<string, string>
   company: string | null
+  /** Ticket #103: ref → the Draft that came back with a gap named beside it.
+   *  A row whose text is still that Draft saves nothing: a sentence about a
+   *  gap is never stored as a Saved answer. */
+  gapDrafts?: Record<string, string>
 }
 
 const WHY_HERE =
@@ -79,6 +83,8 @@ export function buildSaveItems(input: SaveInput): SaveItem[] {
     // snapshot > panel edit > engine value
     const final = (input.snapshot[ref] ?? input.panelEdits[ref] ?? resolution.value ?? '').trim()
     if (final === '') continue
+    const gapDraft = input.gapDrafts?.[ref]
+    if (gapDraft !== undefined && gapDraft.trim() === final) continue
 
     const engine = (resolution.value ?? '').trim()
     if (engine !== '' && engine === final) continue

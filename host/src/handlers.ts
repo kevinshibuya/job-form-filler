@@ -1,20 +1,20 @@
 import type Database from 'better-sqlite3'
 import {
-  FACT_MAX_CHARS, HostRequestSchema, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
+  ABOUT_ME_MAX, FACT_MAX_CHARS, HostRequestSchema, isFieldKey, isProfileKey, normalizeFactValue, toStoredText,
   type FieldKey, type HostErrorKind, type HostRequest, type HostResponse, type ResolveParams, type SelfCheck,
 } from '@jff/shared'
 import { saveCapture } from './capture.js'
 import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
-  checkApplied, checkAppliedByAddress, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
-  insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
-  markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
+  checkApplied, checkAppliedByAddress, getAboutMe, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
+  insertApplication, listAllAnswers, listApplied, listReferenceAnswers, listReusableAnswersNewestFirst,
+  markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAboutMe, setAnswerBank,
   setProfile, upsertAnswer,
 } from './db/repos.js'
 import { ClaudeError, type ClaudeRunner } from './llm/claudeCli.js'
 import { CodexError, type CodexRunner } from './llm/codexCli.js'
-import { buildProfileSummary, runGeneration, sanitizeDraft, type GenerationInput } from './llm/generate.js'
+import { buildProfileSummary, runGeneration, sanitizeDraft, type FormAnswerInput } from './llm/generate.js'
 import { readProjectNotes } from './llm/projects.js'
 import { reviewDraft } from './llm/reviewDraft.js'
 import { claimsInDraft } from './llm/draftCheck.js'
@@ -153,6 +153,21 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
         return ok(req.requestId, getAnswerBank(db))
       }
 
+      // About me (spec #98): no Known key, so it is stored apart and never
+      // reaches Resolution.
+      case 'aboutMe.get':
+        return ok(req.requestId, { text: getAboutMe(db) })
+
+      case 'aboutMe.set': {
+        const { text } = req.params
+        if (text.length > ABOUT_ME_MAX) {
+          return fail(req.requestId, 'bad_request',
+            `About me holds at most ${ABOUT_ME_MAX.toLocaleString('en-US')} characters; this text has ${text.length.toLocaleString('en-US')}.`)
+        }
+        setAboutMe(db, text)
+        return ok(req.requestId, { text: getAboutMe(db) })
+      }
+
       // No model: the host never hands this step a runner.
       case 'resolve.first':
         logResolution(req.method, req.params)
@@ -165,7 +180,7 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
       case 'generate': {
         const lang = detectLanguage(req.params.questionRaw)
         const references = listReferenceAnswers(db, normalizeQuestion(req.params.questionRaw), lang).map((r) => r.answer)
-        const input: GenerationInput = {
+        const input: FormAnswerInput = {
           question: req.params.questionRaw,
           description: req.params.description ?? null,
           jobText: req.params.jobText,
@@ -173,22 +188,31 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           profileSummary: buildProfileSummary(getProfile(db), getAnswerBank(db)),
           cvText: req.params.cvText ?? null,
           projectNotes: readProjectNotes(deps.config.projectsPaths),
+          // About me, as a trusted block for the writer and the Draft check (spec #98).
+          aboutMe: getAboutMe(db),
           references,
+          // Every Reusable Saved answer, as facts; generate.ts leaves out an
+          // accommodation question and holds the block to its cap (spec #98).
+          savedAnswers: listReusableAnswersNewestFirst(db).map((r) => ({ question: r.questionRaw, answer: r.answer })),
+          fieldClass: req.params.fieldClass ?? 'personal_fact',
         }
         // The reply names the model that wrote the Draft, so the Side panel
         // can keep it beside the text (spec #66).
         const model = deps.models.generate
-        const draft = await runGeneration(deps.runner, input, { model })
+        const { draft, missing } = await runGeneration(deps.runner, input, { model })
+        // The gap the writer named rides beside the Draft, whatever the Draft
+        // check makes of it: the two are independent (spec #98).
+        const gap = missing === null ? {} : { missing }
         // B2d: claude draft → Draft check (codex) → final. ANY Draft check
         // failure degrades to the unchecked draft — codex never blocks
         // generation. A flagged sentence reaches the reply only when the final
         // Draft contains it (ADR 0004: the Draft is still shown, with the warning).
-        let reply: { draft: string; model: string; unsupportedClaims?: string[] } = { draft, model }
+        let reply: { draft: string; model: string; unsupportedClaims?: string[]; missing?: string } = { draft, model, ...gap }
         try {
           const checked = await reviewDraft(deps.codex, input, draft, { model: deps.models.reviewDraft, retryTransient: false })
           const final = sanitizeDraft(checked.draft)
           const unsupportedClaims = claimsInDraft(final, checked.unsupported)
-          reply = unsupportedClaims.length === 0 ? { draft: final, model } : { draft: final, model, unsupportedClaims }
+          reply = unsupportedClaims.length === 0 ? { draft: final, model, ...gap } : { draft: final, model, unsupportedClaims, ...gap }
         } catch (e) {
           const kind = e instanceof CodexError || e instanceof ClaudeError ? e.kind : 'process'
           log('warn', 'Draft check failed; returning unreviewed draft', {
@@ -255,6 +279,8 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
             profileSummary: buildProfileSummary(profile, getAnswerBank(db)),
             cvText: req.params.cvText ?? null,
             projectNotes: readProjectNotes(deps.config.projectsPaths),
+            // The Application email and its check read About me (spec #98).
+            aboutMe: getAboutMe(db),
             pageSubject: req.params.pageSubject,
             // The language the user switched to, or the Job posting's own.
             language: req.params.language ?? postingLanguage(req.params.jobText),

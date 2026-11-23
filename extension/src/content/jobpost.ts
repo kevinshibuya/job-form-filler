@@ -1,4 +1,5 @@
 import { atsModule, findAts, JOB_TEXT_MAX, JOB_TEXT_MIN, type AtsModule, type JobTextReply } from '@jff/shared'
+import { coversDocument, formRegions } from './formRegion'
 import { fetchPostingText, type FetchLike } from './postingFetch'
 import { textOf } from './textOf'
 
@@ -40,22 +41,41 @@ export function postingReaderFor(href: string, fetch: FetchLike): PostingReader 
  * heuristic. A posting page that gives nothing, or cannot be read in time,
  * hands over to the next source and never fails the Scan.
  */
-export async function readJobText(root: Document, learnedSelector: string | null, posting: PostingReader): Promise<JobTextReply> {
+export async function readJobText(
+  root: Document, learnedSelector: string | null, posting: PostingReader, controls: readonly Element[],
+  rejected: readonly string[] = [],
+): Promise<JobTextReply> {
   const fromAts = await fetchPostingText(posting.module, posting.formPageUrl, posting.fetch)
   if (fromAts !== null) return { text: fromAts, selector: null, source: 'ats' }
-  return captureJobText(root, learnedSelector)
+  return captureJobText(root, learnedSelector, controls, rejected)
 }
 
 /**
  * The Job posting text on this page itself: the spot the user picked, then a
  * heuristic. Every source here must reach the minimum, and the text is cut to
  * the cap.
+ *
+ * `controls` are the Controls this frame's Enumeration found and the user can
+ * see. The heuristic leaves their form regions out of every candidate before
+ * it measures it (ticket #100), and gives nothing when a region is the whole
+ * document. A picked spot is read whole.
+ *
+ * `rejected` are the spots the user said were not the job description in this
+ * Session (ticket #102). A spot saved for the site that is among them is not
+ * read, and the heuristic skips a candidate at one, or inside one, and takes
+ * the next that qualifies. A candidate that holds a rejected spot is measured
+ * without it, as it is without the form regions, so one click rejects that
+ * text and not only that element. A spot is the element a selector names, so
+ * two spellings of the same element are one spot.
  */
-export function captureJobText(root: Document, learnedSelector: string | null): JobTextReply {
+export function captureJobText(
+  root: Document, learnedSelector: string | null, controls: readonly Element[], rejected: readonly string[] = [],
+): JobTextReply {
+  const { isRejected, elements: rejectedEls } = rejectedSpots(root, rejected)
   if (learnedSelector !== null && learnedSelector !== '') {
     try {
       const el = root.querySelector(learnedSelector)
-      if (el !== null) {
+      if (el !== null && !rejected.includes(learnedSelector) && !isRejected(el)) {
         const t = textOf(el)
         if (t.length >= MIN_JOB_TEXT) return { text: t.slice(0, MAX_JOB_TEXT), selector: learnedSelector, source: 'learned' }
       }
@@ -64,17 +84,42 @@ export function captureJobText(root: Document, learnedSelector: string | null): 
     }
   }
 
+  const regions = formRegions(controls)
+  if (regions.some(coversDocument)) return NOTHING
+  const leaveOut = [...regions, ...rejectedEls]
   for (const tier of HEURISTIC_TIERS) {
     let best: { el: Element; text: string } | null = null
     for (const el of Array.from(root.querySelectorAll(tier))) {
-      const t = textOf(el)
+      if (regions.some((r) => r.contains(el))) continue
+      if (isRejected(el) || rejectedEls.some((r) => r.contains(el))) continue
+      const t = textOf(el, leaveOut)
       if (t.length < MIN_JOB_TEXT) continue
       if (best === null || t.length > best.text.length) best = { el, text: t }
     }
     if (best !== null) return { text: best.text.slice(0, MAX_JOB_TEXT), selector: cssPathOf(best.el), source: 'heuristic' }
   }
 
-  return { text: '', selector: null, source: 'none' }
+  return NOTHING
+}
+
+const NOTHING: JobTextReply = Object.freeze({ text: '', selector: null, source: 'none' })
+
+/** The elements the `rejected` spots name, and whether an element sits at one:
+ *  the element a rejected selector names, or the one whose own selector is
+ *  rejected. A rejected spot that names nothing, or is no selector, rejects
+ *  nothing. */
+function rejectedSpots(root: Document, rejected: readonly string[]): { isRejected: (el: Element) => boolean; elements: Element[] } {
+  if (rejected.length === 0) return { isRejected: () => false, elements: [] }
+  const named = new Set<Element>()
+  for (const spot of rejected) {
+    try {
+      const el = root.querySelector(spot)
+      if (el !== null) named.add(el)
+    } catch {
+      // a spot that is no longer a valid selector rejects nothing
+    }
+  }
+  return { isRejected: (el) => named.has(el) || rejected.includes(cssPathOf(el)), elements: [...named] }
 }
 
 /**

@@ -5,7 +5,7 @@ import type { CodexRunner } from './codexCli.js'
 import { CodexError } from './codexCli.js'
 import { claimsInDraft } from './draftCheck.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
-import { sanitizeDraft, type GenerationInput } from './generate.js'
+import { aboutMeBlock, sanitizeDraft, type GenerationInput } from './generate.js'
 import { reviewDraft } from './reviewDraft.js'
 import { log } from '../log.js'
 
@@ -31,6 +31,8 @@ export interface ApplicationEmailInput {
   cvText: string | null
   /** The Project notes, trusted. null = none. */
   projectNotes: string | null
+  /** About me (spec #98), trusted. null or blank = none. */
+  aboutMe: string | null
   /** Page content: the subject the page's `mailto:` link sets, or null. When
    *  set, it is the email's subject word for word and the writer is asked for none. */
   pageSubject: string | null
@@ -101,6 +103,7 @@ export function buildApplicationEmailPrompt(input: ApplicationEmailInput): strin
       input.projectNotes.slice(0, CAPS.jobText),
       '',
     ]),
+    ...aboutMeBlock(input.aboutMe),
     `Job title: ${input.title === null ? 'unknown' : fence('job_title', input.title, CAPS.label)}`,
     `Company: ${input.company === null ? 'unknown' : fence('company', input.company, CAPS.label)}`,
     fence('job_post', input.jobText, CAPS.jobText),
@@ -117,7 +120,7 @@ export function buildApplicationEmailPrompt(input: ApplicationEmailInput): strin
     '',
     'Rules for the body:',
     `1. Write in ${language}, in the first person as the candidate: a greeting, then a short motivation for this role.`,
-    '2. Factual claims (employers, technologies, metrics, degrees, dates) may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks. Never invent one.',
+    '2. Factual claims (employers, technologies, metrics, degrees, dates) may come ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES or ABOUT ME blocks. Never invent one.',
     '3. Plain text. No markdown, no bullet lists, no HTML.',
     '4. 60 to 150 words.',
     '5. Put no link and no email address in the body, not even the candidate\'s own.',
@@ -208,7 +211,11 @@ export async function draftApplicationEmail(
       question: DRAFT_CHECK_QUESTION[input.language], description: null,
       jobText: input.jobText, company: input.company,
       profileSummary: input.profileSummary, cvText: input.cvText, projectNotes: input.projectNotes,
+      // The check reads About me as the writer did (spec #98).
+      aboutMe: input.aboutMe,
       references: [],
+      // The Application email reads no Saved answer, so neither does its check (spec #98).
+      savedAnswers: [],
     }
     const checked = await reviewDraft(deps.checker, checkInput, drafted, { model: deps.models.checker, retryTransient: false })
     prose = sanitizeDraft(checked.draft)

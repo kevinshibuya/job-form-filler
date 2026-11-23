@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EnumField, FieldKey, Resolution } from '@jff/shared'
 import { sessionKey } from '../sessionKey'
+import { buildSaveItems } from './save'
 import {
-  answerKey, answerKeysByRef, capForStorage, createSessionStore, MAX_PERSISTED_OPTIONS,
+  answerKey, answerKeysByRef, capForStorage, createSessionStore, draftGaps, keptProseAnswers, MAX_PERSISTED_OPTIONS,
   mergeMapping, newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION, settleWaiting,
   type Session,
 } from './sessions'
@@ -758,6 +759,16 @@ describe('waiting rows: Fields the first step left for Mapping', () => {
     expect(settled.resolutions.find((x) => x.handle.fid === 0)).toEqual(filled)
   })
 
+  it('settles a waiting question about accommodation needs with its own reason, so it offers no Generation', () => {
+    const s: Session = {
+      ...waitingSession(),
+      fields: [labelled(0, 'First name'), labelled(1, 'Do you need any accommodation?'), labelled(2, 'Salary expectation')],
+    }
+    const settled = settleWaiting(s, 'mapping-lost')
+    expect(settled.resolutions.find((x) => x.handle.fid === 1)).toMatchObject({ tier: 'needs_input', reason: 'accommodation' })
+    expect(settled.resolutions.find((x) => x.handle.fid === 2)).toMatchObject({ tier: 'needs_input', reason: 'mapping-lost' })
+  })
+
   it('moves the waiting count into the Needs input count of the stored status line', () => {
     expect(settleWaiting(waitingSession(), 'mapping-lost').lastOutcome)
       .toEqual({ kind: 'done', filled: 1, alreadyOnPage: 0, proposed: 0, needsInput: 2 })
@@ -798,6 +809,93 @@ describe('Draft warnings ride the Session', () => {
   it('a re-scan drops them with the refs they were keyed by', () => {
     const s = { ...newSession(7), draftWarnings: { '0:1': ['I do not need any accommodations.'] } }
     expect(projectAnswers(s, [], [], {}).draftWarnings).toEqual({})
+  })
+})
+
+describe('A Draft\'s gap rides its answer record (ticket #103)', () => {
+  const labelled = (fid: number, label: string): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false,
+  })
+  const resolutionFor = (fid: number): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
+    source: null, key: null, answerId: null, reason: 'custom', fieldClass: 'personal_fact',
+  })
+  const ON_SITE = 'Can you work on site one day a week?'
+  const DRAFT = 'Nothing I stored says whether I can work on site.'
+  const GAP = 'Whether you can work on site one day a week.'
+  const drafted = (): Session => {
+    const s = { ...newSession(7), fields: [labelled(0, ON_SITE)], resolutions: [resolutionFor(0)] }
+    return rememberAnswer({ ...s, edits: { '0:0': DRAFT } }, '0:0', DRAFT, 'generated', 'opus', GAP)
+  }
+
+  it('keeps the gap with the Draft on the question\'s record, and names it by the row', () => {
+    const s = drafted()
+    expect(s.answers[answerKey(ON_SITE)]?.draft).toEqual({ text: DRAFT, model: 'opus', missing: GAP })
+    expect(draftGaps(s)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+  })
+
+  it('a Draft with no gap names none', () => {
+    const s = { ...newSession(7), fields: [labelled(0, ON_SITE)], resolutions: [resolutionFor(0)] }
+    expect(draftGaps(rememberAnswer(s, '0:0', DRAFT, 'generated', 'opus'))).toEqual({})
+  })
+
+  it('the user\'s edit keeps the Draft and its gap, so the edit is told apart from it', () => {
+    const s = rememberAnswer(drafted(), '0:0', 'Yes, on Tuesdays.', 'user')
+    expect(s.answers[answerKey(ON_SITE)]?.value).toBe('Yes, on Tuesdays.')
+    expect(draftGaps(s)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+  })
+
+  it('a new Draft replaces the record, gap included', () => {
+    const clean = rememberAnswer(drafted(), '0:0', 'Yes, I can.', 'generated', 'opus')
+    expect(draftGaps(clean)).toEqual({})
+    const other = rememberAnswer(drafted(), '0:0', 'Another draft.', 'generated', 'opus', 'Which day suits you.')
+    expect(draftGaps(other)).toEqual({ '0:0': { text: 'Another draft.', missing: 'Which day suits you.' } })
+  })
+
+  it('survives a Scan that gives the question another ref, and a reload', () => {
+    const next = projectAnswers(drafted(), [labelled(0, 'Anything else?'), labelled(1, ON_SITE)], [resolutionFor(0), resolutionFor(1)], {})
+    expect(next.edits['0:1']).toBe(DRAFT)
+    expect(draftGaps(next)).toEqual({ '0:1': { text: DRAFT, missing: GAP } })
+    expect(draftGaps(parseStoredSession(JSON.parse(JSON.stringify(next)))!)).toEqual({ '0:1': { text: DRAFT, missing: GAP } })
+  })
+
+  describe('on a row that owns no answer key (review of PR #112, finding 2)', () => {
+    // Two Fields of the page share the label, so neither owns its record.
+    const twins = (): Session => ({
+      ...newSession(7), fields: [labelled(0, ON_SITE), labelled(1, ON_SITE)], resolutions: [resolutionFor(0), resolutionFor(1)],
+    })
+
+    it('keeps the gap by the row, so the line shows and Save answers skips the row', () => {
+      const s = rememberAnswer({ ...twins(), edits: { '0:0': DRAFT } }, '0:0', DRAFT, 'generated', 'opus', GAP)
+      expect(s.answers).toEqual({})
+      expect(draftGaps(s)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+      const items = buildSaveItems({
+        fields: s.fields, resolutions: s.resolutions, panelEdits: s.edits, snapshot: {}, company: 'Acme',
+        gapDrafts: Object.fromEntries(Object.entries(draftGaps(s)).map(([ref, g]) => [ref, g.text])),
+      })
+      expect(items).toEqual([])
+    })
+
+    it('a new Draft with no gap clears it, and the user\'s own write leaves it to the text comparison', () => {
+      const gapped = rememberAnswer(twins(), '0:0', DRAFT, 'generated', 'opus', GAP)
+      expect(draftGaps(rememberAnswer(gapped, '0:0', 'Yes, I can.', 'user'))).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+      expect(draftGaps(rememberAnswer(gapped, '0:0', 'Yes, I can.', 'generated', 'opus'))).toEqual({})
+    })
+
+    it('goes with the page on a re-scan, and survives a reload', () => {
+      const gapped = rememberAnswer(twins(), '0:0', DRAFT, 'generated', 'opus', GAP)
+      expect(draftGaps(parseStoredSession(JSON.parse(JSON.stringify(gapped)))!)).toEqual({ '0:0': { text: DRAFT, missing: GAP } })
+      expect(projectAnswers(gapped, [], [], {}).keylessGaps).toEqual({})
+      expect(parseStoredSession({ ...gapped, keylessGaps: { '0:0': { text: DRAFT } } })).toBeNull()
+    })
+  })
+
+  it('a stored gap that is not text names none', () => {
+    const s = drafted()
+    const key = answerKey(ON_SITE)
+    const bad = { ...s, answers: { [key]: { ...s.answers[key]!, draft: { text: DRAFT, model: null, missing: 3 } } } }
+    expect(draftGaps(parseStoredSession(bad)!)).toEqual({})
   })
 })
 
@@ -844,5 +942,83 @@ describe('the Scan\'s ATS rides the Session (spec #41)', () => {
   it('an ATS the list does not name loads as generic, and a value that is no string is refused', () => {
     expect(parseStoredSession({ ...newSession(7), ats: 'teamtailor' })?.ats).toBe('generic')
     expect(parseStoredSession({ ...newSession(7), ats: 3 })).toBeNull()
+  })
+})
+
+describe('An answer on a row that offers Generation is stamped with its kind (ticket #107)', () => {
+  const PROSE = 'Why do you want to work here?'
+  const FACT = 'Which versions of the analytical engine have you worked with?'
+  const UNLABELLED = 'Can you work on site one day a week?'
+  const CHOICE = 'How did you hear about us?'
+  const KEYED = 'Phone'
+  const ACCOMMODATION = 'Do you need any accommodation for the interview?'
+  const fieldOf = (fid: number, label: string, patch: Partial<EnumField> = {}): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false, ...patch,
+  })
+  const needsInput = (fid: number, patch: Partial<Resolution> = {}): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
+    source: null, key: null, answerId: null, reason: 'custom', ...patch,
+  })
+  const page = (): Session => ({
+    ...newSession(7),
+    fields: [
+      fieldOf(0, PROSE, { kind: 'textarea' }), fieldOf(1, FACT), fieldOf(2, UNLABELLED, { kind: 'textarea' }),
+      fieldOf(3, CHOICE, { kind: 'select', options: ['A friend', 'A job board'] }), fieldOf(4, KEYED), fieldOf(5, ACCOMMODATION, { kind: 'textarea' }),
+    ],
+    resolutions: [
+      needsInput(0, { fieldClass: 'prose' }), needsInput(1, { fieldClass: 'personal_fact' }), needsInput(2),
+      needsInput(3, { fieldClass: 'personal_fact' }), needsInput(4, { key: 'phone', reason: 'recognizer:no-stored-value' }),
+      needsInput(5, { fieldClass: 'personal_fact', reason: 'accommodation' }),
+    ],
+  })
+  const answered = (): Session => [
+    ['0:0', 'I read the analytical engine notes.'], ['0:1', 'The first and the second.'], ['0:2', 'Yes, on Tuesdays.'],
+    ['0:3', 'A friend'], ['0:4', '+1 555 0100'], ['0:5', 'None needed.'],
+  ].reduce((s, [ref, value]) => rememberAnswer(s, ref!, value!, 'user'), page())
+
+  it('stamps a Prose row prose, a Personal-fact text row personal fact, and a text row with no label personal fact', () => {
+    const s = answered()
+    expect(s.answers[answerKey(PROSE)]?.prose).toEqual({ question: PROSE, kind: 'prose' })
+    expect(s.answers[answerKey(FACT)]?.prose).toEqual({ question: FACT, kind: 'personal_fact' })
+    expect(s.answers[answerKey(UNLABELLED)]?.prose).toEqual({ question: UNLABELLED, kind: 'personal_fact' })
+  })
+
+  it('stamps no answer on a choice Control, a keyed Field or an accommodation row', () => {
+    const s = answered()
+    for (const label of [CHOICE, KEYED, ACCOMMODATION]) {
+      expect(s.answers[answerKey(label)]?.value).toBeTruthy()
+      expect(s.answers[answerKey(label)]?.prose).toBeUndefined()
+    }
+    expect(keptProseAnswers(s).map((a) => a.question)).toEqual([PROSE, FACT, UNLABELLED])
+  })
+
+  it('keeps each stamped answer with its kind and marks, a Draft\'s included', () => {
+    const drafted = rememberAnswer(answered(), '0:1', 'The first.', 'generated', 'claude-opus-5-5')
+    const edited = rememberAnswer(drafted, '0:1', 'The first and the second.', 'user')
+    expect(keptProseAnswers(edited)).toEqual([
+      { question: PROSE, text: 'I read the analytical engine notes.', aiDrafted: false, edited: false, model: null, kind: 'prose' },
+      { question: FACT, text: 'The first and the second.', aiDrafted: true, edited: true, model: 'claude-opus-5-5', kind: 'personal_fact' },
+      { question: UNLABELLED, text: 'Yes, on Tuesdays.', aiDrafted: false, edited: false, model: null, kind: 'personal_fact' },
+    ])
+  })
+
+  it('keeps an answer stamped on an earlier step with its kind once its row is gone', () => {
+    const next = projectAnswers(answered(), [fieldOf(0, 'Upload your Resume', { kind: 'file' })], [needsInput(0)], {})
+    expect(next.fields.map((f) => f.label)).not.toContain(FACT)
+    expect(keptProseAnswers(next)).toContainEqual(
+      { question: FACT, text: 'The first and the second.', aiDrafted: false, edited: false, model: null, kind: 'personal_fact' },
+    )
+  })
+
+  it('reads a stamp written before the kind as prose', () => {
+    const s: Session = {
+      ...newSession(7),
+      answers: { [answerKey(PROSE)]: { value: 'Because of the engines.', provenance: 'user', fieldKey: null, prose: { question: PROSE } } },
+    }
+    const reloaded = parseStoredSession(JSON.parse(JSON.stringify(s)))!
+    expect(keptProseAnswers(reloaded)).toEqual([
+      { question: PROSE, text: 'Because of the engines.', aiDrafted: false, edited: false, model: null, kind: 'prose' },
+    ])
   })
 })

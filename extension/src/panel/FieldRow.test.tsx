@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { EnumField, Resolution } from '@jff/shared'
-import { FieldRow, NO_MATCH_PICK_HINT, PERSONAL_FACT_HINT, WaitingRow } from './FieldRow'
+import { ACCOMMODATION_HINT, FieldRow, NO_MATCH_PICK_HINT, WaitingRow } from './FieldRow'
 import type { Row } from './group'
 
 const field = (patch: Partial<EnumField> = {}): EnumField => ({
@@ -26,7 +26,7 @@ const props = {
   facts: {} as Record<string, string>, factsReady: false,
 }
 
-/** A Needs input Prose Field on a text box: the one row Generation drafts. */
+/** A Needs input Prose Field on a text box: a row Generation drafts. */
 const needsInput = (label = 'Why us?') =>
   row(field({ label }), resolution({ tier: 'needs_input', value: null, source: null, key: null, fieldClass: 'prose' }))
 
@@ -461,7 +461,7 @@ describe('FieldRow — Save to profile (a fact is stored, never drafted)', () =>
   })
 })
 
-describe('FieldRow — Generation is offered only on a Prose Field', () => {
+describe('FieldRow — Generation is offered on every unanswered text question', () => {
   const genBtn = () => screen.queryByRole('button', { name: 'Generate with AI' })
   const unmatched = (f: Partial<EnumField>, r: Partial<Resolution> = {}) => row(
     field({ label: 'Q', ...f }),
@@ -469,10 +469,12 @@ describe('FieldRow — Generation is offered only on a Prose Field', () => {
   )
 
   it.each([
-    ['a text box', 'text'],
-    ['a text area', 'textarea'],
-  ] as const)('offers it on a Prose Field on %s', (_name, kind) => {
-    render(<ul><FieldRow {...props} row={unmatched({ kind }, { fieldClass: 'prose' })} /></ul>)
+    ['a Prose Field on a text box', 'text', 'prose'],
+    ['a Prose Field on a text area', 'textarea', 'prose'],
+    ['a Personal-fact Field on a text box', 'text', 'personal_fact'],
+    ['a Personal-fact Field on a text area', 'textarea', 'personal_fact'],
+  ] as const)('offers it on %s', (_name, kind, fieldClass) => {
+    render(<ul><FieldRow {...props} row={unmatched({ kind }, { fieldClass })} /></ul>)
     expect(genBtn()).toBeTruthy()
   })
 
@@ -482,21 +484,35 @@ describe('FieldRow — Generation is offered only on a Prose Field', () => {
     ['a combobox', { kind: 'combobox', options: [] }],
     ['a checkbox group', { kind: 'checkboxgroup', options: ['A', 'B'] }],
     ['a Consent checkbox', { kind: 'checkbox', options: [] }],
-  ] as const)('does not offer it on a Prose Field drawn as %s', (_name, f) => {
-    render(<ul><FieldRow {...props} row={unmatched({ ...f, options: [...f.options] }, { fieldClass: 'prose' })} /></ul>)
-    expect(genBtn()).toBeNull()
+  ] as const)('does not offer it on a Field drawn as %s, whatever its label', (_name, f) => {
+    for (const fieldClass of ['prose', 'personal_fact'] as const) {
+      const { unmount } = render(<ul><FieldRow {...props} row={unmatched({ ...f, options: [...f.options] }, { fieldClass })} /></ul>)
+      expect(genBtn(), fieldClass).toBeNull()
+      unmount()
+    }
   })
 
-  it('shows a Personal-fact Field a place to type, no Generation, and why', () => {
-    render(<ul><FieldRow {...props} row={unmatched({ kind: 'textarea', label: 'Do you need any accommodation?' }, { fieldClass: 'personal_fact' })} /></ul>)
-    expect(genBtn()).toBeNull()
-    expect(screen.getByLabelText('Do you need any accommodation?').tagName).toBe('TEXTAREA')
-    expect(document.querySelector('[data-jff-hint]')?.textContent).toBe(PERSONAL_FACT_HINT)
+  it('shows a Personal-fact Field no hint that it is the user\'s to answer', () => {
+    render(<ul><FieldRow {...props} row={unmatched({ kind: 'textarea', label: 'Which versions of TypeScript have you used?' }, { fieldClass: 'personal_fact' })} /></ul>)
+    expect(genBtn()).toBeTruthy()
+    expect(document.querySelector('[data-jff-hint]')).toBeNull()
+    expect(document.body.textContent).not.toContain('A question about you. Answer it yourself.')
   })
 
-  it('reads a row with no label as a Personal-fact Field', () => {
+  it('offers it on a row Mapping gave no label', () => {
     render(<ul><FieldRow {...props} row={unmatched({ kind: 'textarea' })} /></ul>)
-    expect(genBtn()).toBeNull()
+    expect(genBtn()).toBeTruthy()
+  })
+
+  it('shows a question about accommodation needs a place to type, no Generation, and why, whatever its label', () => {
+    for (const fieldClass of ['prose', 'personal_fact', undefined] as const) {
+      const r = unmatched({ kind: 'textarea', label: 'Do you need any accommodation?' }, { reason: 'accommodation', ...(fieldClass === undefined ? {} : { fieldClass }) })
+      const { unmount } = render(<ul><FieldRow {...props} row={r} /></ul>)
+      expect(genBtn(), String(fieldClass)).toBeNull()
+      expect(screen.getByLabelText('Do you need any accommodation?').tagName).toBe('TEXTAREA')
+      expect(document.querySelector('[data-jff-hint]')?.textContent).toBe(ACCOMMODATION_HINT)
+      unmount()
+    }
   })
 })
 

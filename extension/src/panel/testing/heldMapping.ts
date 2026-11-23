@@ -2,7 +2,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { act } from '@testing-library/react'
 import {
-  OPTIONS_READ, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendArrivedParams, type MailSendArrivedResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
+  ACCOMMODATION_REASON, OPTIONS_READ, asksAboutAccommodation, norm, type EnumField, type FoundAddress, type JobTextReply, type FieldHandle, type HostErrorKind, type HostResponse, type LearnWordingParams, type OptionPickParams, type ApplyAddressPickParams, type EmailDraftParams, type EmailDraftResult, type MailSendArrivedParams, type MailSendArrivedResult, type MailSendParams, type MailSendResult, type MailSendersResult, type MailStatus, type Resolution,
 } from '@jff/shared'
 import { clearResume, saveResume } from '../resume'
 
@@ -143,6 +143,11 @@ export interface HeldMappingHost {
   mailArrivals: MailSendArrivedParams[]
   /** What `mail.send.arrived` answers. Defaults to the Applied job it marked. */
   mailArrived: (p: MailSendArrivedParams) => MailSendArrivedAnswer | Promise<MailSendArrivedAnswer>
+  /** The About me the fake host stores (spec #98): `aboutMe.get` answers it
+   *  and `aboutMe.set` replaces it. Empty until a test or a save sets it. */
+  aboutMe: string
+  /** Every `aboutMe.set` request's text, in order. */
+  aboutMeSets: string[]
 }
 
 export type MailStatusAnswer = MailStatus | { error: { kind: HostErrorKind; message: string } }
@@ -176,6 +181,7 @@ export function installHeldMappingHost(): HeldMappingHost {
       mailSenders: () => ({ address: 'ada@example.com', senders: [{ address: 'ada@example.com', displayName: 'Ada Lovelace' }], lastUsed: null }),
       mailSends: [], mailSend: () => SENT, mailSendIds: [],
       mailArrivals: [], mailArrived: () => ({ appliedJobId: 1, markedAt: '2026-11-19T12:00:00.000Z' }),
+      aboutMe: '', aboutMeSets: [],
     } satisfies HeldMappingHost)
     ;(globalThis as unknown as { chrome: unknown }).chrome = fakeChrome(host)
     await saveResume(new File(['stub resume'], 'cv.txt', { type: 'text/plain' }))
@@ -252,6 +258,13 @@ export function installHeldMappingHost(): HeldMappingHost {
         const answer = await host.mailArrived(pp)
         return 'error' in answer ? { requestId, ok: false, error: answer.error } : { requestId, ok: true, result: answer }
       }
+      if (method === 'aboutMe.get') return { requestId, ok: true, result: { text: host.aboutMe } }
+      if (method === 'aboutMe.set') {
+        const { text } = params as { text: string }
+        host.aboutMeSets.push(text)
+        host.aboutMe = text
+        return { requestId, ok: true, result: { text } }
+      }
       if (method === 'wording.learn') {
         host.learned.push(params as LearnWordingParams)
         return { requestId, ok: true, result: { learned: true } }
@@ -285,14 +298,20 @@ export const draftReply = (p: EmailDraftParams): EmailDraftResult => ({
   unchecked: false,
 })
 
-/** A Mapping reply to a held request: Mapping's decisions, or a model error. */
+/**
+ * A Mapping reply to a held request: Mapping's decisions, or a model error.
+ * On an error, as the real host does, a question about accommodation needs
+ * keeps its own reason.
+ */
 export const mapped = (
   host: HeldMappingHost, h: Held, llmError: { kind: 'rate_limit'; message: string } | null = null,
 ): HostResponse => ({
   requestId: h.requestId, ok: true,
   result: {
     epoch: 0, llmError,
-    resolutions: llmError === null ? host.mappingFor(h.fields) : h.fields.map((f) => resolution(f, { reason: `llm-error:${llmError.kind}` })),
+    resolutions: llmError === null ? host.mappingFor(h.fields) : h.fields.map((f) => resolution(f, {
+      reason: asksAboutAccommodation(f.label) ? ACCOMMODATION_REASON : `llm-error:${llmError.kind}`,
+    })),
   },
 })
 

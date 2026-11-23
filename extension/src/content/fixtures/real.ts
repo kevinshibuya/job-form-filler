@@ -3,7 +3,10 @@
  * is the application form of a public page and nothing else of it, cut by
  * `scripts/sanitize-capture.mjs` and kept in `e2e/fixtures/real/`. A posting
  * fixture is the Job posting of a public posting page, cut with `--posting` and
- * kept apart in `e2e/fixtures/postings/`, because it holds no Field. Tests only:
+ * kept apart in `e2e/fixtures/postings/`, because it holds no Field. A step
+ * fixture is the whole of a page that holds no form and no posting, such as an
+ * ATS's step page before its form opens, cut with `--page` and kept in
+ * `e2e/fixtures/steps/`. Tests only:
  * nothing the extension ships imports this.
  */
 
@@ -11,6 +14,7 @@
 // no file system and type-checks with the extension's own types.
 const PAGES = import.meta.glob<string>('../../../../e2e/fixtures/real/*.html', { query: '?raw', import: 'default', eager: true })
 const POSTINGS = import.meta.glob<string>('../../../../e2e/fixtures/postings/*.html', { query: '?raw', import: 'default', eager: true })
+const STEPS = import.meta.glob<string>('../../../../e2e/fixtures/steps/*.html', { query: '?raw', import: 'default', eager: true })
 const EMAILS = import.meta.glob<string>('../../../../e2e/fixtures/email/*.html', { query: '?raw', import: 'default', eager: true })
 
 function nameOf(path: string): string {
@@ -24,6 +28,7 @@ function byName(pages: Record<string, string>): Map<string, string> {
 const BY_NAME = byName(PAGES)
 const POSTINGS_BY_NAME = byName(POSTINGS)
 const EMAILS_BY_NAME = byName(EMAILS)
+const STEPS_BY_NAME = byName(STEPS)
 
 /** The names `loadRealFixture` accepts, without the `.html`. */
 export const REAL_FIXTURES: readonly string[] = [...BY_NAME.keys()].sort()
@@ -63,5 +68,16 @@ export const EMAIL_FIXTURES: readonly string[] = [...EMAILS_BY_NAME.keys()].sort
 export function loadEmailFixture(name: string): void {
   const html = EMAILS_BY_NAME.get(name.replace(/\.html$/, ''))
   if (html === undefined) throw new Error(`no email fixture named ${name}; there are: ${EMAIL_FIXTURES.join(', ') || 'none'}`)
+  load(html)
+}
+
+/** The names `loadStepFixture` accepts: whole pages that hold no form and no
+ *  posting (#108), kept in `e2e/fixtures/steps/`. */
+export const STEP_FIXTURES: readonly string[] = [...STEPS_BY_NAME.keys()].sort()
+
+/** Replaces the test document with the named step fixture; `name` may carry `.html`. */
+export function loadStepFixture(name: string): void {
+  const html = STEPS_BY_NAME.get(name.replace(/\.html$/, ''))
+  if (html === undefined) throw new Error(`no step fixture named ${name}; there are: ${STEP_FIXTURES.join(', ') || 'none'}`)
   load(html)
 }

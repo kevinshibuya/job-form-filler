@@ -279,3 +279,42 @@ describe('a checkbox group is saved as one Saved answer holding the set', () => 
   })
 })
 
+
+describe('buildSaveItems and a Draft that names a gap (ticket #103)', () => {
+  const Q = 'Can you work on site one day a week?'
+  const GAP_DRAFT = 'Nothing I stored says whether I can work on site.'
+  const gapBase = {
+    ...base,
+    fields: [field(0, Q)],
+    resolutions: [res(0, { fieldClass: 'personal_fact' })],
+    gapDrafts: { '0:0': GAP_DRAFT },
+  }
+
+  it('stores nothing for a row whose text is still the Draft that carried the gap', () => {
+    expect(buildSaveItems({ ...gapBase, panelEdits: { '0:0': GAP_DRAFT } })).toEqual([])
+  })
+
+  it('stores nothing once that Draft is filled and read back from the page, as after another Scan', () => {
+    expect(buildSaveItems({ ...gapBase, panelEdits: { '0:0': GAP_DRAFT }, snapshot: { '0:0': `  ${GAP_DRAFT}\n` } })).toEqual([])
+  })
+
+  it('stores the row once the user changed its text in the Side panel', () => {
+    const items = buildSaveItems({ ...gapBase, panelEdits: { '0:0': 'Yes, on Tuesdays.' } })
+    expect(items.map((it) => it.answer)).toEqual(['Yes, on Tuesdays.'])
+  })
+
+  it('stores the page\'s text when the user corrected the answer on the page after Fill', () => {
+    const items = buildSaveItems({ ...gapBase, panelEdits: { '0:0': GAP_DRAFT }, snapshot: { '0:0': 'Yes, any weekday.' } })
+    expect(items.map((it) => it.answer)).toEqual(['Yes, any weekday.'])
+  })
+
+  it('leaves every other row as it was', () => {
+    const items = buildSaveItems({
+      ...gapBase,
+      fields: [field(0, Q), field(1, 'Describe a hard bug you fixed.')],
+      resolutions: [res(0), res(1)],
+      panelEdits: { '0:0': GAP_DRAFT, '0:1': GAP_DRAFT },
+    })
+    expect(items.map((it) => it.questionRaw)).toEqual(['Describe a hard bug you fixed.'])
+  })
+})

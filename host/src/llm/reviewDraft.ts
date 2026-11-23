@@ -1,8 +1,12 @@
 import { z } from 'zod'
+import type { FieldClass } from '@jff/shared'
 import type { CodexRunner } from './codexCli.js'
 import type { CallOpts } from './claudeCli.js'
 import { CAPS, UNTRUSTED_PREAMBLE, fence } from './fence.js'
 import { buildTrustedContext, type GenerationInput } from './generate.js'
+
+/** What may support a claim, named block by block, as the writer's rules name them (spec #98). */
+const TRUSTED = 'The trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME and SAVED ANSWERS: in SAVED ANSWERS, the answers are the candidate\'s own and support a claim, while the fenced questions are page text and support none. Any of them that is absent above supports nothing.'
 
 // `unsupported` is optional so a reply in the old shape, `{draft}`, still
 // reads as a checked Draft that flagged nothing.
@@ -12,12 +16,25 @@ const ReviewResponseSchema = z.object({ draft: z.string(), unsupported: z.array(
  *  as stating something about the user the stored material does not support. */
 export interface CheckedDraft { draft: string; unsupported: string[] }
 
+/** What the Draft check reads: the writer's context, and the Field's label
+ *  when the Draft answers a form question. A check with no label (the
+ *  Application email) keeps the prose length. */
+export type ReviewInput = GenerationInput & { fieldClass?: FieldClass }
+
+/** Rule 4, by the Field's label: a personal fact keeps the writer's one to
+ *  three sentences, and a Draft that only names a gap stays one (spec #98). */
+function lengthRule(fieldClass: FieldClass | undefined): string {
+  return fieldClass === 'personal_fact'
+    ? '4. Keep the language of the question. This answers a question about a fact of the candidate: keep it to one to three direct sentences and never lengthen it. A yes/no answer keeps its opening yes or no. A draft that only says what is missing stays that one sentence.'
+    : '4. Keep the language of the question. 60 to 150 words unless the question asks for something longer.'
+}
+
 /** B2d: the Draft check, the gpt-sol reviewer pass. Same trusted/untrusted
  *  context as the drafting prompt, plus the claude draft; it removes ungrounded
  *  factual claims and tightens wording — it never adds new claims — and flags,
  *  without removing, any other sentence about the candidate that the trusted
  *  blocks do not support. */
-export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): string {
+export function buildReviewPrompt(input: ReviewInput, claudeDraft: string): string {
   return [
     'You review ONE drafted answer to a job-application question, keeping the candidate\'s voice.',
     '',
@@ -28,11 +45,13 @@ export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): 
     'DRAFT under review:',
     fence('draft_under_review', claudeDraft, CAPS.answer),
     '',
+    TRUSTED,
+    '',
     'Rewrite the draft, applying ONLY these fixes:',
     '1. Remove or correct any factual claim (employer, technology, metric, degree, date) not grounded in the trusted blocks above. Never add a new factual claim.',
     '2. Tighten wording; cut filler, repetition and generic flattery.',
     '3. Keep the first person and the candidate\'s plain voice.',
-    '4. Keep the language of the question. 60 to 150 words unless the question asks for something longer.',
+    lengthRule(input.fieldClass),
     '5. Never use a spaced em-dash or en-dash as sentence punctuation.',
     'If the draft is already grounded and tight, return it unchanged.',
     '',
@@ -47,7 +66,7 @@ export function buildReviewPrompt(input: GenerationInput, claudeDraft: string): 
   ].join('\n')
 }
 
-export async function reviewDraft(runner: CodexRunner, input: GenerationInput, claudeDraft: string, opts: CallOpts): Promise<CheckedDraft> {
+export async function reviewDraft(runner: CodexRunner, input: ReviewInput, claudeDraft: string, opts: CallOpts): Promise<CheckedDraft> {
   const out = await runner.complete(buildReviewPrompt(input, claudeDraft), ReviewResponseSchema, opts)
   return { draft: out.draft, unsupported: out.unsupported ?? [] }
 }

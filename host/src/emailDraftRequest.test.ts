@@ -109,6 +109,50 @@ describe('email.draft', () => {
     expect(prompt).toContain('fullName: Ada Lovelace')
   })
 
+  it('hands the writer and its Draft check the stored About me as a trusted block, named where a claim may come from (spec #98)', async () => {
+    const aboutMe = 'I can start in March and I prefer working in TypeScript.'
+    expect(await handleRaw(deps, { requestId: crypto.randomUUID(), method: 'aboutMe.set', params: { text: aboutMe } })).toMatchObject({ ok: true })
+    await drafted(POSTING)
+    const writer = writerPrompt()
+    const check = checkComplete.mock.calls[0]![0]
+    for (const prompt of [writer, check]) {
+      const at = prompt.indexOf('ABOUT ME (')
+      expect(at).toBeGreaterThanOrEqual(0)
+      expect(prompt.slice(at).split('\n')[0]).toMatch(/trusted/i)
+      expect(prompt.slice(at)).toContain(aboutMe)
+    }
+    expect(writer.split('\n').find((l) => /may come ONLY from/.test(l))).toContain('ABOUT ME')
+    expect(check.split('\n').find((l) => l.startsWith('The trusted blocks are'))).toContain('ABOUT ME')
+  })
+
+  it('hands the writer and its Draft check no About me block when none is stored (spec #98)', async () => {
+    await drafted(POSTING)
+    expect(writerPrompt()).not.toContain('ABOUT ME (')
+    expect(checkComplete.mock.calls[0]![0]).not.toContain('ABOUT ME (')
+  })
+
+  it('hands the writer and its Draft check no Saved answer, reusable or not (spec #98)', async () => {
+    const saved = await handleRaw(deps, {
+      requestId: crypto.randomUUID(), method: 'save',
+      params: {
+        url: 'https://jobs.example.com/apply', company: 'Example Ltd', generatedCount: 0,
+        items: [
+          { handle: { frameId: 0, fid: 1, epoch: 1 }, questionRaw: 'What is your expected salary?', answer: 'SALARY-ANSWER', reusability: 'reusable', fieldKey: null },
+          { handle: { frameId: 0, fid: 2, epoch: 1 }, questionRaw: 'Why Example Ltd?', answer: 'COMPANY-ANSWER', reusability: 'company_specific', fieldKey: null },
+        ],
+      },
+    })
+    expect(saved).toMatchObject({ ok: true, result: { saved: 2 } })
+    await drafted(POSTING)
+    const prompts = [writerPrompt(), checkComplete.mock.calls[0]![0]]
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain('SALARY-ANSWER')
+      expect(prompt).not.toContain('COMPANY-ANSWER')
+      expect(prompt).not.toContain('SAVED ANSWERS (')
+      expect(prompt).not.toContain('<stored_question>expected salary')
+    }
+  })
+
   it('runs the writer and the Draft check on claude-opus-5-5, and asks no Codex model', async () => {
     await drafted(POSTING)
     expect(claudeComplete).toHaveBeenCalledTimes(1)

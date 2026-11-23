@@ -1,8 +1,9 @@
-import { ApplyAddressCandidateSchema, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
+import { ACCOMMODATION_REASON, ApplyAddressCandidateSchema, asksAboutAccommodation, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldClass, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { SessionEmailDraftSchema, type SessionEmailDraft } from './emailDraft'
 import { SessionMailHandoverSchema, type SessionMailHandover } from './mailApp'
 import { AddressRevisitSchema, type AddressRevisit } from './addressRevisit'
+import { offersGeneration } from './generationOffer'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
 import type { ScanUiState } from './ScanStatus'
@@ -17,14 +18,17 @@ export interface SessionAnswer {
   value: string
   provenance: AnswerProvenance
   fieldKey: FieldKey | null
-  /** Set on the answer to a Prose Field: its question as the page wrote it,
-   *  which Mark applied keeps beside the Applied job (spec #66). Absent on
-   *  every other Field, and on a row stored before it was kept. */
-  prose?: { question: string }
+  /** The stamp Mark applied reads: set on an answer given on a row that
+   *  offers Generation, with its question as the page wrote it and the row's
+   *  kind (ticket #107). Absent on every other row, and on a row stored before
+   *  it was kept. The key keeps its spec #66 name, from when only Prose Fields
+   *  were stamped; a stamp written then has no kind and reads as prose. */
+  prose?: { question: string; kind?: FieldClass }
   /** The Draft this answer started from and the model that wrote it. It
    *  outlives the user's edits, which are told apart by comparing the value
-   *  with it, and a new Draft replaces it. */
-  draft?: { text: string; model: string | null }
+   *  with it, and a new Draft replaces it. `missing`: what stored fact the
+   *  writer said would let it answer (ticket #103), absent when it named none. */
+  draft?: { text: string; model: string | null; missing?: string }
 }
 
 export interface Session {
@@ -52,6 +56,16 @@ export interface Session {
   /** Where `jobText` came from (spec #41). Null before the first Scan, and on
    *  a row stored before the source was kept. */
   jobTextSource: JobTextSource | null
+  /** The spot the page script named for `jobText` when it came from a pick or
+   *  a heuristic (ticket #102); null for any other source. */
+  jobTextSpot: string | null
+  /** The address the user typed into the link box, when `jobText` came from
+   *  it (ticket #104); null for any other source. */
+  jobTextLink: string | null
+  /** The spots the user said were not the job description in this Session.
+   *  Every request for the page's text carries them, and they go with the
+   *  Session: nothing is kept per site. */
+  rejectedJobTextSpots: string[]
   snapshot: Record<string, string>
   reuseOverrides: Record<string, 'reusable' | 'company_specific'>
   filledRefs: string[]
@@ -59,6 +73,11 @@ export interface Session {
   /** ref → the sentences of that row's Draft the Draft check found unsupported
    *  by the user's own material. A ref is absent when its Draft has none. */
   draftWarnings: Record<string, string[]>
+  /** ref → the Draft that carried a gap and the gap, for a row that owns no
+   *  answer key (its label is empty, or another Field of the page shares it),
+   *  so its gap has no question record to ride on. Ref-keyed, so it goes with
+   *  the page as `draftWarnings` does. Absent on a row stored before it. */
+  keylessGaps?: Record<string, { text: string; missing: string }>
   unreachable: number
   activeCaptcha: boolean
   election: ElectionOutcome | null
@@ -150,11 +169,15 @@ export function newSession(tabId: number, startUrl = ''): Session {
     companyGuessed: false,
     jobText: '',
     jobTextSource: null,
+    jobTextSpot: null,
+    jobTextLink: null,
+    rejectedJobTextSpots: [],
     snapshot: {},
     reuseOverrides: {},
     filledRefs: [],
     generatedRefs: [],
     draftWarnings: {},
+    keylessGaps: {},
     unreachable: 0,
     activeCaptcha: false,
     election: null,
@@ -202,8 +225,10 @@ export function answerKeysByRef(fields: EnumField[]): Map<string, string> {
 
 /**
  * S4 write path: record what ONE ref now answers under its LABEL key, so the
- * answer outlives the ref. Pure, and a no-op for a field that may not own a key
- * (unlabelled, or a label this page duplicates).
+ * answer outlives the ref. Pure. A field that may not own a key (unlabelled, or
+ * a label this page duplicates) carries nothing, but a Draft written for it
+ * keeps its gap by ref in `keylessGaps`, so the missing line shows and "Save
+ * answers" skips the row all the same.
  *
  * An EMPTY value DELETES the entry: a box the user cleared is not an answer, and
  * a stale entry left behind would re-seed the value on the next step.
@@ -216,9 +241,20 @@ export function rememberAnswer(
   /** The model that wrote a Draft, from the `generate` reply; null when an
    *  older Native host named none. Read only with provenance 'generated'. */
   model: string | null = null,
+  /** The gap the `generate` reply named beside the Draft, if any. Read only
+   *  with provenance 'generated'. */
+  missing?: string,
 ): Session {
   const key = answerKeysByRef(s.fields).get(ref)
-  if (key === undefined) return s
+  if (key === undefined) {
+    if (provenance !== 'generated') return s
+    // A new Draft replaces the old one's gap, or clears it.
+    const { [ref]: _previous, ...keylessGaps } = s.keylessGaps ?? {}
+    return {
+      ...s,
+      keylessGaps: missing === undefined || missing === '' ? keylessGaps : { ...keylessGaps, [ref]: { text: value, missing } },
+    }
+  }
   if (value === '') {
     if (!(key in s.answers)) return s
     const answers = { ...s.answers }
@@ -228,22 +264,51 @@ export function rememberAnswer(
   const resolution = s.resolutions.find((r) => refOf(r.handle) === ref)
   const fieldKey = resolution?.key ?? null
   const answer: SessionAnswer = { value, provenance, fieldKey }
-  if (resolution?.fieldClass === 'prose' && fieldKey === null) {
-    answer.prose = { question: (s.fields.find((f) => refOf(f) === ref)?.label ?? '').trim() }
+  const field = s.fields.find((f) => refOf(f) === ref)
+  if (resolution !== undefined && field !== undefined && offersGeneration({ field, resolution })) {
+    // A row Mapping gave no label is a Personal-fact Field, as everywhere else.
+    answer.prose = { question: (field.label ?? '').trim(), kind: resolution.fieldClass === 'prose' ? 'prose' : 'personal_fact' }
   }
   // A new Draft replaces the old one; the user's own write keeps the Draft it
   // started from, so the edit can be told apart at Mark applied.
-  const draft = provenance === 'generated' ? { text: value, model } : s.answers[key]?.draft
+  const draft = provenance === 'generated'
+    ? { text: value, model, ...(missing === undefined || missing === '' ? {} : { missing }) }
+    : s.answers[key]?.draft
   if (draft !== undefined) answer.draft = draft
   return { ...s, answers: { ...s.answers, [key]: answer } }
 }
 
 /**
- * The prose answers a form Mark applied keeps (spec #66): one for each Prose
- * Field the Session holds a non-empty text for, on this page or an earlier
- * step of the same application. The text is what the Session holds now; a
- * change made on the page after Fill is not read back. A text is AI-drafted
- * when a Draft came back for it, and edited when it no longer equals that Draft.
+ * Ticket #103: ref → the Draft that carried a gap and the gap, for every row
+ * on this page whose question's record holds one. The record is keyed by the
+ * question, so the gap outlives a Scan, a wizard step and a reload. Whether
+ * the row still holds that Draft is the caller's comparison: the line shows,
+ * and "Save answers" skips the row, only while the text equals it.
+ */
+export function draftGaps(s: Session): Record<string, { text: string; missing: string }> {
+  const out: Record<string, { text: string; missing: string }> = {}
+  // A row with no answer key keeps its gap by ref (`keylessGaps`).
+  const keyed = answerKeysByRef(s.fields)
+  for (const [ref, gap] of Object.entries(s.keylessGaps ?? {})) {
+    if (keyed.has(ref) || typeof gap?.text !== 'string' || typeof gap.missing !== 'string' || gap.missing === '') continue
+    out[ref] = { text: gap.text, missing: gap.missing }
+  }
+  for (const [ref, key] of answerKeysByRef(s.fields)) {
+    // A stored row is untrusted: a gap that is not text is no gap.
+    const draft = s.answers[key]?.draft
+    if (typeof draft?.text !== 'string' || typeof draft.missing !== 'string' || draft.missing === '') continue
+    out[ref] = { text: draft.text, missing: draft.missing }
+  }
+  return out
+}
+
+/**
+ * The answers a form Mark applied keeps (spec #66, ticket #107): one for each
+ * stamped answer the Session holds a non-empty text for, on this page or an
+ * earlier step of the same application, with its kind. The text is what the
+ * Session holds now; a change made on the page after Fill is not read back. A
+ * text is AI-drafted when a Draft came back for it, and edited when it no
+ * longer equals that Draft. A stamp with no kind is a prose one.
  */
 export function keptProseAnswers(s: Session): KeptProseAnswer[] {
   const out: KeptProseAnswer[] = []
@@ -258,6 +323,7 @@ export function keptProseAnswers(s: Session): KeptProseAnswer[] {
       aiDrafted: draft !== undefined,
       edited: draft !== undefined && draft.text !== a.value,
       model: draft === undefined || typeof draft.model !== 'string' ? null : draft.model,
+      kind: a.prose.kind === 'personal_fact' ? 'personal_fact' : 'prose',
     })
   }
   return out
@@ -331,6 +397,7 @@ export function projectAnswers(
     edits,
     generatedRefs,
     draftWarnings: {},
+    keylessGaps: {},
     filledRefs: [],
     snapshot: {},
     reuseOverrides: {},
@@ -390,7 +457,9 @@ export function settleWaiting(session: Session, reason: string): Session {
     .filter((f) => waiting.has(refOf(f)) && !decided.has(refOf(f)))
     .map((f) => ({
       handle: { frameId: f.frameId, fid: f.fid, epoch: f.epoch },
-      tier: 'needs_input', value: null, source: null, key: null, answerId: null, reason,
+      tier: 'needs_input', value: null, source: null, key: null, answerId: null,
+      // A question about accommodation needs keeps its own reason, so Generation stays off it (ADR 0014).
+      reason: asksAboutAccommodation(f.label) ? ACCOMMODATION_REASON : reason,
     }))
   const last = session.lastOutcome
   const lastOutcome: ScanUiState | null = last?.kind === 'matching'
@@ -436,6 +505,9 @@ const allStrings = (a: unknown[]): boolean => a.every((x) => typeof x === 'strin
 const isDraftWarnings = (v: unknown): v is Record<string, string[]> =>
   isRecord(v) && Object.values(v).every((w) => Array.isArray(w) && allStrings(w))
 
+const isKeylessGaps = (v: unknown): v is Record<string, { text: string; missing: string }> =>
+  isRecord(v) && Object.values(v).every((g) => isRecord(g) && typeof g.text === 'string' && typeof g.missing === 'string')
+
 /** Structural gate on untrusted storage rows: a version mismatch or any shape
  *  surprise yields null rather than a half-typed Session. Never throws. */
 export function parseStoredSession(raw: unknown): Session | null {
@@ -459,6 +531,7 @@ export function parseStoredSession(raw: unknown): Session | null {
     // A row stored before waiting rows, or Draft warnings, existed has none.
     if (raw.waiting !== undefined && (!Array.isArray(raw.waiting) || !allStrings(raw.waiting))) return null
     if (raw.draftWarnings !== undefined && !isDraftWarnings(raw.draftWarnings)) return null
+    if (raw.keylessGaps !== undefined && !isKeylessGaps(raw.keylessGaps)) return null
     // A row stored before attached uploads were read has none (#37).
     if (raw.attachedUploads !== undefined && (!Array.isArray(raw.attachedUploads) || !allStrings(raw.attachedUploads))) return null
     // A row stored before the Resume upload was remembered has none (#49).
@@ -467,6 +540,11 @@ export function parseStoredSession(raw: unknown): Session | null {
     if (raw.ats !== undefined && typeof raw.ats !== 'string') return null
     // A row stored before the job text source was kept has none (spec #41).
     if (raw.jobTextSource != null && !JobTextSourceSchema.safeParse(raw.jobTextSource).success) return null
+    // A row stored before spots were kept has no spot and rejected none (ticket #102).
+    if (raw.jobTextSpot != null && typeof raw.jobTextSpot !== 'string') return null
+    // A row stored before the link box has no link (ticket #104).
+    if (raw.jobTextLink != null && typeof raw.jobTextLink !== 'string') return null
+    if (raw.rejectedJobTextSpots !== undefined && (!Array.isArray(raw.rejectedJobTextSpots) || !allStrings(raw.rejectedJobTextSpots))) return null
     // A row stored before the email flow has no candidates and no Apply address (spec #66).
     if (raw.applyCandidates !== undefined && !ApplyAddressCandidateSchema.array().safeParse(raw.applyCandidates).success) return null
     if (raw.applyAddress != null && typeof raw.applyAddress !== 'string') return null
@@ -485,10 +563,13 @@ export function parseStoredSession(raw: unknown): Session | null {
     const applyAddress = (raw.applyAddress as string | null | undefined) ?? null
     return {
       ...(raw as unknown as Session),
-      waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, attachedUploads: raw.attachedUploads ?? [],
+      waiting: raw.waiting ?? [], draftWarnings: raw.draftWarnings ?? {}, keylessGaps: raw.keylessGaps ?? {}, attachedUploads: raw.attachedUploads ?? [],
       resumeUploaded: raw.resumeUploaded ?? false,
       ats: isAtsOrGeneric(raw.ats) ? raw.ats : 'generic',
       jobTextSource: (raw.jobTextSource as JobTextSource | null | undefined) ?? null,
+      jobTextSpot: (raw.jobTextSpot as string | null | undefined) ?? null,
+      jobTextLink: (raw.jobTextLink as string | null | undefined) ?? null,
+      rejectedJobTextSpots: raw.rejectedJobTextSpots ?? [],
       applyCandidates: (raw.applyCandidates as ApplyAddressCandidate[] | undefined) ?? [],
       applyAddress,
       applyAddressChosenBy: applyAddress === null ? null : (raw.applyAddressChosenBy as ApplyAddressChoice | null | undefined) ?? null,

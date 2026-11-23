@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ClaudeRunner } from './claudeCli.js'
-import { buildGenerationPrompt, buildProfileSummary, sanitizeDraft, runGeneration } from './generate.js'
+import { SAVED_ANSWERS_MAX, buildGenerationPrompt, buildProfileSummary, sanitizeDraft, runGeneration, savedAnswerLines } from './generate.js'
 
 const input = {
   question: 'Why do you want to work at Acme?',
@@ -8,9 +8,12 @@ const input = {
   company: 'Acme',
   profileSummary: 'Name: Ada Lovelace\nRole: Full-stack developer\nYears: 6',
   references: ['An earlier draft about a different company.'],
+  savedAnswers: [],
   description: null,
   cvText: null,
   projectNotes: null,
+  aboutMe: null,
+  fieldClass: 'prose' as const,
 }
 
 describe('buildProfileSummary', () => {
@@ -35,7 +38,7 @@ describe('buildGenerationPrompt', () => {
   })
 
   it('states the factual-grounding and subjective-composition rules (D2)', () => {
-    expect(prompt).toMatch(/Factual claims .* may come ONLY from the CANDIDATE FACTS, CANDIDATE CV or PROJECT NOTES blocks/i)
+    expect(prompt).toMatch(/Factual claims .* may come ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME or SAVED ANSWERS blocks/i)
     expect(prompt).toMatch(/never invent/i)
     expect(prompt).toMatch(/say what is missing plainly in one sentence/i)
     expect(prompt).toMatch(/refusing a subjective question is forbidden/i)
@@ -78,6 +81,35 @@ describe('buildGenerationPrompt', () => {
   })
 })
 
+describe('buildGenerationPrompt for a Personal-fact Field', () => {
+  const fact = { ...input, fieldClass: 'personal_fact' as const, question: 'Você já trabalhou com TypeScript 5?' }
+  const prompt = buildGenerationPrompt(fact)
+
+  it('asks for one to three direct sentences and no narrative', () => {
+    expect(prompt).toMatch(/one to three sentences/i)
+    expect(prompt).toMatch(/no narrative/i)
+    expect(prompt).not.toMatch(/60 to 150 words/)
+  })
+
+  it('answers in the language of the question, and opens a yes/no question with yes or no in that language', () => {
+    expect(prompt).toMatch(/language of the question/i)
+    expect(prompt).toMatch(/yes\/no question.*opens? with yes or no.*in the language of the question/i)
+  })
+
+  it('takes every fact from the trusted blocks only, and says what is missing when they do not cover the question', () => {
+    expect(prompt).toMatch(/ONLY from the CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES, ABOUT ME or SAVED ANSWERS blocks/)
+    expect(prompt).toMatch(/say what is missing.*in one sentence/i)
+    expect(prompt).not.toMatch(/refusing a subjective question is forbidden/i)
+  })
+
+  it('keeps the untrusted fences and the shared clean-up rules', () => {
+    expect(prompt).toMatch(/UNTRUSTED data/)
+    expect(prompt).toContain('<field_label>Você já trabalhou com TypeScript 5?</field_label>')
+    expect(prompt).toMatch(/spaced em-dash/i)
+    expect(prompt).toContain('Name: Ada Lovelace')
+  })
+})
+
 describe('sanitizeDraft', () => {
   it('replaces a spaced em-dash used as punctuation with a comma', () => {
     expect(sanitizeDraft('I build systems — mostly backend.')).toBe('I build systems, mostly backend.')
@@ -98,13 +130,33 @@ describe('sanitizeDraft', () => {
 })
 
 describe('runGeneration', () => {
-  it('returns the sanitized draft', async () => {
+  it('returns the sanitized draft, with no gap when the writer named none', async () => {
     const runner = { complete: vi.fn(async () => ({ draft: 'I ship payments infra — reliably.' })) } as unknown as ClaudeRunner
-    await expect(runGeneration(runner, input, { model: 'claude-opus-5' })).resolves.toBe('I ship payments infra, reliably.')
+    await expect(runGeneration(runner, input, { model: 'claude-opus-5' })).resolves.toEqual({ draft: 'I ship payments infra, reliably.', missing: null })
   })
 
   it('propagates a claude failure to the caller rather than inventing a draft', async () => {
     const runner = { complete: vi.fn(async () => { throw new Error('boom') }) } as unknown as ClaudeRunner
     await expect(runGeneration(runner, input, { model: 'claude-opus-5' })).rejects.toThrow('boom')
+  })
+})
+
+describe('savedAnswerLines', () => {
+  it('leaves out a pair that does not fit what is left of the cap, whole, and still takes an older one that fits', () => {
+    const big = 'b'.repeat(SAVED_ANSWERS_MAX)
+    const lines = savedAnswerLines([
+      { question: 'Newest?', answer: 'newest answer' },
+      { question: 'Too long?', answer: big },
+      { question: 'Older?', answer: 'older answer' },
+    ])
+    expect(lines).toEqual([
+      'Q: <stored_question>Newest?</stored_question>\nA: newest answer',
+      'Q: <stored_question>Older?</stored_question>\nA: older answer',
+    ])
+  })
+
+  it('closes up a blank line inside an answer, so the block stays one block', () => {
+    expect(savedAnswerLines([{ question: 'Tools?', answer: 'Vim.\n\n\nAnd Emacs.' }]))
+      .toEqual(['Q: <stored_question>Tools?</stored_question>\nA: Vim.\nAnd Emacs.'])
   })
 })
