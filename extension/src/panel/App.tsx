@@ -20,7 +20,9 @@ import { addressPickParams, requestAddressPick, type AddressPickUi } from './app
 import { requestAddressRevisit, revisitWords, type RevisitWaiting } from './addressRevisit'
 import { loadResume, loadResumeText, saveResume } from './resume'
 import { NO_MATCH, landPick, pickOwed, requestPick, type PickOutcome, type PickRequest } from './optionPick'
-import { jobTextLine, offersNotTheJob } from './jobTextLine'
+import { jobTextLine, NOTHING_FOUND_WAYS, offersNotTheJob } from './jobTextLine'
+import { LINK_FAILED, LINK_REFUSED, postingLinkAddress, readPostingLink } from './postingLink'
+import type { FetchLike } from '../content/postingFetch'
 import { knownOptions, sendLearnedWording, wordingToLearn } from './learnedWording'
 import { pickResumeTarget, resumeOnPage } from './resumeTarget'
 import { fillEntry, MAPPING_LOST, readPageJobText, runMapping, runScan, ScanError, withReadOptions, type CollectedFill, type ElectionOutcome, type FrameReply, type FrameReport, type RelayFailure, type ScanProgress, type SendResult } from './scan'
@@ -278,9 +280,13 @@ const clearScanResults = (s: Session): Session => ({
 export interface AppProps {
   /** Injected only by tests, so the gate's timeout is provable without fake timers. */
   hostWaitMs?: number
+  /** The fetch the posting's link is read with (ticket #104); a test hands in a stub. */
+  fetchLink?: FetchLike
 }
 
-export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
+const fetchFromPanel: FetchLike = (url, init) => fetch(url, init)
+
+export function App({ hostWaitMs = HOST_WAIT_MS, fetchLink = fetchFromPanel }: AppProps = {}) {
   const portRef = useRef<HostPort | null>(null)
 
   /* ------------------------------------------------- the displayed session */
@@ -376,6 +382,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    *  #102). Kept by tab, not cleared by a swap: the ask belongs to that
    *  Session, and its button stays disabled until the answer lands. */
   const [rereadingTab, setRereadingTab] = useState<number | null>(null)
+  /** What the user typed into the link box and has not read yet, by tab
+   *  (ticket #104). With none, the box shows the link the Session holds. */
+  const [linkDraft, setLinkDraft] = useState<{ tabId: number; value: string } | null>(null)
+  /** The tab whose link is being read; its button stays disabled meanwhile. */
+  const [linkReadingTab, setLinkReadingTab] = useState<number | null>(null)
+  /** The link box's message for a tab: the address was refused, or gave no posting. */
+  const [linkNote, setLinkNote] = useState<{ tabId: number; kind: 'refused' | 'failed' } | null>(null)
   const [marking, setMarking] = useState(false)
   /** A Send is in flight (ticket #82); the ref closes the gap before the
    *  disabled button renders, so two quick clicks make one request. */
@@ -1185,9 +1198,13 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         frameReports: out.frameReports,
         applyCandidates: out.candidates,
         // What the user typed while the Scan ran is theirs.
-        ...(s.jobTextSource === 'paste' && s.jobText.trim() !== ''
+        // What the user typed or read from a link while the Scan ran is theirs.
+        ...((s.jobTextSource === 'paste' || s.jobTextSource === 'link') && s.jobText.trim() !== ''
           ? {}
-          : { jobText: out.jobText, jobTextSource: out.jobTextSource, jobTextSpot: out.jobTextSpot }),
+          : {
+              jobText: out.jobText, jobTextSource: out.jobTextSource, jobTextSpot: out.jobTextSpot,
+              jobTextLink: out.jobTextSource === 'link' ? s.jobTextLink : null,
+            }),
         // The Scan's guess fills an empty field only: what the user typed
         // while the Scan ran is theirs.
         ...(out.companyGuessed && out.company !== null && s.company.trim() === ''
@@ -1727,7 +1744,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         if (inScope(sc)) setScanStatus({ kind: 'action_failed', reason: `Pick refused: that spot holds ${picked.text.trim().length} characters, and a job description needs at least ${JOB_TEXT_MIN} characters.` })
         return
       }
-      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick', jobTextSpot: picked.selector }))
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: picked.text, jobTextSource: 'pick', jobTextSpot: picked.selector, jobTextLink: null }))
       if (inScope(sc)) clearActionFailure()
       // An Application email that waited for the job text starts now.
       void startEmailDraft(sc)
@@ -1979,7 +1996,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
         }, owner.epoch)
         if (!alive(sc)) return
         // What the user pasted or picked meanwhile is theirs.
-        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot } : s))
+        await applyToSession(sc.target, sc.gen, (s) => (s.jobText.trim() === '' ? { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot, jobTextLink: null } : s))
       } catch {
         // A page the panel cannot reach leaves the paste box and the pick to the user.
       }
@@ -1993,7 +2010,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
    * goes, its spot joins the Session's rejected spots, and the Native host
    * forgets the spot saved for the site. Then the page is asked again at once,
    * in its own order, reading past every rejected spot: the box shows the next
-   * text with its source, or nothing found.
+   * text with its source, or nothing found. A text from the user's link is
+   * forgotten with its link (ticket #104).
    */
   const onNotTheJob = async (): Promise<void> => {
     const owner = sessionRef.current
@@ -2005,8 +2023,10 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       await applyToSession(sc.target, sc.gen, (s) => {
         const spot = s.jobTextSpot
         rejected.spots = spot === null || s.rejectedJobTextSpots.includes(spot) ? s.rejectedJobTextSpots : [...s.rejectedJobTextSpots, spot]
-        return { ...s, jobText: '', jobTextSource: 'none', jobTextSpot: null, rejectedJobTextSpots: rejected.spots }
+        // A text from a link has no spot: the link itself is forgotten.
+        return { ...s, jobText: '', jobTextSource: 'none', jobTextSpot: null, jobTextLink: null, rejectedJobTextSpots: rejected.spots }
       })
+      setLinkDraft((d) => (d?.tabId === sc.target ? null : d))
       const tab = await getTab(sc.target)
       if (!alive(sc)) return
       const hostname = hostnameOf(tab?.url)
@@ -2030,7 +2050,7 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       await applyToSession(sc.target, sc.gen, (s) => {
         if (s.jobText.trim() !== '' || s.jobTextSource === 'paste') return s
         landed.text = read.jobText !== ''
-        return { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot }
+        return { ...s, jobText: read.jobText, jobTextSource: read.jobTextSource, jobTextSpot: read.jobTextSpot, jobTextLink: null }
       })
       // An Application email that waited for the job text starts now.
       if (landed.text) void startEmailDraft(sc)
@@ -2039,6 +2059,34 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
       setScanStatus({ kind: 'action_failed', reason: `Reading the page again failed: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       setRereadingTab((t) => (t === sc.target ? null : t))
+    }
+  }
+
+  /**
+   * The posting's link (spec #98, ticket #104): the address the user typed is
+   * read, and its text becomes the Session's, held as a paste is. Only an
+   * `http` or `https` address is fetched. A link that gives no posting shows
+   * one message and changes nothing the Session holds.
+   */
+  const onReadLink = async (): Promise<void> => {
+    const owner = sessionRef.current
+    if (owner === null || linkReadingTab === owner.tabId) return
+    const sc = { target: owner.tabId, gen: runtimeOf(owner.tabId).gen }
+    const typed = linkDraft?.tabId === owner.tabId ? linkDraft.value : (owner.jobTextLink ?? '')
+    const address = postingLinkAddress(typed)
+    if (address === null) { setLinkNote({ tabId: sc.target, kind: 'refused' }); return }
+    setLinkNote((n) => (n?.tabId === sc.target ? null : n))
+    setLinkReadingTab(sc.target)
+    try {
+      const text = await readPostingLink(address, fetchLink)
+      if (!alive(sc)) return
+      if (text === null) { setLinkNote({ tabId: sc.target, kind: 'failed' }); return }
+      await applyToSession(sc.target, sc.gen, (s) => ({ ...s, jobText: text, jobTextSource: 'link', jobTextSpot: null, jobTextLink: address }))
+      setLinkDraft((d) => (d?.tabId === sc.target ? null : d))
+      // An Application email that waited for the job text starts now.
+      void startEmailDraft(sc)
+    } finally {
+      setLinkReadingTab((t) => (t === sc.target ? null : t))
     }
   }
 
@@ -2664,7 +2712,8 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
           onPaste={() => { pastedRef.current = true }}
           onChange={(e) => {
             const v = e.target.value
-            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste', jobTextSpot: null }))
+            // A paste replaces a text read from a link, and its link.
+            writeSession((s) => ({ ...s, jobText: v, jobTextSource: 'paste', jobTextSpot: null, jobTextLink: null }))
             if (!pastedRef.current) return
             pastedRef.current = false
             const sc = scopeNow()
@@ -2681,10 +2730,38 @@ export function App({ hostWaitMs = HOST_WAIT_MS }: AppProps = {}) {
             )}
           </span>
         )}
+        {session !== null && jobTextSource === 'none' && jobText === '' && (
+          <span className="mt-0.5 block text-xs" data-jff-jobtext-ways="1">{NOTHING_FOUND_WAYS}</span>
+        )}
         <button type="button" className={`${BTN} mt-1`} disabled={(fields.length === 0 && (session === null || !emailStarted(session))) || picking} onClick={onPickJobText}>
           {busyLabel(picking, 'Pick job description', 'Picking… (click the description on the page)')}
         </button>
       </label>
+
+      <div className={`my-2.5 block ${MUTED}`} data-jff-link="1">
+        <label className="block">
+          Job posting link (if the posting is on another page)
+          <input
+            type="url" className={`${INPUT} mt-1`} disabled={session === null} placeholder="https://"
+            value={session === null ? '' : linkDraft?.tabId === session.tabId ? linkDraft.value : (session.jobTextLink ?? '')}
+            onChange={(e) => {
+              if (session === null) return
+              const tab = session.tabId
+              setLinkDraft({ tabId: tab, value: e.target.value })
+              setLinkNote((n) => (n?.tabId === tab ? null : n))
+            }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void onReadLink() } }}
+          />
+        </label>
+        {session !== null && linkNote?.tabId === session.tabId && (
+          linkNote.kind === 'refused'
+            ? <span className="mt-0.5 block text-xs text-amber-600 dark:text-amber-400" data-jff-link-refused="1">{LINK_REFUSED}</span>
+            : <span className="mt-0.5 block text-xs text-amber-600 dark:text-amber-400" data-jff-link-failed="1">{LINK_FAILED}</span>
+        )}
+        <button type="button" className={`${BTN} mt-1`} disabled={session === null || linkReadingTab === session.tabId} onClick={() => { void onReadLink() }}>
+          {busyLabel(session !== null && linkReadingTab === session.tabId, 'Read the posting', 'Reading the posting…')}
+        </button>
+      </div>
 
       {view === 'editor'
         ? (

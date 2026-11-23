@@ -456,8 +456,14 @@ describe('the Job posting text source (spec #41)', () => {
     expect(ContentMessageSchema.safeParse({ type: 'JFF_JOBTEXT', epoch: 1, selector: null, rejected: [1] }).success).toBe(false)
   })
 
-  it('the Session\'s source is one of five', () => {
-    expect(JobTextSourceSchema.options).toEqual(['paste', 'ats', 'pick', 'heuristic', 'none'])
+  it('the Session\'s source is one of six, the user\'s link among them (ticket #104)', () => {
+    expect(JobTextSourceSchema.options).toEqual(['paste', 'link', 'ats', 'pick', 'heuristic', 'none'])
+  })
+
+  it('a Capture accepts a text read from the user\'s link', () => {
+    const base = { page: { html: '<p>x</p>', cut: false }, ats: 'generic', url: 'https://x.example/apply', fields: [], resolutions: [], election: null, frameReports: [] }
+    const ok = CaptureSaveParamsSchema.safeParse({ ...base, jobTextSource: 'link' })
+    expect(ok.success && ok.data.jobTextSource).toBe('link')
   })
 
   it('a Capture carries a source and refuses one that is not on the list', () => {
