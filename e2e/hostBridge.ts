@@ -75,6 +75,10 @@ export async function startHost(
     claudePath: join(FAKE_BIN, 'claude'),
     codexPath: join(FAKE_BIN, 'codex'),
     dbPath: join(home, 'db.sqlite'),
+    // Mapping and the Option pick run on Claude by default (host/src/llm/models.ts),
+    // but their stand-in behaviours (the held reply, the rate limit, the canned
+    // pick) live in the fake codex. A gpt id routes those two tasks back to it.
+    models: { mapping: 'gpt-6-luna', optionPick: 'gpt-6-luna' },
   }))
 
   const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [opts.fakeMail === true ? FAKE_MAIL_ENTRY : HOST_ENTRY], {
