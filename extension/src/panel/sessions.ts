@@ -1,8 +1,9 @@
-import { ACCOMMODATION_REASON, ApplyAddressCandidateSchema, asksAboutAccommodation, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
+import { ACCOMMODATION_REASON, ApplyAddressCandidateSchema, asksAboutAccommodation, ApplyAddressChoiceSchema, isAtsOrGeneric, JobTextSourceSchema, normalizeQuestion, type ApplyAddressCandidate, type ApplyAddressChoice, type AtsOrGeneric, type JobTextSource, type EnumField, type FieldClass, type FieldKey, type KeptProseAnswer, type Resolution } from '@jff/shared'
 import { SESSION_KEY_RE, sessionKey } from '../sessionKey'
 import { SessionEmailDraftSchema, type SessionEmailDraft } from './emailDraft'
 import { SessionMailHandoverSchema, type SessionMailHandover } from './mailApp'
 import { AddressRevisitSchema, type AddressRevisit } from './addressRevisit'
+import { offersGeneration } from './generationOffer'
 import { refOf } from './group'
 import type { ElectionOutcome, FrameReport } from './scan'
 import type { ScanUiState } from './ScanStatus'
@@ -17,10 +18,12 @@ export interface SessionAnswer {
   value: string
   provenance: AnswerProvenance
   fieldKey: FieldKey | null
-  /** Set on the answer to a Prose Field: its question as the page wrote it,
-   *  which Mark applied keeps beside the Applied job (spec #66). Absent on
-   *  every other Field, and on a row stored before it was kept. */
-  prose?: { question: string }
+  /** The stamp Mark applied reads: set on an answer given on a row that
+   *  offers Generation, with its question as the page wrote it and the row's
+   *  kind (ticket #107). Absent on every other row, and on a row stored before
+   *  it was kept. The key keeps its spec #66 name, from when only Prose Fields
+   *  were stamped; a stamp written then has no kind and reads as prose. */
+  prose?: { question: string; kind?: FieldClass }
   /** The Draft this answer started from and the model that wrote it. It
    *  outlives the user's edits, which are told apart by comparing the value
    *  with it, and a new Draft replaces it. `missing`: what stored fact the
@@ -245,8 +248,10 @@ export function rememberAnswer(
   const resolution = s.resolutions.find((r) => refOf(r.handle) === ref)
   const fieldKey = resolution?.key ?? null
   const answer: SessionAnswer = { value, provenance, fieldKey }
-  if (resolution?.fieldClass === 'prose' && fieldKey === null) {
-    answer.prose = { question: (s.fields.find((f) => refOf(f) === ref)?.label ?? '').trim() }
+  const field = s.fields.find((f) => refOf(f) === ref)
+  if (resolution !== undefined && field !== undefined && offersGeneration({ field, resolution })) {
+    // A row Mapping gave no label is a Personal-fact Field, as everywhere else.
+    answer.prose = { question: (field.label ?? '').trim(), kind: resolution.fieldClass === 'prose' ? 'prose' : 'personal_fact' }
   }
   // A new Draft replaces the old one; the user's own write keeps the Draft it
   // started from, so the edit can be told apart at Mark applied.
@@ -276,11 +281,12 @@ export function draftGaps(s: Session): Record<string, { text: string; missing: s
 }
 
 /**
- * The prose answers a form Mark applied keeps (spec #66): one for each Prose
- * Field the Session holds a non-empty text for, on this page or an earlier
- * step of the same application. The text is what the Session holds now; a
- * change made on the page after Fill is not read back. A text is AI-drafted
- * when a Draft came back for it, and edited when it no longer equals that Draft.
+ * The answers a form Mark applied keeps (spec #66, ticket #107): one for each
+ * stamped answer the Session holds a non-empty text for, on this page or an
+ * earlier step of the same application, with its kind. The text is what the
+ * Session holds now; a change made on the page after Fill is not read back. A
+ * text is AI-drafted when a Draft came back for it, and edited when it no
+ * longer equals that Draft. A stamp with no kind is a prose one.
  */
 export function keptProseAnswers(s: Session): KeptProseAnswer[] {
   const out: KeptProseAnswer[] = []
@@ -295,6 +301,7 @@ export function keptProseAnswers(s: Session): KeptProseAnswer[] {
       aiDrafted: draft !== undefined,
       edited: draft !== undefined && draft.text !== a.value,
       model: draft === undefined || typeof draft.model !== 'string' ? null : draft.model,
+      kind: a.prose.kind === 'personal_fact' ? 'personal_fact' : 'prose',
     })
   }
   return out

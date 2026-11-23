@@ -2,7 +2,7 @@ import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import {
   isProfileKey, norm,
-  type AppliedChannel, type AppliedTexts, type ApplicationEmail, type EmailLanguage, type EmailRoute, type FieldKey, type KeptProseAnswer, type MailKind,
+  type AppliedChannel, type AppliedTexts, type ApplicationEmail, type EmailLanguage, type EmailRoute, type FieldClass, type FieldKey, type KeptProseAnswer, type MailKind,
 } from '@jff/shared'
 import { canonicalUrl } from '../canonicalUrl.js'
 import { MIGRATIONS, migrate, type Migration } from './migrations.js'
@@ -346,11 +346,11 @@ export function markApplied(
     if ((row.channel ?? 'form') === 'form' || kept.length > 0) {
       db.prepare(`DELETE FROM applied_prose_answers WHERE applied_job_id = ?`).run(got.id)
       const insert = db.prepare(
-        `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO applied_prose_answers (applied_job_id, position, question, text, ai_drafted, edited, model, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       kept.forEach((a, i) => {
-        insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model)
+        insert.run(got.id, i, a.question, a.text, a.aiDrafted ? 1 : 0, a.edited ? 1 : 0, a.model, a.kind)
       })
     }
     if (row.email !== undefined) insertApplicationEmail(db, got.id, row.email)
@@ -431,14 +431,15 @@ export function listApplied(db: Database.Database): AppliedJob[] {
   return (db.prepare(`SELECT ${APPLIED_COLUMNS} FROM applied_jobs ORDER BY marked_at DESC, id DESC`).all() as RawApplied[]).map(toApplied)
 }
 
-/** The prose answers kept beside one Applied job, in the order the mark sent them. */
+/** The answers kept beside one Applied job, prose and personal fact, each
+ *  with its kind, in the order the mark sent them. */
 export function listKeptProseAnswers(db: Database.Database, appliedJobId: number): KeptProseAnswer[] {
   const rows = db.prepare(
-    `SELECT question, text, ai_drafted, edited, model FROM applied_prose_answers
+    `SELECT question, text, ai_drafted, edited, model, kind FROM applied_prose_answers
      WHERE applied_job_id = ? ORDER BY position`,
-  ).all(appliedJobId) as { question: string; text: string; ai_drafted: number; edited: number; model: string | null }[]
+  ).all(appliedJobId) as { question: string; text: string; ai_drafted: number; edited: number; model: string | null; kind: FieldClass }[]
   return rows.map((r) => ({
-    question: r.question, text: r.text, aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model,
+    question: r.question, text: r.text, aiDrafted: r.ai_drafted === 1, edited: r.edited === 1, model: r.model, kind: r.kind,
   }))
 }
 

@@ -93,10 +93,13 @@ export const AppliedChannelSchema = z.enum(APPLIED_CHANNELS)
 export type AppliedChannel = z.infer<typeof AppliedChannelSchema>
 
 /**
- * One Prose Field's final text, kept beside a form Applied job (spec #66):
- * the question as the page wrote it, the text the Session held at Mark
- * applied, whether AI drafted it, whether the user changed the Draft, and the
- * model that wrote the Draft, null when AI drafted nothing.
+ * One final text kept beside a form Applied job (spec #66), from a row that
+ * offered Generation: the question as the page wrote it, the text the Session
+ * held at Mark applied, whether AI drafted it, whether the user changed the
+ * Draft, the model that wrote the Draft, null when AI drafted nothing, and the
+ * row's kind (ticket #107). The name keeps its spec #66 wording, from when only
+ * Prose Fields were kept. A `kind` that is absent, from a Side panel or a
+ * Native host older than the kind, reads as prose.
  */
 export const KeptProseAnswerSchema = z.object({
   question: z.string(),
@@ -104,6 +107,7 @@ export const KeptProseAnswerSchema = z.object({
   aiDrafted: z.boolean(),
   edited: z.boolean(),
   model: z.string().nullable(),
+  kind: FieldClassSchema.default('prose'),
 })
 export type KeptProseAnswer = z.infer<typeof KeptProseAnswerSchema>
 

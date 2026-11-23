@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EnumField, FieldKey, Resolution } from '@jff/shared'
 import { sessionKey } from '../sessionKey'
 import {
-  answerKey, answerKeysByRef, capForStorage, createSessionStore, draftGaps, MAX_PERSISTED_OPTIONS,
+  answerKey, answerKeysByRef, capForStorage, createSessionStore, draftGaps, keptProseAnswers, MAX_PERSISTED_OPTIONS,
   mergeMapping, newSession, parseStoredSession, projectAnswers, rememberAnswer, SESSION_VERSION, settleWaiting,
   type Session,
 } from './sessions'
@@ -910,5 +910,83 @@ describe('the Scan\'s ATS rides the Session (spec #41)', () => {
   it('an ATS the list does not name loads as generic, and a value that is no string is refused', () => {
     expect(parseStoredSession({ ...newSession(7), ats: 'teamtailor' })?.ats).toBe('generic')
     expect(parseStoredSession({ ...newSession(7), ats: 3 })).toBeNull()
+  })
+})
+
+describe('An answer on a row that offers Generation is stamped with its kind (ticket #107)', () => {
+  const PROSE = 'Why do you want to work here?'
+  const FACT = 'Which versions of the analytical engine have you worked with?'
+  const UNLABELLED = 'Can you work on site one day a week?'
+  const CHOICE = 'How did you hear about us?'
+  const KEYED = 'Phone'
+  const ACCOMMODATION = 'Do you need any accommodation for the interview?'
+  const fieldOf = (fid: number, label: string, patch: Partial<EnumField> = {}): EnumField => ({
+    frameId: 0, fid, epoch: 1, label, name: null, idAttr: null, kind: 'text',
+    options: [], required: false, visible: true, currentValue: null, demographic: false, ...patch,
+  })
+  const needsInput = (fid: number, patch: Partial<Resolution> = {}): Resolution => ({
+    handle: { frameId: 0, fid, epoch: 1 }, tier: 'needs_input', value: null,
+    source: null, key: null, answerId: null, reason: 'custom', ...patch,
+  })
+  const page = (): Session => ({
+    ...newSession(7),
+    fields: [
+      fieldOf(0, PROSE, { kind: 'textarea' }), fieldOf(1, FACT), fieldOf(2, UNLABELLED, { kind: 'textarea' }),
+      fieldOf(3, CHOICE, { kind: 'select', options: ['A friend', 'A job board'] }), fieldOf(4, KEYED), fieldOf(5, ACCOMMODATION, { kind: 'textarea' }),
+    ],
+    resolutions: [
+      needsInput(0, { fieldClass: 'prose' }), needsInput(1, { fieldClass: 'personal_fact' }), needsInput(2),
+      needsInput(3, { fieldClass: 'personal_fact' }), needsInput(4, { key: 'phone', reason: 'recognizer:no-stored-value' }),
+      needsInput(5, { fieldClass: 'personal_fact', reason: 'accommodation' }),
+    ],
+  })
+  const answered = (): Session => [
+    ['0:0', 'I read the analytical engine notes.'], ['0:1', 'The first and the second.'], ['0:2', 'Yes, on Tuesdays.'],
+    ['0:3', 'A friend'], ['0:4', '+1 555 0100'], ['0:5', 'None needed.'],
+  ].reduce((s, [ref, value]) => rememberAnswer(s, ref!, value!, 'user'), page())
+
+  it('stamps a Prose row prose, a Personal-fact text row personal fact, and a text row with no label personal fact', () => {
+    const s = answered()
+    expect(s.answers[answerKey(PROSE)]?.prose).toEqual({ question: PROSE, kind: 'prose' })
+    expect(s.answers[answerKey(FACT)]?.prose).toEqual({ question: FACT, kind: 'personal_fact' })
+    expect(s.answers[answerKey(UNLABELLED)]?.prose).toEqual({ question: UNLABELLED, kind: 'personal_fact' })
+  })
+
+  it('stamps no answer on a choice Control, a keyed Field or an accommodation row', () => {
+    const s = answered()
+    for (const label of [CHOICE, KEYED, ACCOMMODATION]) {
+      expect(s.answers[answerKey(label)]?.value).toBeTruthy()
+      expect(s.answers[answerKey(label)]?.prose).toBeUndefined()
+    }
+    expect(keptProseAnswers(s).map((a) => a.question)).toEqual([PROSE, FACT, UNLABELLED])
+  })
+
+  it('keeps each stamped answer with its kind and marks, a Draft\'s included', () => {
+    const drafted = rememberAnswer(answered(), '0:1', 'The first.', 'generated', 'claude-opus-5-5')
+    const edited = rememberAnswer(drafted, '0:1', 'The first and the second.', 'user')
+    expect(keptProseAnswers(edited)).toEqual([
+      { question: PROSE, text: 'I read the analytical engine notes.', aiDrafted: false, edited: false, model: null, kind: 'prose' },
+      { question: FACT, text: 'The first and the second.', aiDrafted: true, edited: true, model: 'claude-opus-5-5', kind: 'personal_fact' },
+      { question: UNLABELLED, text: 'Yes, on Tuesdays.', aiDrafted: false, edited: false, model: null, kind: 'personal_fact' },
+    ])
+  })
+
+  it('keeps an answer stamped on an earlier step with its kind once its row is gone', () => {
+    const next = projectAnswers(answered(), [fieldOf(0, 'Upload your Resume', { kind: 'file' })], [needsInput(0)], {})
+    expect(next.fields.map((f) => f.label)).not.toContain(FACT)
+    expect(keptProseAnswers(next)).toContainEqual(
+      { question: FACT, text: 'The first and the second.', aiDrafted: false, edited: false, model: null, kind: 'personal_fact' },
+    )
+  })
+
+  it('reads a stamp written before the kind as prose', () => {
+    const s: Session = {
+      ...newSession(7),
+      answers: { [answerKey(PROSE)]: { value: 'Because of the engines.', provenance: 'user', fieldKey: null, prose: { question: PROSE } } },
+    }
+    const reloaded = parseStoredSession(JSON.parse(JSON.stringify(s)))!
+    expect(keptProseAnswers(reloaded)).toEqual([
+      { question: PROSE, text: 'Because of the engines.', aiDrafted: false, edited: false, model: null, kind: 'prose' },
+    ])
   })
 })
