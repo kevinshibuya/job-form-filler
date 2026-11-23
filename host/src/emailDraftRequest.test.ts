@@ -109,6 +109,28 @@ describe('email.draft', () => {
     expect(prompt).toContain('fullName: Ada Lovelace')
   })
 
+  it('hands the writer and its Draft check no Saved answer, reusable or not (spec #98)', async () => {
+    const saved = await handleRaw(deps, {
+      requestId: crypto.randomUUID(), method: 'save',
+      params: {
+        url: 'https://jobs.example.com/apply', company: 'Example Ltd', generatedCount: 0,
+        items: [
+          { handle: { frameId: 0, fid: 1, epoch: 1 }, questionRaw: 'What is your expected salary?', answer: 'SALARY-ANSWER', reusability: 'reusable', fieldKey: null },
+          { handle: { frameId: 0, fid: 2, epoch: 1 }, questionRaw: 'Why Example Ltd?', answer: 'COMPANY-ANSWER', reusability: 'company_specific', fieldKey: null },
+        ],
+      },
+    })
+    expect(saved).toMatchObject({ ok: true, result: { saved: 2 } })
+    await drafted(POSTING)
+    const prompts = [writerPrompt(), checkComplete.mock.calls[0]![0]]
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain('SALARY-ANSWER')
+      expect(prompt).not.toContain('COMPANY-ANSWER')
+      expect(prompt).not.toContain('SAVED ANSWERS (')
+      expect(prompt).not.toContain('<stored_question>expected salary')
+    }
+  })
+
   it('runs the writer and the Draft check on claude-opus-5-5, and asks no Codex model', async () => {
     await drafted(POSTING)
     expect(claudeComplete).toHaveBeenCalledTimes(1)

@@ -209,6 +209,8 @@ export async function draftApplicationEmail(
       jobText: input.jobText, company: input.company,
       profileSummary: input.profileSummary, cvText: input.cvText, projectNotes: input.projectNotes,
       references: [],
+      // The Application email reads no Saved answer, so neither does its check (spec #98).
+      savedAnswers: [],
     }
     const checked = await reviewDraft(deps.checker, checkInput, drafted, { model: deps.models.checker, retryTransient: false })
     prose = sanitizeDraft(checked.draft)

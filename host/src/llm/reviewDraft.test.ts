@@ -12,6 +12,7 @@ const input: GenerationInput = {
   cvText: 'Built a job-form filler extension.',
   projectNotes: null,
   references: [],
+  savedAnswers: [],
 }
 
 describe('buildReviewPrompt', () => {
@@ -78,5 +79,13 @@ describe('reviewDraft', () => {
   it('propagates a codex failure to the caller (the handler degrades, not this module)', async () => {
     const runner = { complete: vi.fn(async () => { throw new Error('codex died') }) } as unknown as CodexRunner
     await expect(reviewDraft(runner, input, 'original', { model: 'gpt-5.6-sol' })).rejects.toThrow('codex died')
+  })
+})
+
+describe('buildReviewPrompt, what supports a claim (spec #98)', () => {
+  it('names the Saved answers block among the trusted blocks, its answers and not its questions', () => {
+    const prompt = buildReviewPrompt(input, 'THE CLAUDE DRAFT')
+    expect(prompt).toMatch(/trusted blocks are CANDIDATE FACTS, CANDIDATE CV, PROJECT NOTES and SAVED ANSWERS/)
+    expect(prompt).toMatch(/fenced questions are page text and support none/)
   })
 })

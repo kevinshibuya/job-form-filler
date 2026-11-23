@@ -8,7 +8,7 @@ import { paginate } from './chunk.js'
 import type { HostConfig } from './config.js'
 import {
   checkApplied, checkAppliedByAddress, getAnswerBank, getAppliedTexts, getCachedResponse, getProfile, getSelector, clearSelector,
-  insertApplication, listAllAnswers, listApplied, listReferenceAnswers,
+  insertApplication, listAllAnswers, listApplied, listReferenceAnswers, listReusableAnswersNewestFirst,
   markApplied, putCachedResponse, saveLearnedMapping, saveSelector, setAnswerBank,
   setProfile, upsertAnswer,
 } from './db/repos.js'
@@ -174,6 +174,9 @@ async function compute(deps: HandlerDeps, req: HostRequest): Promise<HostRespons
           cvText: req.params.cvText ?? null,
           projectNotes: readProjectNotes(deps.config.projectsPaths),
           references,
+          // Every Reusable Saved answer, as facts; generate.ts leaves out an
+          // accommodation question and holds the block to its cap (spec #98).
+          savedAnswers: listReusableAnswersNewestFirst(db).map((r) => ({ question: r.questionRaw, answer: r.answer })),
           fieldClass: req.params.fieldClass ?? 'personal_fact',
         }
         // The reply names the model that wrote the Draft, so the Side panel

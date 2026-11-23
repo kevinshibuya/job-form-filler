@@ -137,6 +137,16 @@ export function listReusableAnswers(db: Database.Database, language: Lang): QaRo
   return rows.map(toQa)
 }
 
+/** Every Reusable Saved answer, both languages, in the order first saved,
+ *  latest first: an upsert keeps a row's id, so a correction keeps its place.
+ *  Generation reads them as facts (spec #98). */
+export function listReusableAnswersNewestFirst(db: Database.Database): QaRow[] {
+  const rows = db.prepare(
+    `SELECT * FROM qa_memory WHERE reusability = 'reusable' ORDER BY id DESC`,
+  ).all() as RawQa[]
+  return rows.map(toQa)
+}
+
 /** company_specific prior drafts for the SAME question — [Generate] reference only. */
 export function listReferenceAnswers(db: Database.Database, questionNormalized: string, language: Lang): QaRow[] {
   const rows = db.prepare(
