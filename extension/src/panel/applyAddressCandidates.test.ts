@@ -3,6 +3,7 @@ import { ADDRESS_CONTEXTS_MAX, APPLY_CANDIDATES_MAX, type AddressContext, type F
 import { collectAddresses } from '../content/addresses'
 import { loadEmailFixture } from '../content/fixtures/real'
 import { mergeCandidates } from './applyAddressCandidates'
+import { pageSubjectFor } from './emailDraft'
 
 /**
  * The Side panel merges the frames' address lists into Apply address
@@ -57,6 +58,29 @@ describe('merging the frames\' addresses', () => {
     const contexts = mergeCandidates([many], null)[0]!.contexts
     expect(contexts).toHaveLength(ADDRESS_CONTEXTS_MAX)
     expect(contexts[0]).toEqual(text('Sentence 0.'))
+  })
+
+  it('keeps the first mailto: subject found past the cap, so the page\'s subject is not lost (#88)', () => {
+    const found = [
+      ...Array.from({ length: ADDRESS_CONTEXTS_MAX }, (_, i) => at('jobs@example.org', text(`Sentence ${i}.`))),
+      at('jobs@example.org', mailto('Mail us')),
+      at('jobs@example.org', mailto('Apply here', 'Application: analyst')),
+      at('jobs@example.org', mailto('Apply again', 'A later subject')),
+    ]
+    const candidates = mergeCandidates([found], null)
+    expect(candidates[0]!.contexts).toEqual([
+      text('Sentence 0.'), text('Sentence 1.'), text('Sentence 2.'), mailto('Apply here', 'Application: analyst'),
+    ])
+    expect(pageSubjectFor(candidates, 'jobs@example.org')).toBe('Application: analyst')
+  })
+
+  it('adds no context past the cap when a kept one already sets a subject (#88)', () => {
+    const found = [
+      at('jobs@example.org', mailto('Apply', 'First')),
+      ...Array.from({ length: ADDRESS_CONTEXTS_MAX }, (_, i) => at('jobs@example.org', text(`Sentence ${i}.`))),
+      at('jobs@example.org', mailto('Apply here', 'Second')),
+    ]
+    expect(mergeCandidates([found], null)[0]!.contexts).toHaveLength(ADDRESS_CONTEXTS_MAX)
   })
 
   it('stops the list at its cap, keeping the first in page order', () => {

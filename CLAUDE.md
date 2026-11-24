@@ -43,5 +43,11 @@ it from stored answers, and draft the free-text ones under human review.
 - Notes that hold real application data (pages visited, answers given, employers)
   go in `~/.job-form-filler/dev/`. A PR, an issue and a commit message are
   public: write them from the sanitised summary.
+- A merge commit GitHub builds for a PR merged through the API or `gh` takes
+  its author address from the account, not from the repo's git config, and the
+  private-data guard sees it only once it is on the branch. A PR merged from the
+  shell is either a merge commit built locally with the noreply identity, or a
+  `gh pr merge` with `--author-email <noreply>`. Check `git log -1 --format='%ae %ce'`
+  on the merge before anything builds on it.
 - A captured page becomes a fixture only through `scripts/sanitize-capture.mjs`.
 - Branch flow: feature branch, PR into `ai-staging`. Never commit on `main`.

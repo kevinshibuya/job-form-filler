@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addedLines, scanIdentity, scanLine } from './check-private.mjs'
+import { addedLines, formatFinding, scanIdentity, scanLine } from './check-private.mjs'
 
 // Every offending sample is assembled at run time, so this file never holds a
 // string the guard it tests would refuse to commit.
@@ -72,6 +72,25 @@ describe('scanIdentity', () => {
     expect(scanIdentity('123+someone@users.noreply.github.com')).toEqual([])
     expect(scanIdentity('noreply@github.com')).toEqual([])
     expect(scanIdentity(realEmail)).toEqual([{ rule: 'identity', detail: realEmail }])
+  })
+})
+
+describe('formatFinding', () => {
+  it('names the rule, the place and what matched on a local run', () => {
+    expect(formatFinding({ rule: 'email', where: 'README.md:3', detail: realEmail }, false)).toBe(`  email          README.md:3  ${realEmail}`)
+  })
+
+  it('in CI names the rule and the place, never what matched: the log is public (#62)', () => {
+    for (const finding of [
+      { rule: 'identity', where: 'abc1234 identity', detail: realEmail },
+      { rule: 'email', where: 'README.md:3', detail: realEmail },
+      { rule: 'home-path', where: 'notes.md:1', detail: homePath },
+    ]) {
+      const line = formatFinding(finding, true)
+      expect(line).toContain(finding.rule)
+      expect(line).toContain(finding.where)
+      expect(line).not.toContain(finding.detail)
+    }
   })
 })
 
