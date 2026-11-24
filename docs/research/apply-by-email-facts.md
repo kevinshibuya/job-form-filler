@@ -170,6 +170,19 @@ The recipe, for the service name `job-form-filler` and one account name per secr
 
 The `security` tool created the item, so it reads the item back without a Keychain prompt.
 
+A failure inside `security -i` reaches its exit code. Checked on 2026-11-24 on macOS 15.8.3 with a throwaway item under a random service name, removed afterwards:
+
+| Command on standard input | Exit |
+| --- | --- |
+| `delete-generic-password` of an item that is not there | 44 |
+| `add-generic-password` without `-U` of an item that exists | 45 |
+| an unknown command | 1 |
+| `add-generic-password -U`, then `delete-generic-password` of the same item | 0, then 0 |
+| a read after that delete | 44 |
+| a failing `delete-generic-password`, then a command that succeeds, in one session | 0 |
+
+`security -i` exits with the status of its last command. The Keychain store sends one command per call, so a delete that fails throws, and Disconnect cannot report success with the secret still in the Keychain. Two commands in one session would hide the first one's failure.
+
 ## Revocation
 
 Not one of the nine questions, but the Mail account ticket needs it. `POST https://oauth2.googleapis.com/revoke` with the refresh token returned 200 with an empty JSON object. Five seconds later a refresh with the same token returned 400 with `{"error": "invalid_grant", "error_description": "Token has been expired or revoked."}` (`refresh-invalid-grant.json`). A second sign-in after that worked as the first did. Google's text: "If the token is an access token and it has a corresponding refresh token, the refresh token will also be revoked." (https://developers.google.com/identity/protocols/oauth2/native-app).

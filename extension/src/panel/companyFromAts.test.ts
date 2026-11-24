@@ -29,6 +29,11 @@ describe('the Company on Lever', () => {
     expect(guess({ title: 'Apply', url: 'https://jobs.lever.co/acme-rockets/123/apply' })).toBe('Acme Rockets')
     expect(guess({ title: '', url: 'https://jobs.lever.co/acme_rockets/123' })).toBe('Acme Rockets')
   })
+  it('reads a Lever frame\'s address, not Lever\'s title pattern, on a company\'s own page (#59)', () => {
+    expect(guess({
+      title: 'Careers - Acme', url: 'https://careers.example.com/jobs/1', frameUrl: 'https://jobs.lever.co/acme-rockets/123/apply',
+    })).toBe('Acme Rockets')
+  })
 })
 
 describe('the Company on Ashby', () => {

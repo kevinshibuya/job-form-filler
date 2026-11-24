@@ -55,13 +55,17 @@ const hostOf = (url: string | null): string => {
 /**
  * The Company of a Scan (spec #41): the ATS's title pattern, then the ATS's
  * address slug written as words, then `guessCompany`'s generic guess. The title
- * is the tab's. The address is the elected frame's when that frame is on the
- * ATS, and the tab's otherwise. An ATS's name is never the Company.
+ * is the tab's, and the ATS's pattern is read from it only when the tab itself
+ * is on the ATS: a company's page titled "Careers - Acme" around a Lever frame
+ * is not a Lever title (#59). The address is the elected frame's when that
+ * frame is on the ATS, and the tab's otherwise. An ATS's name is never the
+ * Company.
  */
 export function guessScanCompany(page: CompanyPage): string | null {
   const ats = ATS_LIST.find((a) => a.id === page.ats)
   if (ats !== undefined) {
-    const fromTitle = companyFromTitle(ats, page.title)
+    const tabOnAts = findAts(page.hostname.toLowerCase())?.id === ats.id
+    const fromTitle = tabOnAts ? companyFromTitle(ats, page.title) : null
     if (fromTitle !== null && !isAtsName(fromTitle)) return fromTitle
     const frameOnAts = findAts(hostOf(page.frameUrl))?.id === ats.id
     const slug = companySlugFrom(ats, frameOnAts ? page.frameUrl! : page.url)
