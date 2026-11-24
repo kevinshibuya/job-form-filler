@@ -652,7 +652,9 @@ export function recordArrivedEmail(
     if (r.email.senderAddress !== null) setLastSenderAddress(db, r.email.senderAddress)
     return { ok: true, job }
   })
-  // Immediate, as a Send's begin(): a deferred transaction reads first and, in
-  // WAL, fails at once with SQLITE_BUSY when another panel commits meanwhile.
+  // Immediate, as a Send's begin(). A deferred transaction reads first, and its
+  // upgrade to a write fails at once with SQLITE_BUSY when another panel holds
+  // the write lock or has committed since that read: the busy timeout covers
+  // neither.
   return tx.immediate()
 }

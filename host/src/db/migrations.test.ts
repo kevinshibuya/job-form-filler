@@ -315,6 +315,15 @@ function firstLine(child: ChildProcess): Promise<string> {
 // after it proves the Native host's own busy timeout, not the library's.
 const HOLD_MS = 7_000
 
+/** An "It arrived" record for one new Job posting, under a fresh request id. */
+const arrivedEmail = (): Parameters<typeof recordArrivedEmail>[1] => ({
+  requestId: crypto.randomUUID(), url: 'https://jobs.example.com/arrived', company: null, jobTitle: null,
+  email: {
+    applyAddress: 'jobs@example.org', senderAddress: null, subject: 'Application', body: 'Hello', attachmentNames: [],
+    language: 'en', gmailMessageId: null, gmailThreadId: null, route: 'tool', aiDrafted: true, edited: false, model: null,
+  },
+})
+
 describe('openDb across processes', () => {
   it("makes a write wait for another process's lock and then succeed", async () => {
     const path = tempDbPath()
@@ -343,8 +352,10 @@ describe('openDb across processes', () => {
     const path = tempDbPath()
     const db = openDb(path)
 
-    // A deferred transaction would read first, then find its snapshot stale
-    // once the holder commits, and fail with SQLITE_BUSY without waiting.
+    // A deferred transaction would read first, then ask for the write lock the
+    // holder still has. SQLite runs no busy handler for a connection that
+    // already holds a read, so it would fail with SQLITE_BUSY at once instead
+    // of waiting for the commit.
     const holder = spawn(process.execPath, ['--input-type=module', '-e', `
       import { createRequire } from 'node:module'
       const Database = createRequire(import.meta.url)(${JSON.stringify(BETTER_SQLITE)})
@@ -357,17 +368,30 @@ describe('openDb across processes', () => {
     children.push(holder)
     expect(await firstLine(holder)).toBe('locked')
 
-    const out = recordArrivedEmail(db, {
-      requestId: crypto.randomUUID(), url: 'https://jobs.example.com/arrived', company: null, jobTitle: null,
-      email: {
-        applyAddress: 'jobs@example.org', senderAddress: null, subject: 'Application', body: 'Hello', attachmentNames: [],
-        language: 'en', gmailMessageId: null, gmailThreadId: null, route: 'tool', aiDrafted: true, edited: false, model: null,
-      },
-    })
-    expect(out.ok).toBe(true)
+    expect(recordArrivedEmail(db, arrivedEmail()).ok).toBe(true)
     expect(getProfile(db)).toEqual({ firstName: 'Ada' })
     db.close()
   }, 30_000)
+
+  it('"It arrived" waits out the busy timeout for a write lock another connection holds, instead of failing at once (#90)', () => {
+    const path = tempDbPath()
+    const db = openDb(path)
+    db.pragma('busy_timeout = 400')
+    // One process, two connections: the lock is held for the whole synchronous
+    // call, so the contention cannot slip away under load.
+    const other = new DatabaseCtor(path)
+    other.exec('BEGIN IMMEDIATE')
+    other.prepare("INSERT INTO profile (key, value) VALUES ('firstName', 'Ada')").run()
+
+    const started = Date.now()
+    expect(() => recordArrivedEmail(db, arrivedEmail())).toThrow(/database is locked/)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(300)
+
+    other.exec('COMMIT')
+    other.close()
+    expect(recordArrivedEmail(db, arrivedEmail()).ok).toBe(true)
+    db.close()
+  })
 
   it('migrates an old database file once when two processes open it at the same moment', async () => {
     const path = tempDbPath()

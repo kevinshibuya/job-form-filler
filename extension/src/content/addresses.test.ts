@@ -98,9 +98,35 @@ describe('a mailto: link', () => {
     expect(collectAddresses(document)[0]!.context).toEqual({ kind: 'mailto', linkText: 'Apply', subject: 'Senior analyst role' })
   })
 
-  it('keeps a subject whose percent sign is not an escape as written (#89)', () => {
-    page('<a href="mailto:jobs@example.org?subject=100%%20remote">Apply</a>')
-    expect(collectAddresses(document)[0]!.context).toEqual({ kind: 'mailto', linkText: 'Apply', subject: '100%%20remote' })
+  it('decodes each escape and keeps a percent sign that is not one (#89)', () => {
+    const subjectOf = (query: string): string | null => {
+      page(`<a href="mailto:jobs@example.org?${query}">Apply</a>`)
+      const ctx = collectAddresses(document)[0]!.context
+      return ctx.kind === 'mailto' ? ctx.subject : null
+    }
+    expect(subjectOf('subject=100%%20remote')).toBe('100% remote')
+    expect(subjectOf('subject=Engineer%20-%20100% remote')).toBe('Engineer - 100% remote')
+    expect(subjectOf('subject=Caf%E9%20role')).toBe('Caf\ufffd role')
+  })
+
+  it('turns control characters in the subject into single spaces (#89)', () => {
+    page('<a href="mailto:jobs@example.org?subject=Senior%00analyst%1B%7Frole">Apply</a>')
+    expect(collectAddresses(document)[0]!.context).toEqual({ kind: 'mailto', linkText: 'Apply', subject: 'Senior analyst role' })
+  })
+
+  it('reads its header names in any case (#89)', () => {
+    page('<a href="mailto:jobs@example.org?Subject=Hello&amp;TO=second@example.org">Apply</a>')
+    expect(collectAddresses(document)).toEqual([
+      { address: 'jobs@example.org', context: { kind: 'mailto', linkText: 'Apply', subject: 'Hello' } },
+      { address: 'second@example.org', context: { kind: 'mailto', linkText: 'Apply', subject: 'Hello' } },
+    ])
+  })
+
+  it('keeps every to, the first subject, and skips empty pairs (#89)', () => {
+    page('<a href="mailto:first@example.org?to=second@example.org&amp;&amp;to=third@example.org&amp;subject=First&amp;subject=Second&amp;flag">Apply</a>')
+    const found = collectAddresses(document)
+    expect(found.map((f) => f.address)).toEqual(['first@example.org', 'second@example.org', 'third@example.org'])
+    for (const f of found) expect(f.context).toEqual({ kind: 'mailto', linkText: 'Apply', subject: 'First' })
   })
 
   it('with no address gives nothing', () => {

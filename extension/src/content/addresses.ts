@@ -52,13 +52,17 @@ function sentenceAround(text: string, start: number, end: number): string {
 /** The recipients of a `mailto:` address, and its subject. Its `body`, `cc`
  *  and `bcc` are never read. RFC 6068 percent-decodes each part and gives `+`
  *  no meaning, so the query is split by hand: `URLSearchParams` would read
- *  "C++ Developer" as "C   Developer". The subject's whitespace, an encoded
- *  line break included, collapses to single spaces: a header holds one line. */
+ *  "C++ Developer" as "C   Developer". Each run of escapes decodes as UTF-8,
+ *  and a `%` that starts no escape stays as written. The subject's control
+ *  characters and whitespace, an encoded line break or NUL included, collapse
+ *  to single spaces: a header holds one line. */
 function readMailto(href: string): { recipients: string[]; subject: string | null } {
   const rest = href.replace(/^\s*mailto:/i, '')
   const q = rest.indexOf('?')
   const path = q === -1 ? rest : rest.slice(0, q)
-  const decode = (s: string): string => { try { return decodeURIComponent(s) } catch { return s } }
+  const decode = (s: string): string =>
+    s.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) =>
+      new TextDecoder('utf-8', { ignoreBOM: true }).decode(Uint8Array.from(run.slice(1).split('%'), (h) => parseInt(h, 16))))
   const params = (q === -1 ? '' : rest.slice(q + 1)).split('&').map((pair) => {
     const eq = pair.indexOf('=')
     return eq === -1 ? { key: decode(pair).toLowerCase(), value: '' } : { key: decode(pair.slice(0, eq)).toLowerCase(), value: decode(pair.slice(eq + 1)) }
@@ -68,7 +72,7 @@ function readMailto(href: string): { recipients: string[]; subject: string | nul
     .map((a) => a.trim())
     .filter(isAddressShape)
   const raw = params.find((p) => p.key === 'subject')?.value
-  const subject = raw === undefined ? '' : collapse(raw)
+  const subject = raw === undefined ? '' : collapse(raw.replace(/[\x00-\x1f\x7f]/g, ' '))
   return { recipients, subject: subject === '' ? null : subject }
 }
 
