@@ -99,6 +99,12 @@ function scanTree(denylist, findings) {
   }
 }
 
+/** One finding's line. In CI the output is a public log that outlives a
+ *  history rewrite, so it names the rule and the place, never what matched. */
+export function formatFinding({ rule, where, detail }, ci) {
+  return ci ? `  ${rule.padEnd(14)} ${where}` : `  ${rule.padEnd(14)} ${where}  ${detail}`
+}
+
 /** The commits a push would publish, from the lines git feeds a pre-push hook. */
 function pushedCommits(remote, stdin) {
   const shas = new Set()
@@ -144,7 +150,7 @@ function main(argv) {
   }
   if (findings.length === 0) return 0
   console.error(`check-private: ${findings.length} finding(s). Nothing personal belongs in this repo.`)
-  for (const { rule, where, detail } of findings.slice(0, 50)) console.error(`  ${rule.padEnd(14)} ${where}  ${detail}`)
+  for (const finding of findings.slice(0, 50)) console.error(formatFinding(finding, Boolean(process.env.CI)))
   if (findings.length > 50) console.error(`  … and ${findings.length - 50} more`)
   console.error('Use the Ada Lovelace persona in tests, and keep real notes in ~/.job-form-filler/dev/.')
   return 1
