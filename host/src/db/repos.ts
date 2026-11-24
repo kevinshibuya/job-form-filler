@@ -652,5 +652,7 @@ export function recordArrivedEmail(
     if (r.email.senderAddress !== null) setLastSenderAddress(db, r.email.senderAddress)
     return { ok: true, job }
   })
-  return tx()
+  // Immediate, as a Send's begin(): a deferred transaction reads first and, in
+  // WAL, fails at once with SQLITE_BUSY when another panel commits meanwhile.
+  return tx.immediate()
 }

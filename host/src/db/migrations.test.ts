@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import DatabaseCtor from 'better-sqlite3'
 import type Database from 'better-sqlite3'
 import { DatabaseTooNew, MIGRATIONS, type Migration } from './migrations.js'
-import { getMailAccount, getProfile, listApplicationEmails, listApplied, listKeptProseAnswers, markApplied, openDb, saveMailAccount, setProfile } from './repos.js'
+import { getMailAccount, getProfile, listApplicationEmails, listApplied, listKeptProseAnswers, markApplied, openDb, recordArrivedEmail, saveMailAccount, setProfile } from './repos.js'
 import { SCHEMA_SQL } from './schema.js'
 
 // The host log is a file under the real home directory: no test writes to it.
@@ -336,6 +336,36 @@ describe('openDb across processes', () => {
     setProfile(db, { email: 'ada@example.com' })
     expect(Date.now() - started).toBeGreaterThan(HOLD_MS / 2)
     expect(getProfile(db)).toEqual({ email: 'ada@example.com', firstName: 'Ada' })
+    db.close()
+  }, 30_000)
+
+  it('records "It arrived" after another process commits a write, instead of failing at once (#90)', async () => {
+    const path = tempDbPath()
+    const db = openDb(path)
+
+    // A deferred transaction would read first, then find its snapshot stale
+    // once the holder commits, and fail with SQLITE_BUSY without waiting.
+    const holder = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { createRequire } from 'node:module'
+      const Database = createRequire(import.meta.url)(${JSON.stringify(BETTER_SQLITE)})
+      const db = new Database(${JSON.stringify(path)})
+      db.exec('BEGIN IMMEDIATE')
+      db.prepare("INSERT INTO profile (key, value) VALUES ('firstName', 'Ada')").run()
+      process.stdout.write('locked\\n')
+      setTimeout(() => { db.exec('COMMIT'); db.close(); process.exit(0) }, 1_500)
+    `], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.push(holder)
+    expect(await firstLine(holder)).toBe('locked')
+
+    const out = recordArrivedEmail(db, {
+      requestId: crypto.randomUUID(), url: 'https://jobs.example.com/arrived', company: null, jobTitle: null,
+      email: {
+        applyAddress: 'jobs@example.org', senderAddress: null, subject: 'Application', body: 'Hello', attachmentNames: [],
+        language: 'en', gmailMessageId: null, gmailThreadId: null, route: 'tool', aiDrafted: true, edited: false, model: null,
+      },
+    })
+    expect(out.ok).toBe(true)
+    expect(getProfile(db)).toEqual({ firstName: 'Ada' })
     db.close()
   }, 30_000)
 
