@@ -85,6 +85,24 @@ describe('a mailto: link', () => {
     expect(collectAddresses(document)).toEqual([{ address: 'jobs@example.org', context: { kind: 'mailto', linkText: 'Apply', subject: null } }])
   })
 
+  it('keeps a plus sign in the subject and in an address, as RFC 6068 reads them (#89)', () => {
+    page('<a href="mailto:jobs@example.org?to=ada+jobs@example.org&subject=C++%20Developer">Apply</a>')
+    expect(collectAddresses(document)).toEqual([
+      { address: 'jobs@example.org', context: { kind: 'mailto', linkText: 'Apply', subject: 'C++ Developer' } },
+      { address: 'ada+jobs@example.org', context: { kind: 'mailto', linkText: 'Apply', subject: 'C++ Developer' } },
+    ])
+  })
+
+  it('collapses a line break and runs of spaces in the subject to one space (#89)', () => {
+    page('<a href="mailto:jobs@example.org?subject=%20Senior%0A%0D%0Aanalyst%09%20role%20">Apply</a>')
+    expect(collectAddresses(document)[0]!.context).toEqual({ kind: 'mailto', linkText: 'Apply', subject: 'Senior analyst role' })
+  })
+
+  it('keeps a subject whose percent sign is not an escape as written (#89)', () => {
+    page('<a href="mailto:jobs@example.org?subject=100%%20remote">Apply</a>')
+    expect(collectAddresses(document)[0]!.context).toEqual({ kind: 'mailto', linkText: 'Apply', subject: '100%%20remote' })
+  })
+
   it('with no address gives nothing', () => {
     page('<a href="mailto:?subject=Hi">Share</a><a href="mailto:not-an-address">x</a>')
     expect(collectAddresses(document)).toEqual([])
